@@ -1,24 +1,58 @@
-// Gate G10's iOS spec (plan ios-e2ee-messaging-port D7 + D10 G10). Run with
-// Node's built-in runner:
+// Gate G10's iOS spec (plan ios-e2ee-messaging-port D7 + D10 G10), rewritten
+// for iOS call E2EE phase 2, Wave 3 (plan ios-call-e2ee-phase2 D6 + D8, §10
+// step 2, contract C-W3-8). Run with Node's built-in runner:
 //   node --conditions=browser --test components/client/e2eeIosGate.test.ts
-// iOS turns native E2EE on for messages and attachments, but calls on iPhone
-// stay plaintext in phase 1. What keeps that honest is one chain: on iOS
-// `platformMediaE2EESupported()` is TRUE (no `slogaShell`), so
-// `mediaE2EEPlatformSupported(keyPush)` is false ONLY because
-// `CapacitorTransport.keyPushAvailable()` answers false there. That one
-// predicate feeds both `shellSupported` (rtc/state.tsx) and the bridge's MLS
-// KeyPackage prepublish, so an iOS device neither builds an "encrypted" Room
-// nor stocks the KeyPackage directory.
 //
-// `e2eePlatform.ts` and `e2eeProtectorCopy.ts` load under Node and are tested
-// by behavior. `e2ee.ts`, `rtc/state.tsx`, `Controller.ts` and
-// `Encryption.tsx` do not (Solid, Capacitor, stoat.js), so their wiring is
-// pinned by reading the sources. Point `E2EE_IOS_GATE_TS`,
-// `E2EE_IOS_GATE_STATE`, `E2EE_IOS_GATE_CONTROLLER` (files) and
-// `E2EE_IOS_GATE_COMPONENTS` (a components root) at other copies to scan
-// those instead (the known-bad control: the 8821aac9 files, which fail
-// G4-G9, F1, C1, C2 and D1-D2; G1-G3 hold there, the keyPush body being
-// unchanged by design; and the 8f78a9ea e2ee.ts, which fails G9 and R1-R7).
+// Phase 1 kept calls on iPhone plaintext with one pin: G3 required
+// `CapacitorTransport.keyPushAvailable()` to be android-only, and the
+// behaviour rows and the chain test asserted that iOS reads false. Phase 2
+// W3 is the audited unpin step (plan §10 step 2), so those "iOS must stay
+// plaintext" pins are REMOVED here, on purpose, and replaced by the rule
+// that decides iOS now. On iOS `platformMediaE2EESupported()` is still TRUE
+// (no `slogaShell`), so `mediaE2EEPlatformSupported(keyPush)` is exactly the
+// iOS key push, and that key push is `iosMediaE2EEReady(...)` over four
+// terms, each failing closed: the build's caps flag
+// (`window.__slogaIosCaps?.mediaE2EE`, literal `true` only; a phase-1 or
+// Release build says nothing or false), the E2ee plugin, a WebKit with
+// `RTCRtpScriptTransform` (iOS 15.0-15.3 has none) and the app-start D8
+// worker probe having PASSED ("pending" and "fail" read no). The bridge
+// feeds that one answer to the KeyPackage prepublish and, through
+// `shellMediaE2EESupported`, to both `shellSupported` (rtc/state.tsx) and
+// the prejoin copy (`useCallPrejoinMode.ts`), so an iOS device without all
+// four terms neither builds an "encrypted" Room, nor stocks the KeyPackage
+// directory, nor tells the user a call will be encrypted.
+//
+// `e2eePlatform.ts`, `e2eeProtectorCopy.ts`, `rtc/workerProbe.ts` and
+// `rtc/e2eeDeviceReadiness.ts` load under Node and are tested by behaviour.
+// The iOS rows compose them the way the callers do (pinned lexically by G3,
+// G8, P1-P4 and C1), and each behaviour row is checked against in-suite
+// mutants of `e2eePlatform.ts` ("flag ignored", "plugin dropped", "probe
+// dropped", ...), so a green matrix is never one that cannot fail.
+// `e2ee.ts`, `rtc/state.tsx`, `useCallPrejoinMode.ts`, `Controller.ts` and
+// `Encryption.tsx` do not load (Solid, Capacitor, stoat.js, livekit), so
+// their wiring is pinned by reading the sources. Point
+// `E2EE_IOS_GATE_PLATFORM`, `E2EE_IOS_GATE_TS`, `E2EE_IOS_GATE_STATE`,
+// `E2EE_IOS_GATE_PREJOIN`, `E2EE_IOS_GATE_SETTINGS`,
+// `E2EE_IOS_GATE_CONTROLLER` (files) and
+// `E2EE_IOS_GATE_COMPONENTS` (a components root) at other copies to check
+// those instead (the known-bad control: the 7de02a68 files, whose
+// e2eePlatform.ts lacks the iOS rule, whose e2ee.ts keeps the android-only
+// key push (G3, G9) and whose prejoin copy is the second, unpinned predicate
+// (P1, P3)).
+//
+// The state.tsx pins written against the CONTRACT shape (C-W3-8:
+// `shellSupported` calls `shellMediaE2EESupported` with the prejoin copy's
+// shell inputs, then folds in the toggle; R21: the server's iOS switch goes
+// to readiness as its own `pausedByServer` input) sit in their own
+// `describe("L3t: ...")` block at the end. They were written red before L3t
+// rewired state.tsx and went green with it.
+//
+// Stage 5 fix round F (D14, R9 was wrong): the switch is fetched from
+// `GET /` (`client.configuration` is a stub) and passed RAW (absent reads
+// ON). The prejoin copy and Settings apply it through the one helper
+// `callMediaE2EEOffered(shell, sw)`; state.tsx never does (R21: folded into
+// `shellSupported`, a paused iPhone would read "unsupported", the forbidden
+// copy). Pinned by P3 + P5-P7, S0-S4 and C4-C5, and by a behaviour row.
 //
 // The TS lexer is the one in e2eeDecryptSelf.scan.test.ts (that file exports
 // nothing), plus one change for .tsx: a quote right after a letter or digit
@@ -33,9 +67,17 @@
 //   G2. Its only top-level `nativeBlobTransfer` is
 //       `readonly nativeBlobTransfer = true;`.
 //   G3. Its one `keyPushAvailable()` body is exactly
-//       `return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android";`
-//       (wrapping parens allowed): the D7 media gate pin, iOS false. Never
-//       "fix" it to true in phase 1.
+//       `const platform = Capacitor.getPlatform(); return (Capacitor.isNativePlatform() &&
+//       (platform === "android" || (platform === "ios" && iosMediaE2EEReady({
+//       capsMediaE2EE: (window as SlogaIosCapsWindow).__slogaIosCaps?.mediaE2EE,
+//       pluginPresent: Capacitor.isPluginAvailable("E2ee"),
+//       scriptTransform: typeof RTCRtpScriptTransform !== "undefined",
+//       probe: workerProbeResult() }))));`
+//       (plan D6 + D8): each of the four `iosMediaE2EEReady` terms is also
+//       checked by name, so "flag ignored", "plugin dropped", "transform
+//       dropped" and "probe dropped" each say which; `iosMediaE2EEReady(` is
+//       called once in the file; `workerProbeResult` is imported unaliased
+//       from `../rtc/workerProbe` and not defined here.
 //   G4. Its only top-level `clipboardImageInWebview` is
 //       `readonly clipboardImageInWebview = capacitorClipboardImageInWebview(Capacitor.getPlatform());`.
 //   G5. Its one `attachmentUrl(messageId, idx)` body is exactly
@@ -52,9 +94,9 @@
 //       returning `mediaE2EEPlatformSupported(this.nativeKeyPushAvailable())`
 //       and one `nativeKeyPushAvailable()` returning
 //       `this.#transport.keyPushAvailable()`.
-//   G9. One source: the five Capacitor/media helpers are imported unaliased
-//       from `./e2eePlatform`, and e2ee.ts defines none of the six
-//       e2eePlatform functions itself.
+//   G9. One source: the six Capacitor/media helpers (incl.
+//       `iosMediaE2EEReady`) are imported unaliased from `./e2eePlatform`,
+//       and e2ee.ts defines none of the eight e2eePlatform functions itself.
 //   F1. Every `new E2EESendError(` whose message is "Encryption status could
 //       not be verified. ..." and that sits in a `catch` (same function) binds
 //       the error and reads
@@ -98,13 +140,57 @@
 //   R7. `.refreshBackupIfDue(` is called once, inside the courier, and
 //       "e2ee_backup_refresh_if_due" appears once, inside
 //       `refreshBackupIfDue()`.
+// useCallPrejoinMode.ts (the prejoin copy; plan D6, C-W3-8):
+//   P0. The file lexes to balanced braces.
+//   P1. `shellMediaE2EESupported` is imported unaliased from e2eePlatform
+//       and not defined here, `isE2EESupported` comes from livekit-client,
+//       and the file calls no `platformMediaE2EESupported(`,
+//       `nativeKeyPushAvailable(` or `iosMediaE2EEReady(` of its own.
+//       The three switch helpers (`callMediaE2EEOffered`,
+//       `fetchIosCallSwitchValue`, `iosCallSwitch`) are imported unaliased
+//       from `@revolt/rtc/iosCallSwitch` and not defined here.
+//   P2. `const wouldEncrypt =` (one) is a pure `&&` chain.
+//   P3. Its first term is exactly `callMediaE2EEOffered(SHELL_CALL, sw)`,
+//       SHELL_CALL being `shellMediaE2EESupported({ e2eeSupported:
+//       isE2EESupported(), nativeE2EEAvailable: nativeE2EEAvailable(),
+//       bridgePlatformSupported: !!bridge?.mediaE2EEPlatformSupported() })`
+//       (the shell argument is named separately: "prejoin copy diverges").
+//   P4. Then exactly the device and toggle terms, as before W3:
+//       `!!bridge?.status.get("state")?.published`, `input.e2eeCallsEnabled`.
+//   P5. `const sw =` (one) is exactly `iosCallSwitch({ platform:
+//       Capacitor.getPlatform(), serverValue: Capacitor.getPlatform() ===
+//       "ios" ? await fetchIosCallSwitchValue({ fetchRoot: () =>
+//       client().api.get("/"), setTimeout, clearTimeout }) : undefined })`.
+//   P6. The switch is applied ONLY through `callMediaE2EEOffered`: every
+//       `iosCallSwitch(` verdict (and its binding) is that helper's second
+//       argument and is read nowhere else.
+//   P7. RAW: no `serverValue` key or `...SwitchValue`/`...SwitchFetch`
+//       assignment holds `!!`, `Boolean(`, `??`, `||`, `&&`, a comparison
+//       with true/false or `configuration`; every `iosCallSwitch(` takes
+//       `{ platform: Capacitor.getPlatform(), serverValue }`; every
+//       `fetchIosCallSwitchValue(` reads `() => client().api.get("/")`.
+// settings/user/Encryption.tsx (the Settings call row; fix round F6):
+//   S0. The file lexes to balanced braces.
+//   S1. The three switch helpers, as P1.
+//   S2. The switch is applied only through `callMediaE2EEOffered`, as P6.
+//   S3. RAW, as P7.
+//   S4. The one `iosCallSwitch(` reads `<signal>()?.serverValue`, whose one
+//       setter call is `fetchIosCallSwitchValue(...).then((serverValue) =>
+//       set<Signal>({ serverValue }))`: the fetched value, untouched.
 // rtc/state.tsx:
 //   C0. The file lexes to balanced braces.
-//   C1. `const shellSupported =` (one): a pure `&&` chain with the term
-//       `!!bridge?.mediaE2EEPlatformSupported()` and no separate
-//       `nativeKeyPushAvailable(` or `platformMediaE2EESupported(` term.
+//   C1. (L3t) `const shellSupported =` (one) is a pure `&&` chain of exactly
+//       SHELL_CALL (the prejoin copy's first term, character for character)
+//       and `this.#settings.e2eeCallsEnabled`.
 //   C2. state.tsx defines no `platformMediaE2EESupported` and re-exports it
 //       from `../client/e2eePlatform` (one source).
+//   C3. (L3t) `shellMediaE2EESupported` is imported unaliased from
+//       e2eePlatform and not defined in state.tsx.
+//   C4. (R21) state.tsx names no `callMediaE2EEOffered`; its one
+//       `callEncryptionReadiness({...})` takes `shellSupported` itself and
+//       `pausedByServer: iosCallSwitch({ platform: Capacitor.getPlatform(),
+//       serverValue: <raw value> }) === "off"`.
+//   C5. RAW, as P7.
 // Controller.ts:
 //   D0. The file lexes to balanced braces.
 //   D1. `Capacitor` is imported from `@capacitor/core`.
@@ -131,24 +217,53 @@
 // a scanner that cannot fail.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
-import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { stripTypeScriptTypes } from "node:module";
+import { describe, test } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { callEncryptionReadiness } from "../rtc/e2eeDeviceReadiness.ts";
 import {
+  callMediaE2EEOffered,
+  fetchIosCallSwitchValue,
+  iosCallSwitch,
+} from "../rtc/iosCallSwitch.ts";
+import {
+  resetWorkerProbeForTest,
+  runWorkerProbe,
+  workerProbeResult,
+} from "../rtc/workerProbe.ts";
+import { protectorSendErrorCopy } from "./e2eeProtectorCopy.ts";
+
+type Platform = typeof import("./e2eePlatform.ts");
+
+/** The e2eePlatform.ts under test (loaded, so a control copy can be swapped in). */
+const PLATFORM_FILE = process.env.E2EE_IOS_GATE_PLATFORM
+  ? pathToFileURL(process.env.E2EE_IOS_GATE_PLATFORM)
+  : new URL("./e2eePlatform.ts", import.meta.url);
+const e2eePlatform = (await import(PLATFORM_FILE.href)) as Platform;
+const {
   capacitorAttachmentUrl,
   capacitorClipboardImageInWebview,
   capacitorCouriersOrphanedRecovery,
   capacitorNativeE2EE,
   mediaE2EEPlatformSupported,
   platformMediaE2EESupported,
-} from "./e2eePlatform.ts";
-import { protectorSendErrorCopy } from "./e2eeProtectorCopy.ts";
+} = e2eePlatform;
 
 const TS_FILE =
   process.env.E2EE_IOS_GATE_TS || new URL("./e2ee.ts", import.meta.url);
 const STATE_FILE =
   process.env.E2EE_IOS_GATE_STATE ||
   new URL("../rtc/state.tsx", import.meta.url);
+const PREJOIN_FILE =
+  process.env.E2EE_IOS_GATE_PREJOIN ||
+  new URL(
+    "../ui/components/features/voice/useCallPrejoinMode.ts",
+    import.meta.url,
+  );
+const SETTINGS_FILE =
+  process.env.E2EE_IOS_GATE_SETTINGS ||
+  new URL("../app/interface/settings/user/Encryption.tsx", import.meta.url);
 const CONTROLLER_FILE =
   process.env.E2EE_IOS_GATE_CONTROLLER ||
   new URL("./Controller.ts", import.meta.url);
@@ -261,24 +376,24 @@ test("capacitorCouriersOrphanedRecovery: only iOS couriers a kept recovery bundl
   }
 });
 
-test("media gate pin (D7): on iOS the platform term is TRUE, so the key-push false is all that keeps calls honest", () => {
+test("media gate (D6): on iOS the platform term is TRUE, so the iOS key push alone decides", () => {
   // A Capacitor iOS webview: no `slogaShell`, no `__TAURI__`.
   withWindow({}, () => {
     assert.equal(platformMediaE2EESupported(), true);
-    // iOS: CapacitorTransport.keyPushAvailable() is false (G3).
+    // So `mediaE2EEPlatformSupported` is exactly the key push, which on iOS
+    // is `iosMediaE2EEReady(...)` (G3): the four terms below decide.
     assert.equal(mediaE2EEPlatformSupported(false), false);
-    // The same window with a key push WOULD arm media E2EE, which is why G3
-    // must never be "fixed" to true for iOS.
     assert.equal(mediaE2EEPlatformSupported(true), true);
   });
 });
 
-test("media predicate per platform: Tauri, Android and audited Electron arm; unaudited Electron never does", () => {
+test("media predicate per platform: Tauri, Android, a ready iOS and audited Electron arm; unaudited Electron never does", () => {
   const rows: [string, object, boolean, boolean][] = [
     // [label, window, keyPushAvailable, expected]
     ["Windows Tauri", { __TAURI__: { core: {} } }, true, true],
     ["Android", {}, true, true],
-    ["iOS", {}, false, false],
+    ["iOS, iosMediaE2EEReady false", {}, false, false],
+    ["iOS, iosMediaE2EEReady true", {}, true, true],
     ["web (no bridge)", {}, false, false],
     [
       "Linux Electron, audited",
@@ -313,6 +428,308 @@ test("media predicate per platform: Tauri, Android and audited Electron arm; una
     assert.equal(platformMediaE2EESupported(), true, "audited Electron");
   });
 });
+
+// ---- B. Behaviour: the iOS call-E2EE chain (plan D6 + D8, C-W3-8) ----------
+
+/** One iOS build and device, as the callers read it. */
+interface IosDevice {
+  /** `window.__slogaIosCaps?.mediaE2EE` (C4); undefined on a phase-1 build. */
+  caps: unknown;
+  /** `Capacitor.isPluginAvailable("E2ee")`. */
+  plugin: boolean;
+  /** `typeof RTCRtpScriptTransform !== "undefined"`. */
+  scriptTransform: boolean;
+  /** `workerProbeResult()`, the cached D8 probe. */
+  probe: "pending" | "pass" | "fail";
+  /**
+   * Whether livekit's `isE2EESupported()` would still say yes without a
+   * script transform (insertable streams). Real WebKit has none; a row sets
+   * it so the iOS rule alone has to refuse a transform-less engine.
+   */
+  insertableStreams?: boolean;
+}
+
+interface IosAnswer {
+  keyPush: boolean;
+  prepublish: boolean;
+  shellSupported: boolean;
+  readiness: string;
+}
+
+/**
+ * What an iOS device answers, composed exactly as the callers compose it:
+ * `CapacitorTransport.keyPushAvailable()` on native iOS (G3),
+ * `E2EEBridge.mediaE2EEPlatformSupported()` (G8; it is also the KeyPackage
+ * prepublish gate, G7), `nativeE2EEAvailable()` (G6), the one shell
+ * predicate (P3, C1) with "Encrypt my calls" on, and the readiness the call
+ * chrome reads (C-W3-9; switch on, device not owned elsewhere).
+ */
+function iosAnswer(p: Platform, d: IosDevice): IosAnswer {
+  return withWindow({}, () => {
+    const keyPush = p.iosMediaE2EEReady({
+      capsMediaE2EE: d.caps,
+      pluginPresent: d.plugin,
+      scriptTransform: d.scriptTransform,
+      probe: d.probe,
+    });
+    const prepublish = p.mediaE2EEPlatformSupported(keyPush);
+    const shellSupported = p.shellMediaE2EESupported({
+      e2eeSupported: d.scriptTransform || d.insertableStreams === true,
+      nativeE2EEAvailable: p.capacitorNativeE2EE(
+        true,
+        "ios",
+        (name) => d.plugin && name === "E2ee",
+      ),
+      bridgePlatformSupported: prepublish,
+    });
+    const readiness = callEncryptionReadiness({
+      shellSupported,
+      status: undefined,
+      deviceOwnedElsewhere: false,
+      pausedByServer: false,
+    });
+    return { keyPush, prepublish, shellSupported, readiness };
+  });
+}
+
+const READY_DEVICE: IosDevice = {
+  caps: true,
+  plugin: true,
+  scriptTransform: true,
+  probe: "pass",
+};
+
+type IosGroup = "ready" | "caps" | "plugin" | "transform" | "probe";
+
+const IOS_ROWS: { group: IosGroup; label: string; device: IosDevice }[] = [
+  { group: "ready", label: "a ready build and device", device: READY_DEVICE },
+  {
+    group: "caps",
+    label: "a phase-1 build (no caps object)",
+    device: { ...READY_DEVICE, caps: undefined },
+  },
+  {
+    group: "caps",
+    label: "a Release build (caps flag false)",
+    device: { ...READY_DEVICE, caps: false },
+  },
+  {
+    group: "caps",
+    label: 'caps flag "true" (a string)',
+    device: { ...READY_DEVICE, caps: "true" },
+  },
+  { group: "caps", label: "caps flag 1", device: { ...READY_DEVICE, caps: 1 } },
+  {
+    group: "caps",
+    label: "caps flag an object",
+    device: { ...READY_DEVICE, caps: { mediaE2EE: true } },
+  },
+  {
+    group: "plugin",
+    label: "no E2ee plugin",
+    device: { ...READY_DEVICE, plugin: false },
+  },
+  {
+    group: "transform",
+    label: "no RTCRtpScriptTransform, insertable streams claimed",
+    device: {
+      ...READY_DEVICE,
+      scriptTransform: false,
+      insertableStreams: true,
+    },
+  },
+  {
+    group: "transform",
+    label: "no RTCRtpScriptTransform (iOS 15.0-15.3)",
+    device: { ...READY_DEVICE, scriptTransform: false },
+  },
+  {
+    group: "probe",
+    label: "probe pending",
+    device: { ...READY_DEVICE, probe: "pending" },
+  },
+  {
+    group: "probe",
+    label: "probe failed",
+    device: { ...READY_DEVICE, probe: "fail" },
+  },
+];
+
+/**
+ * Every way the rows in `groups` (all rows when omitted) differ from the
+ * rule: only the ready row may arm anything, and every other row reads no
+ * key push, no prepublish, no shell support and `unsupported`.
+ */
+function iosMatrixFailures(p: Platform, groups?: IosGroup[]): string[] {
+  const out: string[] = [];
+  for (const { group, label, device } of IOS_ROWS) {
+    if (groups && !groups.includes(group)) continue;
+    const ready = group === "ready";
+    const want: IosAnswer = {
+      keyPush: ready,
+      prepublish: ready,
+      shellSupported: ready,
+      readiness: ready ? "ready" : "unsupported",
+    };
+    let got: IosAnswer;
+    try {
+      got = iosAnswer(p, device);
+    } catch (error) {
+      out.push(`${label}: threw ${String(error)}`);
+      continue;
+    }
+    for (const key of Object.keys(want) as (keyof IosAnswer)[]) {
+      if (got[key] !== want[key]) {
+        out.push(
+          `${label}: ${key} is ${String(got[key])}, want ${String(want[key])}`,
+        );
+      }
+    }
+  }
+  return out;
+}
+
+test("iOS: caps flag + plugin + script transform + probe pass = key push, prepublish, shell support and readiness ready", () => {
+  assert.deepEqual(iosMatrixFailures(e2eePlatform, ["ready"]), []);
+});
+
+test("iOS: without the caps flag (a phase-1 or Release build), or with any non-true flag, nothing arms and the call is unsupported", () => {
+  assert.deepEqual(iosMatrixFailures(e2eePlatform, ["caps"]), []);
+});
+
+test("iOS: without the E2ee plugin nothing arms and the call is unsupported", () => {
+  assert.deepEqual(iosMatrixFailures(e2eePlatform, ["plugin"]), []);
+});
+
+test("iOS: without RTCRtpScriptTransform nothing arms and the call is unsupported, even where insertable streams are claimed", () => {
+  assert.deepEqual(iosMatrixFailures(e2eePlatform, ["transform"]), []);
+});
+
+test("iOS: a pending or failed D8 probe arms nothing and the call is unsupported", () => {
+  assert.deepEqual(iosMatrixFailures(e2eePlatform, ["probe"]), []);
+});
+
+/** A probe worker that answers `init` with livekit's ack and one heartbeat. */
+function answeringWorker(rte: string) {
+  const listeners: ((ev: { data?: unknown }) => void)[] = [];
+  return {
+    postMessage(m: unknown) {
+      if ((m as { kind?: unknown } | null)?.kind !== "init") return;
+      for (const f of [...listeners]) {
+        f({ data: { kind: "initAck", data: {} } });
+        f({ data: { kind: "slogaDecodeWitness", data: { rte } } });
+      }
+    },
+    addEventListener(
+      type: "message" | "error",
+      f: (ev: { data?: unknown }) => void,
+    ) {
+      if (type === "message") listeners.push(f);
+    },
+    terminate() {},
+  };
+}
+
+test("iOS (D8): the real probe cache feeds the predicate: unsupported until a probe passes, ready only after it does, unsupported after a fail", async () => {
+  const readiness = () =>
+    iosAnswer(e2eePlatform, { ...READY_DEVICE, probe: workerProbeResult() })
+      .readiness;
+  const deps = (rte: string) => ({
+    makeWorker: () => answeringWorker(rte),
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+  });
+  resetWorkerProbeForTest();
+  try {
+    assert.equal(workerProbeResult(), "pending");
+    assert.equal(readiness(), "unsupported", "before any probe settled");
+    assert.equal(await runWorkerProbe(deps("function")), "pass");
+    assert.equal(readiness(), "ready", "after a passed probe");
+    resetWorkerProbeForTest();
+    assert.equal(await runWorkerProbe(deps("undefined")), "fail");
+    assert.equal(readiness(), "unsupported", "after a failed probe");
+  } finally {
+    resetWorkerProbeForTest();
+  }
+});
+
+/**
+ * The module under test, with `swaps` applied (exact, unique snippets),
+ * type-stripped and imported from a data: URL: no file is written.
+ */
+async function platformCopy(swaps: [string, string][]): Promise<Platform> {
+  const src = swapped(readFileSync(PLATFORM_FILE, "utf8"), swaps);
+  const js = stripTypeScriptTypes(src);
+  return (await import(
+    `data:text/javascript,${encodeURIComponent(js)}`
+  )) as Platform;
+}
+
+/** Behaviour mutants of e2eePlatform.ts, and the iOS row each must fail. */
+const PLATFORM_MUTANTS: {
+  label: string;
+  swap: [string, string];
+  kills: RegExp;
+}[] = [
+  {
+    label: "flag ignored",
+    swap: ["input.capsMediaE2EE === true", "true"],
+    kills: /^a phase-1 build \(no caps object\): keyPush is true/,
+  },
+  {
+    label: "flag read as truthy",
+    swap: ["input.capsMediaE2EE === true", "!!input.capsMediaE2EE"],
+    kills: /^caps flag "true" \(a string\): keyPush is true/,
+  },
+  {
+    label: "plugin dropped",
+    swap: ["input.pluginPresent === true", "true"],
+    kills: /^no E2ee plugin: keyPush is true/,
+  },
+  {
+    label: "script transform dropped",
+    swap: ["input.scriptTransform === true", "true"],
+    kills:
+      /^no RTCRtpScriptTransform, insertable streams claimed: shellSupported is true/,
+  },
+  {
+    label: "probe dropped",
+    swap: ['input.probe === "pass"', "true"],
+    kills: /^probe failed: keyPush is true/,
+  },
+  {
+    label: "a pending probe read as a pass",
+    swap: ['input.probe === "pass"', 'input.probe !== "fail"'],
+    kills: /^probe pending: keyPush is true/,
+  },
+  {
+    label: "key push dropped from the media predicate",
+    swap: [
+      "return keyPushAvailable && platformMediaE2EESupported();",
+      "return platformMediaE2EESupported();",
+    ],
+    kills: /^a phase-1 build \(no caps object\): prepublish is true/,
+  },
+  {
+    label: "the bridge term dropped from the shell predicate",
+    swap: ["input.bridgePlatformSupported === true", "true"],
+    kills: /^probe pending: shellSupported is true/,
+  },
+];
+
+test("behaviour mutation harness: the unmutated module, loaded the same way, passes every iOS row", async () => {
+  assert.deepEqual(iosMatrixFailures(await platformCopy([])), []);
+});
+
+for (const { label, swap, kills } of PLATFORM_MUTANTS) {
+  test(`behaviour mutation (e2eePlatform.ts): ${label} fails its iOS row`, async () => {
+    const found = iosMatrixFailures(await platformCopy([swap]));
+    assert.ok(
+      found.some((f) => kills.test(f)),
+      `${label}: want ${kills}, got ${JSON.stringify(found, null, 2)}`,
+    );
+  });
+}
 
 // ---- Shared helpers ---------------------------------------------------------
 
@@ -541,18 +958,6 @@ function memberStatement(m: Masked, at: number): string {
   return end < 0 ? "" : norm(m.text.slice(start, end + 1));
 }
 
-/** A normalized body, with `return (x);` unwrapped to `return x;`. */
-function unwrapReturn(body: string): string {
-  const wrapped = /^return\((.*)\);$/.exec(body);
-  if (!wrapped) return body;
-  let depth = 0;
-  for (const c of wrapped[1]) {
-    if (c === "(") depth++;
-    else if (c === ")" && --depth < 0) return body;
-  }
-  return depth === 0 ? `return${wrapped[1]};` : body;
-}
-
 /** Whether the braces of the masked code balance. */
 function balanced(code: string): boolean {
   let depth = 0;
@@ -699,8 +1104,31 @@ function maskTs(src: string): Masked {
 
 // ---- e2ee.ts rules: the transport, the gate and the prepublish (G) ---------
 
+/** The four `iosMediaE2EEReady` terms, normalized (plan D6 + D8, G3). */
+const IOS_READY_TERMS: [string, string, string][] = [
+  // [property, value, what dropping it is]
+  [
+    "capsMediaE2EE",
+    "(windowasSlogaIosCapsWindow).__slogaIosCaps?.mediaE2EE",
+    "the build's caps flag ignored",
+  ],
+  ["pluginPresent", 'Capacitor.isPluginAvailable("E2ee")', "plugin dropped"],
+  [
+    "scriptTransform",
+    'typeofRTCRtpScriptTransform!=="undefined"',
+    "the RTCRtpScriptTransform check dropped",
+  ],
+  ["probe", "workerProbeResult()", "the D8 probe dropped"],
+];
+const IOS_READY_CALL = `iosMediaE2EEReady({${IOS_READY_TERMS.map(
+  ([key, value]) => `${key}:${value}`,
+).join(",")}})`;
 const KEY_PUSH_BODY =
-  'returnCapacitor.isNativePlatform()&&Capacitor.getPlatform()==="android";';
+  "constplatform=Capacitor.getPlatform();" +
+  'return(Capacitor.isNativePlatform()&&(platform==="android"||' +
+  `(platform==="ios"&&${IOS_READY_CALL})));`;
+const PROBE_IMPORT =
+  /\bimport\s*\{([^}]*)\}\s*from\s*["']\.\.\/rtc\/workerProbe(?:\.ts)?["']/g;
 const CLIPBOARD_DECL =
   "readonlyclipboardImageInWebview=capacitorClipboardImageInWebview(Capacitor.getPlatform());";
 const ATTACHMENT_BODY =
@@ -717,9 +1145,14 @@ const PLATFORM_IMPORTS = [
   "capacitorClipboardImageInWebview",
   "capacitorCouriersOrphanedRecovery",
   "capacitorNativeE2EE",
+  "iosMediaE2EEReady",
   "mediaE2EEPlatformSupported",
 ];
-const PLATFORM_FUNCTIONS = [...PLATFORM_IMPORTS, "platformMediaE2EESupported"];
+const PLATFORM_FUNCTIONS = [
+  ...PLATFORM_IMPORTS,
+  "platformMediaE2EESupported",
+  "shellMediaE2EESupported",
+];
 
 /** Index of the one top-level `name` member of a class body, or a violation. */
 function oneMember(
@@ -761,17 +1194,48 @@ function transportViolations(src: string, m: Masked): string[] {
     );
   }
 
-  // G3: keyPushAvailable() stays android-only.
+  // G3: keyPushAvailable() is android, or iOS with all four ready terms.
   const keyPush = oneMember(m, body, "keyPushAvailable");
   if (typeof keyPush === "string") out.push(`G3 line ${line}: ${keyPush}`);
   else {
     const at = methodBodyAt(m.code, keyPush, "keyPushAvailable");
-    const got = at ? unwrapReturn(norm(m.text.slice(at[0] + 1, at[1]))) : "";
+    const got = at ? norm(m.text.slice(at[0] + 1, at[1])) : "";
+    const where = `G3 line ${lineOf(src, keyPush)}`;
     if (got !== KEY_PUSH_BODY) {
       out.push(
-        `G3 line ${lineOf(src, keyPush)}: keyPushAvailable() is \`${got}\`,` +
-          ` want \`${KEY_PUSH_BODY}\` (iOS false, D7 media gate pin)`,
+        `${where}: keyPushAvailable() is \`${got}\`, want` +
+          ` \`${KEY_PUSH_BODY}\` (android, or iOS only when iosMediaE2EEReady)`,
       );
+    }
+    // Name the dropped term, so a red run says which one.
+    const calls = at
+      ? hitsOf(m.code.slice(at[0], at[1]), /\biosMediaE2EEReady\s*\(/g)
+      : [];
+    if (calls.length !== 1) {
+      out.push(
+        `${where}: iosMediaE2EEReady( called ${calls.length} times in` +
+          " keyPushAvailable(), want 1",
+      );
+    } else {
+      const paren = m.code.indexOf("(", at![0] + calls[0]);
+      const brace = skipWs(m.code, paren + 1);
+      const terms = new Map<string, string>();
+      if (m.code[brace] === "{") {
+        for (const item of items(m, brace)) {
+          const colon = item.indexOf(":");
+          if (colon < 0) terms.set(item, item);
+          else terms.set(item.slice(0, colon), item.slice(colon + 1));
+        }
+      }
+      for (const [key, value, what] of IOS_READY_TERMS) {
+        const term = terms.get(key);
+        if (term !== value) {
+          out.push(
+            `${where}: iosMediaE2EEReady's ${key} is \`${term ?? "missing"}\`,` +
+              ` want \`${value}\` (${what})`,
+          );
+        }
+      }
     }
   }
 
@@ -903,6 +1367,33 @@ function gateViolations(src: string, m: Masked): string[] {
       `\\b(?:function|const|let|var)\\s+${name}(?![\\w$])`,
     );
     if (local.test(m.code)) out.push(`G9 e2ee.ts defines ${name} itself`);
+  }
+
+  // G3 (file-wide): one iOS ready call, and the probe answer is the real cache.
+  // (A definition is G9's to report, not a second caller.)
+  const readyCalls = hitsOf(
+    m.code,
+    /(?<!\bfunction\s+)\biosMediaE2EEReady\s*\(/g,
+  );
+  if (readyCalls.length !== 1) {
+    out.push(
+      `G3 iosMediaE2EEReady( is called ${readyCalls.length} times in e2ee.ts,` +
+        " want once (in CapacitorTransport.keyPushAvailable)",
+    );
+  }
+  if (
+    ![...m.text.matchAll(PROBE_IMPORT)].some((h) =>
+      h[1].split(",").map(squash).includes("workerProbeResult"),
+    )
+  ) {
+    out.push(
+      "G3 workerProbeResult is not imported (unaliased) from ../rtc/workerProbe",
+    );
+  }
+  if (
+    /\b(?:function|const|let|var)\s+workerProbeResult(?![\w$])/.test(m.code)
+  ) {
+    out.push("G3 e2ee.ts defines workerProbeResult itself");
   }
   return out;
 }
@@ -1294,7 +1785,335 @@ function tsViolations(src: string, expectedSites: number): string[] {
 
 // ---- rtc/state.tsx rules (C) ------------------------------------------------
 
-const MEDIA_TERM = "!!bridge?.mediaE2EEPlatformSupported()";
+/**
+ * THE shell predicate call (plan D6, C-W3-8), normalized: the prejoin
+ * copy's first `wouldEncrypt` term (P3) and, once L3t lands,
+ * `shellSupported`'s first term (C1), character for character.
+ */
+const SHELL_CALL =
+  "shellMediaE2EESupported({e2eeSupported:isE2EESupported()," +
+  "nativeE2EEAvailable:nativeE2EEAvailable()," +
+  "bridgePlatformSupported:!!bridge?.mediaE2EEPlatformSupported()})";
+const STATE_TOGGLE = "this.#settings.e2eeCallsEnabled";
+const PREJOIN_DEVICE_TERMS = [
+  '!!bridge?.status.get("state")?.published',
+  "input.e2eeCallsEnabled",
+];
+/** Calls that would make a copy its own, second predicate. */
+const OWN_PLATFORM_CALLS = [
+  "platformMediaE2EESupported(",
+  "nativeKeyPushAvailable(",
+  "iosMediaE2EEReady(",
+];
+/** `import { ... } from` the alias, or the one relative path that resolves. */
+const platformImport = (relative: string) =>
+  new RegExp(
+    `\\bimport\\s*\\{([^}]*)\\}\\s*from\\s*["'](?:@revolt/client|${escapeRe(relative)})/e2eePlatform(?:\\.ts)?["']`,
+    "g",
+  );
+/** From rtc/state.tsx. */
+const STATE_PLATFORM_IMPORT = platformImport("../client");
+/** From ui/components/features/voice/useCallPrejoinMode.ts. */
+const PREJOIN_PLATFORM_IMPORT = platformImport("../../../../client");
+
+/** Whether `name` is imported unaliased by an import matching `re`. */
+function importsName(m: Masked, re: RegExp, name: string): boolean {
+  return [...m.text.matchAll(re)].some((h) =>
+    h[1].split(",").map(squash).includes(name),
+  );
+}
+
+// ---- The server's iOS switch (D14, Stage 5 fix round F, R21) ---------------
+
+/** The prejoin copy's switch binding and its first `wouldEncrypt` term (P3). */
+const PREJOIN_SWITCH_NAME = "sw";
+const PREJOIN_FIRST = `callMediaE2EEOffered(${SHELL_CALL},${PREJOIN_SWITCH_NAME})`;
+/** `const sw = ...` in the prejoin copy, normalized (P5). */
+const PREJOIN_SWITCH =
+  "iosCallSwitch({platform:Capacitor.getPlatform(),serverValue:" +
+  'Capacitor.getPlatform()==="ios"?awaitfetchIosCallSwitchValue({' +
+  'fetchRoot:()=>client().api.get("/"),setTimeout,clearTimeout}):undefined})';
+/** The three switch helpers the prejoin copy and Settings import. */
+const SWITCH_HELPERS = [
+  "callMediaE2EEOffered",
+  "fetchIosCallSwitchValue",
+  "iosCallSwitch",
+];
+/** From the prejoin hook and the Settings card (both four levels deep). */
+const SWITCH_IMPORT =
+  /\bimport\s*\{([^}]*)\}\s*from\s*["'](?:@revolt\/rtc|\.\.\/\.\.\/\.\.\/\.\.\/rtc)\/iosCallSwitch(?:\.ts)?["']/g;
+/**
+ * What turns the RAW server value into something else before
+ * `iosCallSwitch` reads it: absent must read ON, so `!!x`, `Boolean(x)`,
+ * `x ?? false`, `x || false`, `x === true` (all fold absent into OFF or flip
+ * the rule) and `client.configuration` (a local stub, Stage 5 B1) are banned.
+ */
+const COERCION =
+  /!!|^!|\bBoolean\(|\?\?|\|\||&&|[!=]==?(?:true|false)(?![\w$])|\bconfiguration\b/;
+/** `GET /`, the only place the switch is read from (never a stub). */
+const FETCH_ROOT = /^\(\)=>(?:this\.getClient|client)\(\)\.api\.get\("\/"\)$/;
+/** state.tsx's readiness input for the switch (R21), normalized. */
+const PAUSED_BY_SERVER =
+  /^pausedByServer:iosCallSwitch\(\{platform:Capacitor\.getPlatform\(\),serverValue:[\w$]+\}\)==="off"$/;
+
+/** Index of the top-level `,` `;` or closing bracket ending the expression at `from`. */
+function exprEnd(code: string, from: number): number {
+  for (let i = from; i < code.length; i++) {
+    const c = code[i];
+    if (c === "(" || c === "[" || c === "{") i = matchClose(code, i);
+    else if (",;)]}".includes(c)) return i;
+  }
+  return code.length;
+}
+
+/** The arguments of `expr` when it is exactly one call of `name`, else null. */
+function callArgsOf(expr: string, name: string): string[] | null {
+  if (!expr.startsWith(`${name}(`)) return null;
+  const mm = maskTs(expr);
+  let close: number;
+  try {
+    close = matchClose(mm.code, name.length);
+  } catch {
+    return null;
+  }
+  return close === expr.length - 1 ? items(mm, name.length) : null;
+}
+
+/** Calls of `name` (not its definition), as the index of each `(`. */
+function callParens(code: string, name: string): number[] {
+  const re = new RegExp(`(?<!\\bfunction\\s+)\\b${name}\\s*\\(`, "g");
+  return hitsOf(code, re).map((at) => code.indexOf("(", at));
+}
+
+/** `key -> value` of the object literal argument at `paren`, or null. */
+function objectArg(m: Masked, paren: number): Map<string, string> | null {
+  const brace = skipWs(m.code, paren + 1);
+  if (m.code[brace] !== "{") return null;
+  const out = new Map<string, string>();
+  for (const item of items(m, brace)) {
+    const colon = item.indexOf(":");
+    if (colon < 0) out.set(item, item);
+    else out.set(item.slice(0, colon), item.slice(colon + 1));
+  }
+  return out;
+}
+
+/**
+ * The server value reaches `iosCallSwitch` RAW (rule `rule`): every
+ * `serverValue` object key and every `...SwitchValue` / `...SwitchFetch`
+ * assignment is free of COERCION, every `iosCallSwitch(` call takes exactly
+ * `{ platform, serverValue }` with the real platform, and every
+ * `fetchIosCallSwitchValue(` reads `GET /`.
+ */
+function switchRawViolations(
+  rule: string,
+  file: string,
+  src: string,
+  m: Masked,
+): string[] {
+  const out: string[] = [];
+  const raw = (at: number, what: string, value: string) => {
+    if (COERCION.test(value)) {
+      out.push(
+        `${rule} ${file} line ${lineOf(src, at)}: ${what} is \`${value}\`;` +
+          " the server value must reach iosCallSwitch RAW (no !!, Boolean()," +
+          " ?? false, comparisons or client.configuration: absent reads ON)",
+      );
+    }
+  };
+  for (const hit of m.code.matchAll(/(?<=[{,]\s*)serverValue\s*:/g)) {
+    const from = hit.index! + hit[0].length;
+    raw(
+      hit.index!,
+      "serverValue",
+      norm(m.text.slice(from, exprEnd(m.code, from))),
+    );
+  }
+  for (const hit of m.code.matchAll(
+    /\b([\w$]*[sS]witch(?:Value|Fetch))\s*=(?![=>])/g,
+  )) {
+    const from = hit.index! + hit[0].length;
+    raw(hit.index!, hit[1], norm(m.text.slice(from, exprEnd(m.code, from))));
+  }
+  const localPlatform = squash(m.code).includes(
+    "constplatform=Capacitor.getPlatform();",
+  );
+  for (const paren of callParens(m.code, "iosCallSwitch")) {
+    const line = lineOf(src, paren);
+    const arg = objectArg(m, paren);
+    const keys = arg ? [...arg.keys()].sort().join(",") : "";
+    if (!arg || keys !== "platform,serverValue") {
+      out.push(
+        `${rule} ${file} line ${line}: iosCallSwitch( takes \`${keys}\`,` +
+          " want { platform, serverValue }",
+      );
+      continue;
+    }
+    const platform = arg.get("platform");
+    if (
+      platform !== "Capacitor.getPlatform()" &&
+      !(platform === "platform" && localPlatform)
+    ) {
+      out.push(
+        `${rule} ${file} line ${line}: iosCallSwitch's platform is` +
+          ` \`${platform}\`, want Capacitor.getPlatform()`,
+      );
+    }
+  }
+  for (const paren of callParens(m.code, "fetchIosCallSwitchValue")) {
+    const root = objectArg(m, paren)?.get("fetchRoot");
+    if (!root || !FETCH_ROOT.test(root)) {
+      out.push(
+        `${rule} ${file} line ${lineOf(src, paren)}: fetchRoot is` +
+          ` \`${root ?? "missing"}\`, want () => client().api.get("/") (GET /,` +
+          " never client.configuration)",
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * The switch is applied ONLY through `callMediaE2EEOffered` (rule `rule`):
+ * at least one call, each with two arguments whose second is an
+ * `iosCallSwitch(...)` verdict inline or a `const` bound to one, and every
+ * `iosCallSwitch(` call (and its binding) used there and nowhere else.
+ */
+function switchOfferedViolations(
+  rule: string,
+  file: string,
+  src: string,
+  m: Masked,
+): string[] {
+  const out: string[] = [];
+  const offered = callParens(m.code, "callMediaE2EEOffered");
+  if (offered.length === 0) {
+    out.push(
+      `${rule} ${file} never calls callMediaE2EEOffered(: the server switch` +
+        " is not applied through the one helper",
+    );
+  }
+  const covered = new Set<number>();
+  const bound = new Map<string, number>();
+  for (const paren of offered) {
+    const args = items(m, paren);
+    const line = lineOf(src, paren);
+    if (args.length !== 2) {
+      out.push(
+        `${rule} ${file} line ${line}: callMediaE2EEOffered takes` +
+          ` ${args.length} arguments, want (shell, switch)`,
+      );
+      continue;
+    }
+    if (args[1].startsWith("iosCallSwitch(")) {
+      for (const p of callParens(m.code, "iosCallSwitch")) {
+        if (paren < p && p < matchClose(m.code, paren)) covered.add(p);
+      }
+    } else if (/^[\w$]+$/.test(args[1])) {
+      bound.set(args[1], (bound.get(args[1]) ?? 0) + 1);
+    } else {
+      out.push(
+        `${rule} ${file} line ${line}: callMediaE2EEOffered's switch is` +
+          ` \`${args[1]}\`, want an iosCallSwitch(...) verdict`,
+      );
+    }
+  }
+  for (const [name, uses] of bound) {
+    const decls = [
+      ...m.code.matchAll(
+        new RegExp(
+          `\\bconst\\s+${escapeRe(name)}\\s*=\\s*iosCallSwitch\\s*\\(`,
+          "g",
+        ),
+      ),
+    ];
+    if (decls.length !== 1) {
+      out.push(
+        `${rule} ${file}: ${name} is not one const bound to iosCallSwitch(...)`,
+      );
+      continue;
+    }
+    covered.add(m.code.indexOf("(", decls[0].index! + decls[0][0].length - 1));
+    const all = hitsOf(
+      m.code,
+      new RegExp(`(?<![.\\w$#])${escapeRe(name)}(?![\\w$])`, "g"),
+    ).length;
+    if (all - 1 !== uses) {
+      out.push(
+        `${rule} ${file} line ${lineOf(src, decls[0].index!)}: the switch` +
+          ` ${name} is read ${all - 1 - uses} times outside` +
+          " callMediaE2EEOffered (applied by hand)",
+      );
+    }
+  }
+  for (const paren of callParens(m.code, "iosCallSwitch")) {
+    if (!covered.has(paren)) {
+      out.push(
+        `${rule} ${file} line ${lineOf(src, paren)}: iosCallSwitch( outside` +
+          " callMediaE2EEOffered (the switch applied by hand)",
+      );
+    }
+  }
+  return out;
+}
+
+/** The three switch helpers imported unaliased, defined nowhere locally. */
+function switchImportViolations(rule: string, file: string, m: Masked) {
+  const out: string[] = [];
+  for (const name of SWITCH_HELPERS) {
+    if (!importsName(m, SWITCH_IMPORT, name)) {
+      out.push(
+        `${rule} ${name} is not imported (unaliased) from` +
+          ` @revolt/rtc/iosCallSwitch in ${file}`,
+      );
+    }
+    if (
+      new RegExp(`\\b(?:function|const|let|var)\\s+${name}(?![\\w$])`).test(
+        m.code,
+      )
+    ) {
+      out.push(`${rule} ${file} defines ${name} itself`);
+    }
+  }
+  return out;
+}
+
+/**
+ * The top-level `&&` terms of the one `const <name> =` initializer, or the
+ * violations (rule `rule`) that stop it being read: not exactly one
+ * declaration, no end, or a top-level `||` / `??`.
+ */
+function andTerms(
+  src: string,
+  m: Masked,
+  rule: string,
+  name: string,
+): { terms: string[]; line: number } | string[] {
+  const decls = [
+    ...m.code.matchAll(new RegExp(`\\bconst\\s+${name}\\s*=`, "g")),
+  ];
+  if (decls.length !== 1) {
+    return [`${rule} const ${name} declared ${decls.length} times, want 1`];
+  }
+  const from = decls[0].index! + decls[0][0].length;
+  const end = stmtEnd(m.code, from);
+  const line = lineOf(src, from);
+  if (end < 0)
+    return [`${rule} line ${line}: ${name}'s initializer has no end`];
+  const out: string[] = [];
+  for (const op of ["||", "??"]) {
+    if (splitTop(m, from, end, op).length > 1) {
+      out.push(`${rule} line ${line}: a top-level ${op} in ${name}`);
+    }
+  }
+  return out.length > 0 ? out : { terms: splitTop(m, from, end, "&&"), line };
+}
+
+/** The first `&&` term of `const <name> =` in `src`, or "" (cross-file check). */
+function firstTerm(src: string, name: string): string {
+  const got = andTerms(src, maskTs(src), "-", name);
+  return Array.isArray(got) ? "" : (got.terms[0] ?? "");
+}
 
 function stateViolations(src: string): string[] {
   const m = maskTs(src);
@@ -1303,40 +2122,76 @@ function stateViolations(src: string): string[] {
     out.push("C0 state.tsx does not lex to balanced braces");
   }
 
-  // C1: one shared predicate in shellSupported.
-  const decls = [...m.code.matchAll(/\bconst\s+shellSupported\s*=/g)];
-  if (decls.length !== 1) {
-    out.push(`C1 const shellSupported declared ${decls.length} times, want 1`);
-  } else {
-    const from = decls[0].index! + decls[0][0].length;
-    const end = stmtEnd(m.code, from);
-    const line = lineOf(src, from);
-    if (end < 0) {
-      out.push(`C1 line ${line}: shellSupported's initializer has no end`);
-    } else {
-      for (const op of ["||", "??"]) {
-        if (splitTop(m, from, end, op).length > 1) {
-          out.push(`C1 line ${line}: a top-level ${op} in shellSupported`);
-        }
-      }
-      const terms = splitTop(m, from, end, "&&");
-      if (!terms.includes(MEDIA_TERM)) {
-        out.push(
-          `C1 line ${line}: no \`${MEDIA_TERM}\` term in` +
-            ` ${JSON.stringify(terms)}`,
-        );
-      }
-      const init = squash(m.text.slice(from, end));
-      for (const old of [
-        "nativeKeyPushAvailable(",
-        "platformMediaE2EESupported(",
-      ]) {
-        if (init.includes(old)) {
-          out.push(`C1 line ${line}: shellSupported has its own ${old}) term`);
-        }
-      }
+  // C1 (L3t): the one shell predicate, then the toggle, nothing else.
+  const got = andTerms(src, m, "C1", "shellSupported");
+  if (Array.isArray(got)) out.push(...got);
+  else {
+    const want = [SHELL_CALL, STATE_TOGGLE];
+    if (JSON.stringify(got.terms) !== JSON.stringify(want)) {
+      out.push(
+        `C1 line ${got.line}: shellSupported is ${JSON.stringify(got.terms)},` +
+          ` want ${JSON.stringify(want)} (the one shell predicate the prejoin` +
+          " copy calls, then the toggle; anything else and the prejoin copy" +
+          " diverges)",
+      );
     }
   }
+
+  // C3 (L3t): that predicate comes from e2eePlatform.
+  if (!importsName(m, STATE_PLATFORM_IMPORT, "shellMediaE2EESupported")) {
+    out.push(
+      "C3 shellMediaE2EESupported is not imported (unaliased) from e2eePlatform",
+    );
+  }
+  if (
+    /\b(?:function|const|let|var)\s+shellMediaE2EESupported(?![\w$])/.test(
+      m.code,
+    )
+  ) {
+    out.push("C3 state.tsx defines shellMediaE2EESupported itself");
+  }
+
+  // C4 (R21): the switch goes to readiness as its own input, never folded
+  // into the shell term (folded, a paused iPhone reads "unsupported").
+  if (/\bcallMediaE2EEOffered\b/.test(m.code)) {
+    out.push(
+      "C4 state.tsx names callMediaE2EEOffered (R21: that helper is for the" +
+        " prejoin and Settings copy; readiness takes shellSupported and" +
+        " pausedByServer separately)",
+    );
+  }
+  // The bare call with an input object (not `this.callEncryptionReadiness()`).
+  const readinessCalls = hitsOf(
+    m.code,
+    /(?<!\.\s*)\bcallEncryptionReadiness\s*\(\s*\{/g,
+  ).map((at) => m.code.indexOf("(", at));
+  if (readinessCalls.length !== 1) {
+    out.push(
+      `C4 callEncryptionReadiness({...}) is called ${readinessCalls.length}` +
+        " times in state.tsx, want 1",
+    );
+  } else {
+    const line = lineOf(src, readinessCalls[0]);
+    const brace = skipWs(m.code, readinessCalls[0] + 1);
+    const inputs = m.code[brace] === "{" ? items(m, brace) : [];
+    if (!inputs.includes("shellSupported")) {
+      out.push(
+        `C4 line ${line}: callEncryptionReadiness's shellSupported is not the` +
+          " shell term itself (`shellSupported`)",
+      );
+    }
+    const paused = inputs.filter((i) => i.startsWith("pausedByServer"));
+    if (paused.length !== 1 || !PAUSED_BY_SERVER.test(paused[0])) {
+      out.push(
+        `C4 line ${line}: pausedByServer is \`${paused.join(",")}\`, want` +
+          " iosCallSwitch({ platform: Capacitor.getPlatform(), serverValue:" +
+          ' <raw value> }) === "off"',
+      );
+    }
+  }
+
+  // C5: the server value reaches the switch raw.
+  out.push(...switchRawViolations("C5", "state.tsx", src, m));
 
   // C2: the rule lives in e2eePlatform only.
   if (
@@ -1355,6 +2210,171 @@ function stateViolations(src: string): string[] {
   ) {
     out.push(
       'C2 no export { platformMediaE2EESupported } from "../client/e2eePlatform"',
+    );
+  }
+  return out;
+}
+
+// ---- useCallPrejoinMode.ts rules: the prejoin copy (P) ---------------------
+
+function prejoinViolations(src: string): string[] {
+  const m = maskTs(src);
+  const out: string[] = [];
+  if (!balanced(m.code)) {
+    out.push("P0 useCallPrejoinMode.ts does not lex to balanced braces");
+  }
+
+  // P1: the one predicate, imported; no platform rule of its own.
+  if (!importsName(m, PREJOIN_PLATFORM_IMPORT, "shellMediaE2EESupported")) {
+    out.push(
+      "P1 shellMediaE2EESupported is not imported (unaliased) from e2eePlatform",
+    );
+  }
+  if (
+    /\b(?:function|const|let|var)\s+shellMediaE2EESupported(?![\w$])/.test(
+      m.code,
+    )
+  ) {
+    out.push("P1 useCallPrejoinMode.ts defines shellMediaE2EESupported itself");
+  }
+  const livekit = /\bimport\s*\{([^}]*)\}\s*from\s*["']livekit-client["']/g;
+  if (!importsName(m, livekit, "isE2EESupported")) {
+    out.push(
+      "P1 isE2EESupported is not imported (unaliased) from livekit-client",
+    );
+  }
+  const code = squash(m.code);
+  for (const call of OWN_PLATFORM_CALLS) {
+    if (code.includes(call)) {
+      out.push(
+        `P1 useCallPrejoinMode.ts calls ${call}) itself: a second predicate` +
+          " beside the shared one (the prejoin copy diverges)",
+      );
+    }
+  }
+
+  out.push(...switchImportViolations("P1", "useCallPrejoinMode.ts", m));
+
+  // P5: the switch is read once, raw, from GET / on iOS only.
+  const swDecls = [
+    ...m.code.matchAll(
+      new RegExp(`\\bconst\\s+${PREJOIN_SWITCH_NAME}\\s*=`, "g"),
+    ),
+  ];
+  if (swDecls.length !== 1) {
+    out.push(
+      `P5 const ${PREJOIN_SWITCH_NAME} declared ${swDecls.length} times, want 1`,
+    );
+  } else {
+    const from = swDecls[0].index! + swDecls[0][0].length;
+    const init = norm(m.text.slice(from, exprEnd(m.code, from)));
+    if (init !== PREJOIN_SWITCH) {
+      out.push(
+        `P5 line ${lineOf(src, from)}: ${PREJOIN_SWITCH_NAME} is \`${init}\`,` +
+          ` want \`${PREJOIN_SWITCH}\``,
+      );
+    }
+  }
+
+  // P6, P7: applied only through callMediaE2EEOffered, and never coerced.
+  out.push(...switchOfferedViolations("P6", "useCallPrejoinMode.ts", src, m));
+  out.push(...switchRawViolations("P7", "useCallPrejoinMode.ts", src, m));
+
+  // P2-P4: wouldEncrypt is the one predicate with the switch applied, then
+  // the device and toggle.
+  const got = andTerms(src, m, "P2", "wouldEncrypt");
+  if (Array.isArray(got)) {
+    out.push(...got);
+    return out;
+  }
+  const [first, ...rest] = got.terms;
+  const offered = callArgsOf(first ?? "", "callMediaE2EEOffered");
+  if (!offered) {
+    out.push(
+      `P3 line ${got.line}: wouldEncrypt starts with \`${first ?? ""}\`,` +
+        ` want \`${PREJOIN_FIRST}\` (the shell predicate state.tsx calls,` +
+        " with the server switch applied through callMediaE2EEOffered)",
+    );
+  } else {
+    if (offered[0] !== SHELL_CALL) {
+      out.push(
+        `P3 line ${got.line}: callMediaE2EEOffered's shell argument is` +
+          ` \`${offered[0] ?? ""}\`, want \`${SHELL_CALL}\` (the predicate` +
+          " state.tsx calls; anything else and the prejoin copy diverges)",
+      );
+    }
+    if (offered.length !== 2 || offered[1] !== PREJOIN_SWITCH_NAME) {
+      out.push(
+        `P3 line ${got.line}: callMediaE2EEOffered's switch argument is` +
+          ` \`${offered.slice(1).join(",")}\`, want \`${PREJOIN_SWITCH_NAME}\``,
+      );
+    }
+  }
+  if (JSON.stringify(rest) !== JSON.stringify(PREJOIN_DEVICE_TERMS)) {
+    out.push(
+      `P4 line ${got.line}: wouldEncrypt's device and toggle terms are` +
+        ` ${JSON.stringify(rest)}, want ${JSON.stringify(PREJOIN_DEVICE_TERMS)}`,
+    );
+  }
+  return out;
+}
+
+/** The shell argument the prejoin copy hands `callMediaE2EEOffered`, or "". */
+function prejoinShellArg(src: string): string {
+  const first = firstTerm(src, "wouldEncrypt");
+  return callArgsOf(first, "callMediaE2EEOffered")?.[0] ?? first;
+}
+
+// ---- Settings Encryption.tsx rules: the call row (S) -----------------------
+
+function settingsViolations(src: string): string[] {
+  const m = maskTs(src);
+  const out: string[] = [];
+  if (!balanced(m.code)) {
+    out.push("S0 Encryption.tsx does not lex to balanced braces");
+  }
+
+  // S1: the switch helpers, imported.
+  out.push(...switchImportViolations("S1", "Encryption.tsx", m));
+
+  // S2, S3: applied only through callMediaE2EEOffered, and never coerced.
+  out.push(...switchOfferedViolations("S2", "Encryption.tsx", src, m));
+  out.push(...switchRawViolations("S3", "Encryption.tsx", src, m));
+
+  // S4: what the switch reads is the fetched value, untouched on the way:
+  // `iosCallSwitch({ ..., serverValue: <signal>()?.serverValue })`, whose
+  // one setter is `.then((serverValue) => set<Signal>({ serverValue }))`
+  // directly on a fetchIosCallSwitchValue(...) call.
+  const switches = callParens(m.code, "iosCallSwitch");
+  if (switches.length !== 1) {
+    out.push(`S4 iosCallSwitch( called ${switches.length} times, want 1`);
+    return out;
+  }
+  const line = lineOf(src, switches[0]);
+  const value = objectArg(m, switches[0])?.get("serverValue") ?? "";
+  const signal = /^([\w$]+)\(\)\?\.serverValue$/.exec(value)?.[1];
+  if (!signal) {
+    out.push(
+      `S4 line ${line}: the switch reads \`${value}\`, want` +
+        " <signal>()?.serverValue (the fetched value, held as read)",
+    );
+    return out;
+  }
+  const setter = `set${signal[0].toUpperCase()}${signal.slice(1)}`;
+  const setterCalls = callParens(m.code, setter);
+  const fed = callParens(m.code, "fetchIosCallSwitchValue").some((paren) => {
+    const then = skipWs(m.code, matchClose(m.code, paren) + 1);
+    if (!/^\.\s*then\s*\(/.test(m.code.slice(then, then + 20))) return false;
+    const args = items(m, m.code.indexOf("(", then));
+    return (
+      args.length === 1 && args[0] === `(serverValue)=>${setter}({serverValue})`
+    );
+  });
+  if (setterCalls.length !== 1 || !fed) {
+    out.push(
+      `S4 line ${line}: ${setter}( is called ${setterCalls.length} times; want` +
+        ` once, as fetchIosCallSwitchValue(...).then((serverValue) =>` +
+        ` ${setter}({ serverValue }))`,
     );
   }
   return out;
@@ -1601,11 +2621,13 @@ interface Mutation {
 const TS_FIXTURE = `
 import { Capacitor, registerPlugin } from "@capacitor/core";
 
+import { workerProbeResult } from "../rtc/workerProbe";
 import {
   capacitorAttachmentUrl,
   capacitorClipboardImageInWebview,
   capacitorCouriersOrphanedRecovery,
   capacitorNativeE2EE,
+  iosMediaE2EEReady,
   mediaE2EEPlatformSupported,
 } from "./e2eePlatform";
 import { protectorSendErrorCopy } from "./e2eeProtectorCopy";
@@ -1673,9 +2695,20 @@ class CapacitorTransport implements NativeTransport {
   }
 
   keyPushAvailable(): boolean {
-    // iOS answers false on purpose; never "fix" it to true.
+    // iOS only through iosMediaE2EEReady. A comment does not count:
+    // return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android";
+    const platform = Capacitor.getPlatform();
     return (
-      Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android"
+      Capacitor.isNativePlatform() &&
+      (platform === "android" ||
+        (platform === "ios" &&
+          iosMediaE2EEReady({
+            capsMediaE2EE: (window as SlogaIosCapsWindow).__slogaIosCaps
+              ?.mediaE2EE,
+            pluginPresent: Capacitor.isPluginAvailable("E2ee"),
+            scriptTransform: typeof RTCRtpScriptTransform !== "undefined",
+            probe: workerProbeResult(),
+          })))
     );
   }
 
@@ -1816,9 +2849,21 @@ export class E2EEBridge implements E2EEAdapter {
 
 const TS_FIXTURE_SITES = 2;
 
-const KEY_PUSH_RETURN = `    return (
-      Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android"
+const KEY_PUSH_RETURN = `    const platform = Capacitor.getPlatform();
+    return (
+      Capacitor.isNativePlatform() &&
+      (platform === "android" ||
+        (platform === "ios" &&
+          iosMediaE2EEReady({
+            capsMediaE2EE: (window as SlogaIosCapsWindow).__slogaIosCaps
+              ?.mediaE2EE,
+            pluginPresent: Capacitor.isPluginAvailable("E2ee"),
+            scriptTransform: typeof RTCRtpScriptTransform !== "undefined",
+            probe: workerProbeResult(),
+          })))
     );`;
+const CAPS_TERM = `capsMediaE2EE: (window as SlogaIosCapsWindow).__slogaIosCaps
+              ?.mediaE2EE,`;
 const CLIPBOARD_INIT = `capacitorClipboardImageInWebview(
     Capacitor.getPlatform(),
   )`;
@@ -1935,34 +2980,165 @@ const TS_MUTATIONS: Mutation[] = [
   },
   {
     label: "keyPushAvailable widened to every native platform",
-    swaps: [
-      [
-        'Capacitor.getPlatform() === "android"\n    );',
-        'Capacitor.getPlatform() !== "web"\n    );',
-      ],
-    ],
+    swaps: [['(platform === "android" ||', '(platform !== "web" ||']],
     rules: ["G3"],
     expected: /keyPushAvailable\(\) is/,
   },
   {
-    label: "keyPushAvailable 'fixed' to true for iOS",
+    label: "the phase-1 android-only body (7de02a68)",
     swaps: [
       [
-        'Capacitor.getPlatform() === "android"\n    );',
-        '(Capacitor.getPlatform() === "android" ||\n' +
-          '        Capacitor.getPlatform() === "ios")\n    );',
+        KEY_PUSH_RETURN,
+        "    return (\n" +
+          '      Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android"\n' +
+          "    );",
       ],
     ],
     rules: ["G3"],
-    expected: /iOS false/,
+    expected: /iosMediaE2EEReady\( called 0 times in keyPushAvailable/,
+  },
+  {
+    label: "iOS armed on the platform alone (the ready check bypassed)",
+    swaps: [['(platform === "ios" &&', '(platform === "ios" ||']],
+    rules: ["G3"],
+    expected: /keyPushAvailable\(\) is .*android, or iOS only when/,
+  },
+  {
+    label: "the ready check on every native platform (the iOS term dropped)",
+    swaps: [['(platform === "ios" &&\n          ', "(\n          "]],
+    rules: ["G3"],
+    expected: /keyPushAvailable\(\) is/,
+  },
+  {
+    label: "flag ignored (the caps term hard-coded true)",
+    swaps: [[CAPS_TERM, "capsMediaE2EE: true,"]],
+    rules: ["G3"],
+    expected: /capsMediaE2EE is `true`.*caps flag ignored/,
+  },
+  {
+    label: "flag read off the plugin instead of the caps global",
+    swaps: [[CAPS_TERM, 'capsMediaE2EE: Capacitor.isPluginAvailable("E2ee"),']],
+    rules: ["G3"],
+    expected: /capsMediaE2EE is `Capacitor\.isPluginAvailable/,
+  },
+  {
+    label: "plugin dropped",
+    swaps: [
+      [
+        'pluginPresent: Capacitor.isPluginAvailable("E2ee"),',
+        "pluginPresent: true,",
+      ],
+    ],
+    rules: ["G3"],
+    expected: /pluginPresent is `true`.*plugin dropped/,
+  },
+  {
+    label: "plugin asked under another name",
+    swaps: [['isPluginAvailable("E2ee"),\n', 'isPluginAvailable("e2ee"),\n']],
+    rules: ["G3"],
+    expected: /pluginPresent is `Capacitor\.isPluginAvailable\("e2ee"\)`/,
+  },
+  {
+    label: "script transform dropped",
+    swaps: [
+      [
+        'scriptTransform: typeof RTCRtpScriptTransform !== "undefined",',
+        "scriptTransform: true,",
+      ],
+    ],
+    rules: ["G3"],
+    expected: /scriptTransform is `true`/,
+  },
+  {
+    label: "probe dropped",
+    swaps: [["probe: workerProbeResult(),", 'probe: "pass",']],
+    rules: ["G3"],
+    expected: /probe is `"pass"`.*the D8 probe dropped/,
+  },
+  {
+    label: "a pending probe read as a pass",
+    swaps: [
+      [
+        "probe: workerProbeResult(),",
+        'probe: workerProbeResult() === "fail" ? "fail" : "pass",',
+      ],
+    ],
+    rules: ["G3"],
+    expected: /probe is `workerProbeResult\(\)==="fail"/,
+  },
+  {
+    label: "a term missing from the ready call",
+    swaps: [["            probe: workerProbeResult(),\n", ""]],
+    rules: ["G3"],
+    expected: /probe is `missing`/,
+  },
+  {
+    label: "a second iosMediaE2EEReady caller",
+    swaps: [
+      [
+        "    if (!this.mediaE2EEPlatformSupported()) return;\n",
+        "    if (!this.mediaE2EEPlatformSupported()) return;\n" +
+          "    if (iosMediaE2EEReady(caps)) return;\n",
+      ],
+    ],
+    rules: ["G3"],
+    expected: /called 2 times in e2ee\.ts/,
+  },
+  {
+    label: "the probe answer imported from another module",
+    swaps: [['from "../rtc/workerProbe";', 'from "./probeStub";']],
+    rules: ["G3"],
+    expected: /workerProbeResult is not imported/,
+  },
+  {
+    label: "the probe answer imported under another name",
+    swaps: [
+      [
+        "import { workerProbeResult } from",
+        "import { workerProbeResult as probeAnswer } from",
+      ],
+    ],
+    rules: ["G3"],
+    expected: /workerProbeResult is not imported/,
+  },
+  {
+    label: "a local probe answer",
+    swaps: [
+      [
+        "class ElectronTransport implements NativeTransport {",
+        'const workerProbeResult = () => "pass" as const;\n\n' +
+          "class ElectronTransport implements NativeTransport {",
+      ],
+    ],
+    rules: ["G3"],
+    expected: /defines workerProbeResult itself/,
+  },
+  {
+    label: "the iOS ready rule no longer imported",
+    swaps: [["  iosMediaE2EEReady,\n", ""]],
+    rules: ["G9"],
+    expected: /iosMediaE2EEReady is not imported/,
+  },
+  {
+    label: "a local copy of the iOS ready rule",
+    swaps: [
+      [
+        "class ElectronTransport implements NativeTransport {",
+        "function iosMediaE2EEReady(): boolean {\n  return true;\n}\n\n" +
+          "class ElectronTransport implements NativeTransport {",
+      ],
+    ],
+    rules: ["G9"],
+    expected: /defines iosMediaE2EEReady itself/,
   },
   {
     label: "keyPushAvailable returns true, the old body left in a comment",
     swaps: [
       [
         KEY_PUSH_RETURN,
-        "    // return Capacitor.isNativePlatform() && Capacitor.getPlatform()" +
-          ' === "android";\n    return true;',
+        "    // " +
+          KEY_PUSH_RETURN.trim().replaceAll("\n", "\n    // ") +
+          "\n    return true;",
       ],
     ],
     rules: ["G3"],
@@ -2328,10 +3504,10 @@ const TS_MUTATIONS: Mutation[] = [
     label: "a second listener for the event",
     swaps: [
       [
-        "  keyPushAvailable(): boolean {\n    // iOS answers",
+        "  keyPushAvailable(): boolean {\n    // iOS only",
         "  async alsoWaiting(): Promise<void> {\n" +
           '    await this.#plugin.addListener("backupBundleWaiting", () => {});\n' +
-          "  }\n\n  keyPushAvailable(): boolean {\n    // iOS answers",
+          "  }\n\n  keyPushAvailable(): boolean {\n    // iOS only",
       ],
     ],
     rules: ["R2"],
@@ -2554,25 +3730,72 @@ const TS_MUTATIONS: Mutation[] = [
   },
 ];
 
-/** A conforming rtc/state.tsx excerpt. */
+/** A conforming rtc/state.tsx excerpt, in the contract shape (C-W3-8, R21). */
 const STATE_FIXTURE = `
+import { Capacitor } from "@capacitor/core";
+import { isE2EESupported } from "livekit-client";
+
 import { nativeE2EEAvailable, type E2EEBridge } from "../client/e2ee";
+import { shellMediaE2EESupported } from "../client/e2eePlatform";
 
 export { platformMediaE2EESupported } from "../client/e2eePlatform";
 
+import { fetchIosCallSwitchValue, iosCallSwitch } from "./iosCallSwitch";
+
 class Voice {
-  #connect() {
+  async #connect() {
+    const iosSwitchFetch = IOS_WEBKIT
+      ? fetchIosCallSwitchValue({
+          fetchRoot: () => this.getClient().api.get("/"),
+          setTimeout,
+          clearTimeout,
+        })
+      : undefined;
+    let iosSwitchValue: unknown;
+    if (iosSwitchFetch) {
+      iosSwitchValue = await iosSwitchFetch;
+    }
     const bridge = this.getClient()?.e2ee as E2EEBridge | undefined;
     bridge?.setCallsEnabled(() => this.#settings.e2eeCallsEnabled);
     const shellSupported =
-      isE2EESupported() &&
-      nativeE2EEAvailable() &&
-      // !!bridge?.nativeKeyPushAvailable() in a comment does not count
-      !!bridge?.mediaE2EEPlatformSupported() &&
+      // isE2EESupported() && nativeE2EEAvailable() && in a comment does not count
+      shellMediaE2EESupported({
+        e2eeSupported: isE2EESupported(),
+        nativeE2EEAvailable: nativeE2EEAvailable(),
+        bridgePlatformSupported: !!bridge?.mediaE2EEPlatformSupported(),
+      }) &&
       this.#settings.e2eeCallsEnabled;
+    // callMediaE2EEOffered(shellSupported, sw) in a comment does not count
+    const readiness = callEncryptionReadiness({
+      shellSupported,
+      status: bridge?.status.get("state"),
+      deviceOwnedElsewhere: false,
+      pausedByServer:
+        iosCallSwitch({
+          platform: Capacitor.getPlatform(),
+          serverValue: iosSwitchValue,
+        }) === "off",
+    });
     return <Chip>{shellSupported ? "on" : <Trans>Calls aren't encrypted</Trans>}</Chip>;
   }
+
+  get readiness() {
+    return this.callEncryptionReadiness();
+  }
 }
+`;
+
+const STATE_SHELL_CALL = `      shellMediaE2EESupported({
+        e2eeSupported: isE2EESupported(),
+        nativeE2EEAvailable: nativeE2EEAvailable(),
+        bridgePlatformSupported: !!bridge?.mediaE2EEPlatformSupported(),
+      }) &&
+`;
+const STATE_PAUSED = `      pausedByServer:
+        iosCallSwitch({
+          platform: Capacitor.getPlatform(),
+          serverValue: iosSwitchValue,
+        }) === "off",
 `;
 
 const STATE_MUTATIONS: Mutation[] = [
@@ -2589,58 +3812,208 @@ const STATE_MUTATIONS: Mutation[] = [
     expected: /C0 state\.tsx does not lex/,
   },
   {
+    label:
+      "the inline phase-1 terms, not the shared call (the 7de02a68 shape; the prejoin copy diverges)",
+    swaps: [
+      [
+        STATE_SHELL_CALL,
+        "      isE2EESupported() &&\n      nativeE2EEAvailable() &&\n" +
+          "      !!bridge?.mediaE2EEPlatformSupported() &&\n",
+      ],
+    ],
+    rules: ["C1"],
+    expected: /C1 .*prejoin copy diverges/,
+  },
+  {
     label: "the two-term shellSupported (8821aac9)",
     swaps: [
       [
-        "      !!bridge?.mediaE2EEPlatformSupported() &&\n",
+        STATE_SHELL_CALL,
         "      !!bridge?.nativeKeyPushAvailable() &&\n" +
           "      platformMediaE2EESupported() &&\n",
       ],
     ],
     rules: ["C1"],
-    expected: /no `!!bridge\?\.mediaE2EEPlatformSupported\(\)` term/,
+    expected: /C1 .*want \["shellMediaE2EESupported/,
   },
   {
-    label: "a separate platform term beside the shared one",
+    label: "an own platform term beside the shared call",
     swaps: [
       [
-        "      !!bridge?.mediaE2EEPlatformSupported() &&\n",
-        "      !!bridge?.mediaE2EEPlatformSupported() &&\n" +
-          "      platformMediaE2EESupported() &&\n",
+        STATE_SHELL_CALL,
+        STATE_SHELL_CALL + "      platformMediaE2EESupported() &&\n",
       ],
     ],
     rules: ["C1"],
-    expected: /own platformMediaE2EESupported\(\) term/,
+    expected: /C1 .*platformMediaE2EESupported\(\)/,
+  },
+  {
+    label:
+      "isE2EESupported fed as a constant (the call diverges from the copy)",
+    swaps: [["e2eeSupported: isE2EESupported(),", "e2eeSupported: true,"]],
+    rules: ["C1"],
+    expected: /C1 .*e2eeSupported:true/,
+  },
+  {
+    label: "the bridge term read as key push alone",
+    swaps: [
+      [
+        "bridgePlatformSupported: !!bridge?.mediaE2EEPlatformSupported(),",
+        "bridgePlatformSupported: !!bridge?.nativeKeyPushAvailable(),",
+      ],
+    ],
+    rules: ["C1"],
+    expected: /C1 .*nativeKeyPushAvailable/,
   },
   {
     label: "a top-level || in shellSupported",
     swaps: [
-      ["      nativeE2EEAvailable() &&\n", "      nativeE2EEAvailable() ||\n"],
+      [
+        "      }) &&\n      this.#settings",
+        "      }) ||\n      this.#settings",
+      ],
     ],
     rules: ["C1"],
     expected: /top-level \|\|/,
   },
   {
-    label: "the shared term negated",
+    label: "the toggle dropped",
     swaps: [
-      [
-        "      !!bridge?.mediaE2EEPlatformSupported() &&\n",
-        "      !bridge?.mediaE2EEPlatformSupported() &&\n",
-      ],
+      ["      }) &&\n      this.#settings.e2eeCallsEnabled;", "      });"],
     ],
     rules: ["C1"],
-    expected: /no `!!bridge/,
+    expected:
+      /C1 .*shellSupported is \["shellMediaE2EESupported\([^"]*\)"\], want/,
   },
   {
-    label: "the shared term only in a comment",
+    label: "the shared call only in a comment",
     swaps: [
-      [
-        "      !!bridge?.mediaE2EEPlatformSupported() &&\n",
-        "      // !!bridge?.mediaE2EEPlatformSupported() &&\n",
-      ],
+      [STATE_SHELL_CALL, STATE_SHELL_CALL.replaceAll("      ", "      // ")],
     ],
     rules: ["C1"],
-    expected: /no `!!bridge/,
+    expected: /C1 .*shellSupported is \["this\.#settings\.e2eeCallsEnabled"\]/,
+  },
+  {
+    label: "the shell predicate imported under another name",
+    swaps: [
+      [
+        'import { shellMediaE2EESupported } from "../client/e2eePlatform";',
+        'import { shellMediaE2EESupported as shellGate } from "../client/e2eePlatform";',
+      ],
+    ],
+    rules: ["C3"],
+    expected: /C3 shellMediaE2EESupported is not imported/,
+  },
+  {
+    label:
+      "the shell predicate imported from a path that does not resolve to it",
+    swaps: [
+      [
+        'import { shellMediaE2EESupported } from "../client/e2eePlatform";',
+        'import { shellMediaE2EESupported } from "./e2eePlatform";',
+      ],
+    ],
+    rules: ["C3"],
+    expected: /C3 shellMediaE2EESupported is not imported/,
+  },
+  {
+    label: "a local copy of the shell predicate",
+    swaps: [
+      [
+        "class Voice {",
+        "function shellMediaE2EESupported(): boolean {\n  return true;\n}\n\n" +
+          "class Voice {",
+      ],
+    ],
+    rules: ["C3"],
+    expected: /C3 state\.tsx defines shellMediaE2EESupported itself/,
+  },
+  {
+    label: "R21: the switch folded into shellSupported",
+    swaps: [
+      [
+        STATE_SHELL_CALL,
+        "      callMediaE2EEOffered(\n" +
+          STATE_SHELL_CALL.replace("      }) &&\n", "      }),\n") +
+          "        iosCallSwitch({\n" +
+          "          platform: Capacitor.getPlatform(),\n" +
+          "          serverValue: iosSwitchValue,\n" +
+          "        }),\n      ) &&\n",
+      ],
+    ],
+    rules: ["C1", "C4"],
+    expected: /C4 state\.tsx names callMediaE2EEOffered/,
+  },
+  {
+    label: "R21: readiness handed the combined offer as shellSupported",
+    swaps: [
+      [
+        "      shellSupported,\n      status:",
+        "      shellSupported: callMediaE2EEOffered(\n" +
+          "        shellSupported,\n" +
+          "        iosCallSwitch({ platform: Capacitor.getPlatform(), serverValue: iosSwitchValue }),\n" +
+          "      ),\n      status:",
+      ],
+    ],
+    rules: ["C4"],
+    expected: /C4 .*shellSupported is not the shell term itself/,
+  },
+  {
+    label: "R21: pausedByServer dropped (a paused iPhone would read ready)",
+    swaps: [[STATE_PAUSED, ""]],
+    rules: ["C4"],
+    expected: /C4 .*pausedByServer is ``/,
+  },
+  {
+    label: "R21: pausedByServer inverted",
+    swaps: [['        }) === "off",', '        }) === "on",']],
+    rules: ["C4"],
+    expected: /C4 .*pausedByServer is `pausedByServer:/,
+  },
+  {
+    label: "the switch read from client.configuration again (R9)",
+    swaps: [
+      [
+        "          serverValue: iosSwitchValue,\n        }) ===",
+        "          serverValue: this.getClient()?.configuration?.features.ios_call_e2ee,\n" +
+          "        }) ===",
+      ],
+    ],
+    rules: ["C4", "C5"],
+    expected: /C5 .*serverValue is `this\.getClient\(\)\?\.configuration/,
+  },
+  {
+    label: "the server value defaulted with ?? false",
+    swaps: [
+      [
+        "          serverValue: iosSwitchValue,\n        }) ===",
+        "          serverValue: iosSwitchValue ?? false,\n        }) ===",
+      ],
+    ],
+    rules: ["C4", "C5"],
+    expected: /C5 .*serverValue is `iosSwitchValue\?\?false`/,
+  },
+  {
+    label: "the server value coerced on assignment",
+    swaps: [
+      [
+        "iosSwitchValue = await iosSwitchFetch;",
+        "iosSwitchValue = !!(await iosSwitchFetch);",
+      ],
+    ],
+    rules: ["C5"],
+    expected: /C5 .*iosSwitchValue is `!!\(awaitiosSwitchFetch\)`/,
+  },
+  {
+    label: "the switch fetched from somewhere other than GET /",
+    swaps: [
+      [
+        'fetchRoot: () => this.getClient().api.get("/"),',
+        "fetchRoot: async () => this.getClient().configuration,",
+      ],
+    ],
+    rules: ["C5"],
+    expected: /C5 .*fetchRoot is `async\(\)=>/,
   },
   {
     label: "a local platformMediaE2EESupported again (8821aac9)",
@@ -2664,6 +4037,503 @@ const STATE_MUTATIONS: Mutation[] = [
     ],
     rules: ["C2"],
     expected: /no export \{ platformMediaE2EESupported \}/,
+  },
+];
+
+/** A conforming useCallPrejoinMode.ts excerpt (fix round F shape). */
+const PREJOIN_FIXTURE = `
+import { Capacitor } from "@capacitor/core";
+import { isE2EESupported } from "livekit-client";
+import { createResource } from "solid-js";
+
+import type { E2EEBridge } from "@revolt/client";
+import { nativeE2EEAvailable, useClient } from "@revolt/client";
+import { shellMediaE2EESupported } from "@revolt/client/e2eePlatform";
+import {
+  callMediaE2EEOffered,
+  fetchIosCallSwitchValue,
+  iosCallSwitch,
+} from "@revolt/rtc/iosCallSwitch";
+
+export function useCallPrejoinMode(deps: () => unknown) {
+  const client = useClient();
+  const [resource] = createResource(deps, async (input) => {
+    const bridge = client()?.e2ee as E2EEBridge | undefined;
+    // platformMediaE2EESupported() && !!bridge?.nativeKeyPushAvailable() in
+    // a comment does not count
+    const sw = iosCallSwitch({
+      platform: Capacitor.getPlatform(),
+      serverValue:
+        Capacitor.getPlatform() === "ios"
+          ? await fetchIosCallSwitchValue({
+              fetchRoot: () => client().api.get("/"),
+              setTimeout,
+              clearTimeout,
+            })
+          : undefined,
+    });
+    const wouldEncrypt =
+      callMediaE2EEOffered(
+        shellMediaE2EESupported({
+          e2eeSupported: isE2EESupported(),
+          nativeE2EEAvailable: nativeE2EEAvailable(),
+          bridgePlatformSupported: !!bridge?.mediaE2EEPlatformSupported(),
+        }),
+        sw,
+      ) &&
+      !!bridge?.status.get("state")?.published &&
+      input.e2eeCallsEnabled;
+    return classify(null, wouldEncrypt);
+  });
+  return resource;
+}
+`;
+
+const PREJOIN_SHELL = `        shellMediaE2EESupported({
+          e2eeSupported: isE2EESupported(),
+          nativeE2EEAvailable: nativeE2EEAvailable(),
+          bridgePlatformSupported: !!bridge?.mediaE2EEPlatformSupported(),
+        })`;
+const PREJOIN_OFFERED = `      callMediaE2EEOffered(
+${PREJOIN_SHELL},
+        sw,
+      ) &&
+`;
+const PREJOIN_SERVER = `      serverValue:
+        Capacitor.getPlatform() === "ios"
+          ? await fetchIosCallSwitchValue({
+              fetchRoot: () => client().api.get("/"),
+              setTimeout,
+              clearTimeout,
+            })
+          : undefined,
+`;
+
+/** Each is a "prejoin copy diverges" from state.tsx, or a switch misuse. */
+const PREJOIN_MUTATIONS: Mutation[] = [
+  {
+    label: "the file does not lex to balanced braces",
+    swaps: [
+      [
+        'import { createResource } from "solid-js";\n',
+        'import { createResource } from "solid-js";\nconst broken = {\n',
+      ],
+    ],
+    rules: ["P0"],
+    expected: /P0 useCallPrejoinMode\.ts does not lex/,
+  },
+  {
+    label:
+      "the 7de02a68 second predicate (platform + key push, no isE2EESupported)",
+    swaps: [
+      [
+        PREJOIN_OFFERED,
+        "      platformMediaE2EESupported() &&\n" +
+          "      !!bridge?.nativeKeyPushAvailable() &&\n",
+      ],
+    ],
+    rules: ["P1", "P3", "P4", "P6"],
+    expected: /P3 .*wouldEncrypt starts with `platformMediaE2EESupported\(\)`/,
+  },
+  {
+    label: "isE2EESupported dropped from the copy",
+    swaps: [["e2eeSupported: isE2EESupported(),", "e2eeSupported: true,"]],
+    rules: ["P3"],
+    expected: /P3 .*shell argument is `.*e2eeSupported:true/,
+  },
+  {
+    label: "the native layer dropped from the copy",
+    swaps: [
+      [
+        "nativeE2EEAvailable: nativeE2EEAvailable(),",
+        "nativeE2EEAvailable: true,",
+      ],
+    ],
+    rules: ["P3"],
+    expected: /P3 .*shell argument is `.*nativeE2EEAvailable:true/,
+  },
+  {
+    label: "the bridge term read as key push alone",
+    swaps: [
+      [
+        "bridgePlatformSupported: !!bridge?.mediaE2EEPlatformSupported(),",
+        "bridgePlatformSupported: !!bridge?.nativeKeyPushAvailable(),",
+      ],
+    ],
+    rules: ["P1", "P3"],
+    expected: /P3 .*shell argument is `.*nativeKeyPushAvailable/,
+  },
+  {
+    label: "the copy asks the iOS rule itself",
+    swaps: [
+      [PREJOIN_OFFERED, PREJOIN_OFFERED + "      iosMediaE2EEReady(caps) &&\n"],
+    ],
+    rules: ["P1", "P4"],
+    expected: /P1 .*calls iosMediaE2EEReady\(\) itself/,
+  },
+  {
+    label: "a top-level || in wouldEncrypt",
+    swaps: [
+      [
+        '      !!bridge?.status.get("state")?.published &&\n',
+        '      !!bridge?.status.get("state")?.published ||\n',
+      ],
+    ],
+    rules: ["P2"],
+    expected: /P2 .*top-level \|\| in wouldEncrypt/,
+  },
+  {
+    label: "the shared call only in a comment",
+    swaps: [
+      [PREJOIN_OFFERED, PREJOIN_OFFERED.replaceAll("      ", "      // ")],
+    ],
+    rules: ["P3", "P4", "P6"],
+    expected: /P3 .*wouldEncrypt starts with `!!bridge/,
+  },
+  {
+    label: "the switch dropped (the bare shell call, the pre-fix-round shape)",
+    swaps: [[PREJOIN_OFFERED, PREJOIN_SHELL.trimStart() + " &&\n"]],
+    rules: ["P3", "P6"],
+    expected: /P3 .*want `callMediaE2EEOffered\(/,
+  },
+  {
+    label: "the switch applied by hand beside the helper",
+    swaps: [[PREJOIN_OFFERED, PREJOIN_OFFERED + '      sw === "on" &&\n']],
+    rules: ["P4", "P6"],
+    expected: /P6 .*the switch sw is read 1 times outside callMediaE2EEOffered/,
+  },
+  {
+    label: "the switch applied by hand instead of the helper",
+    swaps: [
+      [
+        PREJOIN_OFFERED,
+        "      " + PREJOIN_SHELL.trimStart() + ' &&\n      sw === "on" &&\n',
+      ],
+    ],
+    rules: ["P3", "P4", "P6"],
+    expected: /P6 .*never calls callMediaE2EEOffered/,
+  },
+  {
+    label: "the switch and shell arguments swapped",
+    swaps: [
+      [
+        PREJOIN_OFFERED,
+        `      callMediaE2EEOffered(\n        sw,\n${PREJOIN_SHELL},\n      ) &&\n`,
+      ],
+    ],
+    rules: ["P3", "P6"],
+    expected: /P3 .*shell argument is `sw`/,
+  },
+  {
+    label: "the server value coerced with !!",
+    swaps: [
+      [
+        "? await fetchIosCallSwitchValue({",
+        "? !!(await fetchIosCallSwitchValue({",
+      ],
+      [
+        "            })\n          : undefined,",
+        "            }))\n          : undefined,",
+      ],
+    ],
+    rules: ["P5", "P7"],
+    expected: /P7 .*serverValue is `.*!!\(awaitfetchIosCallSwitchValue/,
+  },
+  {
+    label: "the server value coerced with Boolean()",
+    swaps: [
+      [
+        "? await fetchIosCallSwitchValue({",
+        "? Boolean(await fetchIosCallSwitchValue({",
+      ],
+      [
+        "            })\n          : undefined,",
+        "            }))\n          : undefined,",
+      ],
+    ],
+    rules: ["P5", "P7"],
+    expected: /P7 .*serverValue is `.*Boolean\(/,
+  },
+  {
+    label: "the server value defaulted with ?? false",
+    swaps: [
+      [
+        "      serverValue:\n        Capacitor",
+        "      serverValue:\n        (Capacitor",
+      ],
+      ["          : undefined,\n", "          : undefined) ?? false,\n"],
+    ],
+    rules: ["P5", "P7"],
+    expected: /P7 .*serverValue is `.*\?\?false`/,
+  },
+  {
+    label: "the switch read from client.configuration again (R9)",
+    swaps: [
+      [
+        PREJOIN_SERVER,
+        "      serverValue: client().configuration?.features.ios_call_e2ee,\n",
+      ],
+    ],
+    rules: ["P5", "P7"],
+    expected: /P7 .*serverValue is `client\(\)\.configuration/,
+  },
+  {
+    label: "the switch never fetched (serverValue hard-coded undefined)",
+    swaps: [[PREJOIN_SERVER, "      serverValue: undefined,\n"]],
+    rules: ["P5"],
+    expected:
+      /P5 .*sw is `iosCallSwitch\(\{platform:Capacitor\.getPlatform\(\),serverValue:undefined\}\)`/,
+  },
+  {
+    label: "the switch fetched from somewhere other than GET /",
+    swaps: [
+      [
+        'fetchRoot: () => client().api.get("/"),',
+        "fetchRoot: async () => client().configuration,",
+      ],
+    ],
+    rules: ["P5", "P7"],
+    expected: /P7 .*fetchRoot is `async\(\)=>client\(\)\.configuration`/,
+  },
+  {
+    label: "the switch asked for a fixed platform",
+    swaps: [
+      [
+        "      platform: Capacitor.getPlatform(),\n      serverValue",
+        '      platform: "android",\n      serverValue',
+      ],
+    ],
+    rules: ["P5", "P7"],
+    expected: /P7 .*iosCallSwitch's platform is `"android"`/,
+  },
+  {
+    label: "the published term dropped",
+    swaps: [['      !!bridge?.status.get("state")?.published &&\n', ""]],
+    rules: ["P4"],
+    expected: /P4 .*device and toggle terms are \["input\.e2eeCallsEnabled"\]/,
+  },
+  {
+    label: "the toggle dropped",
+    swaps: [["?.published &&\n      input.e2eeCallsEnabled;", "?.published;"]],
+    rules: ["P4"],
+    expected: /P4 .*published"\], want/,
+  },
+  {
+    label: "the shell predicate imported under another name",
+    swaps: [
+      [
+        'import { shellMediaE2EESupported } from "@revolt/client/e2eePlatform";',
+        'import { shellMediaE2EESupported as shellGate } from "@revolt/client/e2eePlatform";',
+      ],
+    ],
+    rules: ["P1"],
+    expected: /P1 shellMediaE2EESupported is not imported/,
+  },
+  {
+    label:
+      "the shell predicate imported from a path that does not resolve to it",
+    swaps: [
+      ['from "@revolt/client/e2eePlatform";', 'from "../client/e2eePlatform";'],
+    ],
+    rules: ["P1"],
+    expected: /P1 shellMediaE2EESupported is not imported/,
+  },
+  {
+    label: "a switch helper imported under another name",
+    swaps: [
+      ["  callMediaE2EEOffered,\n", "  callMediaE2EEOffered as offered,\n"],
+    ],
+    rules: ["P1"],
+    expected: /P1 callMediaE2EEOffered is not imported/,
+  },
+  {
+    label: "a local copy of the shell predicate",
+    swaps: [
+      [
+        "export function useCallPrejoinMode(",
+        "function shellMediaE2EESupported(): boolean {\n  return true;\n}\n\n" +
+          "export function useCallPrejoinMode(",
+      ],
+    ],
+    rules: ["P1"],
+    expected:
+      /P1 useCallPrejoinMode\.ts defines shellMediaE2EESupported itself/,
+  },
+  {
+    label: "isE2EESupported taken from somewhere other than livekit",
+    swaps: [
+      [
+        'import { isE2EESupported } from "livekit-client";',
+        'import { isE2EESupported } from "./shim";',
+      ],
+    ],
+    rules: ["P1"],
+    expected: /P1 isE2EESupported is not imported/,
+  },
+];
+
+/** A conforming Settings Encryption.tsx call-row excerpt (fix round F). */
+const SETTINGS_FIXTURE = `
+import { Capacitor } from "@capacitor/core";
+import { createSignal, onMount } from "solid-js";
+
+import { useClient, useE2EE } from "@revolt/client";
+import {
+  callMediaE2EEOffered,
+  fetchIosCallSwitchValue,
+  iosCallSwitch,
+} from "@revolt/rtc/iosCallSwitch";
+
+function CallEncryptionRow() {
+  const e2ee = useE2EE();
+  const client = useClient();
+  if (!e2ee) return null;
+  const mediaCapable = () => e2ee.nativeKeyPushAvailable();
+  const platform = Capacitor.getPlatform();
+  const [switchRead, setSwitchRead] = createSignal<{ serverValue: unknown }>();
+  onMount(() => {
+    if (platform !== "ios") return;
+    void fetchIosCallSwitchValue({
+      fetchRoot: () => client().api.get("/"),
+      setTimeout,
+      clearTimeout,
+    }).then((serverValue) => setSwitchRead({ serverValue }));
+  });
+  // iosCallSwitch(...) === "on" in a comment does not count
+  const offered = () =>
+    callMediaE2EEOffered(
+      mediaCapable(),
+      iosCallSwitch({ platform, serverValue: switchRead()?.serverValue }),
+    );
+  const pausedByServer = () => mediaCapable() && !offered();
+  return <div>{offered() ? <Trans>Always on</Trans> : <Trans>Calls aren't encrypted</Trans>}</div>;
+}
+`;
+
+const SETTINGS_OFFERED = `    callMediaE2EEOffered(
+      mediaCapable(),
+      iosCallSwitch({ platform, serverValue: switchRead()?.serverValue }),
+    );`;
+
+const SETTINGS_MUTATIONS: Mutation[] = [
+  {
+    label: "the file does not lex to balanced braces",
+    swaps: [
+      [
+        'import { createSignal, onMount } from "solid-js";\n',
+        'import { createSignal, onMount } from "solid-js";\nconst broken = {\n',
+      ],
+    ],
+    rules: ["S0"],
+    expected: /S0 Encryption\.tsx does not lex/,
+  },
+  {
+    label: "the switch dropped (offered = capability alone)",
+    swaps: [[SETTINGS_OFFERED, "    mediaCapable();"]],
+    rules: ["S2", "S4"],
+    expected: /S2 Encryption\.tsx never calls callMediaE2EEOffered/,
+  },
+  {
+    label: "the switch compared by hand instead of the helper",
+    swaps: [
+      [
+        SETTINGS_OFFERED,
+        "    mediaCapable() &&\n" +
+          '    iosCallSwitch({ platform, serverValue: switchRead()?.serverValue }) === "on";',
+      ],
+    ],
+    rules: ["S2"],
+    expected: /S2 .*never calls callMediaE2EEOffered/,
+  },
+  {
+    label: "the switch verdict compared beside the helper",
+    swaps: [
+      [
+        "  const pausedByServer = () => mediaCapable() && !offered();",
+        "  const pausedByServer = () =>\n" +
+          '    iosCallSwitch({ platform, serverValue: switchRead()?.serverValue }) === "off";',
+      ],
+    ],
+    rules: ["S2", "S4"],
+    expected: /S2 .*iosCallSwitch\( outside callMediaE2EEOffered/,
+  },
+  {
+    label: "the server value coerced with !!",
+    swaps: [
+      [
+        "serverValue: switchRead()?.serverValue",
+        "serverValue: !!switchRead()?.serverValue",
+      ],
+    ],
+    rules: ["S3", "S4"],
+    expected: /S3 .*serverValue is `!!switchRead\(\)\?\.serverValue`/,
+  },
+  {
+    label: "the server value defaulted with ?? false",
+    swaps: [
+      [
+        "serverValue: switchRead()?.serverValue",
+        "serverValue: switchRead()?.serverValue ?? false",
+      ],
+    ],
+    rules: ["S3", "S4"],
+    expected: /S3 .*serverValue is `switchRead\(\)\?\.serverValue\?\?false`/,
+  },
+  {
+    label: "the fetched value coerced at the setter",
+    swaps: [
+      [
+        "setSwitchRead({ serverValue })",
+        "setSwitchRead({ serverValue: Boolean(serverValue) })",
+      ],
+    ],
+    rules: ["S3", "S4"],
+    expected: /S3 .*serverValue is `Boolean\(serverValue\)`/,
+  },
+  {
+    label: "the switch read from client.configuration again (R9)",
+    swaps: [
+      [
+        "serverValue: switchRead()?.serverValue",
+        "serverValue: client().configuration?.features.ios_call_e2ee",
+      ],
+    ],
+    rules: ["S3", "S4"],
+    expected: /S3 .*serverValue is `client\(\)\.configuration/,
+  },
+  {
+    label: "the switch never fed by the fetch",
+    swaps: [[".then((serverValue) => setSwitchRead({ serverValue }))", ""]],
+    rules: ["S4"],
+    expected: /S4 .*setSwitchRead\( is called 0 times/,
+  },
+  {
+    label: "the switch fetched from somewhere other than GET /",
+    swaps: [
+      [
+        'fetchRoot: () => client().api.get("/"),',
+        "fetchRoot: async () => client().configuration,",
+      ],
+    ],
+    rules: ["S3"],
+    expected: /S3 .*fetchRoot is `async\(\)=>client\(\)\.configuration`/,
+  },
+  {
+    label: "the switch asked for a fixed platform",
+    swaps: [
+      [
+        "iosCallSwitch({ platform, serverValue",
+        'iosCallSwitch({ platform: "web", serverValue',
+      ],
+    ],
+    rules: ["S3"],
+    expected: /S3 .*iosCallSwitch's platform is `"web"`/,
+  },
+  {
+    label: "a switch helper imported under another name",
+    swaps: [["  iosCallSwitch,\n} from", "  iosCallSwitch as sw,\n} from"]],
+    rules: ["S1"],
+    expected: /S1 iosCallSwitch is not imported/,
   },
 ];
 
@@ -2975,8 +4845,22 @@ test("fixture: the conforming e2ee.ts passes", () => {
   assert.deepEqual(tsViolations(TS_FIXTURE, TS_FIXTURE_SITES), []);
 });
 
-test("fixture: the conforming state.tsx passes", () => {
+test("fixture: the conforming state.tsx (the contract shape, R21) passes", () => {
   assert.deepEqual(stateViolations(STATE_FIXTURE), []);
+});
+
+test("fixture: the conforming useCallPrejoinMode.ts passes", () => {
+  assert.deepEqual(prejoinViolations(PREJOIN_FIXTURE), []);
+});
+
+test("fixture: the conforming Settings Encryption.tsx passes", () => {
+  assert.deepEqual(settingsViolations(SETTINGS_FIXTURE), []);
+});
+
+test("fixture: the state term and the prejoin's shell argument are the same shell call", () => {
+  assert.equal(firstTerm(STATE_FIXTURE, "shellSupported"), SHELL_CALL);
+  assert.equal(prejoinShellArg(PREJOIN_FIXTURE), SHELL_CALL);
+  assert.equal(firstTerm(PREJOIN_FIXTURE, "wouldEncrypt"), PREJOIN_FIRST);
 });
 
 test("fixture: the conforming Controller.ts passes", () => {
@@ -3003,6 +4887,28 @@ for (const { label, swaps, rules, expected } of STATE_MUTATIONS) {
     assertOnly(
       label,
       stateViolations(swapped(STATE_FIXTURE, swaps)),
+      rules,
+      expected,
+    );
+  });
+}
+
+for (const { label, swaps, rules, expected } of PREJOIN_MUTATIONS) {
+  test(`fixture mutation (useCallPrejoinMode.ts): ${label}`, () => {
+    assertOnly(
+      label,
+      prejoinViolations(swapped(PREJOIN_FIXTURE, swaps)),
+      rules,
+      expected,
+    );
+  });
+}
+
+for (const { label, swaps, rules, expected } of SETTINGS_MUTATIONS) {
+  test(`fixture mutation (Settings Encryption.tsx): ${label}`, () => {
+    assertOnly(
+      label,
+      settingsViolations(swapped(SETTINGS_FIXTURE, swaps)),
       rules,
       expected,
     );
@@ -3050,7 +4956,7 @@ const ruleFilter = (found: string[], rules: string[]) =>
 const realTs = () =>
   tsViolations(readFileSync(TS_FILE, "utf8"), PROTECTOR_SITES);
 
-test("e2ee.ts: CapacitorTransport is one class, moves blobs natively, and keeps keyPushAvailable android-only (iOS false)", () => {
+test("e2ee.ts: CapacitorTransport is one class, moves blobs natively, and its key push is android, or iOS only through iosMediaE2EEReady's four terms", () => {
   assert.deepEqual(ruleFilter(realTs(), ["G1", "G2", "G3"]), []);
 });
 
@@ -3086,8 +4992,28 @@ test("e2ee.ts: the whole scan is clean (G0-G9, F1-F2, R1-R7; G0 = it lexed)", ()
   assert.deepEqual(realTs(), []);
 });
 
-test("state.tsx: shellSupported uses the one shared predicate, defined only in e2eePlatform", () => {
-  assert.deepEqual(stateViolations(readFileSync(STATE_FILE, "utf8")), []);
+const realState = () => stateViolations(readFileSync(STATE_FILE, "utf8"));
+const realPrejoin = () => prejoinViolations(readFileSync(PREJOIN_FILE, "utf8"));
+const realSettings = () =>
+  settingsViolations(readFileSync(SETTINGS_FILE, "utf8"));
+
+test("state.tsx: it lexes, and platformMediaE2EESupported is re-exported from e2eePlatform, not defined (C0, C2)", () => {
+  assert.deepEqual(ruleFilter(realState(), ["C0", "C2"]), []);
+});
+
+test("useCallPrejoinMode.ts: wouldEncrypt is the one shell predicate with the switch applied through callMediaE2EEOffered, then the device and toggle terms (P0-P4)", () => {
+  assert.deepEqual(
+    ruleFilter(realPrejoin(), ["P0", "P1", "P2", "P3", "P4"]),
+    [],
+  );
+});
+
+test("useCallPrejoinMode.ts: the server switch is fetched from GET /, applied only through callMediaE2EEOffered, and never coerced (P5-P7)", () => {
+  assert.deepEqual(ruleFilter(realPrejoin(), ["P5", "P6", "P7"]), []);
+});
+
+test("Settings Encryption.tsx: the call row applies the fetched switch only through callMediaE2EEOffered, never coerced (S0-S4)", () => {
+  assert.deepEqual(realSettings(), []);
 });
 
 test("Controller.ts: an iOS native login is named Sloga for iOS, decided before the web/UA name", () => {
@@ -3106,18 +5032,329 @@ test("components: e2ee_backup_status is reached only behind enabled && published
   assert.deepEqual(backupViolations(files), []);
 });
 
-test("iOS: shellSupported and the KeyPackage prepublish both read false (the D7 chain)", () => {
-  // keyPushAvailable() is android-only (G3), the bridge feeds it into the
-  // one predicate (G8, G9), shellSupported and the prepublish both use that
-  // predicate (C1, G7), and on an iOS window it is false for a false key push.
+test("iOS: the key push, the KeyPackage prepublish and the prejoin copy all read iosMediaE2EEReady (the D6 chain)", () => {
+  // keyPushAvailable() is android, or iOS through iosMediaE2EEReady (G3);
+  // the bridge feeds it into the one media predicate (G8, G9); the
+  // prepublish is gated on that first (G7); the prejoin copy feeds the same
+  // bridge answer to the one shell predicate (P1-P4). On an iOS window that
+  // chain arms only for the one ready combination. state.tsx joins the chain
+  // in the L3t block below.
   const chain = [
     ...ruleFilter(realTs(), ["G3", "G7", "G8", "G9"]),
-    ...stateViolations(readFileSync(STATE_FILE, "utf8")).filter(
-      (v) => ruleOf(v) === "C1",
-    ),
+    ...realPrejoin(),
   ];
   assert.deepEqual(chain, []);
-  withWindow({}, () => {
-    assert.equal(mediaE2EEPlatformSupported(false), false);
+  assert.deepEqual(iosMatrixFailures(e2eePlatform), []);
+});
+
+// ---- L3t: the state.tsx half of the chain -----------------------------------
+
+// L3t: written against the CONTRACT shape (C-W3-8: state.tsx's
+// `shellSupported` calls `shellMediaE2EESupported` with exactly the prejoin
+// copy's shell inputs, then folds in `this.#settings.e2eeCallsEnabled`; R21:
+// the server switch reaches readiness as its own `pausedByServer` input and
+// never through `callMediaE2EEOffered`). Written red before L3t landed and
+// shown to go green on a scratch copy in the contract shape; green since.
+describe("L3t: state.tsx shellSupported calls the one shell predicate; the switch stays a separate readiness input (R21)", () => {
+  test("state.tsx: shellSupported is shellMediaE2EESupported(...) && the toggle, imported from e2eePlatform (C1, C3)", () => {
+    assert.deepEqual(ruleFilter(realState(), ["C1", "C3"]), []);
   });
+
+  test("state.tsx and the prejoin copy call the shell predicate with the same inputs (prejoin copy diverges)", () => {
+    const state = firstTerm(readFileSync(STATE_FILE, "utf8"), "shellSupported");
+    const prejoin = prejoinShellArg(readFileSync(PREJOIN_FILE, "utf8"));
+    assert.equal(prejoin, SHELL_CALL, "the prejoin copy's shell argument");
+    assert.equal(state, prejoin, "state.tsx's first term vs the prejoin copy");
+  });
+
+  test("state.tsx: readiness gets the shell term and pausedByServer separately, never callMediaE2EEOffered, and the switch value stays raw (C4, C5; R21)", () => {
+    assert.deepEqual(ruleFilter(realState(), ["C4", "C5"]), []);
+  });
+});
+
+// ---- D14 behaviour: why the switch is a separate, raw input (R21) ----------
+
+test("iOS (D14, R21): a paused switch reads paused with separate inputs, unsupported if folded; absent reads on, and a coerced absent would read off", () => {
+  const shellSupported = iosAnswer(e2eePlatform, READY_DEVICE).shellSupported;
+  assert.equal(shellSupported, true);
+  const off = iosCallSwitch({ platform: "ios", serverValue: false });
+  assert.equal(off, "off");
+  const readiness = (shell: boolean, paused: boolean) =>
+    callEncryptionReadiness({
+      shellSupported: shell,
+      status: undefined,
+      deviceOwnedElsewhere: false,
+      pausedByServer: paused,
+    });
+  // state.tsx (C4): its own copy, the loud paused state.
+  assert.equal(readiness(shellSupported, off === "off"), "paused");
+  // The prejoin and Settings offer (P3, S2): not offered.
+  assert.equal(callMediaE2EEOffered(shellSupported, off), false);
+  // Folded into the shell term (what C4 forbids): the forbidden copy.
+  assert.equal(
+    readiness(callMediaE2EEOffered(shellSupported, off), false),
+    "unsupported",
+  );
+  // Raw (P7, S3, C5): absent or unreachable reads ON ...
+  assert.equal(
+    iosCallSwitch({ platform: "ios", serverValue: undefined }),
+    "on",
+  );
+  assert.equal(callMediaE2EEOffered(shellSupported, "on"), true);
+  // ... and a coerced absent (`!!undefined`, `undefined ?? false`) reads OFF.
+  const absent: unknown = undefined;
+  for (const coerced of [!!absent, absent ?? false, Boolean(absent)]) {
+    assert.equal(
+      iosCallSwitch({ platform: "ios", serverValue: coerced }),
+      "off",
+    );
+  }
+});
+
+// ---- Settings card behaviour (fix round F6): the card's own logic, run ------
+
+// The Settings call row (`CallEncryptionCard` in Encryption.tsx) cannot load
+// under Node (Solid, lingui, the UI kit), and a text pin on its `when=`
+// expressions proves shape, not behaviour. So its predicate block (from
+// `const mediaCapable =` up to `const onClick =`) is lifted out of the real
+// file, type-stripped and run against the real iosCallSwitch.ts with a fake
+// Capacitor/bridge/client/Solid, and the card's `<Show when={...}>` tree
+// (the outer gate and the description) is walked with those predicates to
+// pick the copy the user would see. No file is written.
+
+/** `[open, close]` of the body of `function name(`, masked code, or null. */
+function functionBody(m: Masked, name: string): [number, number] | null {
+  const hit = new RegExp(`\\bfunction\\s+${name}\\s*\\(`).exec(m.code);
+  if (!hit) return null;
+  const params = matchClose(m.code, hit.index + hit[0].length - 1);
+  const open = m.code.indexOf("{", params);
+  return open < 0 ? null : [open, matchClose(m.code, open)];
+}
+
+interface ShowNode {
+  when: string;
+  fallback: [number, number] | null;
+  children: [number, number];
+}
+
+/** The `<Show when={...} fallback={...}>children</Show>` opening at `at`. */
+function showNode(m: Masked, at: number): ShowNode {
+  let when = "";
+  let fallback: [number, number] | null = null;
+  let i = at + "<Show".length;
+  for (; i < m.code.length && m.code[i] !== ">"; i++) {
+    if (m.code[i] !== "{") continue;
+    const close = matchClose(m.code, i);
+    const name = wordBefore(m.code, skipBack(m.code, i - 1));
+    if (name === "when") when = m.text.slice(i + 1, close);
+    else if (name === "fallback") fallback = [i + 1, close];
+    i = close;
+  }
+  const start = i + 1;
+  const tags = /<Show\b|<\/Show>/g;
+  tags.lastIndex = start;
+  let depth = 1;
+  for (let hit = tags.exec(m.code); hit; hit = tags.exec(m.code)) {
+    depth += hit[0] === "</Show>" ? -1 : 1;
+    if (depth === 0) return { when, fallback, children: [start, hit.index] };
+  }
+  throw new Error(`unclosed <Show> at ${at}`);
+}
+
+/** The text the JSX in `[from, to)` renders, choosing each `<Show>` branch. */
+function jsxChoice(
+  m: Masked,
+  from: number,
+  to: number,
+  ev: (expr: string) => unknown,
+): string {
+  const i = skipWs(m.code, from);
+  if (m.code[i] === "{") {
+    return jsxChoice(m, i + 1, matchClose(m.code, i), ev);
+  }
+  if (m.code.startsWith("<Show", i)) {
+    const node = showNode(m, i);
+    if (ev(node.when)) return jsxChoice(m, ...node.children, ev);
+    return node.fallback ? jsxChoice(m, ...node.fallback, ev) : "";
+  }
+  if (m.code.startsWith("<Trans>", i)) {
+    const end = m.code.indexOf("</Trans>", i);
+    return m.text
+      .slice(i + "<Trans>".length, end)
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  return m.text.slice(i, to).replace(/\s+/g, " ").trim();
+}
+
+interface SettingsCard {
+  m: Masked;
+  /** The outer `<Show when={...}>` the card returns. */
+  gate: ShowNode;
+  /** `description={...}`'s content range. */
+  description: [number, number];
+  build: (env: object) => (expr: string) => unknown;
+}
+
+/** The real card from `src`: its predicate block and its `<Show>` tree. */
+async function loadSettingsCard(src: string): Promise<SettingsCard> {
+  const m = maskTs(src);
+  const body = functionBody(m, "CallEncryptionCard");
+  assert.ok(body, "function CallEncryptionCard not found");
+  const [open, close] = body;
+  const at = (re: RegExp) => {
+    re.lastIndex = open;
+    const hit = re.exec(m.code);
+    return hit && hit.index < close ? hit.index : -1;
+  };
+  const from = at(/\bconst\s+mediaCapable\s*=/g);
+  const to = at(/\bconst\s+onClick\s*=/g);
+  const ret = at(/\breturn\s*\(\s*<Show\b/g);
+  const desc = at(/\bdescription=\{/g);
+  assert.ok(
+    from > 0 && from < to && to < ret && ret < desc,
+    "the card's predicate block (mediaCapable .. onClick), return <Show> and description not found",
+  );
+  const logic = src.slice(from, stmtStart(m.code, to));
+  const js = stripTypeScriptTypes(
+    "export function build(env: any) {\n" +
+      "  const { Capacitor, e2ee, client, onMount, createSignal, setTimeout," +
+      " clearTimeout, callMediaE2EEOffered, fetchIosCallSwitchValue," +
+      " iosCallSwitch } = env;\n" +
+      `${logic}\n` +
+      "  return (expr: string) => eval(expr);\n}\n",
+  );
+  const { build } = (await import(
+    `data:text/javascript,${encodeURIComponent(js)}`
+  )) as { build: SettingsCard["build"] };
+  const brace = m.code.indexOf("{", desc);
+  return {
+    m,
+    gate: showNode(m, m.code.indexOf("<Show", ret)),
+    description: [brace + 1, matchClose(m.code, brace)],
+    build,
+  };
+}
+
+interface CardWorld {
+  platform: string;
+  capable: boolean;
+  enrolled: boolean;
+  root: () => Promise<unknown>;
+}
+
+/** One rendering of the card: the fake world, then what the user sees. */
+function settingsCardRun(card: SettingsCard, o: CardWorld) {
+  let value: unknown;
+  let fetches = 0;
+  const mounts: (() => void)[] = [];
+  const ev = card.build({
+    Capacitor: { getPlatform: () => o.platform },
+    e2ee: {
+      nativeKeyPushAvailable: () => o.capable,
+      status: {
+        get: () => ({ enabled: o.enrolled, published: o.enrolled }),
+      },
+    },
+    client: () => ({
+      api: {
+        get: (path: string) => {
+          fetches++;
+          assert.equal(path, "/");
+          return o.root();
+        },
+      },
+    }),
+    onMount: (f: () => void) => mounts.push(f),
+    createSignal: () => [
+      () => value,
+      (v: unknown) => {
+        value = v;
+      },
+    ],
+    // The 3 s bound never fires here: every root below settles or is held.
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+    callMediaE2EEOffered,
+    fetchIosCallSwitchValue,
+    iosCallSwitch,
+  });
+  for (const f of mounts) f();
+  const shown = () => Boolean(ev(card.gate.when));
+  return {
+    fetches: () => fetches,
+    shown,
+    copy: () =>
+      shown() ? jsxChoice(card.m, ...card.description, ev) : "(hidden)",
+  };
+}
+
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+const rootSays = (v: unknown) => () =>
+  Promise.resolve({ features: { ios_call_e2ee: v } });
+const CARD_ON = /^Always on\./;
+const CARD_PAUSED = /^Encrypted calls on iPhone are paused right now\./;
+const CARD_SETUP = /^Set up secure device keys/;
+const CARD_UNAVAILABLE = /^Encrypted calls aren't available on this device/;
+
+test("Settings (F6): iOS while the switch is pending -> card hidden (no Always-on flash); shown once GET / answers", async () => {
+  const card = await loadSettingsCard(readFileSync(SETTINGS_FILE, "utf8"));
+  let answer: (body: unknown) => void = () => {};
+  const run = settingsCardRun(card, {
+    platform: "ios",
+    capable: true,
+    enrolled: true,
+    root: () => new Promise((resolve) => (answer = resolve)),
+  });
+  await settle();
+  assert.equal(run.fetches(), 1, "the card asks GET / on iOS");
+  assert.equal(run.shown(), false, "hidden while the switch is pending");
+  assert.equal(run.copy(), "(hidden)");
+  answer({ features: { ios_call_e2ee: true } });
+  await settle();
+  assert.equal(run.shown(), true, "shown once the switch answered");
+  assert.match(run.copy(), CARD_ON);
+});
+
+test("Settings (F6): iOS capable + switch off -> the paused copy, never setup or Always on", async () => {
+  const card = await loadSettingsCard(readFileSync(SETTINGS_FILE, "utf8"));
+  const ios = (capable: boolean, enrolled: boolean, sw: boolean) => ({
+    platform: "ios",
+    capable,
+    enrolled,
+    root: rootSays(sw),
+  });
+  const rows: [string, CardWorld, RegExp][] = [
+    ["iOS, capable, enrolled, switch off", ios(true, true, false), CARD_PAUSED],
+    [
+      "iOS, capable, not enrolled, switch off",
+      ios(true, false, false),
+      CARD_PAUSED,
+    ],
+    // Controls: every other branch is reachable, so the rows above are a
+    // choice the card makes, not the only copy the walk can produce.
+    ["iOS, capable, enrolled, switch on", ios(true, true, true), CARD_ON],
+    [
+      "iOS, capable, not enrolled, switch on",
+      ios(true, false, true),
+      CARD_SETUP,
+    ],
+    ["iOS, not capable, switch off", ios(false, true, false), CARD_UNAVAILABLE],
+    [
+      "Android, capable, enrolled (no switch)",
+      { ...ios(true, true, false), platform: "android" },
+      CARD_ON,
+    ],
+  ];
+  for (const [label, world, want] of rows) {
+    const run = settingsCardRun(card, world);
+    await settle();
+    assert.equal(run.shown(), true, `${label}: shown`);
+    assert.match(run.copy(), want, label);
+    assert.equal(
+      run.fetches(),
+      world.platform === "ios" ? 1 : 0,
+      `${label}: GET / asked on iOS only`,
+    );
+  }
 });

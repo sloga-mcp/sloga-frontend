@@ -1,8 +1,15 @@
+import { Capacitor } from "@capacitor/core";
+import { isE2EESupported } from "livekit-client";
 import { createResource } from "solid-js";
 
 import type { E2EEBridge } from "@revolt/client";
-import { useClient } from "@revolt/client";
-import { platformMediaE2EESupported } from "@revolt/rtc";
+import { nativeE2EEAvailable, useClient } from "@revolt/client";
+import { shellMediaE2EESupported } from "@revolt/client/e2eePlatform";
+import {
+  callMediaE2EEOffered,
+  fetchIosCallSwitchValue,
+  iosCallSwitch,
+} from "@revolt/rtc/iosCallSwitch";
 import { useState } from "@revolt/state";
 
 /**
@@ -65,19 +72,46 @@ export function useCallPrejoinMode(
 
   const [resource] = createResource(source, async (input) => {
     const bridge = client()?.e2ee as E2EEBridge | undefined;
-    // WE would negotiate encryption only when the platform's media-E2EE
-    // path is audited AND the shell can push keys AND the device is
-    // enrolled AND "Encrypt my calls" is on (gate F4 — a toggle-OFF
-    // desktop must classify `self-plain` for an open group, not
-    // `e2ee-open`: it will join unencrypted and BE the downgrade cause,
-    // §0.2 #9). The platform clause (EL4 §4.3) keeps the badge honest on
-    // shells where key push probes TRUE but media frames run plaintext —
-    // without it a non-flipped Electron shell shows `will-e2ee`/
-    // `e2ee-open` for calls it will actually join unencrypted.
+    // WE would negotiate encryption only when the SHELL could carry
+    // encrypted calls AND the device is enrolled AND "Encrypt my calls" is
+    // on (gate F4 — a toggle-OFF desktop must classify `self-plain` for an
+    // open group, not `e2ee-open`: it will join unencrypted and BE the
+    // downgrade cause, §0.2 #9). The shell term is `shellMediaE2EESupported`,
+    // the same predicate `shellSupported` in `rtc/state.tsx` uses before it
+    // folds in the toggle (plan D6), fed the same three inputs, so this copy
+    // cannot disagree with the Room it describes: livekit's
+    // `isE2EESupported()`, a native E2EE layer, and the bridge's
+    // `mediaE2EEPlatformSupported()` (key push AND an audited media path —
+    // a non-flipped Electron shell, or an iOS build that is not
+    // `iosMediaE2EEReady`, reads false and shows `plain`/`self-plain`).
+    // On iPhone the server's kill switch (plan D14) can pause encrypted
+    // calls; `callMediaE2EEOffered` is the one helper the call and this copy
+    // both combine it through, so a paused iPhone shows `plain`/`self-plain`
+    // here too (Stage 5 C-M2/B2). The switch is fetched from `GET /` (never
+    // `client.configuration`, a stub) and passed RAW: only the server's
+    // explicit `false` turns it off; absent or unreachable reads on. Off
+    // iOS there is no fetch and the switch always reads on.
+    const sw = iosCallSwitch({
+      platform: Capacitor.getPlatform(),
+      serverValue:
+        Capacitor.getPlatform() === "ios"
+          ? await fetchIosCallSwitchValue({
+              fetchRoot: () => client().api.get("/"),
+              setTimeout,
+              clearTimeout,
+            })
+          : undefined,
+    });
     const wouldEncrypt =
-      platformMediaE2EESupported() &&
-      !!bridge?.nativeKeyPushAvailable() &&
-      !!bridge.status.get("state")?.published &&
+      callMediaE2EEOffered(
+        shellMediaE2EESupported({
+          e2eeSupported: isE2EESupported(),
+          nativeE2EEAvailable: nativeE2EEAvailable(),
+          bridgePlatformSupported: !!bridge?.mediaE2EEPlatformSupported(),
+        }),
+        sw,
+      ) &&
+      !!bridge?.status.get("state")?.published &&
       input.e2eeCallsEnabled;
 
     if (featureOff) {

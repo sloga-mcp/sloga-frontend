@@ -87,10 +87,17 @@ const SRC = readFileSync(FILE, "utf8");
  * route, the restore-dialog `RestoreReport` docs, `SPLIT_COMMIT_ATTEMPTS`
  * and `isMissingCommandError`). The merged region is exactly the union of
  * that and the S7 additions above, nothing else.
+ *
+ * Re-pinned when iOS call E2EE phase 2 (feat/ios-call-e2ee) merged main
+ * 68653961 (S7 landed), 2026-11-11. Phase 2 Wave 3 edits the region on
+ * purpose: `CapacitorTransport.keyPushAvailable` answers for iOS (plan D6)
+ * and `#rethrow` maps a call-plane `protector_locked` to a typed error (D10).
+ * The merged region is byte-identical to `git merge-file` of (phase 2
+ * ca01edb3, base fabe3ab7, main 68653961): main's value above (88e76b2a...)
+ * plus those phase 2 lines, nothing else.
  */
-// Re-pinned from feat/e2ee-add-device: multi-device W3 adds splitBegin.
 const TRANSPORT_REGION_SHA256 =
-  "88e76b2aaaa40af81200cd56dd31611e35ea245167770d8066007e3a0d7347c0";
+  "8814ad345ac6bc10acc5584fb880a67507bd7ef49e725d4e1bcd4031bfdbb816";
 
 /**
  * S7 D9 / PA-7: the text commands Android signs only after a tap on a native
