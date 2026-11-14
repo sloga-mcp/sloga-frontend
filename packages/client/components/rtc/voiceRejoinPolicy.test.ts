@@ -429,7 +429,11 @@ function methodText(code: string, header: string): string {
 
 test("🔴 #connectAttempt passes opts?.rejoinAttempt to joinCall as its 5th argument", () => {
   // stoat.js's `joinCall` is positional:
-  // (node, forceDisconnect, recipients, deviceId, rejoin).
+  // (node, forceDisconnect, recipients, deviceId, rejoin, opts).
+  // Six since the ring options were added: `rejoin` stays 5th, and the 6th is
+  // the options object that carries `answer` and `video`. `answer` is worked
+  // out there from this attempt's own options, and an automatic rejoin (the
+  // very flag the 5th argument carries) switches it off.
   const body = methodText(stateCode(), "async #connectAttempt(");
   assert.ok(
     body.includes("++this.#connectGen"),
@@ -447,10 +451,15 @@ test("🔴 #connectAttempt passes opts?.rejoinAttempt to joinCall as its 5th arg
   );
   assert.equal(
     args.length,
-    5,
-    `joinCall( in #connectAttempt passes ${args.length} arguments ${JSON.stringify(args)}; the 5th is rejoin`,
+    6,
+    `joinCall( in #connectAttempt passes ${args.length} arguments ${JSON.stringify(args)}; the 5th is rejoin, the 6th the ring options`,
   );
   assert.equal(args[4], "opts?.rejoinAttempt");
+  assert.equal(
+    args[5],
+    "{ answer: opts?.answer === true && !opts?.rejoinAttempt && !hadAuth, video: opts?.video === true, }",
+    "the ring options: a rejoin attempt, or an attempt that started with a ready-made token, never sends `answer`",
+  );
 });
 
 test("🔴 the rejoin flag is raised by the auto-rejoin loop and nowhere else", () => {

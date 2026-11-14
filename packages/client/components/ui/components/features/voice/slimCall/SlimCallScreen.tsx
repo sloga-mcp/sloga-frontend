@@ -1,0 +1,631 @@
+import {
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  on,
+  onCleanup,
+  untrack,
+} from "solid-js";
+import { Portal } from "solid-js/web";
+
+import { useLingui } from "@lingui-solid/solid/macro";
+import { createResizeObserver } from "@solid-primitives/resize-observer";
+import { TrackLoop } from "solid-livekit-components";
+import { styled } from "styled-system/jsx";
+
+import { useSlimMode } from "@revolt/client/useSlimMode";
+import { useWindowCtx } from "@revolt/client/windowCtx";
+import { CONFIGURATION } from "@revolt/common";
+import { InRoom, useVoice } from "@revolt/rtc";
+import {
+  type CallAudioRoutes,
+  getCallAudioRoutes,
+  setCallAudioRoute,
+} from "@revolt/rtc/callAudioRoute";
+import { type CameraDevice, cameraFlipTarget } from "@revolt/rtc/cameraFlip";
+import { Button, IconButton } from "@revolt/ui/components/design";
+import { Symbol } from "@revolt/ui/components/utils/Symbol";
+
+import { ParticipantTile } from "../callCard/ParticipantTile";
+import { VoiceCallAudioBlockedBanner } from "../callCard/VoiceCallAudioBlockedBanner";
+import {
+  VoiceCallCardStatus,
+  VoiceCallEncryptionChip,
+} from "../callCard/VoiceCallCardStatus";
+import { VoiceCallDowngradeBanner } from "../callCard/VoiceCallDowngradeBanner";
+import { VoiceCallRecordingBanner } from "../callCard/VoiceCallRecordingBanner";
+import { VoiceCallRosterPanel } from "../callCard/VoiceCallRosterPanel";
+import { VoiceCallWhisperBanner } from "../callCard/VoiceCallWhisperBanner";
+import { selectCallTiles } from "../callCard/callTileSelection";
+import { participantUserId } from "../participantIdentity";
+import { nextSlimCallMinimised, slimCallShown } from "./slimCallPolicy";
+import { setSlimCallMinimised, slimCallMinimised } from "./slimCallView";
+
+/**
+ * The Slim view call screen: a direct message or group call, full screen.
+ *
+ * It is mounted once at app level and draws nothing until `slimCallShown`
+ * says so. The call card asks `slimCallOwnsTiles` the same question with the
+ * same four facts and draws nothing while the answer is yes, so the call is
+ * always on exactly one of the two.
+ *
+ * This component also keeps the minimised flag honest. It is always mounted,
+ * so it is the one place that sees every call start, end and change of
+ * channel, and a new call always starts with the screen up.
+ */
+export function SlimCallScreen() {
+  const slim = useSlimMode();
+  const voice = useVoice();
+  const floating = useWindowCtx().floatingMount();
+
+  // `inCall` is true from the moment a call is being joined, not from the
+  // moment it connects. The card reads it the same way, so one of the two
+  // surfaces, and with it a way to hang up, is on screen while joining.
+  const shown = createMemo(() =>
+    slimCallShown({
+      slim: slim(),
+      inCall: !!voice.channel(),
+      channelType: voice.channel()?.type,
+      minimised: slimCallMinimised(),
+    }),
+  );
+
+  let lastChannelId: string | undefined;
+  createEffect(() => {
+    const channelId = voice.channel()?.id;
+    const minimised = untrack(slimCallMinimised);
+    const next = nextSlimCallMinimised({
+      minimised,
+      inCall: channelId !== undefined,
+      channelChanged: channelId !== lastChannelId,
+    });
+    lastChannelId = channelId;
+    if (next !== minimised) setSlimCallMinimised(next);
+  });
+
+  // Rendered into the floating layer, next to the dialogs and menus, so its
+  // place among them is decided by `zIndex` alone (see `Screen`).
+  return (
+    <Show when={shown()}>
+      <Portal mount={floating}>
+        <CallScreen />
+      </Portal>
+    </Show>
+  );
+}
+
+/**
+ * What the screen shows, top to bottom: who the call is with, the call's own
+ * notices, the participants, the controls. They are stacked in the normal
+ * flow, so the participants start below the notices and cannot be drawn over
+ * them. The notices are the call card's own components, mounted the way the
+ * card mounts them: no props, no condition, each deciding for itself whether
+ * it has something to show.
+ */
+function CallScreen() {
+  const voice = useVoice();
+  const { t } = useLingui();
+
+  const title = () => {
+    const channel = voice.channel();
+    return channel?.recipient?.displayName ?? channel?.displayName ?? "";
+  };
+
+  return (
+    <Screen>
+      <Header>
+        <IconButton
+          size="md"
+          variant="standard"
+          aria-label={t`Minimize call`}
+          onPress={() => setSlimCallMinimised(true)}
+        >
+          <Symbol>keyboard_arrow_down</Symbol>
+        </IconButton>
+        <Title>{title()}</Title>
+        <VoiceCallCardStatus />
+      </Header>
+      <Notices>
+        <ChipRow>
+          <VoiceCallEncryptionChip />
+        </ChipRow>
+        <VoiceCallDowngradeBanner />
+        <VoiceCallAudioBlockedBanner />
+        <VoiceCallRecordingBanner />
+        <VoiceCallWhisperBanner />
+      </Notices>
+      <Stage>
+        {/* Opened by a press on the chip above. It lies over the tiles. */}
+        <VoiceCallRosterPanel />
+        <Tiles />
+      </Stage>
+      <Controls />
+    </Screen>
+  );
+}
+
+/** Never more than three tiles across. */
+const GRID_MAX_COLUMNS = 3;
+/** The narrowest a tile gets before the grid scrolls instead. */
+const GRID_MIN_TILE_WIDTH = 160;
+/** `var(--gap-md)` in px. Only used to compare arrangements. */
+const GRID_GAP = 8;
+/** How much wider the tiles must get before fewer columns are taken. */
+const GRID_NARROWER_MARGIN = 1.05;
+/** The tile width used until the area has been measured. */
+const TILE_FALLBACK_WIDTH = "min(100%, 250px)";
+
+/**
+ * The participants. Every tile is the call card's `ParticipantTile`, fed by
+ * the same `TrackLoop` and the same `selectCallTiles` choice the card makes,
+ * so a tile looks and behaves here as it does there (a press on one puts it
+ * in the large box, a second press puts it back).
+ *
+ * Only the arrangement is this screen's own: the card's grid is sized for a
+ * card in a channel page, this one for a whole phone or tablet screen. Every
+ * participant gets a tile; the card's "hide participants without video"
+ * setting is not applied, because this screen has no control to undo it.
+ */
+function Tiles() {
+  const voice = useVoice();
+
+  const [area, setArea] = createSignal<HTMLDivElement>();
+  const [size, setSize] = createSignal({ width: 0, height: 0 });
+
+  // The tiles size themselves from these two properties
+  createResizeObserver(area, ({ width, height }) => {
+    const el = area();
+    if (!el) return;
+    el.style.setProperty("--vc-w", `${width}px`);
+    el.style.setProperty("--vc-h", `${height}px`);
+    setSize({ width, height });
+  });
+
+  const selection = createMemo(() =>
+    selectCallTiles(voice.vidTracks(), {
+      hideNonVideo: false,
+      isFocused: (track) => voice.isFocus(track),
+      participantOf: (track) => participantUserId(track.participant.identity),
+    }),
+  );
+
+  /** Everyone except the tile in the large box. */
+  const gridTracks = () => selection().tiles;
+
+  const focused = () => !!voice.focusTrack();
+
+  // The tile in the large box left the call: back to the plain grid. The
+  // card does the same while it is the one drawing the tiles.
+  createEffect(() => {
+    if (voice.focusId() && !voice.focusTrack()) voice.toggleFocus();
+  });
+
+  /**
+   * The width of one tile in the plain grid, as a CSS length. Every
+   * arrangement from three columns down to one is tried, and the one that
+   * makes the tiles widest while all rows still fit the height wins. On a
+   * phone held upright that stacks the two sides of a direct call.
+   */
+  const tileWidth = () => {
+    const count = gridTracks().length;
+    const { width, height } = size();
+    if (focused() || !count || !width || !height) return TILE_FALLBACK_WIDTH;
+
+    let columns = 1,
+      rows = count,
+      best = 0;
+
+    // Widest first, so a narrower arrangement has to beat it
+    for (let c = Math.min(count, GRID_MAX_COLUMNS); c >= 1; c--) {
+      const r = Math.ceil(count / c);
+      const fit = Math.min(
+        (width - (c - 1) * GRID_GAP) / c,
+        Math.max(
+          GRID_MIN_TILE_WIDTH,
+          ((height - (r - 1) * GRID_GAP) / r) * (16 / 9),
+        ),
+      );
+
+      if (fit > best * GRID_NARROWER_MARGIN) {
+        best = fit;
+        columns = c;
+        rows = r;
+      }
+    }
+
+    // The browser does the exact sum against the real gap. The 1px keeps a
+    // width of exactly one third from wrapping a tile onto its own row.
+    const gaps = (n: number) => (n > 1 ? ` - ${n - 1} * var(--gap-md)` : "");
+    return (
+      `min((100%${gaps(columns)} - 1px) / ${columns}, ` +
+      `max(${GRID_MIN_TILE_WIDTH}px, (var(--vc-h)${gaps(rows)}) * 16 / 9 / ${rows}))`
+    );
+  };
+
+  return (
+    <TileArea ref={setArea} focused={focused()}>
+      <InRoom>
+        <Show when={voice.focusTrack()}>
+          <TrackLoop tracks={() => [voice.focusTrack()!]}>
+            {() => (
+              <FocusBox>
+                <ParticipantTile focus />
+              </FocusBox>
+            )}
+          </TrackLoop>
+        </Show>
+        <Show when={gridTracks().length > 0}>
+          <Grid strip={focused()} style={{ "--vc-tile-width": tileWidth() }}>
+            <TrackLoop tracks={gridTracks}>
+              {() => <ParticipantTile />}
+            </TrackLoop>
+          </Grid>
+        </Show>
+      </InRoom>
+    </TileArea>
+  );
+}
+
+/**
+ * The controls. Mute, camera and hang up do what the call card's buttons do,
+ * with the card's labels: the same store calls, the same conditions. They are
+ * written out here because the card exports its controls only as one whole
+ * bar, sized for a pointer. Speaker and flip camera exist only here.
+ */
+function Controls() {
+  const voice = useVoice();
+  const { t } = useLingui();
+
+  const enableVideo = CONFIGURATION.ENABLE_VIDEO;
+
+  const [routes, setRoutes] = createSignal<CallAudioRoutes>({
+    supported: false,
+  });
+  const [flipTarget, setFlipTarget] = createSignal<CameraDevice>();
+  const [flipBusy, setFlipBusy] = createSignal(false);
+  const [routeBusy, setRouteBusy] = createSignal(false);
+
+  // An answer that arrives after a newer question was asked, or after the
+  // screen went away, is dropped.
+  let alive = true,
+    routeRead = 0,
+    flipRead = 0;
+  onCleanup(() => (alive = false));
+
+  /** Ask the phone which output has the call sound. */
+  async function readRoutes() {
+    const read = ++routeRead;
+    const answer = await getCallAudioRoutes();
+    if (alive && read === routeRead) setRoutes(answer);
+  }
+
+  /** Ask which camera a flip would switch to, if any. */
+  async function readFlipTarget() {
+    const read = ++flipRead;
+    const room = untrack(voice.room);
+    const target =
+      room && untrack(voice.video) ? await cameraFlipTarget(room) : undefined;
+    if (alive && read === flipRead) setFlipTarget(target);
+  }
+
+  function refresh() {
+    void readRoutes();
+    void readFlipTarget();
+  }
+
+  // Both answers can change with the call, with the camera, and with what
+  // the call is allowed to send, so each of those asks again.
+  createEffect(
+    on(
+      [
+        voice.room,
+        voice.state,
+        voice.video,
+        () => voice.callBanner(),
+        () => voice.callEncryptionChip(),
+      ],
+      refresh,
+    ),
+  );
+
+  // A headset or a camera that was plugged in or taken away, and coming
+  // back to the app after changing either in the system settings.
+  const mediaDevices =
+    typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
+  if (mediaDevices && typeof mediaDevices.addEventListener === "function") {
+    mediaDevices.addEventListener("devicechange", refresh);
+    onCleanup(() => mediaDevices.removeEventListener("devicechange", refresh));
+  }
+  document.addEventListener("visibilitychange", refresh);
+  onCleanup(() => document.removeEventListener("visibilitychange", refresh));
+
+  /**
+   * Switch the call sound to the other output. What the button shows
+   * afterwards is what the phone says is on, not what was asked for: a
+   * refused switch leaves the button as it was.
+   */
+  async function toggleSpeaker() {
+    if (routeBusy()) return;
+    setRouteBusy(true);
+    try {
+      await setCallAudioRoute(
+        routes().route === "speaker" ? "earpiece" : "speaker",
+      );
+      await readRoutes();
+    } finally {
+      setRouteBusy(false);
+    }
+  }
+
+  /**
+   * Flip to the other camera. The store does the switch, under the same
+   * rules as every other change to what the call sends, and reports a
+   * failure itself, so a refused flip shows nothing more here.
+   */
+  async function flip() {
+    if (flipBusy()) return;
+    setFlipBusy(true);
+    try {
+      await voice.flipCamera();
+    } finally {
+      setFlipBusy(false);
+      void readFlipTarget();
+    }
+  }
+
+  return (
+    <Bar>
+      <IconButton
+        size="md"
+        variant={voice.microphone() ? "filled" : "tonal"}
+        onPress={() => voice.toggleMute()}
+        aria-label={
+          voice.speakingPermission
+            ? voice.microphone()
+              ? t`Mute`
+              : t`Unmute`
+            : t`Missing permission`
+        }
+        isDisabled={!voice.speakingPermission}
+      >
+        <Show when={voice.microphone()} fallback={<Symbol>mic_off</Symbol>}>
+          <Symbol>mic</Symbol>
+        </Show>
+      </IconButton>
+      {/* Only where the phone can switch: the Android app, and not while a
+          headset has the sound. */}
+      <Show when={routes().supported}>
+        <IconButton
+          size="md"
+          variant={routes().route === "speaker" ? "filled" : "tonal"}
+          onPress={() => void toggleSpeaker()}
+          aria-label={t`Speaker`}
+          aria-pressed={routes().route === "speaker"}
+          isDisabled={routeBusy()}
+        >
+          <Symbol>volume_up</Symbol>
+        </IconButton>
+      </Show>
+      <IconButton
+        size="md"
+        variant={enableVideo && voice.video() ? "filled" : "tonal"}
+        onPress={() => {
+          if (enableVideo) voice.toggleCamera();
+        }}
+        aria-label={
+          enableVideo
+            ? voice.video()
+              ? t`Stop camera`
+              : t`Start camera`
+            : t`Coming soon! 👀`
+        }
+        isDisabled={!enableVideo}
+      >
+        <Symbol>camera_video</Symbol>
+      </IconButton>
+      {/* Only while the camera is on and there is another camera to go to */}
+      <Show when={voice.video() && flipTarget()}>
+        <IconButton
+          size="md"
+          variant="tonal"
+          onPress={() => void flip()}
+          aria-label={t`Flip camera`}
+          isDisabled={flipBusy()}
+        >
+          <Symbol>cameraswitch</Symbol>
+        </IconButton>
+      </Show>
+      <Button
+        size="md"
+        variant="_error"
+        onPress={() => voice.disconnect()}
+        aria-label={t`End call`}
+      >
+        <Symbol>call_end</Symbol>
+      </Button>
+    </Bar>
+  );
+}
+
+const Screen = styled("div", {
+  base: {
+    // The same box as the app itself: inside the safe area, below a desktop
+    // title bar.
+    position: "fixed",
+    top: "calc(env(safe-area-inset-top, 0px) + var(--titlebar-height, 0px))",
+    left: "env(safe-area-inset-left, 0px)",
+    right: "env(safe-area-inset-right, 0px)",
+    bottom: "env(safe-area-inset-bottom, 0px)",
+
+    // Over the app, the floating call card (10) and the transcript panel
+    // (6). Under the settings page (100) and the dialogs (998), which the
+    // call's own notices open, under the menus (999), and under the incoming
+    // call popup (9999): a second call can ring while this one is up.
+    zIndex: 50,
+
+    display: "flex",
+    flexDirection: "column",
+
+    // A very short screen scrolls as a whole, and nothing is cut off
+    overflowX: "hidden",
+    overflowY: "auto",
+
+    color: "var(--md-sys-color-on-surface)",
+    background: "var(--md-sys-color-surface)",
+  },
+});
+
+const Header = styled("div", {
+  base: {
+    flexShrink: 0,
+
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-md)",
+    padding: "var(--gap-sm) var(--gap-md)",
+  },
+});
+
+const Title = styled("div", {
+  base: {
+    flex: "1 1 0",
+    minWidth: 0,
+
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+
+    fontSize: "1rem",
+    fontWeight: 600,
+  },
+});
+
+const Notices = styled("div", {
+  base: {
+    // Never squeezed: the participants below give way instead
+    flexShrink: 0,
+
+    display: "flex",
+    flexDirection: "column",
+    gap: "var(--gap-sm)",
+    padding: "0 var(--gap-md)",
+  },
+});
+
+const ChipRow = styled("div", {
+  base: {
+    display: "flex",
+    justifyContent: "flex-start",
+
+    // No row, and no gap for it, while there is nothing to say
+    "&:empty": {
+      display: "none",
+    },
+  },
+});
+
+const Stage = styled("div", {
+  base: {
+    // Anchors the roster panel
+    position: "relative",
+
+    flex: "1 1 0",
+    minHeight: 0,
+
+    display: "flex",
+    flexDirection: "column",
+    padding: "var(--gap-md)",
+  },
+});
+
+const TileArea = styled("div", {
+  base: {
+    position: "relative",
+    flex: "1 1 0",
+    minHeight: 0,
+
+    display: "flex",
+    flexDirection: "column",
+    gap: "var(--gap-sm)",
+
+    // The plain grid scrolls when there are more tiles than fit
+    overflowX: "hidden",
+    overflowY: "auto",
+  },
+  variants: {
+    focused: {
+      true: {
+        // The large box takes the height; only the strip under it scrolls
+        overflowY: "hidden",
+      },
+      false: {},
+    },
+  },
+});
+
+const Grid = styled("div", {
+  base: {
+    // `safe`, so a grid taller than the area starts at its top edge and all
+    // of it can be scrolled to.
+    display: "flex",
+    flexWrap: "wrap",
+    justifyContent: "safe center",
+    alignContent: "safe center",
+    minHeight: "100%",
+    gap: "var(--gap-md)",
+
+    "& .vc_tile": {
+      minWidth: 0,
+    },
+  },
+  variants: {
+    /** Everyone else, in one row under the large box. */
+    strip: {
+      true: {
+        flexShrink: 0,
+        flexWrap: "nowrap",
+        justifyContent: "flex-start",
+        alignContent: "normal",
+        height: "clamp(96px, 22%, 160px)",
+        minHeight: 0,
+
+        overflowX: "auto",
+        overflowY: "hidden",
+
+        "& .vc_tile": {
+          flexShrink: 0,
+          width: "auto",
+          height: "100%",
+        },
+      },
+      false: {},
+    },
+  },
+});
+
+const FocusBox = styled("div", {
+  base: {
+    height: 0,
+    flexGrow: 1,
+
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    margin: "0 auto",
+    maxWidth: "100%",
+  },
+});
+
+const Bar = styled("div", {
+  base: {
+    flexShrink: 0,
+
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "var(--gap-lg)",
+    padding: "var(--gap-md) var(--gap-lg) var(--gap-lg)",
+  },
+});

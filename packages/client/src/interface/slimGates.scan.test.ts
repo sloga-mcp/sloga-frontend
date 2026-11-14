@@ -30,8 +30,20 @@
 //  G13  AppearanceMenu.tsx + SlimViewChoice.tsx: one toggle, off in a call;
 //  G14  Sync.ts: the settings store is not synced (R11);
 //  G15  Settings.ts: `appearance:slim_view` is a boolean, off by default;
-//  G16  AndroidBackWorker.tsx: Back at the Slim view root does not slide to
-//       the placeholder pane.
+//  G16  AndroidBackWorker.tsx + keybindHandler.tsx: Back at the Slim view
+//       root does not slide to the placeholder pane, and Back on the Slim
+//       view call screen closes the menus and dialogs over it first, then
+//       minimises it and touches nothing behind it;
+//  G17  AndroidBackWorker.tsx: Back while a call rings us leaves native
+//       fullscreen if it is on, and otherwise does nothing;
+//  G18  SlimCallScreen.tsx: the encryption chip and the three call banners
+//       are mounted once each, with no condition of their own, above the
+//       tiles (C11);
+//  G19  SlimCallScreen.tsx + VoiceCallCard.tsx: the call screen and the
+//       card decide on the same four facts, and the card's Slim branch is
+//       its first;
+//  G20  VoiceCallCard.tsx: in Slim view the card never falls back to the
+//       picture-in-picture, which has no chip or banners (C11).
 //
 // WHAT THIS SPEC CANNOT CATCH. It matches text; it never runs the app.
 //  - Wrong polarity inside an expression it does not parse. A few short
@@ -70,9 +82,13 @@ const APPEARANCE_MENU = `${SETTINGS_UI}/user/appearance/AppearanceMenu.tsx`;
 const SLIM_VIEW_CHOICE = `${SETTINGS_UI}/user/appearance/SlimViewChoice.tsx`;
 const NOTIFICATIONS = "components/client/NotificationsWorker.tsx";
 const ANDROID_BACK = "components/client/AndroidBackWorker.tsx";
+const KEYBIND_HANDLER = "components/keybinds/keybindHandler.tsx";
 const POLICY = "components/client/slimRoutePolicy.ts";
 const SYNC = "components/state/stores/Sync.ts";
 const SETTINGS = "components/state/stores/Settings.ts";
+const VOICE_UI = "components/ui/components/features/voice";
+const SLIM_CALL_SCREEN = `${VOICE_UI}/slimCall/SlimCallScreen.tsx`;
+const CALL_CARD = `${VOICE_UI}/callCard/VoiceCallCard.tsx`;
 
 /**
  * First path segments of the routes in src/index.tsx that Slim view does
@@ -324,6 +340,120 @@ function blockAround(src: string, at: number): string {
     }
   }
   assert.fail(`scanner: no block around line ${lineOf(src, at)}`);
+}
+
+/**
+ * `src` with every string and the inside of every bracket pair blanked, so
+ * only its own level is left: `a(b && c) && d` reads `a() && d`.
+ */
+function topLevel(src: string): string {
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '"' || c === "'" || c === "`") {
+      i = skipString(src, i);
+      out += '""';
+    } else if (c === "(" || c === "[" || c === "{") {
+      const close = matchClose(src, i);
+      out += c + src[close];
+      i = close + 1;
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out;
+}
+
+/**
+ * Index of every `return` at the own level of the block body that opens at
+ * `open`; a `return` in a nested function or block does not count.
+ */
+function ownReturns(src: string, open: number): number[] {
+  const out: number[] = [];
+  const close = matchClose(src, open);
+  let i = open + 1;
+  while (i < close) {
+    const c = src[i];
+    if (c === '"' || c === "'" || c === "`") i = skipString(src, i);
+    else if (c === "(" || c === "[" || c === "{") i = matchClose(src, i) + 1;
+    else if (
+      /^return\b/.test(src.slice(i, i + 7)) &&
+      !/[\w$.]/.test(src[i - 1])
+    )
+      out.push(i++);
+    else i++;
+  }
+  return out;
+}
+
+/**
+ * The brackets opened between `from` and `at` that are still open at `at`,
+ * by line. Empty when `at` is a plain JSX child of what holds `from`: not in
+ * a `{cond && ...}`, a ternary, a callback or any other expression.
+ */
+function openBrackets(src: string, from: number, at: number): string[] {
+  const out: string[] = [];
+  let i = from;
+  while (i < at) {
+    const c = src[i];
+    if (c === "<" && /[A-Za-z]/.test(src[i + 1] ?? "")) {
+      // A whole opening tag, so a quote in an attribute is read as one; one
+      // that holds `at` in an attribute is read on into its braces
+      const tag = openTag(src, i);
+      i = tag.end > at ? i + 1 : tag.end;
+    } else if (c === "(" || c === "[" || c === "{") {
+      const close = matchClose(src, i);
+      if (close > at) out.push(`${c} on line ${lineOf(src, i)}`);
+      i = close > at ? i + 1 : close + 1;
+    } else i++;
+  }
+  return out;
+}
+
+/**
+ * The JSX elements open at `at`, outermost first, reading JSX children from
+ * `from`. Expression containers are skipped whole, so `at` must not be in one
+ * (see `openBrackets`).
+ */
+function jsxAncestors(
+  src: string,
+  from: number,
+  at: number,
+): { name: string; at: number }[] {
+  const stack: { name: string; at: number }[] = [];
+  let i = from;
+  while (i < at) {
+    const c = src[i];
+    if (c === "{") {
+      i = matchClose(src, i) + 1;
+    } else if (c === "<") {
+      const close = /^<\/([\w.]*)\s*>/.exec(src.slice(i, i + 200));
+      if (close) {
+        const top = stack.pop();
+        assert.equal(
+          top?.name,
+          close[1],
+          `scanner: </${close[1]}> does not close <${top?.name}>, line ${lineOf(src, i)}`,
+        );
+        i += close[0].length;
+      } else {
+        const name = /^<([A-Za-z][\w.]*)?/.exec(src.slice(i, i + 200))?.[1];
+        const tag = openTag(src, i);
+        if (!tag.selfClosing) stack.push({ name: name ?? "", at: i });
+        i = tag.end;
+      }
+    } else i++;
+  }
+  return stack;
+}
+
+/** Index of `body` in `src`, which it must be a slice of. */
+function placeOf(src: string, body: string): number {
+  const at = src.indexOf(body);
+  assert.ok(at !== -1, "scanner: a body is not part of its file");
+  return at;
 }
 
 type Tag = { at: number; text: string; end: number; selfClosing: boolean };
@@ -1036,7 +1166,7 @@ test("G15 Settings.ts: appearance:slim_view is a boolean, off by default", () =>
   assert.deepEqual(values.sort(), ['"boolean"', "boolean", "false", "false"]);
 });
 
-test("G16 AndroidBackWorker.tsx: Back at the Slim view root skips the drawer step", () => {
+test("G16 AndroidBackWorker.tsx, keybindHandler.tsx: Back skips the drawer step at the Slim view root, and on the Slim view call screen closes only what is over it, then minimises it", () => {
   const src = load(ANDROID_BACK);
 
   assert.match(
@@ -1063,4 +1193,430 @@ test("G16 AndroidBackWorker.tsx: Back at the Slim view root skips the drawer ste
     "the drawer step must not run at the Slim view root",
   );
   assert.equal(count(src, "atSlimRoot"), 2, "atSlimRoot is read once");
+
+  // Back on the Slim view call screen. The call store is resolved at setup
+  // for the same reason as Slim view, and never inside the handler
+  assert.match(
+    src,
+    /\bconst\s+voice\s*=\s*useVoice\(\);/,
+    "the call store must be resolved at setup: a back press has no owner",
+  );
+  const onBack = arrowBody(src, "onBack");
+  assert.doesNotMatch(
+    onBack,
+    /\buse(Voice|SlimMode|DismissOverlay|DismissTopmost)\(/,
+    "onBack must not resolve a hook: a back press has no owner",
+  );
+
+  // Pinned whole, polarity included: the four facts the call screen is
+  // shown by, then the one write, then the end of the press
+  const steps = squash(onBack);
+  const minimise = steps.indexOf(
+    squash(
+      `if (
+        slimCallShown({
+          slim: slim(),
+          inCall: !!voice.channel(),
+          channelType: voice.channel()?.type,
+          minimised: slimCallMinimised(),
+        })
+      ) {
+        setSlimCallMinimised(true);
+        return;
+      }`,
+    ),
+  );
+  assert.ok(
+    minimise !== -1,
+    "Back on the Slim view call screen must minimise it and return",
+  );
+  assert.equal(count(src, "slimCallShown("), 1, "one slimCallShown( call");
+  assert.equal(
+    count(src, "setSlimCallMinimised("),
+    1,
+    "the minimised flag is written once, by that case",
+  );
+
+  // The order of the press. Native fullscreen is drawn over everything, so
+  // it leaves first (the ring right after it is G17). Then the menus and
+  // dialogs, Settings included, which are drawn over the call screen; then
+  // the call screen; and only then the rest of the ladder (the side column,
+  // an edit, a composition element), the drawer, history and exit, which
+  // all act on what the call screen covers
+  const order: [string, number][] = [
+    "document.exitFullscreen",
+    "if(dismissOverlay())return;",
+    "call screen case",
+    "if(dismissTopmost())return;",
+    "drawer.setShown(true)",
+    "history.back()",
+    "exitApp()",
+  ].map((step): [string, number] => [
+    step,
+    step === "call screen case" ? minimise : steps.indexOf(step),
+  ]);
+  for (const [step, at] of order)
+    assert.ok(at !== -1, `scan is stale: onBack has no ${step}`);
+  for (let i = 1; i < order.length; i++) {
+    assert.ok(
+      order[i - 1][1] < order[i][1],
+      `${order[i - 1][0]} must come before ${order[i][0]}`,
+    );
+  }
+  assert.equal(count(src, "dismissOverlay()"), 1, "one dismissOverlay() call");
+  assert.equal(count(src, "dismissTopmost()"), 1, "one dismissTopmost() call");
+
+  // Both resolved at setup, from the keybind handler itself
+  for (const hook of ["DismissOverlay", "DismissTopmost"]) {
+    assert.match(
+      src,
+      new RegExp(
+        `\\bimport\\s*\\{[^}]*\\buse${hook}\\b[^}]*\\}\\s*from\\s*"@revolt\\/keybinds\\/keybindHandler";`,
+      ),
+      `use${hook} must come from @revolt/keybinds/keybindHandler`,
+    );
+  }
+  has(src, "const dismissOverlay = useDismissOverlay();", "setup must resolve");
+  assert.doesNotMatch(
+    src,
+    /\b(?:function|let|var)\s+dismissOverlay\b|\bas\s+use(?:DismissOverlay|DismissTopmost)\b/,
+    "dismissOverlay must not be redefined or renamed here",
+  );
+
+  // `dismissOverlay` is the ladder's own first two rungs, menus (floating
+  // elements) and dialogs (Settings is one), walked the way the whole
+  // ladder is, and never the side column, an edit or a composition element
+  const keys = load(KEYBIND_HANDLER);
+  has(
+    keys,
+    `const OVERLAY_DISMISSALS: ReadonlySet<KeybindAction> = new Set([
+      KeybindAction.CLOSE_FLOATING,
+      KeybindAction.CLOSE_MODAL,
+    ]);`,
+    "the overlay rungs must be CLOSE_FLOATING and CLOSE_MODAL alone",
+  );
+  has(
+    keys,
+    `const OVERLAY_PRIORITY: KeybindAction[] = DISMISSAL_PRIORITY.filter(
+      (keybind) => OVERLAY_DISMISSALS.has(keybind),
+    );`,
+    "the overlay rungs must be taken from the ladder, in its order",
+  );
+  assert.equal(
+    count(keys, "OVERLAY_DISMISSALS"),
+    2,
+    "one overlay set, read once",
+  );
+  assert.equal(
+    count(keys, "OVERLAY_PRIORITY"),
+    2,
+    "one overlay list, read once",
+  );
+  has(
+    keys,
+    "function dismissOverlay(): boolean { return dismissFirstOf(OVERLAY_PRIORITY); }",
+    "dismissOverlay must walk the overlay rungs only",
+  );
+  has(
+    keys,
+    "function dismissTopmost(): boolean { return dismissFirstOf(DISMISSAL_PRIORITY); }",
+    "dismissTopmost must walk the whole ladder",
+  );
+  has(
+    keys,
+    "return () => context?.dismissOverlay() ?? false;",
+    "useDismissOverlay must call dismissOverlay",
+  );
+  has(
+    keys,
+    "dismissTopmost, dismissOverlay, }}",
+    "the context must carry both",
+  );
+});
+
+test("G17 AndroidBackWorker.tsx: Back while a call rings us leaves fullscreen, and otherwise does nothing", () => {
+  const src = load(ANDROID_BACK);
+
+  // The ring, popup or full-screen, is up exactly while `incomingCall()` is
+  // set. It is the app's own module signal, not a stand-in
+  assert.match(
+    src,
+    /\bimport\s*\{[^}]*\bincomingCall\b[^}]*\}\s*from\s*"@revolt\/rtc(?:\/incomingCall)?";/,
+    "incomingCall must come from @revolt/rtc",
+  );
+  assert.doesNotMatch(
+    src,
+    /\b(?:const|let|var|function)\s+incomingCall\b|\bincomingCall\s+as\b|\bas\s+incomingCall\b/,
+    "incomingCall must not be redefined or renamed here",
+  );
+
+  // Pinned whole, polarity included. Native fullscreen comes first: its top
+  // layer hides the ring, so that press leaves fullscreen and shows it. The
+  // ring comes right after, and with it up nothing else in the press runs
+  // (menus, dialogs, call screen, ladder, drawer, history, exit), so nothing
+  // behind the ring changes
+  const onBack = squash(arrowBody(src, "onBack"));
+  const fullscreen = squash(
+    `if (typeof document !== "undefined" && document.fullscreenElement) {
+      void document.exitFullscreen?.().catch(() => undefined);
+      return;
+    }`,
+  );
+  assert.ok(
+    onBack.startsWith(`{${fullscreen}`),
+    "the first step of onBack must be the native fullscreen exit",
+  );
+  assert.ok(
+    onBack.startsWith(`{${fullscreen}if(incomingCall())return;`),
+    "the step right after fullscreen must be `if (incomingCall()) return;`",
+  );
+  assert.equal(count(src, "incomingCall("), 1, "the ring is read once");
+});
+
+/** The four call components rule C11 keeps on the Slim view call screen. */
+const C11_PARTS: [name: string, from: string][] = [
+  ["VoiceCallEncryptionChip", "../callCard/VoiceCallCardStatus"],
+  ["VoiceCallDowngradeBanner", "../callCard/VoiceCallDowngradeBanner"],
+  ["VoiceCallAudioBlockedBanner", "../callCard/VoiceCallAudioBlockedBanner"],
+  ["VoiceCallRecordingBanner", "../callCard/VoiceCallRecordingBanner"],
+];
+
+test("G18 SlimCallScreen.tsx: the chip and the three banners, once each, with no condition of their own, above the tiles (C11)", () => {
+  const src = load(SLIM_CALL_SCREEN);
+
+  // The screen's content is the one JSX tree CallScreen returns: no early
+  // return, no ternary around it
+  const body = functionBody(src, "CallScreen");
+  const open = placeOf(src, body);
+  const returns = ownReturns(src, open);
+  assert.equal(returns.length, 1, "CallScreen must return once");
+  const paren = must(
+    /^return\s*\(/.exec(src.slice(returns[0])),
+    "CallScreen must return one parenthesised JSX tree",
+  );
+  const start = returns[0] + paren[0].length - 1;
+  const end = matchClose(src, start);
+  assert.match(
+    topLevel(src.slice(start, matchClose(src, open) + 1)),
+    /^\(\)\s*;?\s*\}$/,
+    "CallScreen must return its JSX tree as it is",
+  );
+
+  // Every element around the four is a plain tag or one of this file's own
+  // styled tags, which always render their children. A `<Show>`, a
+  // `<Match>`, `<InRoom>` or any other component could hide them
+  const plain = (name: string) =>
+    /^[a-z]/.test(name) ||
+    new RegExp(`\\bconst\\s+${name}\\s*=\\s*styled\\(\\s*"[a-z]+"`).test(src);
+
+  // The tiles' container: the child of the root that holds `<Tiles`
+  const tilesAt = only(src, /<Tiles(?![\w.])/, "<Tiles");
+  assert.ok(start < tilesAt && tilesAt < end, "<Tiles is not in CallScreen");
+  const container = jsxAncestors(src, start + 1, tilesAt)[1]?.at ?? tilesAt;
+
+  for (const [name, from] of C11_PARTS) {
+    // The card's own component, not a local stand-in
+    assert.match(
+      src,
+      new RegExp(
+        `\\bimport\\s*\\{[^}]*\\b${name}\\b[^}]*\\}\\s*from\\s*"${from}";`,
+      ),
+      `${name} must be imported from ${from}`,
+    );
+    assert.doesNotMatch(
+      src,
+      new RegExp(
+        `\\b(?:const|let|var|function)\\s+${name}\\b|\\bas\\s+${name}\\b`,
+      ),
+      `${name} must not be redefined or renamed here`,
+    );
+
+    // Once in the file, so it cannot sit in a local wrapper component
+    const at = only(src, new RegExp(`<${name}(?![\\w.])`), `<${name}`);
+    assert.ok(start < at && at < end, `<${name} must be in CallScreen's JSX`);
+    assert.equal(
+      squash(openTag(src, at).text),
+      `<${name}/>`,
+      `<${name} /> is mounted with no props, as the card mounts it`,
+    );
+
+    assert.deepEqual(
+      openBrackets(src, start + 1, at),
+      [],
+      `<${name} must not be inside an expression ({cond && ...}, a ternary, a callback)`,
+    );
+    assert.deepEqual(
+      jsxAncestors(src, start + 1, at)
+        .map((a) => a.name)
+        .filter((n) => !plain(n)),
+      [],
+      `<${name} must not be inside a component that decides whether its children show`,
+    );
+
+    // Above the tiles, so they never cover it
+    assert.ok(at < container, `<${name} must come before the tiles' container`);
+  }
+});
+
+/** The four facts the call screen is shown by, as every reader passes them. */
+const FOUR_FACTS = `{
+  slim: slim(),
+  inCall: !!voice.channel(),
+  channelType: voice.channel()?.type,
+  minimised: slimCallMinimised(),
+}`;
+
+test("G19 SlimCallScreen.tsx, VoiceCallCard.tsx: the call screen and the card decide on the same four facts, and the card's Slim branch is its first", () => {
+  const screenSrc = load(SLIM_CALL_SCREEN);
+  const cardSrc = load(CALL_CARD);
+
+  const sides: [file: string, src: string, fn: string, rule: string][] = [
+    [SLIM_CALL_SCREEN, screenSrc, "SlimCallScreen", "slimCallShown"],
+    [CALL_CARD, cardSrc, "VoiceCallCardContext", "slimCallOwnsTiles"],
+  ];
+  for (const [file, src, fn, rule] of sides) {
+    const body = functionBody(src, fn);
+
+    // One question each, with the same facts, pinned whole
+    const asked = calls(body, rule);
+    assert.equal(asked.length, 1, `${fn} must call ${rule}( once`);
+    assert.equal(
+      squash(asked[0]),
+      squash(`${rule}(${FOUR_FACTS})`),
+      `${file}: ${rule} must be fed the four facts the other side reads`,
+    );
+
+    // The names in the facts are the ones resolved there
+    has(body, "const slim = useSlimMode();", `${fn} must resolve`);
+    has(body, "const voice = useVoice();", `${fn} must resolve`);
+    assert.match(
+      src,
+      /\bimport\s*\{[^}]*\bslimCallMinimised\b[^}]*\}\s*from\s*"\.{1,2}\/(?:slimCall\/)?slimCallView";/,
+      `${file} must read slimCallMinimised from slimCallView`,
+    );
+    assert.doesNotMatch(
+      src,
+      new RegExp(
+        `\\b(?:const|let|var|function)\\s+(?:slimCallMinimised|${rule})\\b|\\bas\\s+(?:slimCallMinimised|${rule})\\b`,
+      ),
+      `${file} must not redefine slimCallMinimised or ${rule}`,
+    );
+  }
+
+  // The call screen is drawn by that answer and nothing else
+  has(
+    functionBody(screenSrc, "SlimCallScreen"),
+    "const shown = createMemo(() => slimCallShown(",
+    "the call screen's memo",
+  );
+  const mount = only(screenSrc, /<CallScreen(?![\w.])/, "<CallScreen");
+  assert.deepEqual(
+    enclosing(screenSrc, mount, "Show"),
+    ["<Showwhen={shown()}>"],
+    "<CallScreen /> must be drawn under <Show when={shown()}> alone",
+  );
+
+  // The card's answer, and its first branch: while the call screen owns the
+  // tiles, the card draws nothing
+  has(
+    functionBody(cardSrc, "VoiceCallCardContext"),
+    "const slimOwnsTiles = createMemo(() => slimCallOwnsTiles(",
+    "the card's memo",
+  );
+  const at = only(cardSrc, /<Switch(?![\w.])/, "<Switch");
+  assert.ok(
+    squash(element(cardSrc, at, "Switch")).startsWith(
+      "<Switch><Matchwhen={slimOwnsTiles()}>{null}</Match>",
+    ),
+    "the card's first branch must be <Match when={slimOwnsTiles()}>{null}</Match>",
+  );
+});
+
+test("G20 VoiceCallCard.tsx: in Slim view the card never falls back to the picture-in-picture (C11)", () => {
+  const src = load(CALL_CARD);
+  const context = functionBody(src, "VoiceCallCardContext");
+
+  // The picture-in-picture has none of the chip and banners rule C11 keeps
+  // on screen, so a Slim view call stays on the full card. Pinned whole,
+  // polarity included: in Slim view and in a call, `fullCard()` is the
+  // call's channel, which is never empty while in a call
+  has(
+    context,
+    "const slimNoPiP = () => slim() && !!voice.channel();",
+    "Slim view in a call must be slimNoPiP",
+  );
+  has(
+    context,
+    `const fullCard = () =>
+      docked()?.channel ??
+      (voice.remoteControl.controlling() || slimNoPiP()
+        ? voice.channel()
+        : undefined);`,
+    "fullCard must give the call's channel in Slim view",
+  );
+  has(
+    context,
+    "const slim = useSlimMode();",
+    "VoiceCallCardContext must resolve",
+  );
+  assert.equal(count(src, "slimNoPiP ="), 1, "slimNoPiP is defined once");
+  assert.equal(count(src, "fullCard ="), 1, "fullCard is defined once");
+
+  // The full card's branch, pinned whole, comes before the PiP's in the one
+  // Switch, so with `fullCard()` set the PiP is never mounted
+  assert.match(
+    src,
+    /\bimport\s*\{\s*VoiceCallCardPiP\s*\}\s*from\s*"\.\/VoiceCallCardPiP";/,
+    "VoiceCallCardPiP must come from ./VoiceCallCardPiP",
+  );
+  assert.doesNotMatch(
+    src,
+    /\bas\s+VoiceCallCardPiP\b|\b(?:const|let|var|function)\s+VoiceCallCardPiP\b/,
+    "VoiceCallCardPiP must not be redefined or renamed here",
+  );
+  const switchAt = only(src, /<Switch(?![\w.])/, "<Switch");
+  const branches = element(src, switchAt, "Switch");
+  const full = only(src, /<Match\s+when=\{fullCard\(\)\}>/, "fullCard <Match>");
+  assert.ok(
+    squash(element(src, full, "Match")) ===
+      "<Matchwhen={fullCard()}>{(channel)=><VoiceCallCardchannel={channel()}/>}</Match>",
+    "the fullCard <Match> must draw the full card for that channel",
+  );
+  const pip = only(src, /<VoiceCallCardPiP(?![\w.])/, "<VoiceCallCardPiP");
+  assert.ok(
+    switchAt < full && pip < switchAt + branches.length,
+    "the full card and the PiP must both be branches of the card's Switch",
+  );
+  for (const at of [full, pip]) {
+    assert.equal(
+      enclosing(src, at, "Switch").length,
+      1,
+      "scanner: a branch is not directly in the card's Switch",
+    );
+  }
+  assert.equal(
+    enclosing(src, full, "Match").length,
+    0,
+    "the fullCard <Match> must be a branch of the Switch itself",
+  );
+  assert.equal(
+    enclosing(src, pip, "Match").length,
+    1,
+    "<VoiceCallCardPiP /> must be in one <Match> of the Switch",
+  );
+  const pipMatch = must(
+    indexes(src, /<Match(?![\w.])/)
+      .filter((m) => m < pip)
+      .at(-1),
+    "scanner: the PiP's <Match> is lost",
+  );
+  assert.ok(
+    full < pipMatch,
+    "the fullCard <Match> must come before the PiP's <Match>",
+  );
+  assert.deepEqual(
+    openBrackets(src, openTag(src, pipMatch).end, pip),
+    [],
+    "<VoiceCallCardPiP /> must be a plain child of its <Match>",
+  );
 });

@@ -2,8 +2,17 @@ import { onCleanup, onMount } from "solid-js";
 
 import { Capacitor, registerPlugin } from "@capacitor/core";
 
-import { useDismissTopmost } from "@revolt/keybinds/keybindHandler";
+import {
+  useDismissOverlay,
+  useDismissTopmost,
+} from "@revolt/keybinds/keybindHandler";
+import { incomingCall, useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
+import { slimCallShown } from "@revolt/ui/components/features/voice/slimCall/slimCallPolicy";
+import {
+  setSlimCallMinimised,
+  slimCallMinimised,
+} from "@revolt/ui/components/features/voice/slimCall/slimCallView";
 import { SlideState } from "@revolt/ui/components/navigation/SlideDrawer";
 
 import { useClientLifecycle } from ".";
@@ -81,11 +90,18 @@ export function AndroidBackWorker() {
   // current owner — a back press arrives on a bare window event with none, so
   // resolving it there would report "nothing to dismiss" forever.
   const dismissTopmost = useDismissTopmost();
+  // Its first rungs only: menus, popovers and dialogs, Settings included.
+  const dismissOverlay = useDismissOverlay();
 
   // Resolved during setup for the same reason. Both are read inside the
   // handler, at the moment of the press.
   const slim = useSlimMode();
   const { lifecycle } = useClientLifecycle();
+
+  // The call store, resolved during setup like the two above. The handler
+  // asks it whether this device is in a call, and on which channel. The
+  // ring (`incomingCall`) is a module signal and needs no context.
+  const voice = useVoice();
 
   onMount(() => {
     if (
@@ -112,7 +128,44 @@ export function AndroidBackWorker() {
         return;
       }
 
-      // 2. The dismissal ladder: floating elements (context menus, tooltips,
+      // 2. A call ringing us, as the popup or the full-screen ring. It comes
+      //    after fullscreen because the fullscreen top layer hides it: that
+      //    press leaves fullscreen and shows the ring. The ring is answered
+      //    or declined with its own buttons, and anything else Back could do
+      //    here happens behind it, where the user cannot see it: close a
+      //    dialog or the side column, drop an edit, slide the drawer, change
+      //    the route, or close the app with a call still ringing. So the
+      //    press is consumed and nothing happens.
+      if (incomingCall()) return;
+
+      // 3. Menus, popovers and dialogs, Settings included: the first rungs
+      //    of the ladder below, and nothing else (`dismissOverlay`). They
+      //    are drawn over the Slim view call screen, so Back closes them
+      //    first, one per press, before it minimises the screen.
+      if (dismissOverlay()) return;
+
+      // 4. The Slim view call screen. It covers the whole app, so every
+      //    step below would act on something behind it (close the side
+      //    column, drop an edit, slide the drawer, change the route, close
+      //    the app) where the user cannot see it happen. Back minimises the
+      //    call screen to the docked call card and the press ends there. The
+      //    call itself is not touched.
+      //
+      //    These are the four facts the call screen is shown by, read at the
+      //    moment of the press.
+      if (
+        slimCallShown({
+          slim: slim(),
+          inCall: !!voice.channel(),
+          channelType: voice.channel()?.type,
+          minimised: slimCallMinimised(),
+        })
+      ) {
+        setSlimCallMinimised(true);
+        return;
+      }
+
+      // 5. The dismissal ladder: floating elements (context menus, tooltips,
       //    the user card), then modals, then the channel side column, then an
       //    in-progress edit or composition element — `DISMISSAL_PRIORITY`
       //    order, one layer per press. `true` means a handler was bound and
@@ -128,9 +181,13 @@ export function AndroidBackWorker() {
       //    that one modal, and the press stops here. That is the intended
       //    outcome — an irreversible in-flight flow is neither dismissed nor
       //    allowed to fall through to exiting the app.
+      //
+      //    Its first rungs already ran in step 3; here they find nothing
+      //    bound, and the rest of the ladder runs only with no Slim view
+      //    call screen up.
       if (dismissTopmost()) return;
 
-      // 3. The phone slide drawer, which is NOT in the Escape ladder — Escape
+      // 6. The phone slide drawer, which is NOT in the Escape ladder — Escape
       //    does not close it today.
       //
       //    Read the state names carefully: the drawer is constructed over the
@@ -166,14 +223,14 @@ export function AndroidBackWorker() {
         return;
       }
 
-      // 4. Ordinary in-app navigation, while this session still has somewhere
+      // 7. Ordinary in-app navigation, while this session still has somewhere
       //    to go back to.
       if (historyDepth() > baseDepth) {
         history.back();
         return;
       }
 
-      // 5. Nothing left to dismiss and nowhere to navigate: ask native to
+      // 8. Nothing left to dismiss and nowhere to navigate: ask native to
       //    leave. No confirmation prompt — deliberately, that would need a new
       //    user-facing string.
       void SlogaBackNative?.exitApp().catch(() => undefined);

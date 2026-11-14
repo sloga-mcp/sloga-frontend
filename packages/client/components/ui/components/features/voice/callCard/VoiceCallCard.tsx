@@ -14,13 +14,22 @@ import {
 } from "solid-js";
 import { Portal } from "solid-js/web";
 
+import { useLingui } from "@lingui-solid/solid/macro";
 import { Channel } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
+import { useSlimMode } from "@revolt/client/useSlimMode";
 import { useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
+import { Button } from "@revolt/ui/components/design";
 import { SlideState } from "@revolt/ui/components/navigation/SlideDrawer";
+import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { slimCallOwnsTiles, slimCallShown } from "../slimCall/slimCallPolicy";
+import {
+  setSlimCallMinimised,
+  slimCallMinimised,
+} from "../slimCall/slimCallView";
 import { VoiceCallCardActiveRoom } from "./VoiceCallCardActiveRoom";
 import { VoiceCallCardPiP } from "./VoiceCallCardPiP";
 import { VoiceCallCardPreview } from "./VoiceCallCardPreview";
@@ -70,6 +79,8 @@ const callCardContext = createContext<{
 export function VoiceCallCardContext(props: { children: JSX.Element }) {
   const voice = useVoice();
   const state = useState();
+  // Whether Slim view is active on this device; read by `slimOwnsTiles`.
+  const slim = useSlimMode();
 
   const [mount, setMount] = createSignal<Mount>();
   // `equals: false`: every measurement re-derives the dock from live values,
@@ -163,19 +174,51 @@ export function VoiceCallCardContext(props: { children: JSX.Element }) {
   );
 
   /**
+   * Whether this is a call in Slim view, which never falls back to the PiP.
+   * The PiP mounts neither the encryption chip nor the call's banners (rule
+   * C11), and has no way back to the call screen; the full card has both
+   * (its "Open call screen" row). So away from the call's page a Slim call
+   * keeps the full card, in a float sized for a phone (see `Float`).
+   */
+  const slimNoPiP = () => slim() && !!voice.channel();
+
+  /**
    * The channel the FULL card is drawn for, or nothing (then the PiP while in
    * a call). That is the dock's channel when docked; and while this user is
-   * CONTROLLING someone's screen it is also the call's channel when not
-   * docked, because PiP is blocked for a controller (see the Switch below).
+   * CONTROLLING someone's screen, or in Slim view (`slimNoPiP`), it is also
+   * the call's channel when not docked, because PiP is blocked for both (see
+   * the Switch below).
    *
-   * One value for both, so a controller moving between the call's page and
-   * anywhere else stays in ONE `<Match>`: only the Float's styles change. Two
-   * Matches remounted the whole card on every such move — the active room,
-   * every video tile, and the remote-control capture with it.
+   * One value for all of them, so moving between the call's page and anywhere
+   * else stays in ONE `<Match>`: only the Float's styles change. Two Matches
+   * remounted the whole card on every such move — the active room, every
+   * video tile, and the remote-control capture with it.
    */
   const fullCard = () =>
     docked()?.channel ??
-    (voice.remoteControl.controlling() ? voice.channel() : undefined);
+    (voice.remoteControl.controlling() || slimNoPiP()
+      ? voice.channel()
+      : undefined);
+
+  /**
+   * Whether the Slim view call screen is up. It draws the participant tiles
+   * itself, so while this is true the float below mounts neither the card nor
+   * the PiP and there is one set of tiles on the page, not two. Minimising
+   * the call screen turns this false and the card or the PiP is mounted
+   * again. It is always false with Slim view off.
+   *
+   * The four facts are read the way the call screen reads them for
+   * `slimCallShown`. If the two ever differ, both surfaces or neither would
+   * draw the call.
+   */
+  const slimOwnsTiles = createMemo(() =>
+    slimCallOwnsTiles({
+      slim: slim(),
+      inCall: !!voice.channel(),
+      channelType: voice.channel()?.type,
+      minimised: slimCallMinimised(),
+    }),
+  );
 
   const mode = (): Mode | undefined =>
     docked()
@@ -340,17 +383,23 @@ export function VoiceCallCardContext(props: { children: JSX.Element }) {
           ref={ref}
           mode={mode()}
           controlling={!!voice.remoteControl.controlling()}
+          slim={slimNoPiP()}
           onPointerDown={mouseDown}
         >
           <Switch>
+            {/* First, so it wins over both branches below: while the Slim
+                view call screen is up it is the one surface that draws the
+                call, and neither the card nor the PiP is mounted here. */}
+            <Match when={slimOwnsTiles()}>{null}</Match>
             {/* Non-keyed on purpose: Solid remounts a Match's children only
                 when WHICH Match is chosen changes, so a new channel (or the
                 same one, docked vs away) reaches the mounted card through
                 the accessor. A controller who navigated away keeps the full
                 card here, in the larger float (see `Float`'s `controlling`
-                variant); anyone else away from the call's page gets the PiP
-                below, never a docked card drawn over a page that is not its
-                channel. */}
+                variant), and so does a Slim view call, in a float sized for
+                a phone (`slimNoPiP`, `Float`'s `slim` variant); anyone else
+                away from the call's page gets the PiP below, never a docked
+                card drawn over a page that is not its channel. */}
             <Match when={fullCard()}>
               {(channel) => <VoiceCallCard channel={channel()} />}
             </Match>
@@ -408,11 +457,16 @@ const Float = styled("div", {
     },
     /** Whether this user is currently controlling someone's screen. */
     controlling: { true: {}, false: {} },
+    /** Whether this is a Slim view call (`slimNoPiP`): never the PiP. */
+    slim: { true: {}, false: {} },
   },
+  // The three float sizes are exclusive: `slim` is false in the first two,
+  // so no two of them ever apply at once and none depends on CSS order.
   compoundVariants: [
     {
       mode: ["floating", "moving"],
       controlling: false,
+      slim: false,
       css: {
         "--flt-w": "300px",
         "--flt-h": "170px",
@@ -429,9 +483,24 @@ const Float = styled("div", {
       // roughly the docked height. Matches the docked 40vh with a 16:10 area.
       mode: ["floating", "moving"],
       controlling: true,
+      slim: false,
       css: {
         "--flt-w": "640px",
         "--flt-h": "400px",
+        width: "var(--flt-w)",
+        height: "var(--flt-h)",
+      },
+    },
+    {
+      // A Slim view call away from its page keeps the full card (with the
+      // chip, the banners and "Open call screen"): the full width of the
+      // phone less the 16px margin each side, at the docked card's height.
+      // This includes a controller in Slim view, where 640x400 would not fit.
+      mode: ["floating", "moving"],
+      slim: true,
+      css: {
+        "--flt-w": "calc(100vw - 32px)",
+        "--flt-h": "var(--call-card-height, 40vh)",
         width: "var(--flt-w)",
         height: "var(--flt-h)",
       },
@@ -458,7 +527,35 @@ export function VoiceChannelCallCardMount(props: { channel: Channel }) {
 function VoiceCallCard(props: { channel: Channel }) {
   const voice = useVoice();
   const state = useState();
+  const { t } = useLingui();
+  // Whether Slim view is active on this device; read by `offerCallScreen`.
+  const slim = useSlimMode();
   const inCall = () => !!voice.channel();
+
+  /**
+   * Whether this card offers the way back to the Slim view call screen. It
+   * does exactly when the user minimised that screen and it would otherwise
+   * be up: `slimCallShown` asked with the call screen's own facts, the
+   * minimised flag aside. So it is always false with Slim view off, and for
+   * a server call. Pressing it clears the flag; the call screen comes back
+   * and, through `slimOwnsTiles`, this card unmounts.
+   *
+   * Not in fullscreen or theater mode, which keep only their own way out
+   * (the resize handle follows the same rule).
+   */
+  const offerCallScreen = () =>
+    slimCallMinimised() &&
+    voice.channel()?.id === props.channel.id &&
+    !voice.fullscreen() &&
+    !voice.immersive() &&
+    slimCallShown({
+      slim: slim(),
+      inCall: inCall(),
+      channelType: voice.channel()?.type,
+      minimised: false,
+    });
+  // One label for the visible text and the accessible name.
+  const openLabel = () => t`Open call screen`;
 
   let viewRef: HTMLDivElement | undefined;
 
@@ -541,8 +638,23 @@ function VoiceCallCard(props: { channel: Channel }) {
         <Card
           ref={viewRef}
           active={inCall()}
+          stacked={offerCallScreen()}
           style={resizing() ? { transition: "none" } : undefined}
         >
+          {/* Above the call, in the normal flow, so it never covers the
+              call's own notices (they sit at the top of the call below). */}
+          <Show when={offerCallScreen()}>
+            <OpenCallScreenRow>
+              <Button
+                size="md"
+                variant="tonal"
+                aria-label={openLabel()}
+                onPress={() => setSlimCallMinimised(false)}
+              >
+                <Symbol>keyboard_arrow_up</Symbol> {openLabel()}
+              </Button>
+            </OpenCallScreenRow>
+          </Show>
           <Show
             when={inCall()}
             fallback={<VoiceCallCardPreview channel={props.channel} />}
@@ -603,9 +715,35 @@ const Card = styled("div", {
         cursor: "pointer",
       },
     },
+    /**
+     * Whether the Slim view "Open call screen" row sits above the call. The
+     * call then takes what is left of the card's height (its view has
+     * `min-height: 0`) instead of being pushed out of the bottom.
+     */
+    stacked: {
+      true: {
+        display: "flex",
+        flexDirection: "column",
+      },
+      false: {},
+    },
   },
   defaultVariants: {
     active: false,
+    stacked: false,
+  },
+});
+
+/**
+ * The row that holds "Open call screen" in Slim view. The button is the
+ * medium size, 56px tall, so its touch target clears 44px on its own.
+ */
+const OpenCallScreenRow = styled("div", {
+  base: {
+    flexShrink: 0,
+    display: "flex",
+    justifyContent: "center",
+    padding: "var(--gap-md) var(--gap-md) 0",
   },
 });
 

@@ -2,13 +2,24 @@ import { useLingui } from "@lingui-solid/solid/macro";
 
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Accessor, createSignal } from "solid-js";
-import { Client } from "stoat.js";
+import {
+  type Channel,
+  type HydratedChannel,
+  type HydratedUser,
+  type User,
+  Client,
+} from "stoat.js";
 
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import { useSnackbar } from "@revolt/ui";
 
-import { useClient } from ".";
+import { useClient, useClientLifecycle } from ".";
+import {
+  type CallContacts,
+  buildCallContacts,
+  callContactsKey,
+} from "./callContacts.ts";
 import {
   notificationPermissionGranted,
   notificationsSupported,
@@ -16,12 +27,20 @@ import {
   tauriNotification,
 } from "./nativeNotifications";
 import {
+  type PushPrefs,
   PushProvider,
   UnifiedPushSubscription,
   choosePushProvider,
   planUnifiedPushRegistration,
+  pushPrefs,
   unifiedPushSubscribeBody,
+  withPushPrefs,
 } from "./pushPolicy.ts";
+import {
+  SLIM_DEV_STORAGE_KEY,
+  resolveSlim,
+  slimDevOverrideFrom,
+} from "./slimMode.ts";
 import {
   compareSubscriptionKey,
   decodeVapidKey,
@@ -34,8 +53,13 @@ export function useNotifications() {
   const { settings } = useState();
   const { t } = useLingui();
   const getClient = useClient();
+  const { lifecycle } = useClientLifecycle();
   const snackbar = useSnackbar();
   const { showError } = useModals();
+
+  // The functions outside this hook cannot reach the providers, so every
+  // caller hands them what they read. See `bindApp`.
+  bindApp({ settings, client: getClient, lifecycle });
 
   const supportsNotification = notificationsSupported();
 
@@ -285,11 +309,11 @@ export function useNotifications() {
       const { pushToken } = unifiedPushBridges();
       // First, as on enable: a new endpoint that arrives after the timeout
       // below is still posted natively
-      await pushToken.saveSubscription(pushCredentials(client));
+      await saveNativeSubscription(pushToken, client);
       const body: UnifiedPushSubscription = unifiedPushSubscribeBody(
         await registerUnifiedPush(vapid),
       );
-      await client.api.post("/push/subscribe", body);
+      await postSubscription(client, body);
     } catch (e) {
       setUnifiedPushRegistered(false);
       // The distributor went away since status() looked: same as having none
@@ -313,9 +337,9 @@ export function useNotifications() {
   ): Promise<boolean> => {
     try {
       const { pushToken } = unifiedPushBridges();
-      await pushToken.saveSubscription(pushCredentials(client));
+      await saveNativeSubscription(pushToken, client);
       const body: UnifiedPushSubscription = unifiedPushSubscribeBody(endpoint);
-      await client.api.post("/push/subscribe", body);
+      await postSubscription(client, body);
     } catch (e) {
       setUnifiedPushRegistered(false);
       console.error("UnifiedPush subscription re-post failed", e);
@@ -416,6 +440,21 @@ const PushTokenNative =
         }>;
         openFullScreenIntentSettings(): Promise<void>;
         requestNotificationPermission(): Promise<{ granted: boolean }>;
+        /**
+         * Store the two push preferences, so a subscription the phone posts
+         * by itself carries them. `clearSubscription` wipes them again.
+         */
+        setPushPrefs(opts: {
+          chatsOnly: boolean;
+          noRing: boolean;
+        }): Promise<void>;
+        /**
+         * Replace the names and photos the ring notification can show. What
+         * is stored is exactly this list: anything not in it is forgotten.
+         */
+        setCallContacts(list: CallContacts): Promise<void>;
+        /** Forget every stored name and photo. */
+        clearCallContacts(): Promise<void>;
       }>("PushToken")
     : undefined;
 
@@ -567,6 +606,373 @@ function pushCredentials(client: Client) {
 }
 
 /**
+ * What the code outside `useNotifications` reads from the app: the settings
+ * store, the current client and the client lifecycle.
+ *
+ * All three come from context providers, so nothing at module scope can
+ * reach them. `useNotifications` hands them over each time a component calls
+ * it. The notifications worker calls it when a signed-in session mounts,
+ * which is before anything here posts a subscription.
+ */
+type AppHandles = {
+  settings: ReturnType<typeof useState>["settings"];
+  client: () => Client | undefined;
+  lifecycle: ReturnType<typeof useClientLifecycle>["lifecycle"];
+};
+
+let app: AppHandles | undefined;
+
+/**
+ * Whether `app` has been handed over yet. A signal, so an effect that called
+ * `resyncPushPrefs` before there was anything to read runs again once there
+ * is.
+ */
+const [appBound, setAppBound] = createSignal(false);
+
+/**
+ * Keep the handles `useNotifications` was given and start what depends on
+ * them. Calling it again for the same app changes nothing: the lifecycle
+ * keeps one entry for a hook it already has, and a client that is already
+ * watched is left alone.
+ */
+function bindApp(handles: AppHandles) {
+  app = handles;
+  setAppBound(true);
+  handles.lifecycle.onSignOut(endSession);
+  watchCallContacts(handles.client());
+}
+
+/**
+ * Runs when the session ends, while its client is still the current one.
+ * The subscription that was posted belonged to that session, and so did the
+ * names on the phone.
+ */
+function endSession() {
+  forgetSubscription();
+  dropCallContacts();
+}
+
+/** The development override for Slim view, once it has been worked out. */
+let slimDevOverride: boolean | undefined;
+
+/**
+ * Whether the development override for Slim view is on. Always false outside
+ * a development build. `useSlimMode.ts` owns the latch in `sessionStorage`
+ * and writes it when the page loads. This reads what was stored, by the same
+ * rule, the first time a preference is needed.
+ */
+function readSlimDevOverride(): boolean {
+  if (!import.meta.env.DEV) return false;
+  if (slimDevOverride === undefined) {
+    let stored: string | null = null;
+    try {
+      stored = sessionStorage.getItem(SLIM_DEV_STORAGE_KEY);
+    } catch {
+      // Storage is blocked: the URL decides
+    }
+    slimDevOverride = slimDevOverrideFrom(true, location.search, stored);
+  }
+  return slimDevOverride;
+}
+
+/**
+ * The two preferences for a subscription of `client`'s session, as they are
+ * right now.
+ *
+ * Slim view here is the answer `resolveSlim` gives, the one the layout uses,
+ * and not the stored setting: a staff account is never in Slim view. The
+ * facts are gathered the way `useSlimMode.ts` gathers them. That file's
+ * accessor is a memo owned by the component that asked for it, so code that
+ * outlives components cannot hold on to it.
+ *
+ * Before `useNotifications` has run there is nothing to read. The answer is
+ * then no preference at all, which the server reads as its defaults.
+ */
+function currentPushPrefs(client: Client | undefined): PushPrefs {
+  if (!app) return {};
+  const user = client?.user;
+  return pushPrefs({
+    slim: resolveSlim({
+      setting: app.settings.getValue("appearance:slim_view") === true,
+      nativeShell: Capacitor.isNativePlatform(),
+      // No build locks Slim view on yet, as in `useSlimMode.ts`
+      locked: false,
+      staff: !!user?.privileged,
+      devOverride: readSlimDevOverride(),
+    }),
+    userLoaded: !!user,
+    ringCalls: app.settings.getValue("notifications:ring_calls") !== false,
+  });
+}
+
+/** A short string that is the same for the same preferences. */
+function pushPrefsKey(prefs: PushPrefs): string {
+  return `${prefs.chats_only === true}:${prefs.no_ring === true}`;
+}
+
+/**
+ * Android: store the two preferences natively, so a subscription the phone
+ * posts by itself (a rotated FCM token, a new UnifiedPush endpoint) carries
+ * them too. Sent again after every `saveSubscription` and every post,
+ * because clearing the stored subscription wipes them. Never throws: an
+ * older app without the method still has to subscribe.
+ */
+async function saveNativePushPrefs(prefs: PushPrefs): Promise<void> {
+  if (!PushTokenNative) return;
+  try {
+    await PushTokenNative.setPushPrefs({
+      chatsOnly: prefs.chats_only === true,
+      noRing: prefs.no_ring === true,
+    });
+  } catch (e) {
+    console.error("Storing the push preferences natively failed", e);
+  }
+}
+
+/**
+ * Hand the native side what it needs to post a subscription on its own: the
+ * session's credentials, and right after them the two preferences.
+ */
+async function saveNativeSubscription(
+  pushToken: NonNullable<typeof PushTokenNative>,
+  client: Client,
+): Promise<void> {
+  await pushToken.saveSubscription(pushCredentials(client));
+  await saveNativePushPrefs(currentPushPrefs(client));
+}
+
+/** The fields every `/push/subscribe` body has, whatever the transport. */
+type SubscribeBody = { endpoint: string; p256dh: string; auth: string };
+
+/**
+ * The subscription this page load last posted: the session it was posted
+ * for, its body, and the preferences that body carried. Held in memory only,
+ * because the body is the device's push token or its endpoint keys.
+ *
+ * `resyncPushPrefs` goes by it. A device that has posted nothing has nothing
+ * to post again, and a changed preference never makes a transport hand out a
+ * new token.
+ */
+type PostedSubscription = {
+  client: Client;
+  body: SubscribeBody;
+  prefs: string;
+};
+
+let posted: PostedSubscription | undefined;
+
+/** Counts teardowns, so a post in flight during one is not remembered. */
+let subscriptionEpoch = 0;
+
+/** This device no longer has a subscription (push turned off, or sign-out). */
+function forgetSubscription() {
+  posted = undefined;
+  subscriptionEpoch += 1;
+}
+
+/**
+ * Counts the subscription posts started, so a teardown can tell whether a
+ * new one was started after it (see `killServiceWorkerSubscription`).
+ */
+let postsStarted = 0;
+
+/**
+ * The one place that posts a subscription. The body always carries the two
+ * preferences as they are when it is sent: `/push/subscribe` replaces the
+ * stored subscription, and with it the preferences the last one came with.
+ */
+async function postSubscription<T extends SubscribeBody>(
+  client: Client,
+  body: T,
+): Promise<void> {
+  postsStarted += 1;
+  const epoch = subscriptionEpoch;
+  const prefs = currentPushPrefs(client);
+  await client.api.post("/push/subscribe", withPushPrefs(body, prefs));
+  // Torn down while the request was in flight: there is nothing to keep
+  if (epoch !== subscriptionEpoch) return;
+
+  const sent = pushPrefsKey(prefs);
+  posted = { client, body, prefs: sent };
+  await saveNativePushPrefs(prefs);
+  // A preference that changed during the request was not in that body, and
+  // a re-sync asked for in the meantime may have found nothing posted yet
+  if (pushPrefsKey(currentPushPrefs(client)) !== sent) void resyncPushPrefs();
+}
+
+/** The `/push/subscribe` body for a browser push subscription. */
+function webPushSubscribeBody(subscription: PushSubscription): SubscribeBody {
+  return {
+    endpoint: subscription.endpoint,
+    p256dh: arrayBufferToBase64URL(
+      subscription.getKey("p256dh") || new ArrayBuffer(),
+    ),
+    auth: arrayBufferToBase64URL(
+      subscription.getKey("auth") || new ArrayBuffer(),
+    ),
+  };
+}
+
+/** Whether another pass was asked for while one is running. */
+let prefsResyncWanted = false;
+
+/** The pass that is running, if any. It never rejects. */
+let prefsResyncRun: Promise<void> | undefined;
+
+/**
+ * The longest sign-out and push-off wait for a re-sync that is already
+ * running before they unsubscribe.
+ */
+const RESYNC_TEARDOWN_WAIT_MS = 2_000;
+
+/**
+ * Wait for `run` for at most `ms`. True when it settled in time. `run` never
+ * rejects.
+ */
+async function settlesWithin(run: Promise<void>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  try {
+    return await Promise.race([run.then(() => true as const), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Post this device's existing subscription again with the two preferences as
+ * they are now, and on Android store them natively as well.
+ *
+ * Nothing new is asked of any transport: no permission prompt, no token and
+ * no endpoint registration. It does nothing when this page load has posted
+ * no subscription for the current session, and nothing when the subscription
+ * already carries these preferences, so calling it more often than needed
+ * costs nothing. It never throws and never rejects.
+ *
+ * Everything the preferences depend on is read before the first await: Slim
+ * view, the ring setting and the signed-in user. The user is not a signal,
+ * so the lifecycle state and the client's `ready` are read for it, as in
+ * `useSlimMode.ts`. An effect that calls this therefore runs again when any
+ * of them changes.
+ *
+ * Calls made while a pass is running are folded into one more pass after it,
+ * so two posts with different preferences never race to the server.
+ */
+export function resyncPushPrefs(): Promise<void> {
+  try {
+    if (appBound() && app) {
+      app.lifecycle.state();
+      const client = app.client();
+      client?.ready();
+      currentPushPrefs(client);
+    }
+  } catch (e) {
+    console.error("Reading the push preferences failed", e);
+  }
+
+  prefsResyncWanted = true;
+  prefsResyncRun ??= runPrefsResync();
+  return prefsResyncRun;
+}
+
+/** Run passes until no call has asked for another one. */
+async function runPrefsResync(): Promise<void> {
+  try {
+    while (prefsResyncWanted) {
+      prefsResyncWanted = false;
+      try {
+        await repostWithCurrentPrefs();
+      } catch (e) {
+        console.error("Push preference re-sync failed", e);
+      }
+    }
+  } finally {
+    prefsResyncRun = undefined;
+  }
+}
+
+/** One pass of `resyncPushPrefs`. */
+async function repostWithCurrentPrefs(): Promise<void> {
+  const target = posted;
+  if (!target || app?.client() !== target.client) return;
+  const prefs = currentPushPrefs(target.client);
+  if (pushPrefsKey(prefs) === target.prefs) return;
+
+  // Native first, so what the phone posts by itself carries the new choice
+  // even if the request below fails
+  await saveNativePushPrefs(prefs);
+  if (posted !== target) return;
+
+  if (isWebPushPlatform()) {
+    await repostWebPush(target);
+  } else if (pushProvider() === "unifiedpush") {
+    // The registration native has stored is the current one: a new endpoint
+    // can arrive, and be posted natively, without this page hearing of it
+    const status = await unifiedPushStatus();
+    if (
+      posted !== target ||
+      status === null ||
+      status.acked === null ||
+      status.endpoint === null ||
+      status.p256dh === null ||
+      status.auth === null
+    ) {
+      return;
+    }
+    await postSubscription(
+      target.client,
+      unifiedPushSubscribeBody({
+        endpoint: status.endpoint,
+        p256dh: status.p256dh,
+        auth: status.auth,
+      }),
+    );
+  } else {
+    // Everything else, which is FCM and APNs: the token cannot be read again
+    // without a permission prompt or a new registration, so the body posted
+    // earlier is the subscription
+    await postSubscription(target.client, target.body);
+  }
+}
+
+/**
+ * Web: post the browser's current subscription again. It is read under the
+ * lock setup and teardown use, so this never posts a subscription another
+ * tab is replacing, and never posts after push was turned off in this
+ * browser. Nothing is subscribed here: with no subscription in the browser
+ * it stops.
+ */
+async function repostWebPush(target: PostedSubscription) {
+  const registration = await navigator.serviceWorker.getRegistration(
+    import.meta.env.BASE_URL ?? undefined,
+  );
+  if (!registration) return;
+
+  const repost = async () => {
+    if (posted !== target) return;
+    const existing = webPushTurnedOff()
+      ? null
+      : await registration.pushManager.getSubscription();
+    if (posted !== target) return;
+    if (!existing) {
+      // Another tab turned push off, or the browser dropped the
+      // subscription. Either way this device has none to post again.
+      posted = undefined;
+      return;
+    }
+    await postSubscription(target.client, webPushSubscribeBody(existing));
+  };
+
+  if ("locks" in navigator) {
+    await navigator.locks.request("sloga-webpush", repost);
+  } else {
+    await repost();
+  }
+}
+
+/**
  * Enable UnifiedPush: ask for notification permission, let the user pick a
  * distributor if there is a choice, register with it and hand the endpoint
  * to the server. Throws NoDistributorError when none is installed.
@@ -581,7 +987,7 @@ async function setUpUnifiedPushSubscription(client: Client) {
     try {
       // First, so a new endpoint that reaches SlogaPushService after the
       // timeout below is still posted natively
-      await pushToken.saveSubscription(pushCredentials(client));
+      await saveNativeSubscription(pushToken, client);
       await pushToken.requestNotificationPermission();
       try {
         await unifiedPush.pickDistributor();
@@ -594,9 +1000,9 @@ async function setUpUnifiedPushSubscription(client: Client) {
       const body: UnifiedPushSubscription = unifiedPushSubscribeBody(
         await registerUnifiedPush(vapid),
       );
-      await client.api.post("/push/subscribe", body);
+      await postSubscription(client, body);
       // As the FCM branch does (repeats the first call)
-      await pushToken.saveSubscription(pushCredentials(client));
+      await saveNativeSubscription(pushToken, client);
     } catch (e) {
       setUnifiedPushRegistered(false);
       throw e;
@@ -751,7 +1157,7 @@ async function setUpServiceWorkerSubscription(
   // Ignores gate, which is web only.
   if (IS_IOS_NATIVE) {
     const token = await registerForApns();
-    await client.api.post("/push/subscribe", {
+    await postSubscription(client, {
       endpoint: "apn",
       p256dh: "",
       auth: token,
@@ -771,7 +1177,7 @@ async function setUpServiceWorkerSubscription(
   // the FCM device token as the push subscription instead.
   if (PushTokenNative) {
     const { token } = await PushTokenNative.getToken();
-    await client.api.post("/push/subscribe", {
+    await postSubscription(client, {
       endpoint: "fcm",
       p256dh: "",
       auth: token,
@@ -780,10 +1186,7 @@ async function setUpServiceWorkerSubscription(
     // can re-subscribe through PushResubscriber if FCM rotates the token
     // while the app is killed (onNewToken), instead of waiting for the next
     // app launch.
-    await PushTokenNative.saveSubscription({
-      apiUrl: client.options.baseURL,
-      sessionToken: client.authenticationHeader[1],
-    });
+    await saveNativeSubscription(PushTokenNative, client);
     return;
   }
 
@@ -797,7 +1200,9 @@ async function setUpServiceWorkerSubscription(
   if (!registration) {
     // Register explicitly — the automatic vite-plugin-pwa registration relies
     // on an HMR event that doesn't always fire (e.g. through a tunnel).
-    const swUrl = import.meta.env.DEV ? "/dev-sw.js?dev-sw" : "/serviceWorker.js";
+    const swUrl = import.meta.env.DEV
+      ? "/dev-sw.js?dev-sw"
+      : "/serviceWorker.js";
     registration = await navigator.serviceWorker.register(swUrl, {
       scope: import.meta.env.BASE_URL ?? "/",
       type: "module",
@@ -854,15 +1259,7 @@ async function setUpServiceWorkerSubscription(
     }
 
     // Always re-posted: /push/subscribe overwrites, so this is idempotent
-    await client.api.post("/push/subscribe", {
-      endpoint: subscription.endpoint,
-      p256dh: arrayBufferToBase64URL(
-        subscription.getKey("p256dh") || new ArrayBuffer(),
-      ),
-      auth: arrayBufferToBase64URL(
-        subscription.getKey("auth") || new ArrayBuffer(),
-      ),
-    });
+    await postSubscription(client, webPushSubscribeBody(subscription));
 
     // Only a successful enable lifts a turn-off (see WEB_PUSH_OFF)
     if (!gate) setWebPushTurnedOff(false);
@@ -949,6 +1346,20 @@ export async function killServiceWorkerSubscription(
   client: Client,
   loggingOut?: boolean,
 ) {
+  // The subscription is going, so there is nothing left to post again. A
+  // preference re-post already on its way has to land before the unsubscribe
+  // below, or it would subscribe this session again right after it. It gets
+  // RESYNC_TEARDOWN_WAIT_MS: a request that hangs must not hold up sign-out
+  // or push-off. One still out by then is undone once it settles.
+  forgetSubscription();
+  const started = postsStarted;
+  const resync = prefsResyncRun;
+  if (resync && !(await settlesWithin(resync, RESYNC_TEARDOWN_WAIT_MS))) {
+    void resync.then(() =>
+      unsubscribeAfterLateRepost(client, started, loggingOut),
+    );
+  }
+
   if (IS_IOS_NATIVE) {
     const { PushNotifications } = await import("@capacitor/push-notifications");
     // Best-effort: a failed unregister must not strand the caller in a state
@@ -998,4 +1409,270 @@ export async function killServiceWorkerSubscription(
   } else {
     await unsubscribe();
   }
+}
+
+/**
+ * Sign-out or push-off stopped waiting for a re-sync whose request was still
+ * out. That request may have reached the server after the unsubscribe and
+ * subscribed this session again, so once the re-sync has settled the
+ * unsubscribe is sent again.
+ *
+ * Not when a post was started after the teardown (`started` is the count it
+ * saw): push was turned back on, and that subscription is wanted. Not in a
+ * browser with the lock manager either: there the re-post holds the lock the
+ * unsubscribe waits for, so it always lands first.
+ */
+async function unsubscribeAfterLateRepost(
+  client: Client,
+  started: number,
+  loggingOut?: boolean,
+) {
+  if (loggingOut || postsStarted !== started) return;
+  if (isWebPushPlatform() && "locks" in navigator) return;
+  try {
+    await client.api.post("/push/unsubscribe");
+  } catch (e) {
+    console.error("Unsubscribing after a late push re-sync failed", e);
+  }
+}
+
+/**
+ * The shortest time between two looks at the contact list, and how long a
+ * change waits before the list is built again.
+ */
+const CALL_CONTACTS_INTERVAL_MS = 5_000;
+
+/**
+ * Keeps the phone's list of callers current for one client. `sentKey` is the
+ * key of the list native last took. It holds names, so it stays in memory.
+ */
+type CallContactsWatch = {
+  client: Client;
+  timer: number | undefined;
+  /** When the list was last built, on the `performance.now()` clock. */
+  ranAt: number;
+  sentKey: string | undefined;
+  stop(): void;
+};
+
+let contactsWatch: CallContactsWatch | undefined;
+
+/** Whether a channel of this type is one a call can ring in. */
+function isConversation(type: string): type is "DirectMessage" | "Group" {
+  return type === "DirectMessage" || type === "Group";
+}
+
+/**
+ * Android: keep the names and photos the ring notification shows in step
+ * with `client`. The call push carries ids only, so the phone looks the
+ * caller up in a list this hands to it (see `callContacts.ts`).
+ *
+ * The first list goes out once the client reports ready, which is when the
+ * signed-in user and the channels and users from the server have all
+ * arrived, and never before: native replaces its stored list with whatever
+ * it is given, so a half-loaded one would erase good names.
+ *
+ * After that the client's own events decide. A conversation that is new or
+ * deleted, a group whose members or name changed, a friend added or removed
+ * and a changed name or photo each ask for a fresh list. A message, a
+ * presence change and everything else ask for nothing, so on a busy account
+ * each event costs a few comparisons and the list is rebuilt only when it
+ * may really differ.
+ */
+function watchCallContacts(client: Client | undefined) {
+  if (!PushTokenNative || !client) return;
+  if (contactsWatch?.client === client) return;
+  contactsWatch?.stop();
+
+  const onReady = () => requestCallContacts(watch, true);
+  const onChange = () => requestCallContacts(watch, false);
+  const onUserUpdate = (user: User, previous: HydratedUser) => {
+    if (
+      user.displayName !== (previous.displayName ?? previous.username) ||
+      user.avatar?.id !== previous.avatar?.id ||
+      (user.relationship === "Friend") !== (previous.relationship === "Friend")
+    ) {
+      onChange();
+    }
+  };
+  const onChannelCreate = (channel: Channel) => {
+    if (isConversation(channel.type)) onChange();
+  };
+  const onChannelUpdate = (channel: Channel, previous: HydratedChannel) => {
+    if (channel.type === "Group" && channel.name !== previous.name) onChange();
+  };
+  const onChannelDelete = (channel: HydratedChannel) => {
+    if (isConversation(channel.channelType)) onChange();
+  };
+
+  const watch: CallContactsWatch = {
+    client,
+    timer: undefined,
+    ranAt: -Infinity,
+    sentKey: undefined,
+    stop() {
+      window.clearTimeout(watch.timer);
+      watch.timer = undefined;
+      client.off("ready", onReady);
+      client.off("userUpdate", onUserUpdate);
+      client.off("channelCreate", onChannelCreate);
+      client.off("channelUpdate", onChannelUpdate);
+      client.off("channelDelete", onChannelDelete);
+      client.off("channelGroupJoin", onChange);
+      client.off("channelGroupLeave", onChange);
+    },
+  };
+
+  client.on("ready", onReady);
+  client.on("userUpdate", onUserUpdate);
+  client.on("channelCreate", onChannelCreate);
+  client.on("channelUpdate", onChannelUpdate);
+  client.on("channelDelete", onChannelDelete);
+  client.on("channelGroupJoin", onChange);
+  client.on("channelGroupLeave", onChange);
+  contactsWatch = watch;
+
+  // Already loaded when the watch starts: there is no "ready" left to wait for
+  if (client.ready()) onReady();
+}
+
+/**
+ * Ask for the list to be built and sent. `loaded` is for the moment the
+ * client becomes ready, which builds as soon as the interval allows. A
+ * change waits the whole interval first: that folds a burst into one pass,
+ * and gives a person who has only just appeared time to load. Either way no
+ * two passes are closer together than the interval.
+ */
+function requestCallContacts(watch: CallContactsWatch, loaded: boolean) {
+  if (watch.timer !== undefined) {
+    // The pass already waiting will see this change as well
+    if (!loaded) return;
+    window.clearTimeout(watch.timer);
+  }
+
+  const sinceLast = performance.now() - watch.ranAt;
+  const wait = Math.max(
+    loaded ? 0 : CALL_CONTACTS_INTERVAL_MS,
+    CALL_CONTACTS_INTERVAL_MS - sinceLast,
+  );
+  watch.timer = window.setTimeout(() => {
+    watch.timer = undefined;
+    sendCallContacts(watch);
+  }, wait);
+}
+
+/**
+ * Build the list and hand it to native, unless it is the one native already
+ * has. Neither the list nor its key is ever logged or written to web
+ * storage, and a failure is reported without its error for the same reason.
+ */
+function sendCallContacts(watch: CallContactsWatch) {
+  if (contactsWatch !== watch || !PushTokenNative) return;
+  const client = watch.client;
+
+  if (app?.client() !== client) {
+    // The app moved to another client without a sign-out. That client gets
+    // its own watch, and the names on the phone are still the user's.
+    watch.stop();
+    contactsWatch = undefined;
+    return;
+  }
+
+  // Not loaded yet, or loading again after a reconnect: "ready" asks again
+  const self = client.user;
+  if (!self || !client.ready()) return;
+
+  watch.ranAt = performance.now();
+  let list: CallContacts;
+  try {
+    list = collectCallContacts(client, self.id);
+  } catch {
+    console.error("Building the call contact list failed");
+    return;
+  }
+
+  const key = callContactsKey(list);
+  if (key === watch.sentKey) return;
+  watch.sentKey = key;
+  PushTokenNative.setCallContacts(list).catch(() => {
+    // Native did not take it, so the next pass has to send it again
+    if (watch.sentKey === key) watch.sentKey = undefined;
+    console.error("Storing the call contact list natively failed");
+  });
+}
+
+/**
+ * Read what `buildCallContacts` needs out of the client: every direct
+ * message and group chat, open or closed, with its members and the time it
+ * was last active, the user's friends, and a name and photo for each of
+ * those people. Only people in a conversation or on the friends list are
+ * looked up, not everyone the client has cached.
+ */
+function collectCallContacts(client: Client, selfId: string): CallContacts {
+  const users: Record<string, { name: string; avatar?: string } | undefined> =
+    Object.create(null);
+  const note = (id: string) => {
+    if (id === selfId || users[id] !== undefined) return;
+    const user = client.users.get(id);
+    if (!user) return;
+    // Only a photo the person uploaded. Without one native shows the ring
+    // with no photo, which needs no request for a default picture.
+    users[id] = {
+      name: user.displayName,
+      avatar: user.avatar?.createFileURL(),
+    };
+  };
+
+  const conversations: Parameters<
+    typeof buildCallContacts
+  >[0]["conversations"] = [];
+  for (const channel of client.channels.values()) {
+    const type = channel.type;
+    if (!isConversation(type)) continue;
+    const memberIds = [...channel.recipientIds];
+    for (const id of memberIds) note(id);
+    conversations.push({
+      id: channel.id,
+      type,
+      name: type === "Group" ? channel.name : undefined,
+      memberIds,
+      lastActiveAt: lastActiveAt(channel),
+    });
+  }
+
+  const friendIds: string[] = [];
+  for (const user of client.users.values()) {
+    if (user.relationship !== "Friend") continue;
+    friendIds.push(user.id);
+    note(user.id);
+  }
+  // The collection lists users in the order they arrived. Sorted, the same
+  // friends always give the same list.
+  friendIds.sort();
+
+  return buildCallContacts({ selfId, conversations, friendIds, users });
+}
+
+/**
+ * When a conversation was last active: its last message, or its creation.
+ * Both are read out of an id, and one that cannot be read sorts as oldest.
+ */
+function lastActiveAt(channel: Channel): number {
+  try {
+    return channel.updatedAt.getTime();
+  } catch {
+    return Number.NaN;
+  }
+}
+
+/**
+ * Sign-out: stop following the client, forget the key of the last list, and
+ * have native forget every stored name and photo.
+ */
+function dropCallContacts() {
+  contactsWatch?.stop();
+  contactsWatch = undefined;
+  PushTokenNative?.clearCallContacts().catch(() => {
+    console.error("Clearing the call contact list natively failed");
+  });
 }

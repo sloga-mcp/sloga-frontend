@@ -303,7 +303,8 @@ export function ChannelHeader(props: Props) {
         <IconButton
           isDisabled={!!voice.joinBlocked(props.channel)}
           onPress={async () => {
-            if (await voice.connect(props.channel)) await voice.toggleCamera();
+            if (await voice.connect(props.channel, undefined, { video: true }))
+              await voice.toggleCamera();
           }}
           use:floating={{
             tooltip: {

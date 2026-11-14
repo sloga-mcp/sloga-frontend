@@ -7,12 +7,17 @@
 //
 // Also: the docking decision (`dockDecision`) rule by rule, and source pins
 // holding VoiceCallCard.tsx (Solid JSX, which no spec can load) to feeding it
-// the live drawer and call, and to drawing the full card from ONE Match.
+// the live drawer and call, to drawing the full card from ONE Match, and to
+// never leaving a Slim view call to the PiP.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { codeOf, countWired } from "../../../../../rtc/sourcePins.harness.ts";
+import {
+  bodiesAfter,
+  codeOf,
+  countWired,
+} from "../../../../../rtc/sourcePins.harness.ts";
 import {
   MIN_DOCK_WIDTH,
   dockDecision,
@@ -239,13 +244,19 @@ test("the dock memo feeds dockDecision the live mount, drawer and call", () => {
   );
 });
 
-test("the full card is ONE non-keyed Match, for the dock or a controller away", () => {
+// The Slim term (`|| slimNoPiP()`) is part of this pin because a Slim view
+// call away from its page must reach the SAME Match as a docked one: the PiP
+// mounts neither the encryption chip nor the call's banners (rule C11), and a
+// second Match for the Slim case would remount the card on every move.
+test("the full card is ONE non-keyed Match, for the dock, a controller away or a slim call away", () => {
   assert.equal(
     countWired(
       CARD,
       `const fullCard = () =>
         docked()?.channel ??
-        (voice.remoteControl.controlling() ? voice.channel() : undefined);`,
+        (voice.remoteControl.controlling() || slimNoPiP()
+          ? voice.channel()
+          : undefined);`,
     ),
     1,
   );
@@ -263,4 +274,34 @@ test("the full card is ONE non-keyed Match, for the dock or a controller away", 
   // counted.)
   assert.equal(countWired(CARD, "<VoiceCallCard channel="), 1);
   assert.equal(countWired(CARD, "keyed"), 0);
+});
+
+// Rule C11: the PiP carries neither the encryption chip nor the call's
+// banners, so a Slim view call must never fall back to it. `slimNoPiP` is
+// what sends that call to the full card, and to the float sized for a phone.
+test("a slim view call never falls back to the PiP", () => {
+  const context = bodiesAfter(
+    CARD,
+    "export function VoiceCallCardContext(props: { children: JSX.Element }) {",
+  );
+  assert.equal(context.length, 1);
+  // `slim` there is Slim view itself, and `slimNoPiP` is Slim view in a call.
+  assert.equal(countWired(context[0], "const slim = useSlimMode();"), 1);
+  assert.equal(
+    countWired(
+      context[0],
+      "const slimNoPiP = () => slim() && !!voice.channel();",
+    ),
+    1,
+  );
+  // It is a term of the full card's condition, beside the controller's.
+  assert.equal(
+    countWired(
+      context[0],
+      "(voice.remoteControl.controlling() || slimNoPiP() ? voice.channel()",
+    ),
+    1,
+  );
+  // And it picks the float's size.
+  assert.equal(countWired(context[0], "slim={slimNoPiP()}"), 1);
 });

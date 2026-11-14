@@ -20,6 +20,13 @@ export { answerDecision, driveAnswer, isCallEnded } from "./answerPolicy";
 export type { AnswerDecision, AnswerResult } from "./answerPolicy";
 
 export {
+  deviceLocked,
+  ensureDeviceUnlocked,
+  lockedFrom,
+  unlockedFrom,
+} from "./deviceLock";
+
+export {
   ANSWER_ALONE_GRACE_MS,
   CALLER_HANGUP_GRACE_MS,
   answererAloneOutcome,
