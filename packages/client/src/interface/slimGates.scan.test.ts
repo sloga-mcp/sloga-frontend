@@ -43,7 +43,16 @@
 //       card decide on the same four facts, and the card's Slim branch is
 //       its first;
 //  G20  VoiceCallCard.tsx: in Slim view the card never falls back to the
-//       picture-in-picture, which has no chip or banners (C11).
+//       picture-in-picture, which has no chip or banners (C11);
+//  G21  every client source outside the specs: each `dismissIncomingCall(`
+//       call says why the ring stopped (no reason = the Android ring is
+//       read as missed);
+//  G22  every client source outside the specs: no literal
+//       `joinedAsAnswer: false` (an Answer must never be taken for the
+//       caller's own ring).
+//
+// G21 and G22 walk the whole client tree (see `clientSources`), not a list,
+// so a new call site anywhere is covered.
 //
 // WHAT THIS SPEC CANNOT CATCH. It matches text; it never runs the app.
 //  - Wrong polarity inside an expression it does not parse. A few short
@@ -60,9 +69,10 @@
 // Negative control: set `SLIM_GATES_ROOT` to a directory laid out like
 // packages/client that holds a copy of every scanned file (the paths
 // below; a missing copy fails the tests that read it), change one copy, and
-// run the spec. It must fail in the test for that site.
+// run the spec. It must fail in the test for that site. G21 and G22 need a
+// copy of the client's `components/` and `src/` trees there.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -89,6 +99,10 @@ const SETTINGS = "components/state/stores/Settings.ts";
 const VOICE_UI = "components/ui/components/features/voice";
 const SLIM_CALL_SCREEN = `${VOICE_UI}/slimCall/SlimCallScreen.tsx`;
 const CALL_CARD = `${VOICE_UI}/callCard/VoiceCallCard.tsx`;
+const INCOMING_CALL = "components/rtc/incomingCall.ts";
+const INCOMING_OVERLAY = `${VOICE_UI}/IncomingCallOverlay.tsx`;
+const RTC_STATE = "components/rtc/state.tsx";
+const OUTGOING_RING = "components/rtc/outgoingRingPolicy.ts";
 
 /**
  * First path segments of the routes in src/index.tsx that Slim view does
@@ -1618,5 +1632,199 @@ test("G20 VoiceCallCard.tsx: in Slim view the card never falls back to the pictu
     openBrackets(src, openTag(src, pipMatch).end, pip),
     [],
     "<VoiceCallCardPiP /> must be a plain child of its <Match>",
+  );
+});
+
+/**
+ * Directories `clientSources` never enters: dependencies, generated code
+ * (Panda's output, the compiled lingui catalogs), the native projects
+ * (their assets hold a copy of a built bundle), static files and the
+ * Playwright specs. Build output (`dist`, `dist-*`, `dist_*`) and hidden
+ * directories are skipped by name pattern.
+ */
+const NOT_SOURCE_DIRS = new Set([
+  "node_modules",
+  "styled-system",
+  "styled-system-studio",
+  "catalogs",
+  "android",
+  "ios",
+  "public",
+  "e2e",
+  "coverage",
+  "test-results",
+  "playwright-report",
+]);
+
+let sourceList: string[] | undefined;
+
+/**
+ * Every client source file under ROOT, relative to it: `.ts`, `.tsx`, `.js`,
+ * `.jsx`, `.mjs` and `.cjs`, without specs (`*.test.*`, `*.spec.*`) and
+ * declaration files. Symbolic links are not followed.
+ */
+function clientSources(): string[] {
+  if (sourceList) return sourceList;
+  const out: string[] = [];
+  const walk = (rel: string) => {
+    for (const entry of readdirSync(join(ROOT, rel), { withFileTypes: true })) {
+      const path = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (
+          entry.name.startsWith(".") ||
+          NOT_SOURCE_DIRS.has(entry.name) ||
+          /^dist(?:[-_].*)?$/.test(entry.name)
+        )
+          continue;
+        walk(path);
+      } else if (
+        entry.isFile() &&
+        /\.[cm]?[jt]sx?$/.test(entry.name) &&
+        !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(entry.name) &&
+        !entry.name.endsWith(".d.ts")
+      )
+        out.push(path);
+    }
+  };
+  walk("");
+  sourceList = out.sort();
+  return sourceList;
+}
+
+/** Whether the file's raw text, comments included, contains `word`. */
+function rawMentions(rel: string, word: string): boolean {
+  return readFileSync(join(ROOT, rel), "utf8").includes(word);
+}
+
+/** Fails unless the tree walk reached each of `rels`. */
+function scanned(rels: string[]): string[] {
+  const files = clientSources();
+  for (const rel of rels)
+    assert.ok(
+      files.includes(rel),
+      `scanner: ${rel} was not reached, so a clean result would mean nothing`,
+    );
+  return files;
+}
+
+/**
+ * The top-level arguments of an argument list (the text between its
+ * parentheses), trimmed, without the empty one a trailing comma leaves.
+ */
+function topLevelArgs(list: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  let i = 0;
+  while (i < list.length) {
+    const c = list[i];
+    if (c === '"' || c === "'" || c === "`") i = skipString(list, i);
+    else if (c === "(" || c === "[" || c === "{") i = matchClose(list, i) + 1;
+    else if (c === ",") {
+      out.push(list.slice(start, i));
+      start = ++i;
+    } else i++;
+  }
+  out.push(list.slice(start));
+  return out.map((arg) => arg.trim()).filter((arg) => arg !== "");
+}
+
+/**
+ * Whether index `at` is a name inside the braces of an `import { ... }` or
+ * `export { ... }` statement.
+ */
+function inModuleList(src: string, at: number): boolean {
+  const open = src.lastIndexOf("{", at);
+  if (open === -1) return false;
+  if (!/\b(?:import|export)\b[^;{}()]*$/.test(src.slice(0, open))) return false;
+  return at < matchClose(src, open) && !/[{}()]/.test(src.slice(open + 1, at));
+}
+
+test("G21 every client source: each dismissIncomingCall( call says why the ring stopped", () => {
+  const files = scanned([
+    INCOMING_CALL,
+    NOTIFICATIONS,
+    RTC_STATE,
+    INCOMING_OVERLAY,
+  ]);
+
+  // The reason is optional in the signature, and the Android notification
+  // reads a dismiss with none as a ring nobody picked up: it posts "Missed
+  // call". So every caller names one, and the name is never only renamed
+  // or passed on as a bare function, which would hide a call from here.
+  const name = "dismissIncomingCall";
+  const offenders: string[] = [];
+  let declarations = 0;
+  let calls = 0;
+  for (const rel of files) {
+    // Only a file that names it can call it. The others are not parsed:
+    // the comment stripper is not a full tokenizer (a regex literal with a
+    // backtick in it defeats it), and they cannot matter here.
+    if (!rawMentions(rel, name)) continue;
+    const src = load(rel);
+    for (const at of indexes(src, new RegExp(`\\b${name}\\b`))) {
+      const where = `${rel}:${lineOf(src, at)}`;
+      const after = src.slice(at + name.length);
+      if (/\bfunction\s*$/.test(src.slice(0, at))) {
+        declarations++;
+        continue;
+      }
+      const paren = /^\s*\(/.exec(after);
+      if (paren) {
+        calls++;
+        const open = at + name.length + paren[0].length - 1;
+        const close = matchClose(src, open);
+        const args = topLevelArgs(src.slice(open + 1, close));
+        if (
+          args.length < 2 ||
+          /^(?:undefined|null|void\b.*)$/.test(args[1]) ||
+          args.some((arg) => arg.startsWith("..."))
+        )
+          offenders.push(`${where} ${squash(src.slice(at, close + 1))}`);
+        continue;
+      }
+      if (inModuleList(src, at) && !/^\s+as\b/.test(after)) continue;
+      offenders.push(
+        `${where} a use that is not a call: ${squash(after.slice(0, 30))}`,
+      );
+    }
+  }
+  assert.equal(
+    declarations,
+    1,
+    `scanner: expected the one declaration of ${name}, found ${declarations}`,
+  );
+  assert.ok(calls > 0, `scanner: no call of ${name} was found`);
+  assert.deepEqual(
+    offenders,
+    [],
+    `${name} must be called with a reason (answered, declined, timeout, ended or elsewhere)`,
+  );
+});
+
+test("G22 every client source: no literal joinedAsAnswer: false", () => {
+  const files = scanned([NOTIFICATIONS, RTC_STATE, OUTGOING_RING]);
+
+  // `joinedAsAnswer` tells the outgoing ring and the hang-up timers that
+  // this call was joined by pressing Answer. Pinned to false, an answerer
+  // hears the caller's ringtone and is hung up as a caller nobody answered.
+  // The value always comes from the voice store; the ring decision's read
+  // is pinned whole, so the scan provably sees the field.
+  has(
+    load(NOTIFICATIONS),
+    "joinedAsAnswer: voice.joinedAsAnswer()",
+    "the outgoing-ring decision must read the voice store",
+  );
+  const offenders: string[] = [];
+  for (const rel of files) {
+    // As in G21: only a file that names the field is parsed
+    if (!rawMentions(rel, "joinedAsAnswer")) continue;
+    const src = load(rel);
+    for (const at of indexes(src, /\bjoinedAsAnswer["']?\s*:\s*false\b/))
+      offenders.push(`${rel}:${lineOf(src, at)}`);
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "joinedAsAnswer must come from the voice store, never a literal false",
   );
 });

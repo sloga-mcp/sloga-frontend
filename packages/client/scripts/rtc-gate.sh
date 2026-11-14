@@ -248,7 +248,7 @@ EXPECTED=(
   # Every push subscribe goes through one site and carries the preferences.
   "components/client/pushSubscribeSites.scan.test.ts 7 0"
   # The Slim view's gates and the call screen's security components.
-  "src/interface/slimGates.scan.test.ts 21 0"
+  "src/interface/slimGates.scan.test.ts 23 0"
   "components/client/callContacts.test.ts 33 0"
   "components/rtc/moveSurfacePins.test.ts 10 0"
   "components/rtc/idlePolicy.test.ts 54 0"
