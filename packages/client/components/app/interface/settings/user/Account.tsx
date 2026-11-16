@@ -384,20 +384,25 @@ function ManageAccount() {
         onClick={deleteAccount}
         icon={<MdDelete {...iconSize(22)} fill="var(--md-sys-color-error)" />}
         description={
-          <Trans>
-            We'll email you a link. Once you confirm from that email, your
-            account and data are deleted right away. This can't be undone.
-            Changed your mind? Just sign in again before using the link.
-          </Trans>
+          <Switch
+            fallback={
+              <Trans>
+                We'll email you a link. Once you confirm from that email, your
+                account and data are deleted right away. This can't be undone.
+                Changed your mind? Just sign in again before using the link.
+              </Trans>
+            }
+          >
+            <Match when={stillOwnServers()}>
+              <Trans>
+                Transfer or delete the servers you own first, then come back
+                here.
+              </Trans>
+            </Match>
+          </Switch>
         }
       >
-        <Switch fallback={<Trans>Delete Account</Trans>}>
-          <Match when={stillOwnServers()}>
-            <Trans>
-              Transfer or delete the servers you own first, then come back here.
-            </Trans>
-          </Match>
-        </Switch>
+        <Trans>Delete Account</Trans>
       </CategoryButton>
     </CategoryButton.Group>
   );
