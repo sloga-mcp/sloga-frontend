@@ -37,9 +37,17 @@ import { VoiceCallDowngradeBanner } from "../callCard/VoiceCallDowngradeBanner";
 import { VoiceCallRecordingBanner } from "../callCard/VoiceCallRecordingBanner";
 import { VoiceCallRosterPanel } from "../callCard/VoiceCallRosterPanel";
 import { VoiceCallWhisperBanner } from "../callCard/VoiceCallWhisperBanner";
-import { selectCallTiles } from "../callCard/callTileSelection";
+import {
+  hasLiveVideo,
+  isMutedScreenShare,
+  selectCallTiles,
+} from "../callCard/callTileSelection";
 import { participantUserId } from "../participantIdentity";
-import { nextSlimCallMinimised, slimCallShown } from "./slimCallPolicy";
+import {
+  nextSlimCallMinimised,
+  slimCallShown,
+  slimCallVideoLayout,
+} from "./slimCallPolicy";
 import { setSlimCallMinimised, slimCallMinimised } from "./slimCallView";
 
 /**
@@ -155,6 +163,8 @@ const GRID_GAP = 8;
 const GRID_NARROWER_MARGIN = 1.05;
 /** The tile width used until the area has been measured. */
 const TILE_FALLBACK_WIDTH = "min(100%, 250px)";
+/** livekit-client `Track.Source.ScreenShare`, as `callTileSelection` reads it. */
+const SCREEN_SHARE_SOURCE = "screen_share";
 
 /**
  * The participants. Every tile is the call card's `ParticipantTile`, fed by
@@ -166,6 +176,12 @@ const TILE_FALLBACK_WIDTH = "min(100%, 250px)";
  * card in a channel page, this one for a whole phone or tablet screen. Every
  * participant gets a tile; the card's "hide participants without video"
  * setting is not applied, because this screen has no control to undo it.
+ *
+ * A direct call with a camera on is arranged like a phone's video call
+ * instead (`slimCallVideoLayout`): the other side's picture fills the area
+ * edge to edge and this device's own tile sits in the top right corner. A
+ * press on the corner tile swaps the two, through the same focus the large
+ * box uses.
  */
 function Tiles() {
   const voice = useVoice();
@@ -194,6 +210,41 @@ function Tiles() {
   const gridTracks = () => selection().tiles;
 
   const focused = () => !!voice.focusTrack();
+
+  /** Every tile the call has, the focused one included. */
+  const allTracks = createMemo(() =>
+    voice.vidTracks().filter((track) => !isMutedScreenShare(track)),
+  );
+
+  /** The two tiles of the video layout, or `undefined` for the plain one. */
+  const videoLayout = createMemo(() => {
+    const tracks = allTracks();
+    const layout = slimCallVideoLayout({
+      channelType: voice.channel()?.type,
+      tiles: tracks.map((track) => ({
+        own: track.participant.isLocal,
+        liveVideo: hasLiveVideo(track),
+        screenShare: (track.source as string) === SCREEN_SHARE_SOURCE,
+        focused: voice.isFocus(track),
+      })),
+    });
+    return layout
+      ? { main: tracks[layout.main], corner: tracks[layout.corner] }
+      : undefined;
+  });
+
+  // A swap is kept as the focus. When the video layout stops applying (both
+  // cameras off, the other side gone) the focus goes with it, so the plain
+  // grid comes back and not a large box nobody asked for.
+  createEffect(
+    on(
+      () => !!videoLayout(),
+      (applies, applied) => {
+        if (applied && !applies && untrack(voice.focusId)) voice.toggleFocus();
+      },
+      { defer: true },
+    ),
+  );
 
   // The tile in the large box left the call: back to the plain grid. The
   // card does the same while it is the one drawing the tiles.
@@ -244,23 +295,52 @@ function Tiles() {
   };
 
   return (
-    <TileArea ref={setArea} focused={focused()}>
+    <TileArea
+      ref={setArea}
+      focused={focused() || !!videoLayout()}
+      video={!!videoLayout()}
+    >
       <InRoom>
-        <Show when={voice.focusTrack()}>
-          <TrackLoop tracks={() => [voice.focusTrack()!]}>
+        <Show
+          when={videoLayout()}
+          fallback={
+            <>
+              <Show when={voice.focusTrack()}>
+                <TrackLoop tracks={() => [voice.focusTrack()!]}>
+                  {() => (
+                    <FocusBox>
+                      <ParticipantTile focus />
+                    </FocusBox>
+                  )}
+                </TrackLoop>
+              </Show>
+              <Show when={gridTracks().length > 0}>
+                <Grid
+                  strip={focused()}
+                  style={{ "--vc-tile-width": tileWidth() }}
+                >
+                  <TrackLoop tracks={gridTracks}>
+                    {() => <ParticipantTile />}
+                  </TrackLoop>
+                </Grid>
+              </Show>
+            </>
+          }
+        >
+          <TrackLoop tracks={() => [videoLayout()!.main]}>
             {() => (
-              <FocusBox>
-                <ParticipantTile focus />
-              </FocusBox>
+              <VideoMain>
+                <ParticipantTile />
+              </VideoMain>
             )}
           </TrackLoop>
-        </Show>
-        <Show when={gridTracks().length > 0}>
-          <Grid strip={focused()} style={{ "--vc-tile-width": tileWidth() }}>
-            <TrackLoop tracks={gridTracks}>
-              {() => <ParticipantTile />}
-            </TrackLoop>
-          </Grid>
+          <TrackLoop tracks={() => [videoLayout()!.corner]}>
+            {() => (
+              <VideoCorner>
+                <ParticipantTile />
+              </VideoCorner>
+            )}
+          </TrackLoop>
         </Show>
       </InRoom>
     </TileArea>
@@ -560,6 +640,77 @@ const TileArea = styled("div", {
         overflowY: "hidden",
       },
       false: {},
+    },
+    /** A direct video call: the picture runs to the edges of the stage. */
+    video: {
+      true: {
+        // Takes back the stage's padding
+        margin: "calc(-1 * var(--gap-md))",
+        gap: 0,
+      },
+      false: {},
+    },
+  },
+});
+
+/**
+ * The tile that fills the stage in a direct video call. The tile and its
+ * picture set their own size for a grid, inline, so the sizes here are
+ * `!important`. The picture is cropped to fill, not letterboxed.
+ */
+const VideoMain = styled("div", {
+  base: {
+    position: "absolute",
+    inset: 0,
+    // Its own stacking context, so nothing inside the tile (a live caption
+    // has a z-index) is drawn over the corner tile
+    isolation: "isolate",
+
+    "& .vc_tile": {
+      width: "100% !important",
+      maxWidth: "none !important",
+      height: "100% !important",
+      maxHeight: "none !important",
+      aspectRatio: "auto !important",
+      borderRadius: 0,
+    },
+    "& video": {
+      objectFit: "cover !important",
+    },
+  },
+});
+
+/**
+ * The other tile of a direct video call, in the top right corner. The top,
+ * because the large tile's name, lock, mute and connection marks are along
+ * its bottom edge and must stay in view.
+ */
+const VideoCorner = styled("div", {
+  base: {
+    position: "absolute",
+    top: "var(--gap-md)",
+    right: "var(--gap-md)",
+    zIndex: 1,
+
+    width: "clamp(88px, 28%, 150px)",
+    aspectRatio: "3/4",
+    // Never taller than the stage: a clipped picture stops being received
+    maxHeight: "calc(100% - 2 * var(--gap-md))",
+
+    borderRadius: "var(--borderRadius-lg)",
+    overflow: "hidden",
+    boxShadow: "0 2px 12px #0008",
+    background: "var(--md-sys-color-surface-container-high)",
+
+    "& .vc_tile": {
+      width: "100% !important",
+      maxWidth: "none !important",
+      height: "100% !important",
+      maxHeight: "none !important",
+      aspectRatio: "auto !important",
+    },
+    "& video": {
+      objectFit: "cover !important",
     },
   },
 });

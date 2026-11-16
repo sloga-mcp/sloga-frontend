@@ -245,7 +245,7 @@ EXPECTED=(
   "components/rtc/deviceLock.test.ts 27 0"
   # The server's ring length, read from the root fetch.
   "components/rtc/serverRingLength.test.ts 17 0"
-  "components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts 16 0"
+  "components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts 22 0"
   "components/client/pushPolicy.test.ts 29 0"
   # Every push subscribe goes through one site and carries the preferences.
   "components/client/pushSubscribeSites.scan.test.ts 7 0"

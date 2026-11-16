@@ -83,3 +83,48 @@ export function nextSlimCallMinimised(input: {
 
   return input.minimised;
 }
+
+/** What the video layout rule reads from one participant tile. */
+type SlimCallTile = {
+  /** Whether the tile is this device's own participant. */
+  own: boolean;
+  /** Whether the tile has a real, unmuted picture. */
+  liveVideo: boolean;
+  /** Whether the tile is a screen share rather than a camera. */
+  screenShare: boolean;
+  /** Whether the user picked this tile for the large box. */
+  focused: boolean;
+};
+
+/**
+ * The video layout of a direct call: one picture fills the screen and the
+ * other sits in a corner, as a phone's own video call does.
+ *
+ * It applies to a direct message call with exactly the two sides' camera
+ * tiles and at least one camera on. A group, a screen share, a call still
+ * waiting for the other side, and a call with both cameras off keep the
+ * plain arrangement. The other side fills the screen unless the user picked
+ * their own tile, in which case the two swap.
+ * @param input The channel type and the tiles, in the order they are drawn
+ * @returns The indexes of the tile that fills the screen and of the corner
+ * tile, or `null` for the plain arrangement
+ */
+export function slimCallVideoLayout(input: {
+  channelType: string | undefined;
+  tiles: readonly SlimCallTile[];
+}): { main: number; corner: number } | null {
+  if (input.channelType !== "DirectMessage") return null;
+
+  const { tiles } = input;
+  if (tiles.length !== 2) return null;
+  if (tiles.some((tile) => tile.screenShare)) return null;
+  if (!tiles.some((tile) => tile.liveVideo)) return null;
+
+  const own = tiles.findIndex((tile) => tile.own);
+  if (own === -1 || tiles[1 - own].own) return null;
+
+  const focused = tiles.findIndex((tile) => tile.focused);
+  const main = focused === -1 ? 1 - own : focused;
+
+  return { main, corner: 1 - main };
+}

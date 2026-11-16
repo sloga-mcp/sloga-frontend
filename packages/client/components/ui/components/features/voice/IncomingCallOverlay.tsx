@@ -593,7 +593,8 @@ export function IncomingCallOverlay() {
 }
 
 /**
- * The ring's two buttons, shared by the popup and the full-screen ring.
+ * The ring's two buttons, shared by the popup and the full-screen ring:
+ * Decline first and Accept second, so Accept is on the right as on a phone.
  * Accept cannot be pressed again while an Accept is being worked on; Decline
  * always can.
  */
@@ -605,6 +606,9 @@ function RingButtons(props: {
 }) {
   return (
     <>
+      <Button variant="_error" size={props.size} onPress={props.onDecline}>
+        <Symbol>call_end</Symbol> <Trans>Decline</Trans>
+      </Button>
       <Button
         variant="filled"
         size={props.size}
@@ -612,9 +616,6 @@ function RingButtons(props: {
         onPress={props.onAccept}
       >
         <Symbol>call</Symbol> <Trans>Accept</Trans>
-      </Button>
-      <Button variant="_error" size={props.size} onPress={props.onDecline}>
-        <Symbol>call_end</Symbol> <Trans>Decline</Trans>
       </Button>
     </>
   );

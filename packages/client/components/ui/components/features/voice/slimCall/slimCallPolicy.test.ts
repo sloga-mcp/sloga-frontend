@@ -1,13 +1,15 @@
 // Unit spec for the Slim view call screen rules: run with Node's built-in
 // runner from packages/client:
 //   node --test --conditions=browser components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts
-// Declared test count: 16 (compare against the runner's pass count, since the
+// Declared test count: 22 (compare against the runner's pass count, since the
 // runner also exits 0 when it finds no tests at all).
 // Focus: the call screen is up only for a direct message or group call in
 // Slim view that is not minimised; a server channel, a channel that is not
 // known yet and an unknown type never get it; `slimCallOwnsTiles` gives the
 // same answer on every row; the minimised flag is cleared by leaving the call
-// or by a channel change and is otherwise left as it was.
+// or by a channel change and is otherwise left as it was; the video layout
+// applies only to a direct call with the two sides' camera tiles and a camera
+// on, the other side fills the screen, and a picked tile swaps the two.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -15,6 +17,7 @@ import {
   nextSlimCallMinimised,
   slimCallOwnsTiles,
   slimCallShown,
+  slimCallVideoLayout,
 } from "./slimCallPolicy.ts";
 
 type CallInput = Parameters<typeof slimCallShown>[0];
@@ -335,4 +338,124 @@ test("a call after a minimised one starts with the call screen up", () => {
   });
   assert.equal(minimised, false);
   assert.equal(slimCallShown({ ...UP, channelType: "Group", minimised }), true);
+});
+
+type LayoutTile = Parameters<typeof slimCallVideoLayout>[0]["tiles"][number];
+
+/** The other side's camera tile, camera on */
+const THEM: LayoutTile = {
+  own: false,
+  liveVideo: true,
+  screenShare: false,
+  focused: false,
+};
+/** This device's camera tile, camera off */
+const ME: LayoutTile = {
+  own: true,
+  liveVideo: false,
+  screenShare: false,
+  focused: false,
+};
+
+test("video layout: the other side fills the screen, in either tile order", () => {
+  assert.deepEqual(
+    slimCallVideoLayout({ channelType: "DirectMessage", tiles: [THEM, ME] }),
+    { main: 0, corner: 1 },
+  );
+  assert.deepEqual(
+    slimCallVideoLayout({ channelType: "DirectMessage", tiles: [ME, THEM] }),
+    { main: 1, corner: 0 },
+  );
+});
+
+test("video layout: only my camera on still puts the other side in the large box", () => {
+  assert.deepEqual(
+    slimCallVideoLayout({
+      channelType: "DirectMessage",
+      tiles: [
+        { ...ME, liveVideo: true },
+        { ...THEM, liveVideo: false },
+      ],
+    }),
+    { main: 1, corner: 0 },
+  );
+});
+
+test("video layout: a picked tile fills the screen and the other takes the corner", () => {
+  assert.deepEqual(
+    slimCallVideoLayout({
+      channelType: "DirectMessage",
+      tiles: [THEM, { ...ME, focused: true }],
+    }),
+    { main: 1, corner: 0 },
+  );
+  assert.deepEqual(
+    slimCallVideoLayout({
+      channelType: "DirectMessage",
+      tiles: [{ ...THEM, focused: true }, ME],
+    }),
+    { main: 0, corner: 1 },
+  );
+});
+
+test("video layout: both cameras off keeps the plain arrangement", () => {
+  assert.equal(
+    slimCallVideoLayout({
+      channelType: "DirectMessage",
+      tiles: [{ ...THEM, liveVideo: false }, ME],
+    }),
+    null,
+  );
+});
+
+test("video layout: a group, a server channel and an unknown channel keep the plain arrangement", () => {
+  for (const channelType of [
+    "Group",
+    "TextChannel",
+    "SavedMessages",
+    undefined,
+  ])
+    assert.equal(
+      slimCallVideoLayout({ channelType, tiles: [THEM, ME] }),
+      null,
+      String(channelType),
+    );
+});
+
+test("video layout: anything but the two sides' camera tiles keeps the plain arrangement", () => {
+  const dm = "DirectMessage";
+  // Alone, waiting for the other side
+  assert.equal(
+    slimCallVideoLayout({
+      channelType: dm,
+      tiles: [{ ...ME, liveVideo: true }],
+    }),
+    null,
+  );
+  // A third tile
+  assert.equal(
+    slimCallVideoLayout({ channelType: dm, tiles: [THEM, ME, THEM] }),
+    null,
+  );
+  // A screen share among the two
+  assert.equal(
+    slimCallVideoLayout({
+      channelType: dm,
+      tiles: [{ ...THEM, screenShare: true }, ME],
+    }),
+    null,
+  );
+  // Two tiles of the same side
+  assert.equal(
+    slimCallVideoLayout({ channelType: dm, tiles: [THEM, THEM] }),
+    null,
+  );
+  assert.equal(
+    slimCallVideoLayout({
+      channelType: dm,
+      tiles: [{ ...ME, liveVideo: true }, ME],
+    }),
+    null,
+  );
+  assert.equal(slimCallVideoLayout({ channelType: dm, tiles: [] }), null);
 });
