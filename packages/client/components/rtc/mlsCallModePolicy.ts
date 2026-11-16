@@ -534,6 +534,25 @@ export interface ChipInputs {
    * whole change exists to remove it.
    */
   decodeWitness: DecodeWitness;
+  /**
+   * The server's switch has encrypted calls paused for this shell for this
+   * call (the iOS kill switch, snapshotted at call start). A paused device
+   * builds no session and asserts no gate, so every no-session term below is
+   * the wrong question for it: with no open group yet (an iPhone-to-iPhone
+   * call, or one that joined before the group opened) and no peer that could
+   * encrypt, the chip used to read `none` — a call in the clear with no
+   * chrome at all. Required, never defaulted: a missing binding must not read
+   * as "not paused".
+   */
+  pausedByServer: boolean;
+  /**
+   * Every SFU participant identity right now — tracks or none, screen legs as
+   * their own identity, the local participant included. Gate (d)'s time bound
+   * reads it to tell a sender that LEFT from one that merely went quiet
+   * (`WitnessAmberEscalation`); `publishingIdentities` cannot, because a
+   * sender that unpublishes is still in the call.
+   */
+  presentIdentities: readonly string[];
 }
 
 /**
@@ -549,14 +568,23 @@ export function chipState(inputs: ChipInputs): ChipState {
   const mode = inputs.mode?.kind;
   const latch = inputs.latch;
 
-  // ---- loud — highest precedence. The order of record (rows 1–6) ----------
+  // ---- loud — highest precedence. The order of record (rows 0–6) ----------
   //
-  // Rows 1–6 read ONLY `mode`, `latch`, `sessionState === "failed"` and,
-  // under row 4, `localPublicationsEncrypted` + the decode witness. Every
-  // other input reaches the no-session arm below exactly as before.
+  // Row 0 reads only `pausedByServer`. Rows 1–6 read ONLY `mode`, `latch`,
+  // `sessionState === "failed"` and, under row 4,
+  // `localPublicationsEncrypted` + the decode witness. Every other input
+  // reaches the no-session arm below exactly as before.
   // `pauseDisproved` is NOT an input here: it is a withdrawal-only signal by
   // pinned design (it may contradict a claimed pause, never escalate a chip).
   //
+  // Row 0 — the server has encrypted calls paused for this shell. Nothing
+  // here is encrypted and nothing is held, and that is true whatever the
+  // open-group probe, the setup term or the peers say, so it reads none of
+  // them: a paused call with nobody else encrypting is still a call in the
+  // clear the user may believe is encrypted. Its banner is `ios_paused`
+  // (readiness `paused`). Above the latch rows on purpose: a paused call
+  // never earns the softer `cannot_verify`.
+  if (inputs.pausedByServer) return "not_encrypted";
   // Row 1 — the §3.4 downgrade modes. Plaintext is live or being offered.
   if (mode === "mixed" || mode === "interlude" || mode === "call_full") {
     return "not_encrypted";
@@ -675,8 +703,11 @@ export function chipState(inputs: ChipInputs): ChipState {
   // evidence, or never created, reads as green through every one of them, which
   // is how six review rounds each found the same silent green in a different
   // place. This one needs a positive measurement, refreshed every second, of
-  // the frames actually arriving. It can only ever withhold a green — it never
-  // latches, never clears, and never promotes.
+  // the frames actually arriving. Here it can only ever withhold a green — it
+  // never latches, never clears, and never promotes. The one thing it does
+  // beyond that is bounded in time and lives OUTSIDE this snapshot function:
+  // an amber that only this gate holds goes loud after
+  // `WITNESS_AMBER_ESCALATE_MS` (`WitnessAmberEscalation`, below).
   const decodeWitnessed =
     inputs.decodeWitness.available &&
     inputs.decodeWitness.dropping.length === 0;
@@ -713,6 +744,246 @@ export function chipState(inputs: ChipInputs): ChipState {
   return allVerified ? "e2ee" : "e2ee_unverified";
 }
 
+// ---- Gate (d)'s bound: a witness-only amber goes loud ----------------------
+
+/**
+ * How long an amber that ONLY gate (d) holds may last before it goes loud.
+ *
+ * It is the session's join-race verdict bound, `JOIN_RACE_DEFER_MS` in
+ * `mlsCallSession.ts` (= `MEMBERSHIP_OBSERVED_MS` = `LEAVE_GRACE_MS` +
+ * `SUBMIT_TIMEOUT_MS`, 10 s + 10 s): the longest a membership change this
+ * device watched can legitimately take to reach it as a commit it applies.
+ * That is the right question here too. A withheld commit at join is the case
+ * this exists for: the sender moved to an index this device was never given,
+ * every one of its frames is discarded, no error fires after the first (the
+ * worker silences the index), and a Welcome-window drop is exempt from the
+ * session's ledger — so before this bound the chip sat amber for the life of
+ * the call while the user heard nothing from that peer.
+ *
+ * A literal, not an import: that constant is private to the session, and the
+ * session imports THIS module, which must stay loadable by `node --test` on
+ * its own. Nothing ties the two mechanically — this module's spec pins the
+ * literal — so the dependency should run the other way: the session takes
+ * its bound from here.
+ *
+ * Why not shorter. The legitimate witness-only stretches are bounded well
+ * inside it: a joiner drops the old index for the Add-grace plus the settle
+ * (2 s + 2 s) and the witness window lags by up to its stale bound (3 s), so
+ * an ordinary join reads witness-only for under ~7 s. A rotation's own amber
+ * (the arbitration window, submit + settle = 12 s) is NOT witness-only and
+ * does not count (see `WitnessAmberEscalation`). The re-securing bound
+ * (`RESECURE_ESCALATE_MS`, 10 s) would leave a 3 s margin over the join on a
+ * slow main thread, and a false red here is a red on a call that is fine.
+ */
+export const WITNESS_AMBER_ESCALATE_MS = 20_000;
+
+/**
+ * Once past the bound, a SECOND witness-only reading at least this much later
+ * must agree before the chip goes loud. A main thread resumed from a
+ * suspension (a backgrounded webview, a throttled tab) reads the stale
+ * witness once before the queued heartbeats drain; one reading across a gap
+ * is not evidence that the gap was amber. Half the witness's 1 s check
+ * interval, the same rule the listener's dead-worker check uses.
+ */
+export const WITNESS_AMBER_CONFIRM_MS = 500;
+
+/**
+ * The witness gate (d) passing, for the counterfactual below ONLY. Never a
+ * chip input: a clean witness handed to `chipState` as the real one is the
+ * round-3 defect (green from a literal).
+ */
+const WITNESS_COUNTERFACTUAL_CLEAN: DecodeWitness = Object.freeze({
+  available: true,
+  dropping: Object.freeze([]),
+  live: Object.freeze([]),
+});
+
+/**
+ * Whether this snapshot is a WITNESS-ONLY amber: the chip is amber, and it
+ * would be green (`e2ee` or `e2ee_unverified`) if gate (d) passed. Gates
+ * (a), (b) and the local declaration all hold; only the witness — absent, or
+ * naming a sender whose frames are being discarded — keeps it from green.
+ *
+ * Asked of `chipState` itself, by counterfactual, so it cannot drift from the
+ * rule it describes. Nothing else in the chip reads the witness while it is
+ * amber (row 4, the only other reader, needs a latch, which is loud).
+ */
+export function witnessOnlyAmber(inputs: ChipInputs): boolean {
+  if (chipState(inputs) !== "resecuring") return false;
+  const ifWitnessed = chipState({
+    ...inputs,
+    decodeWitness: WITNESS_COUNTERFACTUAL_CLEAN,
+  });
+  return ifWitnessed === "e2ee" || ifWitnessed === "e2ee_unverified";
+}
+
+/**
+ * The chip, with gate (d)'s time bound applied: an amber that only the decode
+ * witness holds goes LOUD (`not_encrypted`) after `WITNESS_AMBER_ESCALATE_MS`
+ * of witness-only readings. One instance per call; `judge` is the final call
+ * (it runs `chipState` itself, so a caller holds no intermediate chip to
+ * override), and the caller must invoke it at least once per witness check
+ * interval while a session is live — the bound is measured between readings,
+ * so a chip that is only re-read when an input changes never reaches it.
+ * `now` is a MONOTONIC clock (`performance.now`); a step backwards adds
+ * nothing.
+ *
+ * The clock, reading by reading:
+ *  - `none` (no E2EE claim: no session, plain call, still starting) resets
+ *    everything — a later claim starts a new clock.
+ *  - A loud chip passes through untouched; the latch that made it loud owns
+ *    the banner and the gate. It pauses the clock, never resets it.
+ *  - Green (`e2ee` / `e2ee_unverified`) resets the clock only when it is
+ *    evidence about the senders that were failing: every identity seen in
+ *    the witness's `dropping` on a witness-only reading since the last reset
+ *    has since been seen
+ *    decoding (`live` without `dropping`) or has LEFT the SFU
+ *    (`presentIdentities`). Otherwise the clean window says only that the
+ *    failing sender went quiet — a mute, push-to-talk, or an SFU holding its
+ *    packets for a few seconds out of every twenty — and it PAUSES the clock
+ *    instead, so that pattern cannot hold the call amber-or-green forever.
+ *    A call that keeps briefly losing its witness still never goes loud: an
+ *    absent witness names nobody, so its next clean window resets.
+ *  - Any other amber (a re-securing, gate (b), our own declaration) PAUSES the
+ *    clock: it neither adds time nor resets it. Adding would turn a long
+ *    legitimate rotation into a false red; resetting would let any input that
+ *    flaps — an SFU toggling a peer's declared encryption — hold amber
+ *    forever.
+ *  - Witness-only time accrues only between two CONSECUTIVE witness-only
+ *    readings, and the bound must hold at two consecutive readings
+ *    `WITNESS_AMBER_CONFIRM_MS` apart.
+ *
+ * 🔴 Once it fires it STAYS loud until `reset()`, `rearm()` or a `none`
+ * reading. The decode witness may contradict a green and never rescue a red:
+ * a sender that goes quiet stops being dropped without anything having been
+ * fixed. The stickiness only ever keeps a red on screen — nothing here
+ * disarms a gate, pauses, or releases anything. `rearm()` is for the one
+ * thing that may end it mid-call: the session's media latch — which the
+ * escalation fed — healing on its own re-key evidence (`loudHealVerdict`).
+ *
+ * 🔴 It is a CHIP rule and holds no gate. Nothing is latched, so the banner is
+ * the honest floor (`unencrypted_notice`: no pause promised, no release
+ * offered) and this device keeps publishing under its current key. Holding
+ * the publish gate on the same verdict (a desynced member publishes nothing)
+ * is the session's: its loud latch, not this.
+ */
+export class WitnessAmberEscalation {
+  /** Witness-only time accrued since the last positive evidence. */
+  #amberMs = 0;
+  /** The previous reading's time, when that reading was witness-only. */
+  #lastWitnessOnlyAt: number | undefined;
+  /** The first consecutive witness-only reading at or past the bound. */
+  #pastBoundAt: number | undefined;
+  #fired = false;
+  /**
+   * Senders seen in the witness's `dropping` on a witness-only reading since
+   * the last reset, and not seen decoding since. A green resets the clock
+   * only once every one of them still present has been.
+   */
+  #unresolved = new Set<string>();
+
+  /** The bound fired and the chip is held loud (until `reset` / `rearm`). */
+  get escalated(): boolean {
+    return this.#fired;
+  }
+
+  judge(inputs: ChipInputs, now: number): ChipState {
+    const chip = chipState(inputs);
+    if (chip === "none") {
+      this.reset();
+      return chip;
+    }
+    this.#resolveDecoding(inputs.decodeWitness);
+    if (
+      !this.#fired &&
+      (chip === "e2ee" || chip === "e2ee_unverified") &&
+      this.#unresolvedPresent(inputs.presentIdentities)
+    ) {
+      // A clean window that says nothing about the sender that was failing.
+      this.#interrupt();
+      return chip;
+    }
+    if (chip === "not_encrypted" || chip === "cannot_verify") {
+      this.#interrupt();
+      return chip;
+    }
+    if (this.#fired) return "not_encrypted";
+    if (chip === "e2ee" || chip === "e2ee_unverified") {
+      this.reset();
+      return chip;
+    }
+    if (!witnessOnlyAmber(inputs)) {
+      this.#interrupt();
+      return chip;
+    }
+    // The amber run's failing senders. Only here, where every other gate
+    // holds: a joiner's pre-key drops are ordinary join noise, not evidence.
+    for (const identity of inputs.decodeWitness.dropping) {
+      this.#unresolved.add(identity);
+    }
+    const last = this.#lastWitnessOnlyAt;
+    if (last !== undefined && now > last) this.#amberMs += now - last;
+    // Never moved backwards, or the next reading would re-add the span.
+    this.#lastWitnessOnlyAt = last === undefined ? now : Math.max(last, now);
+    if (this.#amberMs < WITNESS_AMBER_ESCALATE_MS) return chip;
+    if (this.#pastBoundAt === undefined) {
+      this.#pastBoundAt = now;
+      return chip;
+    }
+    if (now - this.#pastBoundAt < WITNESS_AMBER_CONFIRM_MS) return chip;
+    this.#fired = true;
+    return "not_encrypted";
+  }
+
+  /** A new call (or a new session): forget everything, the latch included. */
+  reset(): void {
+    this.#amberMs = 0;
+    this.#interrupt();
+    this.#fired = false;
+    this.#unresolved.clear();
+  }
+
+  /**
+   * The session's media latch cleared (it healed on re-key evidence): drop
+   * the latch and the accrued time, so a LATER withheld commit escalates
+   * again — after a full bound, never at once off time spent before the
+   * heal. The senders not yet seen decoding stay recorded: a heal is about
+   * the epoch, and the next green still has to see them.
+   */
+  rearm(): void {
+    this.#amberMs = 0;
+    this.#interrupt();
+    this.#fired = false;
+  }
+
+  /** A reading that is not witness-only: the run of consecutive ones ends. */
+  #interrupt(): void {
+    this.#lastWitnessOnlyAt = undefined;
+    this.#pastBoundAt = undefined;
+  }
+
+  /**
+   * A sender seen decoding with nothing of it dropped is resolved, on any
+   * reading. A sender in BOTH (mid-rotation, its old index still discarded)
+   * stays unresolved.
+   */
+  #resolveDecoding(witness: DecodeWitness): void {
+    for (const identity of witness.live) {
+      if (!witness.dropping.includes(identity)) {
+        this.#unresolved.delete(identity);
+      }
+    }
+  }
+
+  /** Any unresolved sender is still in the SFU. */
+  #unresolvedPresent(present: readonly string[]): boolean {
+    for (const identity of this.#unresolved) {
+      if (present.includes(identity)) return true;
+    }
+    return false;
+  }
+}
+
 // ---- Which banner a chip must carry (the no-dead-end invariant) ------------
 
 /**
@@ -739,6 +1010,11 @@ export function chipState(inputs: ChipInputs): ChipState {
  *   not this rule — decides whether to offer the plaintext release.
  * - `device_unsupported` — this shell can never encrypt calls (a browser, an
  *   unaudited build). Nothing to set up; the escape is Leave.
+ * - `ios_paused` — readiness `paused`: the server has encrypted calls switched
+ *   off for this shell right now (the iPhone kill switch). Treated exactly as
+ *   `device_unsupported` everywhere — same precedence, nothing held, no
+ *   release, does not park the float — and a kind of its own only so the
+ *   banner can say so: "not available on this device" would be false here.
  * - `terminal_loud` — ME-10: the DEVICE is fine and the CALL failed to secure.
  *   Publishing is held by the `negotiating` gate; the escape is Leave / Stay
  *   unencrypted (plus Reset encryption on a store-owner mismatch). Requires a
@@ -746,8 +1022,10 @@ export function chipState(inputs: ChipInputs): ChipState {
  *   and video should stay paused" — a claim about a gate that is asserted.
  * - `unencrypted_notice` — the honest floor: a red chip nothing above claimed,
  *   with nothing latched, so no pause may be promised and no release offered.
- *   Unreachable today (every red chip on a `ready` device latches); it exists
- *   so the backstop cannot lie the way the previous one did.
+ *   Reached by exactly one producer: gate (d)'s time bound
+ *   (`WitnessAmberEscalation`), a chip rule that latches nothing. Every other
+ *   red chip on a `ready` device latches. It exists so the backstop cannot
+ *   lie the way the previous one did.
  * - `cannot_verify` — the chip's `cannot_verify`: a control latch taken while
  *   this device was keyed, media plane clean. Publishing is held by the
  *   `negotiating` gate (`loudModeFallback` / `#onLoud`); the copy says the
@@ -764,6 +1042,7 @@ export type CallBannerKind =
   | "cannot_verify"
   | "device_not_set_up"
   | "device_unsupported"
+  | "ios_paused"
   | "unencrypted_notice";
 
 /**
@@ -934,14 +1213,27 @@ function redBannerKind(inputs: CallBannerInputs): CallBannerKind {
   // encrypted is the device, showing the loud "could not be confirmed" copy
   // and offering only a per-call escape sends the user round the loop again
   // on their next call.
-  switch (inputs.readiness) {
+  //
+  // `paused` — the server has media E2EE switched off for this shell right
+  // now — sits at `unsupported`'s precedence with its own kind, so the banner
+  // can say it is paused rather than unavailable. The `never` arm makes any
+  // further readiness a compile error here instead of a silent fall into the
+  // call-failure arm below.
+  const readiness = inputs.readiness;
+  switch (readiness) {
     case "unsupported":
       return "device_unsupported";
+    case "paused":
+      return "ios_paused";
     case "needs_setup":
     case "owned_elsewhere":
       return "device_not_set_up";
     case "ready":
       break;
+    default: {
+      const exhaustive: never = readiness;
+      return exhaustive;
+    }
   }
 
   // A `ready` device with a red chip is a CALL failure. Everything left lands
@@ -953,11 +1245,12 @@ function redBannerKind(inputs: CallBannerInputs): CallBannerKind {
   // predicate for it, and the harness's `terminalLoud()` reads
   // `callBanner(...).kind` rather than a rule of its own.
   //
-  // The latch is what makes the loud copy true. Every reachable red chip on a
-  // `ready` device has one: `sessionSetupDecision` latches on every
+  // The latch is what makes the loud copy true. Every red chip on a `ready`
+  // device has one but ONE: `sessionSetupDecision` latches on every
   // capable-but-sessionless arm, `#onLoud` latches before `call_full`, and a
-  // session that reached `failed` came through `#onLoud`. An unlatched one
-  // would mean no gate is held, so it gets the floor instead of a promise.
+  // session that reached `failed` came through `#onLoud`. The exception is
+  // gate (d)'s time bound (`WitnessAmberEscalation`), which holds no gate —
+  // and an unlatched red is exactly what gets the floor instead of a promise.
   return inputs.latchedError ? "terminal_loud" : "unencrypted_notice";
 }
 
@@ -977,6 +1270,7 @@ function redBannerKind(inputs: CallBannerInputs): CallBannerKind {
  * | device_not_set_up, refused device | held       |
  * | device_not_set_up, never enrolled | none       |
  * | device_unsupported                | none       |
+ * | ios_paused                        | none       |
  * | unencrypted_notice                | none       |
  * | none                              | none       |
  *
@@ -1012,6 +1306,7 @@ export function pauseClauseFor(
     case "device_not_set_up":
       return inputs.readiness === "owned_elsewhere" ? "held" : "none";
     case "device_unsupported":
+    case "ios_paused":
     case "unencrypted_notice":
       return "none";
   }
@@ -1033,7 +1328,8 @@ export function pauseClauseFor(
  * not be able to miss, and Leave clears it.
  *
  * 🔴 It is NOT true of the device banners. `device_not_set_up`,
- * `device_unsupported` and `unencrypted_notice` describe the DEVICE, and
+ * `device_unsupported`, `ios_paused` and `unencrypted_notice` describe the
+ * DEVICE (or its platform's server switch), and
  * nothing in the call clears them: parking on those un-anchors the player for
  * the entire call, with no control that brings it back and no copy that says
  * why. Testing `!== "none"` did exactly that and is how this rule earned a name
@@ -1512,6 +1808,67 @@ export function keyPairId(identity: string, keyIndex: number): string {
 /** The worker's key ring (livekit-client default `keyringSize`). */
 export const WORKER_KEYRING_SIZE = 16;
 
+/** The key index a `keyPairId` names, or `NaN` for anything else. */
+function keyPairIndex(pair: string): number {
+  const index = /@(\d+)$/.exec(pair);
+  return index ? Number(index[1]) : Number.NaN;
+}
+
+/**
+ * How many epochs BEFORE the one this device first held a Welcome-window
+ * miss may name and still be exempt (`joinWindowMissPredatesEpoch`): half
+ * the worker's key ring, the same 8 as the session's `LAG_WARN_THRESHOLD`.
+ * The other half (minus the held index itself) reads as AHEAD of us, which is
+ * where a sender whose commit is being withheld from this device sits.
+ */
+export const JOIN_WINDOW_PREDATES_DEPTH = WORKER_KEYRING_SIZE / 2;
+
+/**
+ * Whether a decode missing key heard in the Welcome window (before this
+ * device held any key of the group) names an index one of the epochs BEFORE
+ * `heldEpoch` used — the epoch of this device's first install.
+ *
+ * Those frames were encrypted under an epoch this device was never admitted
+ * into, so no install will ever fill that index: the ordinary Welcome
+ * (members keep sending at E-1 through their Add-grace) produces exactly
+ * this, and a bounded verdict on it would be a red on every join. Anything
+ * else is a sender at an index we do not hold although we hold the group:
+ * either it advanced while we joined and our copy of that commit is still
+ * landing, or the commit was withheld.
+ *
+ * The ring is 16 slots, so "before" vs "ahead" is decided by distance: the
+ * `JOIN_WINDOW_PREDATES_DEPTH` epochs below `heldEpoch` (never below epoch 0,
+ * where nothing existed to predate it) are exempt; everything else counts. The
+ * residual, stated rather than closed: a sender 8-15 epochs AHEAD aliases
+ * onto an exempt index. That needs eight or more commits withheld from this
+ * device inside one join window; no local fact separates it from a stale
+ * frame at the same index. Malformed input counts (fails closed).
+ *
+ * The source of truth for both users: the session's Welcome-window review and
+ * `MediaErrorLedger.unfilledPairs`. It lives here because the session imports
+ * this module and this module must not import the session back.
+ */
+export function joinWindowMissPredatesEpoch(
+  keyIndex: number,
+  heldEpoch: number,
+): boolean {
+  if (
+    !Number.isInteger(keyIndex) ||
+    keyIndex < 0 ||
+    keyIndex >= WORKER_KEYRING_SIZE ||
+    !Number.isSafeInteger(heldEpoch) ||
+    heldEpoch < 0
+  ) {
+    return false;
+  }
+  for (let back = 1; back <= JOIN_WINDOW_PREDATES_DEPTH; back++) {
+    const epoch = heldEpoch - back;
+    if (epoch < 0) return false;
+    if (epoch % WORKER_KEYRING_SIZE === keyIndex) return true;
+  }
+  return false;
+}
+
 /**
  * What a media-plane error says about the key it failed at. The worker posts
  * `${reason}: ${message}` as a plain `Error` (`setupCryptorErrorEvents`); the
@@ -1638,6 +1995,23 @@ export class MediaErrorLedger {
    * witness exists to catch (media-E2EE review, 2026-09-08).
    */
   #everMissing = new Map<string, Map<string, boolean>>();
+  /**
+   * The epoch of this device's FIRST local key install since the last
+   * `reset` (`noteFirstHeldEpoch`), or undefined while none is known. It is
+   * what decides whether a pair heard before the first key genuinely predates
+   * our admission (`unfilledPairs`).
+   */
+  #firstHeldEpoch: number | undefined;
+
+  /**
+   * Record the epoch of this device's first local key install. Only the FIRST
+   * call since `reset` counts: the Welcome-window pairs predate THAT epoch,
+   * and judging them against a later one would slide the exempt window off
+   * them as the call ages (a permanent hold on the receiver role, H1).
+   */
+  noteFirstHeldEpoch(epoch: number): void {
+    if (this.#firstHeldEpoch === undefined) this.#firstHeldEpoch = epoch;
+  }
 
   /** Whether `pair` from `identity` is answered by an install since. */
   #superseded(identity: string, pair: string, at: number): boolean {
@@ -1758,29 +2132,42 @@ export class MediaErrorLedger {
    * index re-validates. Non-empty means the sender may be sending into one of
    * them right now, silently dropped, with no further error to prove it.
    *
-   * Deliberately not derived from `#missing`. Exactly one exemption: pairs
-   * heard BEFORE this device held any key of the group. A device joined by
-   * Welcome hears the members' frames first and native snapshots `previous`
-   * only across a commit it applied, so an index they were using at an epoch
-   * older than our admission can never be filled here and would otherwise read
-   * as a permanent failure for the life of the group (the H1 shape `#missing`
+   * Deliberately not derived from `#missing`. Exactly one exemption: a pair
+   * heard BEFORE this device held any key of the group AND at an index one of
+   * the epochs before our first held epoch used
+   * (`joinWindowMissPredatesEpoch`). A device joined by Welcome hears the
+   * members' frames first and native snapshots `previous` only across a
+   * commit it applied, so an index they were using at an epoch older than our
+   * admission can never be filled here and would otherwise read as a
+   * permanent failure for the life of the group (the H1 shape `#missing`
    * exempts too).
    *
-   * 🔴 The exemption is NOT sound in one case, and this is a blind spot `main`
-   * shares rather than one this branch introduces: if such a pair is an index
-   * the sender is STILL using — it advanced while we were joining and the
-   * commit that would give us that key is withheld — the exemption hides an
-   * invalid index for the life of the group. It cannot be told apart locally
-   * from the ordinary stale-index case, because the worker emits one error per
-   * index and then drops silently. Scoping it to "before the latch" instead
-   * was wider still, and giving those pairs a bounded verdict turns the
-   * ordinary Welcome into a guaranteed false red. It wants the worker `setKey`
-   * ack, or a per-index re-check that re-arms on the sender's next epoch —
-   * its own piece of work (media-E2EE reviews, 2026-09-08).
+   * 🔴 The exemption used to be the first half alone, and that was not sound:
+   * a pre-first-key pair at an index AHEAD of the held epoch — the sender
+   * advanced while we were joining and the commit that gives us that key is
+   * withheld — was hidden for the life of the group. When another latch fired
+   * first (clearing the session's own holds) the heal could clear while that
+   * sender's frames were still being dropped silently (WJ2, Wave J). Now only
+   * a provably pre-epoch index stays exempt, and with no held epoch recorded
+   * nothing is provably pre-epoch, so every pair counts (fails closed). The
+   * residual is the predicate's: a sender 8-15 epochs ahead aliases onto an
+   * exempt index.
    */
   unfilledPairs(identity: string): string[] {
-    const seen = this.#everMissing.get(identity);
-    if (!seen) return [];
+    const recorded = this.#everMissing.get(identity);
+    if (!recorded) return [];
+    const held = this.#firstHeldEpoch;
+    // `beforeFirstKey` below means "exempt": heard before the first key AND
+    // provably at an index that predates the first held epoch.
+    const seen = new Map<string, boolean>();
+    for (const [pair, beforeFirstKey] of recorded) {
+      seen.set(
+        pair,
+        beforeFirstKey &&
+          held !== undefined &&
+          joinWindowMissPredatesEpoch(keyPairIndex(pair), held),
+      );
+    }
     const filled = this.#installed.get(identity)?.pairs;
     return [...seen]
       .filter(([pair, beforeFirstKey]) => !beforeFirstKey && !filled?.has(pair))
@@ -1803,6 +2190,7 @@ export class MediaErrorLedger {
     this.#missing.clear();
     this.#installed.clear();
     this.#everMissing.clear();
+    this.#firstHeldEpoch = undefined;
   }
 }
 

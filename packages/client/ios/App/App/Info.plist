@@ -59,5 +59,11 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>SlogaMediaE2EE</key>
+	<string>$(SLOGA_MEDIA_E2EE)</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 </dict>
 </plist>
