@@ -23,6 +23,7 @@ import {
   ringDurationMs,
   useVoice,
 } from "@revolt/rtc";
+import { nativeRingPending } from "@revolt/rtc/incomingCall";
 import { serverCallRingSecs } from "@revolt/rtc/serverRingLength";
 import { useState } from "@revolt/state";
 import { Avatar, Button } from "@revolt/ui/components/design";
@@ -71,7 +72,7 @@ function chatName(channel: Channel | undefined): string | undefined {
 }
 
 /**
- * Global incoming-call popup, mounted once at app level. It renders three
+ * Global incoming-call popup, mounted once at app level. It renders four
  * things, each from its own state, so none of them depends on a ring being
  * up:
  *
@@ -80,6 +81,8 @@ function chatName(channel: Channel | undefined): string | undefined {
  *   the conversation once the join has landed, Decline tells the server. On
  *   a locked phone and in Slim view the ring covers the whole screen and
  *   shows nothing but who is calling.
+ * - The same full-screen cover, without buttons, while a ring the phone
+ *   opened waits to be presented (`nativeRingPending`).
  * - "Call ended", when an Accept found the ring already over.
  * - "No answer" / "Declined", on the caller's side, when our own call was
  *   hung up for us.
@@ -406,6 +409,23 @@ export function IncomingCallOverlay() {
   const coverLabelShown = () =>
     unlocking() || !!caller() || incomingCall()?.video === true;
 
+  // A ring the phone opened that is not presented here yet (see
+  // `nativeRingPending`). The phone may already show the app over its lock
+  // screen, so it gets the full-screen cover whatever the lock state reads.
+  // It has no Accept or Decline: there is no channel to act on yet, and the
+  // phone's own notification still has both. The caller is named only when
+  // this client already knows them; the name line reads "Incoming Call"
+  // otherwise.
+  const pendingCaller = () => {
+    const callerId = nativeRingPending()?.callerId;
+    return callerId ? client()?.users.get(callerId) : undefined;
+  };
+
+  const pendingCallerName = () =>
+    pendingCaller()?.displayName ??
+    pendingCaller()?.username ??
+    t`Incoming Call`;
+
   const callerOutcome = () => {
     const outcome = voice.callerRingNotice()?.outcome;
     switch (outcome) {
@@ -490,6 +510,27 @@ export function IncomingCallOverlay() {
             </CoverActions>
           </Cover>
         </Show>
+      </Show>
+      <Show when={!incomingCall() && nativeRingPending()}>
+        <Cover
+          role="alertdialog"
+          aria-modal="true"
+          aria-label={t`Incoming Call`}
+        >
+          <PulsingAvatar>
+            <Avatar
+              size={96}
+              src={
+                pendingCaller()?.animatedAvatarURL ?? pendingCaller()?.avatarURL
+              }
+              fallback={pendingCallerName()}
+            />
+          </PulsingAvatar>
+          <CoverName>{pendingCallerName()}</CoverName>
+          <Show when={pendingCaller()}>
+            <CoverLine>{t`Incoming Call`}</CoverLine>
+          </Show>
+        </Cover>
       </Show>
       <Show
         when={

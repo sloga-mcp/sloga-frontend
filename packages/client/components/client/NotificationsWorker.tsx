@@ -36,6 +36,11 @@ import {
   ringDurationMs,
   useVoice,
 } from "@revolt/rtc";
+import {
+  type NativeRingPending,
+  nativeRingPending,
+  setNativeRingPending,
+} from "@revolt/rtc/incomingCall";
 import { serverCallRingSecs } from "@revolt/rtc/serverRingLength";
 import { useState } from "@revolt/state";
 import { streamerModeActive, streamerModeHides } from "@revolt/state/streamer";
@@ -437,11 +442,15 @@ export function NotificationsWorker() {
 
   /**
    * Drop the pending chat if it is the one for `channelId`, or whichever it
-   * is when no chat is named.
+   * is when no chat is named. Its ring is over, so the cover of a native
+   * ring still waiting to be presented for that chat goes too.
    */
   const dropPendingOpen = (channelId?: string) => {
     if (pendingOpen && (!channelId || pendingOpen.channelId === channelId))
       pendingOpen = undefined;
+    const ringCover = nativeRingPending();
+    if (ringCover && (!channelId || ringCover.channelId === channelId))
+      setNativeRingPending(undefined);
   };
 
   /**
@@ -1050,9 +1059,12 @@ export function NotificationsWorker() {
 
     // Unmounting ends whatever is still waiting below. This worker lives for
     // one signed-in session, and an action must not carry over into the next.
+    // A native ring still waiting to be presented goes with it: nothing left
+    // would present it or take its cover down.
     let mounted = true;
     onCleanup(() => {
       mounted = false;
+      setNativeRingPending(undefined);
     });
 
     const pushToken = registerPlugin<{
@@ -1205,9 +1217,11 @@ export function NotificationsWorker() {
       // Cold start: the client may still be connecting, so retry until the
       // channel is hydrated (~10s) before giving up. `settled` holds the
       // call back further, while it says no, but never past that time.
+      // `gaveUp` runs once if the channel never loads.
       const withChannel = (
         fn: (channel: Channel) => void,
         settled: () => boolean = () => true,
+        gaveUp: () => void = () => {},
         attempt = 0,
       ) => {
         if (!mounted) return;
@@ -1216,7 +1230,8 @@ export function NotificationsWorker() {
           : undefined;
         if (channel && (settled() || attempt >= 20)) fn(channel);
         else if (attempt < 20)
-          setTimeout(() => withChannel(fn, settled, attempt + 1), 500);
+          setTimeout(() => withChannel(fn, settled, gaveUp, attempt + 1), 500);
+        else gaveUp();
       };
 
       if (action.answer) {
@@ -1262,6 +1277,32 @@ export function NotificationsWorker() {
       // Accept/Decline popup — NEVER auto-join. The chat behind it opens
       // only once the phone is unlocked, asked live: the popup can be over
       // the lock screen.
+      //
+      // The phone shows the app over its lock screen from the moment the
+      // ring arrived, but the popup can only be presented once the chat has
+      // loaded, which on a sleeping phone waits for the websocket. Until
+      // then the overlay covers the screen (who is calling, no buttons), so
+      // the chat that was last open is never drawn over the lock screen. It
+      // is set here, before anything waits, because nothing has said yet
+      // that the phone is unlocked. It goes when the popup is presented or
+      // the ring ends without one, and early only if both the phone's tap
+      // snapshot and a live answer say unlocked. It never opens anything.
+      const ringCover: NativeRingPending | undefined = channelId
+        ? { channelId }
+        : undefined;
+      if (ringCover && action.callerId) ringCover.callerId = action.callerId;
+      if (ringCover) setNativeRingPending(ringCover);
+      const dropRingCover = () => {
+        if (nativeRingPending() === ringCover) setNativeRingPending(undefined);
+      };
+      if (ringCover && action.locked === false) {
+        deviceLocked()
+          .then((locked) => {
+            if (locked === false) dropRingCover();
+          })
+          .catch(() => {});
+      }
+
       parkOpen(channelId, open, tappedAt);
 
       // Whether a Ready reaches the client after this tap. Only a Ready says
@@ -1273,7 +1314,7 @@ export function NotificationsWorker() {
         awaitsReady && lifecycle.state() === State.Connected;
       const settled = () => !awaitsReady || rosterFresh();
 
-      withChannel((channel) => {
+      const presentOrEnd = (channel: Channel) => {
         // Nobody is in the call any more (cold start, so it was asked after
         // the tap): the ring is over. No popup; the phone's ring notification
         // is resolved as ended, which also lets the app fall back behind the
@@ -1296,7 +1337,8 @@ export function NotificationsWorker() {
         presentIncomingCall(ringFor(action, channel, Date.now()));
         // The native notification stays up (and keeps ringing) until the popup
         // is resolved, so don't stack a second ringtone on top of it here.
-      }, settled);
+      };
+      withChannel(presentOrEnd, settled, dropRingCover);
     };
 
     /**

@@ -49,7 +49,11 @@
 //       read as missed);
 //  G22  every client source outside the specs: no literal
 //       `joinedAsAnswer: false` (an Answer must never be taken for the
-//       caller's own ring).
+//       caller's own ring);
+//  G23  NotificationsWorker.tsx + IncomingCallOverlay.tsx + incomingCall.ts:
+//       a ring the phone opened is covered full-screen from the tap, before
+//       anything waits, until its popup is presented or the ring is over,
+//       and the cover has no Accept or Decline (M2 final audit, M1).
 //
 // G21 and G22 walk the whole client tree (see `clientSources`), not a list,
 // so a new call site anywhere is covered.
@@ -1827,4 +1831,207 @@ test("G22 every client source: no literal joinedAsAnswer: false", () => {
     [],
     "joinedAsAnswer must come from the voice store, never a literal false",
   );
+});
+
+test("G23 NotificationsWorker.tsx, IncomingCallOverlay.tsx, incomingCall.ts: a ring the phone opened is covered until it is presented or over (M1)", () => {
+  // The phone shows the app over its lock screen as soon as a ring opens
+  // it, but the popup waits for the chat to load (on a sleeping phone, for
+  // the websocket). Until then the last-open chat would be drawn over the
+  // lock screen. The worker marks the ring pending first thing, the overlay
+  // covers the screen from that mark, and every way the ring ends takes the
+  // mark down.
+  const worker = load(NOTIFICATIONS);
+  const handle = squash(arrowBody(worker, "handleAction"));
+
+  // The ring branch is what follows the Answer and the plain tap, which
+  // both return; the Answer branch never marks a ring
+  const answerAt = handle.indexOf("if(action.answer){");
+  const plainAt = handle.indexOf("if(!action.ring){");
+  assert.ok(
+    answerAt !== -1 && plainAt > answerAt,
+    "scan is stale: handleAction has no Answer branch before its plain tap",
+  );
+  const answerEnd = matchClose(handle, answerAt + "if(action.answer)".length);
+  const plainEnd = matchClose(handle, plainAt + "if(!action.ring)".length);
+  const answerBranch = handle.slice(answerAt, answerEnd + 1);
+  assert.ok(answerBranch.endsWith("return;}"), "the Answer branch returns");
+  assert.ok(
+    handle.slice(plainAt, plainEnd + 1).endsWith("return;}"),
+    "the plain tap returns",
+  );
+  assert.equal(
+    answerBranch.includes("setNativeRingPending("),
+    false,
+    "an Answer must not mark a ring pending",
+  );
+
+  // First thing in the ring branch, before parkOpen, deviceLocked,
+  // withChannel or any timer: nothing has said the phone is unlocked yet
+  const ringBranch = handle.slice(plainEnd + 1);
+  const mark = squash(
+    `const ringCover: NativeRingPending | undefined = channelId
+      ? { channelId }
+      : undefined;
+    if (ringCover && action.callerId) ringCover.callerId = action.callerId;
+    if (ringCover) setNativeRingPending(ringCover);`,
+  );
+  assert.ok(
+    ringBranch.startsWith(mark),
+    "the ring branch must open by marking the ring pending",
+  );
+
+  // Taken down early only when the tap snapshot AND a live answer both say
+  // unlocked, and only if it is still this tap's mark
+  const early = squash(
+    `const dropRingCover = () => {
+      if (nativeRingPending() === ringCover) setNativeRingPending(undefined);
+    };
+    if (ringCover && action.locked === false) {
+      deviceLocked()
+        .then((locked) => {
+          if (locked === false) dropRingCover();
+        })
+        .catch(() => {});
+    }`,
+  );
+  assert.ok(
+    ringBranch.startsWith(mark + early),
+    "the early drop must follow the mark and need both unlocked answers",
+  );
+
+  // A channel that never loads ends the wait and takes the mark down
+  has(ringBranch, "withChannel(presentOrEnd, settled, dropRingCover);");
+  const withChannel = squash(arrowBody(worker, "withChannel"));
+  has(
+    withChannel,
+    `else if (attempt < 20)
+      setTimeout(() => withChannel(fn, settled, gaveUp, attempt + 1), 500);
+    else gaveUp();`,
+    "withChannel must call gaveUp once it stops trying",
+  );
+
+  // A ring found over, a Decline (native, ours from any session) and the
+  // ring coming down all go through dropPendingOpen, which takes the mark
+  // down for that chat (any chat when none is named)
+  has(
+    arrowBody(worker, "dropPendingOpen"),
+    `const ringCover = nativeRingPending();
+    if (ringCover && (!channelId || ringCover.channelId === channelId))
+      setNativeRingPending(undefined);`,
+  );
+  has(
+    arrowBody(worker, "presentOrEnd"),
+    "dropPendingOpen(channel.id); return;",
+  );
+  has(
+    arrowBody(worker, "handleDeclined"),
+    "dropPendingOpen(channelId ?? undefined);",
+  );
+  has(
+    functionBody(worker, "onVoiceCallDeclined"),
+    "dropPendingOpen(channel.id);",
+  );
+
+  // Sign-out (the worker unmounting) takes it down whatever it is
+  has(
+    worker,
+    "onCleanup(() => { mounted = false; setNativeRingPending(undefined); });",
+  );
+
+  // Those are the only writes: one mark, every other write a clear
+  assert.deepEqual(calls(worker, "setNativeRingPending").map(squash), [
+    "setNativeRingPending(undefined)",
+    "setNativeRingPending(undefined)",
+    "setNativeRingPending(ringCover)",
+    "setNativeRingPending(undefined)",
+  ]);
+
+  // The module: presenting that chat's ring clears it after the popup is
+  // set, and any dismiss of that chat clears it, ring on screen or not
+  const ring = load(INCOMING_CALL);
+  has(ring, "createSignal<NativeRingPending>();");
+  has(ring, "export { nativeRingPending, setNativeRingPending };");
+  assert.equal(
+    squash(functionBody(ring, "clearNativeRingPending")),
+    squash(`{
+      const pending = nativeRingPending();
+      if (pending && (!channelId || pending.channelId === channelId))
+        setNativeRingPending(undefined);
+    }`),
+  );
+  assert.ok(
+    squash(functionBody(ring, "presentIncomingCall")).startsWith(
+      "{setIncomingCall(call);clearNativeRingPending(call.channel.id);",
+    ),
+    "presentIncomingCall must clear the mark right after setting the popup",
+  );
+  assert.ok(
+    squash(functionBody(ring, "dismissIncomingCall")).startsWith(
+      "{clearNativeRingPending(channelId);if(channelId&&incomingCall()?.channel.id!==channelId)return;",
+    ),
+    "dismissIncomingCall must clear the mark before its early return",
+  );
+
+  // The overlay: the same opaque cover, drawn from the mark while no ring
+  // is presented, straight inside the portal, with no buttons at all
+  const overlay = load(INCOMING_OVERLAY);
+  assert.match(
+    overlay,
+    /\bimport\s*\{[^}]*\bnativeRingPending\b[^}]*\}\s*from\s*"@revolt\/rtc(?:\/incomingCall)?";/,
+    "nativeRingPending must come from the rtc module",
+  );
+  const gate = "<Showwhen={!incomingCall()&&nativeRingPending()}>";
+  const shows = openTags(overlay, "Show").filter(
+    (tag) => squash(tag.text) === gate,
+  );
+  assert.equal(shows.length, 1, `expected one ${gate}`);
+  assert.deepEqual(
+    enclosing(overlay, shows[0].at, "Show"),
+    [],
+    "not nested in another Show",
+  );
+  assert.equal(
+    enclosing(overlay, shows[0].at, "Portal").length,
+    1,
+    "inside the Portal",
+  );
+  const covers = openTags(overlay, "Cover");
+  assert.equal(covers.length, 2, "the ring's cover and the pending cover");
+  const pending = covers.filter(
+    (tag) => enclosing(overlay, tag.at, "Show").at(-1) === gate,
+  );
+  assert.equal(pending.length, 1, "one cover drawn from the mark");
+  assert.deepEqual(
+    openBrackets(overlay, shows[0].end, pending[0].at),
+    [],
+    "the cover must be a plain child of its Show",
+  );
+  const cover = element(overlay, pending[0].at, "Cover");
+  has(cover, 'role="alertdialog"');
+  has(cover, 'aria-modal="true"');
+  has(cover, "<CoverName>{pendingCallerName()}</CoverName>");
+  const buttons = ["RingButtons", "<Button", "onPress", "accept", "decline"];
+  for (const banned of buttons)
+    assert.equal(cover.includes(banned), false, `the cover has ${banned}`);
+  has(
+    overlay,
+    "const pendingCallerName = () => pendingCaller()?.displayName ?? pendingCaller()?.username ?? t`Incoming Call`;",
+  );
+  has(
+    arrowBody(overlay, "pendingCaller"),
+    `const callerId = nativeRingPending()?.callerId;
+    return callerId ? client()?.users.get(callerId) : undefined;`,
+  );
+  const style = must(
+    /\bconst Cover = styled\("div", \{[\s\S]*?\n\}\);/.exec(overlay),
+    "scan is stale: Cover is not a styled div",
+  )[0];
+  const rules = [
+    'position: "fixed"',
+    "inset: 0",
+    "zIndex: 9999",
+    'backgroundColor: "#05090F"',
+  ];
+  for (const rule of rules)
+    has(style, rule, "the cover must stay full-screen, on top and opaque");
 });

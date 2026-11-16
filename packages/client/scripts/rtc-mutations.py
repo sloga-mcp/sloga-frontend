@@ -15508,5 +15508,213 @@ MUTATIONS += [
 ]
 
 
+# ---- M2 final audit, finding M2: the locked cold start ----------------------
+# A phone answering from its lock screen starts the page while locked, the
+# bridge's `#onReady` cannot open the key store, and the socket's `ready` does
+# not fire again. The key-status wait asks `retryStartupIfUnset()` once. The
+# `state-lockstart-*` entries reach the wait's TEXT (the header's file=STATE
+# rule); the `e2ee-lockstart-*` entries reach the retry's members, which
+# `stateWiring.test.ts` cuts out of the real `e2ee.ts` and RUNS in a stand-in
+# class, so those are behaviour, not text, apart from the ready-handler and
+# `#onReady` catch pins. Not here, and why: `#runStartup` never clearing
+# `#startupRun` makes the retry's `while (this.#startupRun) await ...` spin on
+# microtasks forever, which would hang the spec rather than fail it.
+E2EE_BRIDGE = "../client/e2ee.ts"
+
+MUTATIONS += [
+    Mutation(
+        id='state-lockstart-retry-removed',
+        what='the key-status wait no longer asks the bridge to retry its startup: a locked cold start polls a status nothing will load',
+        file=STATE,
+        search="""      void bridge.retryStartupIfUnset();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-lockstart-retry-awaited',
+        what='the wait awaits the retry, an unbounded native round trip outside its own bound and the move budget',
+        file=STATE,
+        search="""      void bridge.retryStartupIfUnset();""",
+        replace="""      await bridge.retryStartupIfUnset();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-lockstart-retry-after-poll',
+        what='the retry is asked only after the poll gave up, so its status can never reach this join',
+        file=STATE,
+        search="""      void bridge.retryStartupIfUnset();
+""",
+        replace="""""",
+        also=[
+            (
+                """          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+""",
+                """          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+      void bridge.retryStartupIfUnset();
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-lockstart-retry-before-deadline',
+        what='the retry is awaited before the deadline is fixed, so the bound starts only after it',
+        file=STATE,
+        search="""    const deadline = performance.now() + boundMs;
+""",
+        replace="""    await bridge.retryStartupIfUnset();
+    const deadline = performance.now() + boundMs;
+""",
+        also=[
+            (
+                """      void bridge.retryStartupIfUnset();
+""",
+                """""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-lockstart-retry-failure-coerced-off',
+        what='a retry that loaded nothing is turned into "encryption is off" (needs_setup: no gate, a plain join)',
+        file=STATE,
+        search="""          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+""",
+        replace="""          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+      if (bridge.status.get("state") === undefined)
+        bridge.status.set("state", {
+          enabled: false,
+          published: false,
+          device_id: null,
+          protocol_version: 1,
+          claimed: false,
+        });
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-ignores-loaded-status',
+        what='retryStartupIfUnset re-runs the startup although the status is loaded (a second claim, owner read and seed per join)',
+        file=E2EE_BRIDGE,
+        search="""      this.status.get("state") === undefined &&
+      !this.#disposed &&
+      !this.#ptSignedOut &&
+""",
+        replace="""      !this.#disposed &&
+      !this.#ptSignedOut &&
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-after-dispose',
+        what='a bridge whose client was replaced (account switch, logout) still runs a startup and claims under it',
+        file=E2EE_BRIDGE,
+        search="""      this.status.get("state") === undefined &&
+      !this.#disposed &&
+      !this.#ptSignedOut &&
+""",
+        replace="""      this.status.get("state") === undefined &&
+      !this.#ptSignedOut &&
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-after-signout',
+        what='a signed-out bridge still runs a startup',
+        file=E2EE_BRIDGE,
+        search="""      !this.#disposed &&
+      !this.#ptSignedOut &&
+      !!this.#client.user
+""",
+        replace="""      !this.#disposed &&
+      !!this.#client.user
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-without-user',
+        what='a bridge with no signed-in user still runs a startup',
+        file=E2EE_BRIDGE,
+        search="""      !this.#ptSignedOut &&
+      !!this.#client.user
+    );""",
+        replace="""      !this.#ptSignedOut
+    );""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-not-single-flight',
+        what='concurrent retries each start their own run instead of sharing one',
+        file=E2EE_BRIDGE,
+        search="""    this.#startupRetry ??= (async () => {""",
+        replace="""    this.#startupRetry = (async () => {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-ignores-run-in-flight',
+        what="the retry starts a second startup beside a ready's run still in flight",
+        file=E2EE_BRIDGE,
+        search="""        while (this.#startupRun) await this.#startupRun;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-no-recheck-after-wait',
+        what='after waiting for the run in flight the retry runs again without asking whether the status loaded or the bridge was signed out',
+        file=E2EE_BRIDGE,
+        search="""        if (this.#startupStillOwed()) await this.#runStartup();""",
+        replace="""        await this.#runStartup();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-rejects',
+        what='a failed startup rejects out of the retry',
+        file=E2EE_BRIDGE,
+        search="""        console.error("[e2ee] startup retry failed", error);""",
+        replace="""        throw error;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-sticks',
+        what='a settled retry is never forgotten, so the next join (after the unlock) gets the old failed retry back',
+        file=E2EE_BRIDGE,
+        search="""    })().finally(() => {
+      this.#startupRetry = null;
+    });""",
+        replace="""    })();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-ready-bypasses-run-record',
+        what="the socket's ready runs #onReady directly, so a retry cannot see it in flight and runs a second startup beside it",
+        file=E2EE_BRIDGE,
+        search="""      this.#invalidateProof();
+      void this.#runStartup();""",
+        replace="""      this.#invalidateProof();
+      void this.#onReady();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-startup-failure-coerced-off',
+        what='a startup that failed (a locked key store) records "encryption is off", which a join reads as needs_setup and joins in plain',
+        file=E2EE_BRIDGE,
+        search="""      console.error("[e2ee] startup failed", error);""",
+        replace="""      console.error("[e2ee] startup failed", error);
+      this.#setDisabledStatus();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+]
+
+
 if __name__ == "__main__":
     sys.exit(main())

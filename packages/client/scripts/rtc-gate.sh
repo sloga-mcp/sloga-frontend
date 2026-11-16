@@ -221,8 +221,10 @@ EXPECTED=(
   # the decline. 85 with the ringing fix round: our own Decline cancels our
   # own pending Answer, the camera flip through the store under the publish
   # gate, the hang-up timers' re-ask while the Room reconnects and the
-  # server's ring length.
-  "components/rtc/stateWiring.test.ts 85 0"
+  # server's ring length. 90 with the locked cold start (M2 final audit): the
+  # wait's one unawaited startup retry, the e2ee.ts run record and its catch,
+  # and three behaviour tests running the retry's own members.
+  "components/rtc/stateWiring.test.ts 90 0"
   # The AFK channel and its merge with member moves (FE-2). Before it this
   # gate ran NO AFK spec, and none of the ladder that decides whether a
   # client follows a move. memberGate's opt-in skip is not in its row: see
@@ -247,8 +249,9 @@ EXPECTED=(
   "components/client/pushPolicy.test.ts 29 0"
   # Every push subscribe goes through one site and carries the preferences.
   "components/client/pushSubscribeSites.scan.test.ts 7 0"
-  # The Slim view's gates and the call screen's security components.
-  "src/interface/slimGates.scan.test.ts 23 0"
+  # The Slim view's gates and the call screen's security components. 24 with
+  # the M2 final-audit fix (G23: the cover over a ring the phone opened).
+  "src/interface/slimGates.scan.test.ts 24 0"
   "components/client/callContacts.test.ts 33 0"
   "components/rtc/moveSurfacePins.test.ts 10 0"
   "components/rtc/idlePolicy.test.ts 54 0"

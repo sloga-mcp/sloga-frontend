@@ -3946,10 +3946,12 @@ class Voice {
     // below takes for a device that may be enrolled: the join went out
     // without this device's identity and the call sat behind the Leave /
     // Stay banner although the keys were about to load. So wait for the
-    // status first, for a bounded time. The wait only looks: a status that
-    // is still missing afterwards is read as missing, exactly as before, and
-    // the call is held. It is never taken to mean that encryption is off,
-    // which would let the call go out unencrypted with nothing held. Only
+    // status first, for a bounded time, asking the bridge once to retry its
+    // startup (a phone answered from its lock screen could not load it while
+    // locked). The wait writes nothing: a status that is still missing
+    // afterwards is read as missing, exactly as before, and the call is held.
+    // It is never taken to mean that encryption is off, which would let the
+    // call go out unencrypted with nothing held. Only
     // where the status can decide anything: a shell that cannot encrypt
     // reads `unsupported` whatever the status says.
     if (shellSupported && bridge && bridge.status.get("state") === undefined) {
@@ -6363,7 +6365,9 @@ class Voice {
    * status. Resolves when the status is there, when the bound runs out, or
    * when a newer join or a hang-up has superseded generation `gen`. The
    * bound is `KEY_STATUS_WAIT_MS`, or what is left of a move's budget when
-   * that is less.
+   * that is less. It first asks the bridge, once and without awaiting it, to
+   * retry its startup work if the status is still unset
+   * (`retryStartupIfUnset`), then polls within that same bound.
    *
    * It returns nothing on purpose. The caller reads the status again itself,
    * so a wait that timed out or threw leaves the status exactly as it was,
@@ -6381,6 +6385,13 @@ class Voice {
         : Math.min(KEY_STATUS_WAIT_MS, budgetLeftMs);
     const deadline = performance.now() + boundMs;
     try {
+      // A phone that rang on its lock screen started this page while locked,
+      // when the key store cannot open, and nothing loads the status again
+      // while the socket stays up. Ask the bridge to run its startup once
+      // more (on an Answer this is after the unlock); the loop below watches
+      // for it within the same bound. Not awaited: only the loop decides how
+      // long this is.
+      void bridge.retryStartupIfUnset();
       while (
         gen === this.#connectGen &&
         bridge.status.get("state") === undefined &&

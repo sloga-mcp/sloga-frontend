@@ -25,6 +25,7 @@
 // inside a pinned span does.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
 
 import {
@@ -3176,7 +3177,9 @@ test("source pin (ring): the key-status wait sits immediately before the readine
     1,
     "the raw status, in the one readiness read",
   );
-  // The wait hands nothing back and writes nothing: its whole body.
+  // The wait hands nothing back and writes nothing: its whole body. The one
+  // statement besides the poll is the startup retry, which writes no status
+  // here (the retry's own pins are in the next test).
   assert.equal(
     bodyOf(`async #waitForKeyStatus(
       bridge: E2EEBridge,
@@ -3189,6 +3192,7 @@ test("source pin (ring): the key-status wait sits immediately before the readine
         : Math.min(KEY_STATUS_WAIT_MS, budgetLeftMs);
     const deadline = performance.now() + boundMs;
     try {
+      void bridge.retryStartupIfUnset();
       while (
         gen === this.#connectGen &&
         bridge.status.get("state") === undefined &&
@@ -3216,6 +3220,340 @@ test("source pin (ring): the key-status wait sits immediately before the readine
     1,
     "the callback the other two awaits are in",
   );
+});
+
+// --- The locked cold start (M2 final audit, finding M2). A phone answering
+// from its lock screen starts the page while locked; the bridge's startup
+// (`#onReady` in `e2ee.ts`) cannot open the key store then, and the socket's
+// `ready` does not fire again. The key-status wait asks the bridge once to
+// retry (`retryStartupIfUnset`). `state.tsx` cannot load here, so its half is
+// pinned as text; `e2ee.ts` cannot load either, so the retry's own members
+// are cut out of the real file, stripped of their types and run in a small
+// stand-in class (`startupShim`), which exercises that code itself, not a
+// copy of it.
+
+const E2EE_SOURCE = readFileSync(
+  new URL("../client/e2ee.ts", import.meta.url),
+  "utf8",
+);
+const E2EE_CODE = codeOf(E2EE_SOURCE);
+
+/** The inside of the ONE block `head` opens in e2ee.ts's code. */
+function e2eeBodyOf(head: string): string {
+  const bodies = bodiesAfter(E2EE_CODE, head);
+  assert.equal(
+    bodies.length,
+    1,
+    `e2ee.ts must contain this exactly once, found ${bodies.length}:\n` +
+      codeOf(head),
+  );
+  return bodies[0];
+}
+
+/**
+ * The RAW text of the e2ee.ts member that starts with `head` (which must
+ * occur once, character for character), through the `;` of a field or the
+ * `}` that closes a method. Strings and comments are skipped while matching
+ * braces.
+ */
+function e2eeRawMember(head: string): string {
+  const found = E2EE_SOURCE.split(head).length - 1;
+  assert.equal(found, 1, `e2ee.ts must contain this exactly once: ${head}`);
+  const start = E2EE_SOURCE.indexOf(head);
+  if (!head.endsWith("{")) {
+    const end = E2EE_SOURCE.indexOf(";", start);
+    return E2EE_SOURCE.slice(start, end + 1);
+  }
+  let depth = 0;
+  for (let i = start + head.length - 1; i < E2EE_SOURCE.length; i++) {
+    const c = E2EE_SOURCE[i];
+    const next = E2EE_SOURCE[i + 1];
+    if (c === "/" && next === "/") {
+      i = E2EE_SOURCE.indexOf("\n", i);
+    } else if (c === "/" && next === "*") {
+      i = E2EE_SOURCE.indexOf("*/", i + 2) + 1;
+    } else if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1;
+      while (j < E2EE_SOURCE.length && E2EE_SOURCE[j] !== c) {
+        if (E2EE_SOURCE[j] === "\\") j++;
+        j++;
+      }
+      i = j;
+    } else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) {
+      return E2EE_SOURCE.slice(start, i + 1);
+    }
+  }
+  assert.fail(`e2ee.ts: ${head} is never closed`);
+}
+
+/** What the stand-in class exposes to the behaviour tests below. */
+interface StartupShim {
+  status: Map<string, unknown>;
+  onReadyCalls: number;
+  onReadyImpl: (shim: StartupShim) => Promise<void>;
+  setUser(user: { id: string } | undefined): void;
+  dispose(): void;
+  signOut(): void;
+  /** What the socket's `ready` does: `void this.#runStartup();`. */
+  ready(): void;
+  retryStartupIfUnset(): Promise<void>;
+}
+
+/**
+ * A class holding e2ee.ts's own `#startupRun`, `#startupRetry`,
+ * `#runStartup`, `#startupStillOwed` and `retryStartupIfUnset`, verbatim
+ * apart from their types, around stand-ins for what they read: `status`,
+ * `#client.user`, `#disposed`, `#ptSignedOut` and `#onReady` (which counts
+ * its runs and does whatever `onReadyImpl` says).
+ */
+function startupShim(): StartupShim {
+  const members = [
+    `#startupRun: Promise<void> | null = null;`,
+    `#startupRetry: Promise<void> | null = null;`,
+    `#runStartup(): Promise<void> {`,
+    `#startupStillOwed(): boolean {`,
+    `retryStartupIfUnset(): Promise<void> {`,
+  ]
+    .map(e2eeRawMember)
+    .join("\n");
+  const source = `(class {
+    status = new Map();
+    #client = { user: { id: "u1" } };
+    #disposed = false;
+    #ptSignedOut = false;
+    onReadyCalls = 0;
+    onReadyImpl = async () => {};
+    async #onReady() {
+      this.onReadyCalls++;
+      return this.onReadyImpl(this);
+    }
+    setUser(user) { this.#client.user = user; }
+    dispose() { this.#disposed = true; }
+    signOut() { this.#ptSignedOut = true; }
+    ready() { void this.#runStartup(); }
+    ${members}
+  })`;
+  const js = stripTypeScriptTypes(source, { mode: "strip" });
+  const Shim = new Function(`return ${js};`)() as new () => StartupShim;
+  return new Shim();
+}
+
+/** A promise and the function that settles it. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+/** Let every queued microtask (and promise chain) run. */
+const settle = () => new Promise<void>((r) => setTimeout(r, 0));
+
+const LOADED = { enabled: true, published: true, device_id: "d1" };
+
+test("source pin (ring, locked start): the key-status wait asks the bridge once to retry its startup, before polling, unawaited, inside the same bound", () => {
+  const wait = bodyOf(`async #waitForKeyStatus(
+      bridge: E2EEBridge,
+      gen: number,
+      budgetLeftMs: number | undefined,
+    ): Promise<void> {`);
+  const retry = `void bridge.retryStartupIfUnset();`;
+  assert.equal(
+    countWired(STATE_CODE, `retryStartupIfUnset(`),
+    1,
+    "one retry in the whole store, the wait's",
+  );
+  assert.equal(countWired(wait, retry), 1, "in the wait, and not awaited");
+  const at = (s: string) => firstAt("#waitForKeyStatus", wait, s);
+  assert.ok(
+    at(`const deadline = performance.now() + boundMs;`) < at(retry),
+    "the deadline is fixed before the retry starts, so the retry cannot move it",
+  );
+  assert.ok(at(retry) < at(`while (`), "asked before polling");
+  assert.equal(
+    braceDepthAt(wait, at(retry)),
+    1,
+    "at the top of the try, under no condition of its own",
+  );
+  assert.equal(
+    wait.split("await").length - 1,
+    1,
+    "the poll's timer is the wait's only await: the retry never lengthens it",
+  );
+  assert.equal(countWired(wait, `performance.now() < deadline`), 1);
+});
+
+test("source pin (ring, locked start): every e2ee.ts startup run goes through #runStartup, and the retry writes no status", () => {
+  assertLexesInSync("e2ee.ts", E2EE_SOURCE, E2EE_CODE, 100);
+  // The retry can only wait for a run in flight that it can see.
+  assert.equal(
+    countWired(E2EE_CODE, `this.#onReady()`),
+    1,
+    "#onReady is run from one place",
+  );
+  assert.equal(
+    countWired(
+      e2eeBodyOf(`#runStartup(): Promise<void> {`),
+      `const run = this.#onReady().finally(`,
+    ),
+    1,
+    "and that place is #runStartup",
+  );
+  assert.equal(
+    countWired(
+      e2eeBodyOf(`client.on("ready", () => {`),
+      `void this.#runStartup();`,
+    ),
+    1,
+    "the socket's ready runs it",
+  );
+  assert.equal(countWired(E2EE_CODE, `this.#runStartup()`), 2, "ready + retry");
+  assert.equal(
+    countWired(E2EE_CODE, `retryStartupIfUnset(): Promise<void> {`),
+    1,
+    "the public signature",
+  );
+  // A failed startup writes nothing: #onReady's catch only logs, so a throw
+  // (a locked key store) leaves the status unset and the join holds.
+  assert.equal(
+    countWired(
+      e2eeBodyOf(`async #onReady(): Promise<void> {`),
+      `} catch (error) {
+      console.error("[e2ee] startup failed", error);
+    } finally {`,
+    ),
+    1,
+    "#onReady's catch only logs",
+  );
+  for (const head of [
+    `#runStartup(): Promise<void> {`,
+    `#startupStillOwed(): boolean {`,
+    `retryStartupIfUnset(): Promise<void> {`,
+  ]) {
+    const body = e2eeBodyOf(head);
+    for (const write of [
+      `status.set(`,
+      `#setDisabledStatus(`,
+      `#disposed =`,
+      `#ptSignedOut =`,
+      `#claimAccepted =`,
+    ])
+      assert.equal(countWired(body, write), 0, `${head} writes ${write}`);
+  }
+});
+
+test("behaviour (locked start): retryStartupIfUnset does nothing when the status is loaded or the bridge no longer serves a signed-in client", async () => {
+  const loaded = startupShim();
+  loaded.status.set("state", LOADED);
+  await loaded.retryStartupIfUnset();
+  assert.equal(loaded.onReadyCalls, 0, "status already loaded");
+
+  for (const [what, end] of [
+    ["disposed (client replaced)", (s: StartupShim) => s.dispose()],
+    ["signed out", (s: StartupShim) => s.signOut()],
+    ["no signed-in user", (s: StartupShim) => s.setUser(undefined)],
+  ] as const) {
+    const shim = startupShim();
+    end(shim);
+    await shim.retryStartupIfUnset();
+    assert.equal(shim.onReadyCalls, 0, what);
+  }
+
+  const owed = startupShim();
+  owed.onReadyImpl = async (s) => void s.status.set("state", LOADED);
+  await owed.retryStartupIfUnset();
+  assert.equal(owed.onReadyCalls, 1, "unset and signed in: one run");
+  assert.deepEqual(owed.status.get("state"), LOADED);
+});
+
+test("behaviour (locked start): concurrent retries share one run; a run in flight is waited for, and a second runs only if it left the status unset", async () => {
+  // Three callers at once: one run, one promise.
+  const shared = startupShim();
+  const gate = deferred();
+  shared.onReadyImpl = async (s) => {
+    await gate.promise;
+    s.status.set("state", LOADED);
+  };
+  const a = shared.retryStartupIfUnset();
+  const b = shared.retryStartupIfUnset();
+  assert.equal(a, b, "the second caller gets the first caller's retry");
+  void shared.retryStartupIfUnset();
+  await settle();
+  assert.equal(shared.onReadyCalls, 1, "one run while it is in flight");
+  gate.resolve();
+  await a;
+  assert.equal(shared.onReadyCalls, 1, "and still one once it loaded");
+
+  // A `ready` run in flight that loads the status: the retry waits for it
+  // and starts nothing of its own.
+  const inFlight = startupShim();
+  const readyGate = deferred();
+  inFlight.onReadyImpl = async (s) => {
+    await readyGate.promise;
+    s.status.set("state", LOADED);
+  };
+  inFlight.ready();
+  const waited = inFlight.retryStartupIfUnset();
+  await settle();
+  assert.equal(inFlight.onReadyCalls, 1, "no second run beside the ready's");
+  readyGate.resolve();
+  await waited;
+  assert.equal(inFlight.onReadyCalls, 1, "the ready's run loaded it");
+
+  // A `ready` run that began while locked and fails: once it ends with the
+  // status still unset, the retry runs the startup once more.
+  const failed = startupShim();
+  const lockedGate = deferred();
+  let run = 0;
+  failed.onReadyImpl = async (s) => {
+    run++;
+    // The first run is the locked one: it loads nothing.
+    if (run === 1) await lockedGate.promise;
+    else s.status.set("state", LOADED);
+  };
+  failed.ready();
+  const retried = failed.retryStartupIfUnset();
+  await settle();
+  assert.equal(failed.onReadyCalls, 1, "waits for the locked run first");
+  lockedGate.resolve();
+  await retried;
+  assert.equal(failed.onReadyCalls, 2, "then one more run");
+  assert.deepEqual(failed.status.get("state"), LOADED);
+
+  // Signed out while it waited for the run in flight: no new run.
+  const gone = startupShim();
+  const goneGate = deferred();
+  gone.onReadyImpl = () => goneGate.promise;
+  gone.ready();
+  const ended = gone.retryStartupIfUnset();
+  gone.signOut();
+  goneGate.resolve();
+  await ended;
+  assert.equal(gone.onReadyCalls, 1, "nothing runs for a signed-out bridge");
+});
+
+test("behaviour (locked start): the retry never rejects, stands nothing in for a status that did not load, and a later wait may retry again", async () => {
+  const shim = startupShim();
+  // Still locked: the startup fails (the real #onReady catches its own
+  // failures; a rejection here proves the retry would hold even if not).
+  shim.onReadyImpl = async () => {
+    throw new Error("locked key store");
+  };
+  const original = console.error;
+  console.error = () => {};
+  try {
+    await assert.doesNotReject(shim.retryStartupIfUnset());
+  } finally {
+    console.error = original;
+  }
+  assert.equal(shim.onReadyCalls, 1);
+  assert.equal(shim.status.get("state"), undefined, "still unset, not 'off'");
+
+  // The phone is unlocked now: the next join's wait retries, and it loads.
+  shim.onReadyImpl = async (s) => void s.status.set("state", LOADED);
+  await shim.retryStartupIfUnset();
+  assert.equal(shim.onReadyCalls, 2, "a settled retry does not block the next");
+  assert.deepEqual(shim.status.get("state"), LOADED);
 });
 
 test("source pin (ring): answer is worked out once, at the joinCall, from the attempt's own options, and a ready-made token is noted before M3 can drop it", () => {

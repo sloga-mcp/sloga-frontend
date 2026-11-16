@@ -2138,7 +2138,7 @@ export class E2EEBridge implements E2EEAdapter {
       this.#clearClaimRetry();
       // A (re)connect may follow any amount of missed device traffic
       this.#invalidateProof();
-      void this.#onReady();
+      void this.#runStartup();
     });
     // The courier's view only (see `#socketDown`): `#claimAccepted` itself
     // keeps its meaning for the group proof on every shell.
@@ -2611,6 +2611,70 @@ export class E2EEBridge implements E2EEAdapter {
       // marks it ready (structural), then builds the manager if capable.
       void this.#protectedOnReady();
     }
+  }
+
+  /** The `#onReady` run in flight, whoever started it. */
+  #startupRun: Promise<void> | null = null;
+
+  /** The retry `retryStartupIfUnset` is running, shared by its callers. */
+  #startupRetry: Promise<void> | null = null;
+
+  /**
+   * Run `#onReady` and note it as the run in flight. A `ready` always starts
+   * a fresh run here, exactly as it did before the retry existed.
+   */
+  #runStartup(): Promise<void> {
+    const run = this.#onReady().finally(() => {
+      if (this.#startupRun === run) this.#startupRun = null;
+    });
+    this.#startupRun = run;
+    return run;
+  }
+
+  /**
+   * Whether the startup work is still owed: no status has loaded, and this
+   * bridge still serves a signed-in client (not replaced by `dispose()`, not
+   * signed out).
+   */
+  #startupStillOwed(): boolean {
+    return (
+      this.status.get("state") === undefined &&
+      !this.#disposed &&
+      !this.#ptSignedOut &&
+      !!this.#client.user
+    );
+  }
+
+  /**
+   * Run the startup work (`#onReady`: provisioning check, owner read, status
+   * load, device claim) once more if the status has still not loaded.
+   *
+   * A phone answering a call from its lock screen starts this page while it
+   * is locked. The key store cannot be opened on a locked phone (the Android
+   * Keystore wrapping key requires an unlocked device), so the status load
+   * fails, and nothing runs it again while the socket stays up. A join calls
+   * this after the unlock.
+   *
+   * Single-flight: concurrent callers share one retry. A run already in
+   * flight (a `ready`'s) is waited for first, and a new run starts only if
+   * the status is still missing after it. A no-op when the status is already
+   * there or the bridge no longer serves a signed-in client. Never rejects:
+   * `#onReady` catches its own failures and leaves the status unset, and
+   * nothing here stands a value in for a status that did not load.
+   */
+  retryStartupIfUnset(): Promise<void> {
+    if (!this.#startupStillOwed()) return Promise.resolve();
+    this.#startupRetry ??= (async () => {
+      try {
+        while (this.#startupRun) await this.#startupRun;
+        if (this.#startupStillOwed()) await this.#runStartup();
+      } catch (error) {
+        console.error("[e2ee] startup retry failed", error);
+      }
+    })().finally(() => {
+      this.#startupRetry = null;
+    });
+    return this.#startupRetry;
   }
 
   /**

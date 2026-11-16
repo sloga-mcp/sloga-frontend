@@ -71,6 +71,35 @@ const [incomingCall, setIncomingCall] = createSignal<IncomingCall>();
 export { incomingCall };
 
 /**
+ * A ring the phone has opened (the notification tapped, or the full-screen
+ * ring launched over the lock screen) that the web layer has not presented
+ * yet, because the chat is still loading or the client still waits for its
+ * Ready. The phone may already show the app over its lock screen, so while
+ * this is set the overlay covers the whole screen and the chat behind it is
+ * never drawn there. Set by NotificationsWorker only, and only on Android
+ * and iOS. Cleared when that chat's ring is presented or dismissed, and by
+ * the worker whenever the ring ends without being presented.
+ */
+export interface NativeRingPending {
+  /** Chat the ring is for */
+  channelId: string;
+  /** User who started the call, when the notification named one */
+  callerId?: string;
+}
+
+const [nativeRingPending, setNativeRingPending] =
+  createSignal<NativeRingPending>();
+
+export { nativeRingPending, setNativeRingPending };
+
+/** Clear the pending native ring if it is this chat's, or any if none named */
+function clearNativeRingPending(channelId?: string) {
+  const pending = nativeRingPending();
+  if (pending && (!channelId || pending.channelId === channelId))
+    setNativeRingPending(undefined);
+}
+
+/**
  * Desktop shell: flash the taskbar icon while ringing (no-op elsewhere).
  * UserAttentionType.Critical = 1 — Windows flashes until the window is
  * focused; passing null cancels.
@@ -125,14 +154,20 @@ function dismissNativeCallNotification(
   }
 }
 
-/** Present the ringing popup for a starting call */
+/**
+ * Present the ringing popup for a starting call. A pending native ring for
+ * the same chat is cleared after the popup is set, so the screen is never
+ * left without either of them.
+ */
 export function presentIncomingCall(call: IncomingCall) {
   setIncomingCall(call);
+  clearNativeRingPending(call.channel.id);
   requestWindowAttention(true);
 }
 
 /**
- * Dismiss the ringing popup.
+ * Dismiss the ringing popup, and the pending native ring for the same chat
+ * (whichever is pending when no chat is named), whatever the reason.
  * @param channelId Only dismiss if the popup belongs to this channel
  * @param reason Why the ring stopped, passed on to the Android notification
  */
@@ -140,6 +175,7 @@ export function dismissIncomingCall(
   channelId?: string,
   reason?: IncomingCallDismissReason,
 ): void {
+  clearNativeRingPending(channelId);
   if (channelId && incomingCall()?.channel.id !== channelId) return;
   const active = incomingCall();
   if (active) {
