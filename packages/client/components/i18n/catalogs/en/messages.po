@@ -1980,6 +1980,10 @@ msgstr "Chat Input"
 msgid "Check the pointer is on the right screen"
 msgstr "Check the pointer is on the right screen"
 
+#: components/modal/modals/DeleteAccountRequested.tsx
+msgid "Check your email"
+msgstr "Check your email"
+
 #: components/auth/src/flows/FlowCheck.tsx
 msgid "Check your mail!"
 msgstr "Check your mail!"
@@ -2350,6 +2354,10 @@ msgstr "Your support is now linked to your account. Thank you!"
 #: components/app/interface/settings/user/Supporter.tsx
 msgid "We'll review this claim."
 msgstr "We'll review this claim."
+
+#: components/modal/modals/DeleteAccountRequested.tsx
+msgid "We've sent a link to the email address on your account. Open it and press Delete permanently to finish deleting your account. Once you confirm, there is no going back."
+msgstr "We've sent a link to the email address on your account. Open it and press Delete permanently to finish deleting your account. Once you confirm, there is no going back."
 
 #: components/app/interface/settings/user/Supporter.tsx
 msgid "We haven't received that transaction yet. Try again in a few minutes."
@@ -3110,6 +3118,10 @@ msgstr "Bulk delete messages"
 msgid "Delete Message History"
 msgstr "Delete Message History"
 
+#: components/auth/src/flows/FlowDelete.tsx
+msgid "Delete permanently"
+msgstr "Delete permanently"
+
 #: components/app/menus/ChannelContextMenu.tsx
 msgid "Delete post"
 msgstr "Delete post"
@@ -3133,6 +3145,15 @@ msgstr "Delete thread"
 #: components/app/interface/settings/ChannelSettings.tsx
 msgid "Delete Thread"
 msgstr "Delete Thread"
+
+#: components/auth/src/flows/FlowDelete.tsx
+#: components/auth/src/flows/FlowDelete.tsx
+msgid "Delete your account"
+msgstr "Delete your account"
+
+#: components/modal/modals/DeleteAccountConfirm.tsx
+msgid "Delete your account?"
+msgstr "Delete your account?"
 
 #: src/interface/ServerEvents.tsx
 #: components/app/interface/settings/server/stickers/StickerList.tsx
@@ -3574,6 +3595,10 @@ msgstr "email"
 msgid "Email"
 msgstr "Email"
 
+#: components/modal/modals/DeleteAccountConfirm.tsx
+msgid "Email me the link"
+msgstr "Email me the link"
+
 #: components/app/interface/settings/server/soundboard/SoundboardList.tsx
 msgid "Emoji (optional)"
 msgstr "Emoji (optional)"
@@ -3687,6 +3712,10 @@ msgstr "Try again in a moment."
 #: components/modal/modals/E2EEVerify.tsx
 msgid "The keys changed while the system dialog was open. Check them again."
 msgstr "The keys changed while the system dialog was open. Check them again."
+
+#: components/modal/modals/DeleteAccountRequested.tsx
+msgid "The link works for 24 hours. Changed your mind? Just sign in again before you use the link, and the request is cancelled."
+msgstr "The link works for 24 hours. Changed your mind? Just sign in again before you use the link, and the request is cancelled."
 
 #: components/modal/modals/E2EEEnableGroup.tsx
 #: components/modal/modals/AddFriendToGroup.tsx
@@ -6793,6 +6822,14 @@ msgstr "{remaining} to go"
 msgid "We'll contact you to design your badge."
 msgstr "We'll contact you to design your badge."
 
+#: components/modal/modals/DeleteAccountConfirm.tsx
+msgid "We'll email you a link to finish. Once you confirm from that email, your account and everything tied to it are deleted right away."
+msgstr "We'll email you a link to finish. Once you confirm from that email, your account and everything tied to it are deleted right away."
+
+#: components/app/interface/settings/user/Account.tsx
+msgid "We'll email you a link. Once you confirm from that email, your account and data are deleted right away. This can't be undone. Changed your mind? Just sign in again before using the link."
+msgstr "We'll email you a link. Once you confirm from that email, your account and data are deleted right away. This can't be undone. Changed your mind? Just sign in again before using the link."
+
 #: components/ui/components/features/voice/callCard/ParticipantTile.tsx
 msgid "People can draw on your screen"
 msgstr "People can draw on your screen"
@@ -8440,6 +8477,10 @@ msgstr "Prot is the credit you'll use for Protected servers and channels. Your b
 msgid "Thank you! Your Prot is in your wallet."
 msgstr "Thank you! Your Prot is in your wallet."
 
+#: components/auth/src/flows/FlowDelete.tsx
+msgid "Thanks for being part of Sloga."
+msgstr "Thanks for being part of Sloga."
+
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Your balance"
 msgstr "Your balance"
@@ -8882,6 +8923,10 @@ msgstr "Something went wrong while signing you in with Google. Please try again.
 #: components/i18n/errors.ts
 msgid "Something went wrong! {error}"
 msgstr "Something went wrong! {error}"
+
+#: components/auth/src/flows/FlowDelete.tsx
+msgid "Something went wrong. Check your connection and try again."
+msgstr "Something went wrong. Check your connection and try again."
 
 #: components/app/interface/settings/user/voice/EntranceSoundOptions.tsx
 msgid "Sound"
@@ -10516,6 +10561,10 @@ msgstr "This isn't an announcement channel."
 msgid "This key is also used by a Sloga shortcut, so while Sloga is focused pressing it may do both."
 msgstr "This key is also used by a Sloga shortcut, so while Sloga is focused pressing it may do both."
 
+#: components/auth/src/flows/FlowDelete.tsx
+msgid "This link is invalid or has expired, or the request was cancelled because you signed in. To delete your account, sign in and start again from Settings → Account Info."
+msgstr "This link is invalid or has expired, or the request was cancelled because you signed in. To delete your account, sign in and start again from Settings → Account Info."
+
 #: components/i18n/errors.ts
 msgid "This message has already been published."
 msgstr "This message has already been published."
@@ -10555,6 +10604,10 @@ msgstr "This participant's device is not verified yet. Compare safety numbers in
 #: components/i18n/errors.ts
 msgid "This password has previously appeared in security leaks, please use another password."
 msgstr "This password has previously appeared in security leaks, please use another password."
+
+#: components/auth/src/flows/FlowDelete.tsx
+msgid "This permanently deletes your Sloga account, your messages and everything tied to it. There is no going back."
+msgstr "This permanently deletes your Sloga account, your messages and everything tied to it. There is no going back."
 
 #: components/modal/modals/EditForumPostTags.tsx
 msgid "This post has a tag only moderators can change, so only a moderator can edit its tags."
@@ -10979,6 +11032,11 @@ msgstr "Transcript"
 #: components/ui/components/features/voice/callCard/VoiceTranscribeButton.tsx
 msgid "Transcription isn't supported on this device"
 msgstr "Transcription isn't supported on this device"
+
+#: components/app/interface/settings/user/Account.tsx
+#: components/app/interface/settings/user/Account.tsx
+msgid "Transfer or delete the servers you own first, then come back here."
+msgstr "Transfer or delete the servers you own first, then come back here."
 
 #: components/app/interface/settings/user/Language.tsx
 msgid "Translate captions to"
@@ -11518,6 +11576,10 @@ msgstr "Your {sourceLabel} import failed."
 msgid "Your {sourceLabel} import finished."
 msgstr "Your {sourceLabel} import finished."
 
+#: components/auth/src/flows/FlowDelete.tsx
+msgid "Your account has been deleted."
+msgstr "Your account has been deleted."
+
 #: components/client/E2EEDeviceToastWorker.tsx
 msgid "Your other app became a separate device."
 msgstr "Your other app became a separate device."
@@ -12027,6 +12089,10 @@ msgstr "You need the Manage Roles permission to duplicate a role."
 #: components/i18n/errors.ts
 msgid "You need to be in the call to do that."
 msgstr "You need to be in the call to do that."
+
+#: components/auth/src/flows/FlowDelete.tsx
+msgid "You still own one or more servers. Transfer or delete them in Sloga, then come back to this link."
+msgstr "You still own one or more servers. Transfer or delete them in Sloga, then come back to this link."
 
 #: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
 msgid "You turned off encryption for this call. Your audio and video are being sent unencrypted — the server will be able to read this call."
