@@ -117,10 +117,25 @@ export function serverProtectedOf(
 }
 
 /**
- * D3's notice split, notice only (never the state): a Tauri main window
+ * S7 D9: whether this window is a structural shell, from the bridge's
+ * `structuralShell()` (the Tauri main window; Electron and Android per
+ * their native capability and the server flag; never iOS, web, popout or
+ * overlay). False without a bridge surface or that method.
+ */
+export function structuralShellOf(ui: ProtectedUiApi | null): boolean {
+  return (
+    ui !== null &&
+    typeof ui.structuralShell === "function" &&
+    ui.structuralShell() === true
+  );
+}
+
+/**
+ * D3's notice split, notice only (never the state): a structural shell
  * whose bridge is merely off or unprovisioned gets `enable_e2ee`; every
  * other incapable case keeps `not_available`. An unknown status is not
- * "off".
+ * "off". The `tauri` names here and in callers (`tauri`, `tauriE2eeOff`)
+ * predate S7 and mean "structural shell" (`structuralShellOf`), not Tauri.
  */
 export function tauriE2eeOffOf(i: {
   tauri: boolean;
@@ -255,14 +270,6 @@ function access<T>(v: MaybeAccessor<T>): T {
   return typeof v === "function" ? (v as Accessor<T>)() : v;
 }
 
-function isTauriShell(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof (window as { __TAURI__?: { core?: { invoke?: unknown } } }).__TAURI__
-      ?.core?.invoke === "function"
-  );
-}
-
 /** The bridge's protected surface, tracked through `useE2EE`. */
 function useProtectedUi(): Accessor<ProtectedUiApi | null> {
   const client = useClient();
@@ -279,7 +286,6 @@ export function useProtectedShield(
 ): Accessor<ProtectedShield | null> {
   const client = useClient();
   const ui = useProtectedUi();
-  const tauri = isTauriShell();
   const [now, setNow] = createSignal(Date.now());
 
   const view = createMemo((): ProtectedChannelView | null => {
@@ -336,7 +342,8 @@ export function useProtectedShield(
           locallyPinned,
           capable,
           tauriE2eeOff: tauriE2eeOffOf({
-            tauri,
+            // tracked: the bridge's version counter re-runs this memo
+            tauri: structuralShellOf(api),
             bridgePresent: !!e2ee,
             capable,
             status,

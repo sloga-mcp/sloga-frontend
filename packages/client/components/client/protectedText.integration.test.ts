@@ -11,6 +11,9 @@
 // own view is ONE native `live: false` decrypt of the delivered row) and
 // asserts the held Update's persisted stage is never resubmitted (X#2; the
 // guard's own control, C-X2c, is pinned by the unit "C-X2b" case).
+// 3. S7 C9: a decrypt refused by the platform protector, through the REAL
+//    B4, is held pending (never B4's red `error` marker) and decrypts once
+//    the store opens. Control: bypass the manager's protector gate → FAILS.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -553,6 +556,73 @@ test("protect → genesis end to end (real B2): sign, PUT, read back, verify, cr
     [...port.storeMap.keys()].some((k) => k.startsWith("protected-publish:")),
     false,
     "D7c entry cleared once resolved",
+  );
+  m.dispose();
+});
+
+test("C9 protector: a refused decrypt (real B4) stays pending, never a red marker, and decrypts once the store opens", async () => {
+  const port = new Port();
+  baseline(port);
+  let locked = true;
+  let refused = 0;
+  port.handlers.e2ee_text_decrypt = (a) => {
+    if (locked) {
+      refused += 1;
+      throw { type: "protector" };
+    }
+    return {
+      message_id: a.messageId,
+      channel_id: a.channelId,
+      group_id: G0,
+      epoch: a.encrypted.epoch,
+      author_user_id: a.authorUserId,
+      sender_device_id: DEV,
+      cid: a.nonce,
+      ts: port.clock,
+      text: "hello",
+      replies: [],
+      sender_verified: true,
+      ts_skew: false,
+    };
+  };
+  const row = {
+    id: "MSG9",
+    channelId: CH,
+    authorId: PEER,
+    nonce: CID,
+    encrypted: {
+      v: 1 as const,
+      group_id: G0,
+      epoch: 3,
+      sender_device_id: DEV,
+      nonce: "AEAD",
+      ciphertext: "CT",
+      sig: "SIG",
+    },
+  };
+  const m = make(port);
+  m.onMessage(row, false);
+  await port.advance(0);
+  assert.equal(refused, 1);
+  assert.deepEqual(port.msgViews.get("MSG9"), { status: "pending" });
+  await port.advance(1_999);
+  assert.equal(refused, 1, "no second native call inside the 2 s window");
+  await port.advance(1);
+  assert.equal(refused, 2, "one probe at 2 s");
+  assert.deepEqual(port.msgViews.get("MSG9"), { status: "pending" });
+  // A re-request while held neither re-issues nor marks it.
+  m.onMessage(row, false);
+  await port.advance(0);
+  assert.equal(refused, 2);
+  assert.deepEqual(port.msgViews.get("MSG9"), { status: "pending" });
+  locked = false;
+  await port.advance(4_000);
+  const v = port.msgViews.get("MSG9");
+  assert.ok(v?.status === "ok" && v.text === "hello", JSON.stringify(v));
+  assert.equal(
+    port.invokes.filter((i) => i.cmd === "e2ee_text_decrypt").length,
+    3,
+    "two refused + one decrypt",
   );
   m.dispose();
 });

@@ -3803,9 +3803,17 @@ msgstr "Encrypted calls are turned off on this server right now."
 msgid "Encrypted calls aren't available on this device yet."
 msgstr "Encrypted calls aren't available on this device yet."
 
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "Encrypted calls on iPhone are paused right now. Calls on this device are not encrypted."
+msgstr "Encrypted calls on iPhone are paused right now. Calls on this device are not encrypted."
+
 #: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
 msgid "Encrypted calls aren't available on this device, so your audio and video are not encrypted here. Everyone else in this call can see that."
 msgstr "Encrypted calls aren't available on this device, so your audio and video are not encrypted here. Everyone else in this call can see that."
+
+#: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
+msgid "Encrypted calls on iPhone are paused right now. This call is not encrypted."
+msgstr "Encrypted calls on iPhone are paused right now. This call is not encrypted."
 
 #: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
 msgid "Encrypted calls aren't set up on this device, so your audio and video are not encrypted here. Set encryption up to encrypt your next call."
@@ -9843,6 +9851,10 @@ msgstr "Re-securing this channel…"
 #: components/i18n/errors.ts
 msgid "You don't have a seat in this protected channel. Ask the owner for a seat."
 msgstr "You don't have a seat in this protected channel. Ask the owner for a seat."
+
+#: components/client/protectedCopy.ts
+msgid "Protected channels aren't available here yet. They work in the main window of the Sloga app for Windows, Linux and Android."
+msgstr "Protected channels aren't available here yet. They work in the main window of the Sloga app for Windows, Linux and Android."
 
 #: components/client/protectedCopy.ts
 msgid "Protected channels aren't available here yet. Open this channel in the main window of the Sloga desktop app."

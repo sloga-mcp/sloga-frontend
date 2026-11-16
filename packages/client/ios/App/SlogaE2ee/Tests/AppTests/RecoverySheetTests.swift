@@ -500,7 +500,7 @@ final class RecoverySheetTests: XCTestCase {
         holders.append(holder)
         let provisioned = offMain("engine setup", file: file, line: line) { () -> Bool in
             dispatchPrecondition(condition: .notOnQueue(.main))
-            let engine = try E2eeEngine(storeDir: dir.path, confirm: holder.confirm)
+            let engine = try E2eeEngine(storeDir: dir.path, confirm: holder.confirm, keysChanged: KeysChangedRelay(deliver: { _, _ in }))
             holder.set(engine)
             if provision {
                 holder.enableJson.set(try engine.enable())

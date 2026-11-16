@@ -50,12 +50,24 @@ import {
  * - `unsupported` — this shell can never encrypt calls (a browser, an
  *   unaudited Electron build, a shell with no native key-push channel). There
  *   is nothing for the user to set up.
+ * - `paused` — the server's global iOS kill switch is off (plan D14,
+ *   `iosCallSwitch`, snapshotted once at call start). The shell COULD encrypt,
+ *   but encrypted calls on this platform are paused for everyone, so this
+ *   call takes the LOUD non-enrolled path: not capable, no session, no
+ *   setup remedy (nothing on this device can undo a server switch). It has
+ *   its own copy and must never read as `unsupported`'s "not available on
+ *   this device", which would be a lie about the shell; that is also why the
+ *   switch does not ride `e2eeCallsEnabled` (folded into `shellSupported`).
+ *   A pause never reuses an earlier per-channel plaintext consent: nothing
+ *   here takes one, and a consumer must not map this reason onto a state
+ *   that does.
  */
 export type CallEncryptionReadiness =
   | "ready"
   | "needs_setup"
   | "owned_elsewhere"
-  | "unsupported";
+  | "unsupported"
+  | "paused";
 
 export interface CallEncryptionReadinessInput {
   /**
@@ -81,18 +93,36 @@ export interface CallEncryptionReadinessInput {
    * rule does not care which — the consequence is the same.
    */
   deviceOwnedElsewhere: boolean;
+  /**
+   * The server's iOS call-E2EE switch read OFF at call start
+   * (`iosCallSwitch(...) === "off"`, plan D14). REQUIRED, not optional, so a
+   * caller cannot forget it and silently read the switch as on. Always false
+   * off iOS (`iosCallSwitch` answers `"on"` there) and when the server's
+   * value is absent or unreachable (default ON-if-built).
+   */
+  pausedByServer: boolean;
 }
 
 /**
- * The reason. `owned_elsewhere` outranks `needs_setup`: both are "not set up
- * for you here", but only the first has a store to clear, and telling a user
- * to "set up encryption" when the blocker is another account's store sends
- * them into an enable flow that cannot succeed.
+ * The reason, in precedence order:
+ *
+ * 1. `unsupported` — a shell that can never encrypt is never "paused";
+ *    saying so would promise encryption coming back to a browser.
+ * 2. `paused` — the server switch outranks every DEVICE term. The device's
+ *    own state cannot encrypt this call either way, and in particular a
+ *    paused call must not reach `ready` through an UNRESOLVED status (R2-4),
+ *    which would build a session the server has told this platform not to
+ *    run.
+ * 3. `owned_elsewhere` outranks `needs_setup`: both are "not set up for you
+ *    here", but only the first has a store to clear, and telling a user to
+ *    "set up encryption" when the blocker is another account's store sends
+ *    them into an enable flow that cannot succeed.
  */
 export function callEncryptionReadiness(
   input: CallEncryptionReadinessInput,
 ): CallEncryptionReadiness {
   if (!input.shellSupported) return "unsupported";
+  if (input.pausedByServer) return "paused";
   if (input.deviceOwnedElsewhere) return "owned_elsewhere";
   if (e2eeProvenOff(input.status)) return "needs_setup";
   return "ready";
@@ -100,11 +130,15 @@ export function callEncryptionReadiness(
 
 /**
  * Whether the user could fix this from Settings on this device. False for
- * `unsupported` (nothing to set up) and `ready` (nothing wrong).
+ * `unsupported` (nothing to set up), `paused` (a server switch; no setup on
+ * this device lifts it) and `ready` (nothing wrong).
  *
  * Also the chip's `deviceNeedsSetup` term, which is what makes a device that
  * cannot encrypt say so WITHOUT waiting on the open-group probe — see
- * `chipState`.
+ * `chipState`. 🔴 `paused` is outside it by contract (C-W3-9: no setup
+ * remedy), so this term does NOT make a paused device speak without the
+ * probe; if a paused call must be loud there too, the caller has to add
+ * that as its own term rather than widen this one.
  */
 export function encryptionSetupAvailable(
   readiness: CallEncryptionReadiness,
@@ -135,6 +169,11 @@ export function encryptionSetupAvailable(
  * install has no identity to attempt anything with, and holding every fresh
  * desktop's first call behind a consent press is a product change this rule
  * has no business making.
+ *
+ * `paused` is NOT capable either (plan D14): the switch exists to put a bad
+ * iOS build back on honest non-encrypted calls, so it must build no session
+ * and mint no device-qualified identity. Its loudness comes from its own
+ * readiness reason and copy, not from a latch.
  */
 export function callEncryptionCapable(
   readiness: CallEncryptionReadiness,

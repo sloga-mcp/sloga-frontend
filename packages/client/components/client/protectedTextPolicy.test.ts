@@ -9,7 +9,9 @@
 // unknown-outcome rule, M5, and the envelope classifier for every text tag.
 // The plan 7 named mutation controls in this module each have a test below
 // marked "control:". W4d (lane L-MGR): the own-send binding (X#4, control
-// C-X4) and `not_member` on a send and a commit (X#5, C-X5a / C-X5b).
+// C-X4) and `not_member` on a send and a commit (X#5, C-X5a / C-X5b). S7 C9
+// (the tests named "C9 protector ..."): the protector back-off reducers and
+// the `protector` envelope verdict (EL-F7, AND-F13).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -27,11 +29,17 @@ import {
   confirmAfterId,
   errorTypeOf,
   isCatchUpDesync,
+  isProtectorError,
   JOIN_RETRIES,
   JOIN_RETRY_MS,
   LEAF_STAGGER_MS,
   leafStaggerMs,
   ownSendRowBinds,
+  PROTECTOR_BACKOFF,
+  PROTECTOR_GATE_OPEN,
+  protectorBackoffMs,
+  protectorGateAfter,
+  protectorGateStep,
   PUBLISH_BACKOFF,
   publishBackoffMs,
   publishResolved,
@@ -1337,6 +1345,153 @@ test("control: busy holds for a retry and leaves groupError unchanged", () => {
     assert.deepEqual(v, { ack: false, action: "hold" });
     assert.equal("groupError" in v, false);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Protector back-off (S7 C9: EL-F7 Linux keyring, AND-F13 Android Keystore)
+// ---------------------------------------------------------------------------
+
+const PROTECTOR_REFUSALS: unknown[] = [
+  { type: "protector" },
+  { source: "native", error: { type: "protector" } },
+  { type: "protector_locked" },
+  { source: "native", error: { type: "protector_locked" } },
+];
+
+test("C9 protector: an envelope is held, never acked, never a groupError, never a leave or rejoin", () => {
+  for (const err of PROTECTOR_REFUSALS) {
+    const v = classifyTextEnvelopeError(err);
+    assert.deepEqual(v, { ack: false, action: "hold" });
+    assert.equal("groupError" in v, false);
+  }
+});
+
+test("C9 protector: isProtectorError matches a native refusal only", () => {
+  for (const err of PROTECTOR_REFUSALS) {
+    assert.equal(isProtectorError(err), true);
+  }
+  for (const err of [
+    { type: "busy" },
+    { type: "declined" },
+    { type: "storage", code: "x" },
+    { type: "store_corrupt" },
+    { source: "native", error: { type: "busy" } },
+    { source: "server", status: 500, type: "protector", body: null },
+    { source: "client", reason: "protector" },
+    { source: "transport" },
+    "protector",
+    new Error("protector"),
+    null,
+    undefined,
+  ]) {
+    assert.equal(isProtectorError(err), false, JSON.stringify(err));
+  }
+});
+
+test("C9 protector: back-off is 2 s doubling, capped at 60 s", () => {
+  assert.deepEqual(PROTECTOR_BACKOFF, { startMs: 2_000, capMs: 60_000 });
+  assert.deepEqual(
+    [1, 2, 3, 4, 5, 6, 7, 50].map(protectorBackoffMs),
+    [2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000],
+  );
+  for (const odd of [0, -3, 1.5, Number.NaN]) {
+    assert.equal(protectorBackoffMs(odd), 2_000, String(odd));
+  }
+  assert.equal(protectorBackoffMs(Number.POSITIVE_INFINITY), 60_000);
+});
+
+test("C9 protector gate: open runs; closed waits out the window, then ONE probe", () => {
+  const T = 1_000_000;
+  for (const probing of [false, true]) {
+    assert.deepEqual(protectorGateStep(PROTECTOR_GATE_OPEN, T, probing), {
+      kind: "run",
+      probe: false,
+    });
+  }
+  const g = protectorGateAfter(PROTECTOR_GATE_OPEN, "protector", 0, T);
+  assert.deepEqual(g, { failures: 1, untilMs: T + 2_000 });
+  assert.deepEqual(protectorGateStep(g, T, false), {
+    kind: "wait",
+    waitMs: 2_000,
+  });
+  assert.deepEqual(protectorGateStep(g, T + 1_500, false), {
+    kind: "wait",
+    waitMs: 500,
+  });
+  assert.deepEqual(protectorGateStep(g, T + 2_000, false), {
+    kind: "run",
+    probe: true,
+  });
+  // While the probe is out, everything else waits for its answer.
+  assert.deepEqual(protectorGateStep(g, T + 2_000, true), {
+    kind: "wait_probe",
+  });
+  assert.deepEqual(protectorGateStep(g, T + 500, true), { kind: "wait_probe" });
+});
+
+test("C9 protector gate: refusals escalate; the first success reopens; a new refusal starts at 2 s", () => {
+  let g = PROTECTOR_GATE_OPEN;
+  let t = 0;
+  const windows: number[] = [];
+  for (let i = 0; i < 8; i++) {
+    g = protectorGateAfter(g, "protector", g.failures, t);
+    windows.push(g.untilMs - t);
+    t = g.untilMs;
+  }
+  assert.deepEqual(
+    windows,
+    [2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000],
+  );
+  assert.equal(g.failures, 8);
+  g = protectorGateAfter(g, "ok", g.failures, t);
+  assert.equal(g, PROTECTOR_GATE_OPEN);
+  g = protectorGateAfter(g, "protector", 0, t);
+  assert.deepEqual(g, { failures: 1, untilMs: t + 2_000 });
+});
+
+test("C9 protector gate: refusals in flight together count once; `other` changes nothing", () => {
+  const T = 5_000;
+  let g = PROTECTOR_GATE_OPEN;
+  // Three commands issued while open, refused together.
+  for (const dt of [0, 10, 20]) {
+    g = protectorGateAfter(g, "protector", 0, T + dt);
+  }
+  assert.deepEqual(g, { failures: 1, untilMs: T + 20 + 2_000 });
+  // busy / a typed error / an untyped rejection: neither reopens nor escalates.
+  assert.equal(protectorGateAfter(g, "other", 1, T + 30), g);
+  assert.equal(protectorGateAfter(g, "other", 0, T + 5_000), g);
+  // A success, even of a command issued before the gate closed, reopens it.
+  assert.equal(protectorGateAfter(g, "ok", 0, T + 40), PROTECTOR_GATE_OPEN);
+});
+
+test("C9 protector gate: fails closed on a broken state or clock", () => {
+  for (const failures of [Number.NaN, -1, 0.5]) {
+    assert.notDeepEqual(
+      protectorGateStep({ failures, untilMs: 0 }, 10, false),
+      { kind: "run", probe: false },
+      String(failures),
+    );
+    assert.deepEqual(protectorGateStep({ failures, untilMs: 0 }, 10, true), {
+      kind: "wait_probe",
+    });
+  }
+  // An unreadable clock never lets a command through.
+  for (const now of [Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.deepEqual(
+      protectorGateStep({ failures: 1, untilMs: 100 }, now, false),
+      { kind: "wait", waitMs: 60_000 },
+    );
+  }
+  // The clock moved back past the window: one probe restarts it.
+  const g = { failures: 3, untilMs: 10_000_000 };
+  assert.deepEqual(protectorGateStep(g, 0, false), {
+    kind: "run",
+    probe: true,
+  });
+  assert.deepEqual(protectorGateAfter(g, "protector", 3, 0), {
+    failures: 4,
+    untilMs: 16_000,
+  });
 });
 
 test("envelope classifier: never acks a parked owner change or a wrong-kind id", () => {
