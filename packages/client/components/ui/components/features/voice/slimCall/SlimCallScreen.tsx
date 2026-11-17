@@ -14,6 +14,7 @@ import { createResizeObserver } from "@solid-primitives/resize-observer";
 import { TrackLoop } from "solid-livekit-components";
 import { styled } from "styled-system/jsx";
 
+import { excludeBackGesture } from "@revolt/client/AndroidBackWorker";
 import { useSlimMode } from "@revolt/client/useSlimMode";
 import { useWindowCtx } from "@revolt/client/windowCtx";
 import { CONFIGURATION } from "@revolt/common";
@@ -201,6 +202,8 @@ const TILE_FALLBACK_WIDTH = "min(100%, 250px)";
 const SCREEN_SHARE_SOURCE = "screen_share";
 /** The closest a dragged corner tile gets to the edges of its area, in px. */
 const CORNER_MARGIN = 8;
+/** How long the corner tile has been still before its place counts as new. */
+const CORNER_REST_MS = 150;
 
 /**
  * The participants. Every tile is the call card's `ParticipantTile`, fed by
@@ -330,6 +333,7 @@ function Tiles(props: { onVideo: (video: boolean) => void }) {
       }
     | undefined;
   let swallowClick = false;
+  let fingerPress = false;
   let cornerEl: HTMLDivElement | undefined;
 
   /**
@@ -340,9 +344,49 @@ function Tiles(props: { onVideo: (video: boolean) => void }) {
    */
   function cornerMounted(el: HTMLDivElement) {
     cornerEl = el;
-    el.addEventListener("pointerdown", () => (swallowClick = false), true);
+    el.addEventListener(
+      "pointerdown",
+      (event) => {
+        swallowClick = false;
+        fingerPress = event.pointerType !== "mouse";
+      },
+      true,
+    );
     el.addEventListener("click", cornerClick, true);
+    el.addEventListener("contextmenu", cornerMenu, true);
   }
+
+  /**
+   * A finger resting on the corner tile is about to drag it, and the press
+   * and hold that opens the user menu fires under it after half a second. On
+   * this tile a finger never opens that menu; the large tile still does, and
+   * so does a right click here.
+   */
+  function cornerMenu(event: MouseEvent) {
+    if (!fingerPress) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  // Android takes a swipe in from the side of the screen as Back, and the
+  // corner tile starts against that side: a drag begun on its outer edge
+  // never reached the page. The tile's box is handed to the shell once it has
+  // come to rest (a touch is claimed where it lands, so a drag under way does
+  // not need it), and handed back when the tile goes.
+  createEffect(() => {
+    cornerAt();
+    size();
+    const shown = !!videoLayout() && !cornerHidden();
+    const timer = setTimeout(() => {
+      const box =
+        shown && cornerEl?.isConnected
+          ? cornerEl.getBoundingClientRect()
+          : undefined;
+      excludeBackGesture(box ? [box] : []);
+    }, CORNER_REST_MS);
+    onCleanup(() => clearTimeout(timer));
+  });
+  onCleanup(() => excludeBackGesture([]));
 
   function cornerDown(event: PointerEvent & { currentTarget: HTMLElement }) {
     const areaEl = area();

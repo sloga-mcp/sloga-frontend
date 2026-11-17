@@ -40,8 +40,41 @@ const BACK_EVENT = "slogaBackPressed";
  * direction for the defect this fixes (back closing the whole app).
  */
 const SlogaBackNative = Capacitor.isNativePlatform()
-  ? registerPlugin<{ exitApp(): Promise<void> }>("SlogaBack")
+  ? registerPlugin<{
+      exitApp(): Promise<void>;
+      setGestureExclusion(options: {
+        rects: { x: number; y: number; width: number; height: number }[];
+      }): Promise<void>;
+    }>("SlogaBack")
   : undefined;
+
+/**
+ * Tells Android which parts of the page a swipe in from the side of the
+ * screen must not take as Back, so a finger that lands there reaches the
+ * page. Each call replaces the last list; an empty one gives the edges back.
+ * The boxes are in CSS pixels of the viewport. Android honours at most 200dp
+ * of height on each side, so this is for one small thing that is dragged, not
+ * for a whole column.
+ *
+ * Android only. A shell without the method rejects the call, and the swipe
+ * stays Back as it was.
+ */
+export function excludeBackGesture(
+  boxes: { left: number; top: number; width: number; height: number }[],
+) {
+  if (Capacitor.getPlatform() !== "android") return;
+  // The shell lays the boxes over the web view, which it measures in device
+  // pixels
+  const ratio = window.devicePixelRatio || 1;
+  void SlogaBackNative?.setGestureExclusion({
+    rects: boxes.map((box) => ({
+      x: Math.round(box.left * ratio),
+      y: Math.round(box.top * ratio),
+      width: Math.round(box.width * ratio),
+      height: Math.round(box.height * ratio),
+    })),
+  }).catch(() => undefined);
+}
 
 /**
  * Index of the current history entry.
