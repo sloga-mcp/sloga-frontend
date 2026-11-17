@@ -395,6 +395,17 @@ function Tiles(props: { onVideo: (video: boolean) => void }) {
     if (drag?.pointer === event.pointerId) drag = undefined;
   }
 
+  /**
+   * The tile itself lost the pointer. A finger is captured by whatever it
+   * first touched, the picture inside the tile, so taking the capture for
+   * the tile makes that element report the loss, and the report bubbles up
+   * here. Ending the drag on it stopped every drag by finger after its first
+   * step.
+   */
+  function cornerLostCapture(event: PointerEvent) {
+    if (event.target === event.currentTarget) cornerUp(event);
+  }
+
   /** In the capture phase, so the tile under the pointer never hears it. */
   function cornerClick(event: MouseEvent) {
     if (!swallowClick) return;
@@ -525,7 +536,7 @@ function Tiles(props: { onVideo: (video: boolean) => void }) {
                   onPointerMove={cornerMove}
                   onPointerUp={cornerUp}
                   onPointerCancel={cornerUp}
-                  onLostPointerCapture={cornerUp}
+                  onLostPointerCapture={cornerLostCapture}
                 >
                   <ParticipantTile />
                   <CornerHide
