@@ -2,6 +2,7 @@ import { createEffect, createSignal, onCleanup, onMount } from "solid-js";
 
 import { useState } from "@revolt/state";
 
+import { createActivitySync } from "./activitySync.ts";
 import { useClient } from "./index";
 
 type TauriEventApi = {
@@ -46,8 +47,25 @@ export function ActivityWorker() {
     onCleanup(() => unlisten?.());
   });
 
-  /** Last activity name we pushed to the server, to avoid redundant PATCHes */
-  let synced: string | null | undefined;
+  /** Sends each change once and retries a failed one with backoff */
+  const sync = createActivitySync({
+    push(target) {
+      // Read at send time: a retry may run long after the change it carries.
+      const user = client().user;
+      if (!user) return Promise.reject(new Error("no user"));
+      return target
+        ? user.edit({
+            status: { activity: { name: target } },
+          } as Parameters<typeof user.edit>[0])
+        : // `remove` is a real field on the route but absent from stoat-api's
+          // generated edit type, so this needs the two-step widening rather
+          // than a direct assertion.
+          user.edit({ remove: ["StatusActivity"] } as unknown as Parameters<
+            typeof user.edit
+          >[0]);
+    },
+  });
+  onCleanup(() => sync.dispose());
 
   createEffect(() => {
     if (!isDesktop()) return;
@@ -56,29 +74,7 @@ export function ActivityWorker() {
     const user = client().user;
     if (!user) return;
 
-    const target = share ? game : null;
-    if (target === synced) return;
-    if (synced === undefined && target === null && !user.activity) {
-      // nothing to clear on first run
-      synced = null;
-      return;
-    }
-
-    synced = target;
-    (target
-      ? user.edit({
-          status: { activity: { name: target } },
-        } as Parameters<typeof user.edit>[0])
-      : // `remove` is a real field on the route but absent from stoat-api's
-        // generated edit type, so this needs the two-step widening rather
-        // than a direct assertion.
-        user.edit({ remove: ["StatusActivity"] } as unknown as Parameters<
-          typeof user.edit
-        >[0])
-    ).catch(() => {
-      // retry on next change
-      synced = undefined;
-    });
+    sync.update(share ? game : null, () => !!user.activity);
   });
 
   return null;
