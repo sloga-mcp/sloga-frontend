@@ -49,6 +49,14 @@ const SlogaBackNative = Capacitor.isNativePlatform()
     }>("SlogaBack")
   : undefined;
 
+/**
+ * Modals that are a panel at an edge of the page and leave the rest of it in
+ * use, so what the page keeps from the Back swipe is still in view under
+ * them. Named as plain text: the in-call camera effects panel is one, and a
+ * tree without that panel has no such modal type to check the name against.
+ */
+const OPEN_PANELS: ReadonlySet<string> = new Set(["camera_effects"]);
+
 type GestureBox = { left: number; top: number; width: number; height: number };
 
 /** What the page last asked to keep from the Back swipe. */
@@ -155,7 +163,10 @@ export function AndroidBackWorker() {
   const modals = useModals();
   createEffect(() => {
     if (Capacitor.getPlatform() !== "android") return;
-    sendGestureExclusion(modals.isOpen() ? [] : backGestureBoxes());
+    const covered = modals.modals.some(
+      (modal) => modal.show && !OPEN_PANELS.has(modal.props.type),
+    );
+    sendGestureExclusion(covered ? [] : backGestureBoxes());
   });
 
   onMount(() => {
