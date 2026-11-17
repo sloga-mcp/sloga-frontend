@@ -59,6 +59,7 @@ import { CallRecordingNotices } from "@revolt/ui/components/features/voice/callC
 import { RemoteControlOverlays } from "@revolt/ui/components/features/voice/callCard/RemoteControlOverlays";
 import { VoiceMoveNotices } from "@revolt/ui/components/features/voice/callCard/VoiceMoveNotices";
 import { VoiceTranscriptPanel } from "@revolt/ui/components/features/voice/callCard/VoiceTranscriptPanel";
+import { SlimCallScreen } from "@revolt/ui/components/features/voice/slimCall/SlimCallScreen";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import { ChatWindowsHost } from "../components/chatWindows/ChatWindowsHost";
@@ -363,6 +364,13 @@ const Interface = (props: { children: JSX.Element }) => {
         {/* Owns the Discord-import job for the session: the modal may be
             dismissed (or the tab reloaded) while the import runs. */}
         <DiscordImportWorker />
+        {/* The Slim view call screen: full-screen while a direct message or
+            group call is up in Slim view, and nothing otherwise. It sits
+            ahead of the incoming-call popup, which has to stay on top of it:
+            a second call can ring while this one is on screen. What keeps
+            the popup on top is its own layer (it is portalled to the body at
+            z-index 9999), so the call screen has to stay below that. */}
+        <SlimCallScreen />
         <IncomingCallOverlay />
         {/* Remote control's offer prompt, session panels and focused-window
             panic handler. APP LEVEL on purpose: every one of these is a way

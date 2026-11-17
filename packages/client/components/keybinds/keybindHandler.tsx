@@ -29,7 +29,24 @@ import { registerActiveKeyReset } from "./suppress";
 type KeybindContext = {
   createKeybind: (keybind: KeybindAction, callback: () => void) => void;
   dismissTopmost: () => boolean;
+  dismissOverlay: () => boolean;
 };
+
+/**
+ * The first rungs of `DISMISSAL_PRIORITY`, in its order: the layers drawn
+ * over the whole app. `CLOSE_FLOATING` is the menus, popovers, tooltips and
+ * the user card; `CLOSE_MODAL` is every dialog, Settings included. Both are
+ * bound only while something of theirs is on screen. The rungs after them
+ * (the side column, an edit, a composition element) belong to the page
+ * underneath, and `dismissOverlay` never reaches them.
+ */
+const OVERLAY_DISMISSALS: ReadonlySet<KeybindAction> = new Set([
+  KeybindAction.CLOSE_FLOATING,
+  KeybindAction.CLOSE_MODAL,
+]);
+const OVERLAY_PRIORITY: KeybindAction[] = DISMISSAL_PRIORITY.filter((keybind) =>
+  OVERLAY_DISMISSALS.has(keybind),
+);
 
 const keybindContext = createContext<KeybindContext>(null! as KeybindContext);
 
@@ -268,7 +285,33 @@ export function KeybindContext(props: { children: JSXElement }) {
    * in a chat window is not the topmost thing on main's screen.
    */
   function dismissTopmost(): boolean {
-    for (const keybind of DISMISSAL_PRIORITY) {
+    return dismissFirstOf(DISMISSAL_PRIORITY);
+  }
+
+  /**
+   * Dismiss the topmost menu, popover or dialog (Settings included), and
+   * nothing that belongs to the page underneath: the same walk as
+   * `dismissTopmost`, over its first rungs only (`OVERLAY_PRIORITY`).
+   *
+   * For a caller with something of its own between those layers and the
+   * page, such as the Slim view call screen: a dialog over the screen closes
+   * first, and the side column or an edit behind the screen is left alone.
+   *
+   * @returns whether such a handler was bound and invoked, with the same
+   * meaning and limits as `dismissTopmost`
+   */
+  function dismissOverlay(): boolean {
+    return dismissFirstOf(OVERLAY_PRIORITY);
+  }
+
+  /**
+   * Invoke the most recently registered main-window callback of the first
+   * action in `actions` that has one.
+   * @param actions Actions to try, in priority order
+   * @returns whether a callback was invoked
+   */
+  function dismissFirstOf(actions: readonly KeybindAction[]): boolean {
+    for (const keybind of actions) {
       const callbacks = boundCallbacks
         .get(keybind)
         ?.filter((entry) => entry.ctxId === MAIN_CTX.id);
@@ -492,6 +535,7 @@ export function KeybindContext(props: { children: JSXElement }) {
           );
         },
         dismissTopmost,
+        dismissOverlay,
       }}
     >
       {props.children}
@@ -545,6 +589,21 @@ export function useKeybinds(): KeybindContext | null {
 export function useDismissTopmost(): () => boolean {
   const context = useKeybinds();
   return () => context?.dismissTopmost() ?? false;
+}
+
+/**
+ * Resolve a `dismissOverlay()` bound to the surrounding keybind context:
+ * closes the topmost menu, popover or dialog (Settings included) and nothing
+ * on the page underneath. Resolve it during setup, exactly like
+ * `useDismissTopmost`, for the same reason.
+ *
+ * Outside a `<KeybindContext>` the returned function always reports `false`.
+ *
+ * @returns a function reporting whether such a handler was bound and invoked
+ */
+export function useDismissOverlay(): () => boolean {
+  const context = useKeybinds();
+  return () => context?.dismissOverlay() ?? false;
 }
 
 /**

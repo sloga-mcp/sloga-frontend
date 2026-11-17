@@ -14834,6 +14834,887 @@ MUTATIONS += [
     ),
 ]
 
+# --- Calls that ring: Answer, the key-status wait, the lock check, the timers -
+#
+# All `state-*`, so all of them reach only what `stateWiring.test.ts` pins as
+# TEXT (see the file=STATE rule in the header): each proves its statement is
+# present and in its place, never what it does at runtime. The decisions
+# themselves (`answerDecision`, `driveAnswer`, `callerRingOutcome`,
+# `answererAloneOutcome`) live in `answerPolicy.ts` and `outgoingRingPolicy.ts`
+# and are held by those modules' own specs, which this table does not mutate.
+MUTATIONS += [
+    # ---- who may send `answer` ----------------------------------------------
+    Mutation(
+        id='state-ring-answer-on-auto-rejoin',
+        what='the auto-rejoin loop joins as an Answer, so a dropped call that comes back empty is refused as "Call ended"',
+        file=STATE,
+        search="""        await this.connect(channel, undefined, { rejoinAttempt: true });""",
+        replace="""        await this.connect(channel, undefined, {
+          rejoinAttempt: true,
+          answer: true,
+        });""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-on-move-token-arm',
+        what="a server-ordered move's token arm passes answer: true",
+        file=STATE,
+        search="""            moveLatchBypass: true,
+""",
+        replace="""            moveLatchBypass: true,
+            answer: true,
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-on-move-tokenless-arm',
+        what="a server-ordered move's tokenless arm joins as an Answer",
+        file=STATE,
+        search="""        attempt = this.connect(destination);""",
+        replace="""        attempt = this.connect(destination, undefined, { answer: true });""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-sent-on-rejoin-attempt',
+        what='the joinCall argument no longer drops answer on a rejoin attempt',
+        file=STATE,
+        search="""              answer: opts?.answer === true && !opts?.rejoinAttempt && !hadAuth,""",
+        replace="""              answer: opts?.answer === true && !hadAuth,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-with-ready-made-token',
+        what='answer is sent by an attempt that was handed a ready-made token',
+        file=STATE,
+        search="""              answer: opts?.answer === true && !opts?.rejoinAttempt && !hadAuth,""",
+        replace="""              answer: opts?.answer === true && !opts?.rejoinAttempt,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-reads-live-auth',
+        what='answer is dropped on the token as it stands at the joinCall (always unset there), so a move whose token M3 dropped can send it',
+        file=STATE,
+        search="""              answer: opts?.answer === true && !opts?.rejoinAttempt && !hadAuth,""",
+        replace="""              answer: opts?.answer === true && !opts?.rejoinAttempt && !auth,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-had-auth-read-after-m3',
+        what='the ready-made token is noted after M3 has had its chance to drop it',
+        file=STATE,
+        search="""    const hadAuth = auth !== undefined;
+""",
+        replace="""""",
+        also=[
+            (
+                """    const preMintedAuth = auth !== undefined;
+""",
+                """    const preMintedAuth = auth !== undefined;
+    const hadAuth = auth !== undefined;
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-from-remembered-field',
+        what='the joinCall argument is built from the remembered joined-as-answer field, not from this attempt',
+        file=STATE,
+        search="""              answer: opts?.answer === true && !opts?.rejoinAttempt && !hadAuth,""",
+        replace="""              answer: this.joinedAsAnswer(),""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-second-joincall',
+        what='answerCall mints its own join beside the one in #connectAttempt (a second .joinCall( in the store)',
+        file=STATE,
+        search="""          return await this.connect(channel, undefined, { answer: true });""",
+        replace="""          await channel.joinCall(undefined, true, undefined, undefined, false, {
+            answer: true,
+          });
+          return await this.connect(channel, undefined, { answer: true });""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-accept-keybind-joins-directly',
+        what='the accept-call keybind joins through connect() itself and skips answerCall (no lock check, no answer flag)',
+        file=STATE,
+        search="""    if ((await this.answerCall(call.channel)) !== "joined") return;""",
+        replace="""    if (!(await this.connect(call.channel))) return;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- what `answer` may not steer ----------------------------------------
+    Mutation(
+        id='state-ring-answer-skips-refusal-latch',
+        what='an Answer steps past a latched join refusal',
+        file=STATE,
+        search="""      latchedReason !== undefined &&
+      !(""",
+        replace="""      latchedReason !== undefined &&
+      opts?.answer !== true &&
+      !(""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-skips-e2ee-release',
+        what='an Answer skips #releaseCallE2EE(), so what a failed teardown left alive rides into the answered call',
+        file=STATE,
+        search="""    this.#releaseCallE2EE();""",
+        replace="""    if (opts?.answer !== true) this.#releaseCallE2EE();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-skips-readiness',
+        what='an Answer is never E2EE-capable whatever the readiness says: no gate, no session, a plain join',
+        file=STATE,
+        search="""    const e2eeCapable = callEncryptionCapable(readiness);""",
+        replace="""    const e2eeCapable =
+      opts?.answer !== true && callEncryptionCapable(readiness);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the key-status wait ------------------------------------------------
+    Mutation(
+        id='state-ring-keystatus-wait-removed',
+        what='the key-status wait is gone: a join made before the status loads reads no status',
+        file=STATE,
+        search="""    if (shellSupported && bridge && bridge.status.get("state") === undefined) {
+      await this.#waitForKeyStatus(bridge, gen, preConnectBudgetLeft());
+      // Superseded while it waited: nothing constructed yet, just yield.
+      if (gen !== this.#connectGen) return false;
+    }
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-keystatus-wait-after-readiness',
+        what='the key-status wait runs after the readiness was already read',
+        file=STATE,
+        search="""    if (shellSupported && bridge && bridge.status.get("state") === undefined) {
+      await this.#waitForKeyStatus(bridge, gen, preConnectBudgetLeft());
+      // Superseded while it waited: nothing constructed yet, just yield.
+      if (gen !== this.#connectGen) return false;
+    }
+""",
+        replace="""""",
+        also=[
+            (
+                """    const e2eeCapable = callEncryptionCapable(readiness);
+""",
+                """    const e2eeCapable = callEncryptionCapable(readiness);
+    if (shellSupported && bridge && bridge.status.get("state") === undefined) {
+      await this.#waitForKeyStatus(bridge, gen, preConnectBudgetLeft());
+      if (gen !== this.#connectGen) return false;
+    }
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-keystatus-wait-no-generation-check',
+        what='the attempt carries on after the key-status wait without re-checking that it still owns the call',
+        file=STATE,
+        search="""      await this.#waitForKeyStatus(bridge, gen, preConnectBudgetLeft());
+      // Superseded while it waited: nothing constructed yet, just yield.
+      if (gen !== this.#connectGen) return false;
+""",
+        replace="""      await this.#waitForKeyStatus(bridge, gen, preConnectBudgetLeft());
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-keystatus-timeout-coerced-off',
+        what='a status that never loaded is read as "encryption is off": needs_setup, no gate, a plain join',
+        file=STATE,
+        search="""      status: bridge?.status.get("state"),""",
+        replace="""      status: bridge?.status.get("state") ?? { enabled: false },""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-keystatus-wait-ignores-move-budget',
+        what="the key-status wait runs its full bound on a move, half the life of the move's token",
+        file=STATE,
+        search="""        : Math.min(KEY_STATUS_WAIT_MS, budgetLeftMs);""",
+        replace="""        : KEY_STATUS_WAIT_MS;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-keystatus-wait-outlives-its-attempt',
+        what='the key-status wait keeps polling after a newer join or a hang-up superseded it',
+        file=STATE,
+        search="""        gen === this.#connectGen &&
+        bridge.status.get("state") === undefined &&""",
+        replace="""        bridge.status.get("state") === undefined &&""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- `CallEnded` --------------------------------------------------------
+    Mutation(
+        id='state-ring-callended-latched',
+        what='a ring that was already over latches the channel as refused, so "Call back" is dead for 30 s',
+        file=STATE,
+        search="""        if (error === joinCallError && isCallEnded(error)) throw error;""",
+        replace="""        if (error === joinCallError && isCallEnded(error)) {
+          this.#recordJoinRefusal(channel, "NotAVoiceChannel");
+          throw error;
+        }""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-callended-before-teardown',
+        what='CallEnded is rethrown before the failed attempt is torn down, leaving its gate and half-built call standing',
+        file=STATE,
+        search="""        if (error === joinCallError && isCallEnded(error)) throw error;
+""",
+        replace="""""",
+        also=[
+            (
+                """      if (owned) {
+        // We still own the call: tear the half-built call down FULLY.""",
+                """      if (owned) {
+        if (error === joinCallError && isCallEnded(error)) throw error;
+        // We still own the call: tear the half-built call down FULLY.""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-callended-any-error',
+        what="CallEnded is read off any error of the attempt, not only join_call's own answer",
+        file=STATE,
+        search="""        if (error === joinCallError && isCallEnded(error)) throw error;""",
+        replace="""        if (isCallEnded(error)) throw error;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the lock check on "Stay unencrypted" -------------------------------
+    Mutation(
+        id='state-ring-confirm-lock-check-removed',
+        what='confirmCallPlaintext no longer refuses while the lock screen is up',
+        file=STATE,
+        search="""    if (locked) return;
+    const session = this.#mlsSession;""",
+        replace="""    const session = this.#mlsSession;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-confirm-lock-check-below-split',
+        what='the lock check sits below the session split, so a call with no session can be released from the lock screen',
+        file=STATE,
+        search="""    if (locked) return;
+    const session = this.#mlsSession;
+    if (!session) {
+      await this.#confirmNoSessionPlaintext();
+      return;
+    }
+""",
+        replace="""    const session = this.#mlsSession;
+    if (!session) {
+      await this.#confirmNoSessionPlaintext();
+      return;
+    }
+    if (locked) return;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-confirm-lock-failure-reads-unlocked',
+        what='a lock query that throws reads as unlocked',
+        file=STATE,
+        search="""    let locked = true;""",
+        replace="""    let locked = false;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-confirm-session-read-before-lock',
+        what='the session is read before the lock answers, so the press acts on a session that may be gone',
+        file=STATE,
+        search="""    let locked = true;
+""",
+        replace="""    const session = this.#mlsSession;
+    let locked = true;
+""",
+        also=[
+            (
+                """    if (locked) return;
+    const session = this.#mlsSession;
+""",
+                """    if (locked) return;
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the hang-up timers -------------------------------------------------
+    Mutation(
+        id='state-ring-hangup-discards-mls',
+        what="the caller timer's hang-up is not the Hang up button's: it discards kept MLS state like a sign-out",
+        file=STATE,
+        search="""          this.disconnect();
+          this.#setCallerRingNotice({""",
+        replace="""          this.disconnect({ discardMls: true });
+          this.#setCallerRingNotice({""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-timer-acts-while-not-connected',
+        what='a hang-up timer acts while the call is not connected',
+        file=STATE,
+        search="""      this.room() !== room ||
+      this.state() !== "CONNECTED"
+    )""",
+        replace="""      this.room() !== room
+    )""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-timer-ignores-generation',
+        what='a hang-up timer no longer checks the connect generation it was started under',
+        file=STATE,
+        search="""      ring.gen !== this.#connectGen ||
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-latch-counts-own-device',
+        what='our own second device counts as somebody answering',
+        file=STATE,
+        search="""    if (userId === this.getClient()?.user?.id) return;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-latch-before-connect',
+        what='someone who left before we arrived counts as having answered, so an Answer into a dead call is never hung up',
+        file=STATE,
+        search="""    if (ring.connectedAt === undefined) return;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-watch-survives-disconnect',
+        what="disconnect() leaves the call's hang-up timer and ring facts standing",
+        file=STATE,
+        search="""      clearTimeout(this.#callRing?.timer);
+      this.#callRing = undefined;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-joined-as-answer-not-cleared',
+        what='disconnect() no longer clears the joined-as-answer field',
+        file=STATE,
+        search="""      this.#setAnswerGen(undefined);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-opened-call-ignores-who-is-there',
+        what='a join into a call somebody is already in counts as opening it, so the caller timer can hang up an answered call',
+        file=STATE,
+        search="""    ring.openedCall = ring.startedByUser && !ring.remoteEverJoined;""",
+        replace="""    ring.openedCall = ring.startedByUser;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-started-by-user-on-rejoin',
+        what="an automatic rejoin counts as the user starting a call, so the caller timer runs on a rejoined call",
+        file=STATE,
+        search="""        opts?.answer !== true &&
+        !opts?.rejoinAttempt,""",
+        replace="""        opts?.answer !== true,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the decline --------------------------------------------------------
+    Mutation(
+        id='state-ring-declined-without-live-timer',
+        what='a decline is acted on for a call this device did not open, or whose ring timer is no longer running',
+        file=STATE,
+        search="""    if (!ring || !ring.openedCall || ring.timer === undefined) return;""",
+        replace="""    if (!ring) return;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-decline-without-reason',
+        what='declineCall takes the ring down without a reason, so the phone cannot tell a decline from a miss',
+        file=STATE,
+        search="""      dismissIncomingCall(channel.id, "declined");""",
+        replace="""      dismissIncomingCall(channel.id);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+]
+
+
+# --- The ringing fix round: our own Decline over our own Answer, the camera --
+# flip through the store, the timers' re-ask while the Room reconnects, and
+# the server's ring length. All `state-*`, so the same limit as the block
+# above: each proves its statement is PRESENT and in its place in the text
+# `stateWiring.test.ts` pins, never what it does at runtime.
+MUTATIONS += [
+    # ---- S1: a Decline on this device cancels its own pending Answer -------
+    Mutation(
+        id='state-ringfix-decline-ignored-before-join',
+        what='an Answer whose ring the user declined meanwhile still sends its join',
+        file=STATE,
+        search="""          if (ownAnswer.declined) {
+            if (gen === this.#connectGen) this.disconnect();
+            return false;
+          }
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-decline-check-before-last-await',
+        what='the Decline check runs before the voice-node await, so a Decline pressed during it still joins',
+        file=STATE,
+        search="""        const node = await voiceNodeForChannel(this.getClient(), channel);
+""",
+        replace="""""",
+        also=[
+            (
+                """          ownAnswer.joinGen = gen;
+        }
+""",
+                """          ownAnswer.joinGen = gen;
+        }
+        const node = await voiceNodeForChannel(this.getClient(), channel);
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-unlock-decline-ignored',
+        what='a Decline pressed while the phone was being unlocked lets connect() start, tearing down the call the user is in',
+        file=STATE,
+        search="""        if (attempt.declined) return false;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-decline-keeps-sent-join',
+        what='a Decline after the Answer sent its join leaves our own leg in the call',
+        file=STATE,
+        search="""        if (
+          ownAnswer.joinGen !== undefined &&
+          ownAnswer.joinGen === this.#connectGen
+        )
+          this.disconnect();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-decline-hangs-up-any-call',
+        what='a Decline hangs up whatever call is current, not only the leg its own Answer started',
+        file=STATE,
+        search="""        if (
+          ownAnswer.joinGen !== undefined &&
+          ownAnswer.joinGen === this.#connectGen
+        )
+          this.disconnect();
+""",
+        replace="""        if (ownAnswer.joinGen !== undefined) this.disconnect();
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-decline-discards-mls',
+        what="the Decline's hang-up is not the Hang up button's: it discards kept MLS state",
+        file=STATE,
+        search="""          ownAnswer.joinGen === this.#connectGen
+        )
+          this.disconnect();""",
+        replace="""          ownAnswer.joinGen === this.#connectGen
+        )
+          this.disconnect({ discardMls: true });""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-other-decline-cancels-answer',
+        what="somebody else's decline (or another of our devices') cancels this device's Answer",
+        file=STATE,
+        search="""  noteCallDeclined(channelId: string): void {
+    const ring = this.#callRing;
+""",
+        replace="""  noteCallDeclined(channelId: string): void {
+    const own = this.#answerAttempts.get(channelId)?.attempt;
+    if (own) own.declined = true;
+    const ring = this.#callRing;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- S2: answeringChannelId ---------------------------------------------
+    Mutation(
+        id='state-ringfix-answering-cleared-by-disconnect',
+        what="disconnect() clears the Answer record, so connect()'s own leading disconnect() erases the Answer it belongs to",
+        file=STATE,
+        search="""      this.#setAnswerGen(undefined);
+      // The caller hanging up""",
+        replace="""      this.#setAnswerGen(undefined);
+      this.#answerAttempts.clear();
+      this.#setAnsweringChannelId(undefined);
+      // The caller hanging up""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-answering-cleared-by-stale-answer',
+        what='an older Answer settling clears the record and the accessor of the newer one still running',
+        file=STATE,
+        search="""      if (this.#answerAttempts.get(channel.id)?.attempt !== attempt) return;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-second-answer-starts-another',
+        what='a second Answer of a ring already being answered starts its own attempt, whose record shadows the first, so a Decline can miss the first',
+        file=STATE,
+        search="""    if (running) return running.result;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-decline-reads-latest-answer',
+        what="a Decline cancels whichever Answer started last, not its own chat's, so declining one chat misses that chat's Answer",
+        file=STATE,
+        search="""      const ownAnswer = this.#answerAttempts.get(channel.id)?.attempt;
+      if (ownAnswer !== undefined) {
+        ownAnswer.declined = true;""",
+        replace="""      const ownAnswer = [...this.#answerAttempts.values()].at(-1)?.attempt;
+      if (ownAnswer !== undefined) {
+        ownAnswer.declined = true;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-decline-stops-outgoing-ring',
+        what="a Decline stops whatever ringtone plays, our own outgoing ring for another chat included",
+        file=STATE,
+        search="""        untrack(incomingCall)?.channel.id === channel.id &&
+        this.sound.ringtoneKind() === "incoming"
+      )""",
+        replace="""        untrack(incomingCall)?.channel.id === channel.id
+      )""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-answering-never-set',
+        what='answeringChannelId is never set, so the popup cannot see a keybind or notification Answer in flight',
+        file=STATE,
+        search="""    this.#setAnsweringChannelId(channel.id);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- S3: flipCamera -----------------------------------------------------
+    Mutation(
+        id='state-ringfix-flip-ignores-gate',
+        what='flipCamera starts while the publish gate holds a reason',
+        file=STATE,
+        search="""    if (!room || this.state() !== "CONNECTED" || this.#gateHeld()) return false;""",
+        replace="""    if (!room || this.state() !== "CONNECTED") return false;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-flip-gate-not-reread',
+        what='the gate is not read again at the moment of the switch, so a gate that filled during the device list read is overridden',
+        file=STATE,
+        search="""          this.state() === "CONNECTED" &&
+          !this.#gateHeld(),""",
+        replace="""          this.state() === "CONNECTED",""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-flip-no-reassert',
+        what="a gate that filled while the switch ran is not put back over the restarted camera track",
+        file=STATE,
+        search="""      if (this.#gateHeld() && this.room() === room)
+        void this.#applyPublishGate(room);
+""",
+        replace="""      void 0;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-flip-restore-unguarded',
+        what="the camera effects' restore after a failed flip can reject unhandled",
+        file=STATE,
+        search="""        void this.reapplyCameraEffects().catch((error) =>
+          console.warn("[rtc] camera effects not restored", error),
+        );""",
+        replace="""        void this.reapplyCameraEffects();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-flip-error-swallowed',
+        what="a failed flip is swallowed instead of shown through the store's error path",
+        file=STATE,
+        search="""      this.onErr(result.error);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- S4: the timers while the Room reconnects ---------------------------
+    Mutation(
+        id='state-ringfix-timer-dropped-while-reconnecting',
+        what='a hang-up timer that fires while the Room reconnects is dropped for good instead of asking again',
+        file=STATE,
+        search="""      this.#armCallRing(ring, CALL_RING_RETRY_MS);
+      return;
+""",
+        replace="""      return;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-rearm-ignores-generation',
+        what="the re-ask does not check the connect generation, so a superseded call's timer keeps re-arming",
+        file=STATE,
+        search="""      ring.gen === this.#connectGen &&
+      room !== undefined &&""",
+        replace="""      room !== undefined &&""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-timer-ignores-room-connection',
+        what="a hang-up timer acts without the Room's own connection being CONNECTED",
+        file=STATE,
+        search="""      room.state !== ConnectionState.Connected ||
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- S5: the ring length ------------------------------------------------
+    Mutation(
+        id='state-ringfix-ring-length-from-config',
+        what="the caller timer reads the stand-in configuration's ring length (always unset), not the server's",
+        file=STATE,
+        search="""        untrack(() => ringDurationMs(serverCallRingSecs())) +""",
+        replace="""        untrack(() =>
+          ringDurationMs(
+            this.getClient()?.configuration?.features.livekit
+              .call_ring_duration,
+          ),
+        ) +""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+]
+
+
+# ---- M2 final audit, finding M2: the locked cold start ----------------------
+# A phone answering from its lock screen starts the page while locked, the
+# bridge's `#onReady` cannot open the key store, and the socket's `ready` does
+# not fire again. The key-status wait asks `retryStartupIfUnset()` once. The
+# `state-lockstart-*` entries reach the wait's TEXT (the header's file=STATE
+# rule); the `e2ee-lockstart-*` entries reach the retry's members, which
+# `stateWiring.test.ts` cuts out of the real `e2ee.ts` and RUNS in a stand-in
+# class, so those are behaviour, not text, apart from the ready-handler and
+# `#onReady` catch pins. Not here, and why: `#runStartup` never clearing
+# `#startupRun` makes the retry's `while (this.#startupRun) await ...` spin on
+# microtasks forever, which would hang the spec rather than fail it.
+E2EE_BRIDGE = "../client/e2ee.ts"
+
+MUTATIONS += [
+    Mutation(
+        id='state-lockstart-retry-removed',
+        what='the key-status wait no longer asks the bridge to retry its startup: a locked cold start polls a status nothing will load',
+        file=STATE,
+        search="""      void bridge.retryStartupIfUnset();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-lockstart-retry-awaited',
+        what='the wait awaits the retry, an unbounded native round trip outside its own bound and the move budget',
+        file=STATE,
+        search="""      void bridge.retryStartupIfUnset();""",
+        replace="""      await bridge.retryStartupIfUnset();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-lockstart-retry-after-poll',
+        what='the retry is asked only after the poll gave up, so its status can never reach this join',
+        file=STATE,
+        search="""      void bridge.retryStartupIfUnset();
+""",
+        replace="""""",
+        also=[
+            (
+                """          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+""",
+                """          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+      void bridge.retryStartupIfUnset();
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-lockstart-retry-before-deadline',
+        what='the retry is awaited before the deadline is fixed, so the bound starts only after it',
+        file=STATE,
+        search="""    const deadline = performance.now() + boundMs;
+""",
+        replace="""    await bridge.retryStartupIfUnset();
+    const deadline = performance.now() + boundMs;
+""",
+        also=[
+            (
+                """      void bridge.retryStartupIfUnset();
+""",
+                """""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-lockstart-retry-failure-coerced-off',
+        what='a retry that loaded nothing is turned into "encryption is off" (needs_setup: no gate, a plain join)',
+        file=STATE,
+        search="""          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+""",
+        replace="""          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+      if (bridge.status.get("state") === undefined)
+        bridge.status.set("state", {
+          enabled: false,
+          published: false,
+          device_id: null,
+          protocol_version: 1,
+          claimed: false,
+        });
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-ignores-loaded-status',
+        what='retryStartupIfUnset re-runs the startup although the status is loaded (a second claim, owner read and seed per join)',
+        file=E2EE_BRIDGE,
+        search="""      this.status.get("state") === undefined &&
+      !this.#disposed &&
+      !this.#ptSignedOut &&
+""",
+        replace="""      !this.#disposed &&
+      !this.#ptSignedOut &&
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-after-dispose',
+        what='a bridge whose client was replaced (account switch, logout) still runs a startup and claims under it',
+        file=E2EE_BRIDGE,
+        search="""      this.status.get("state") === undefined &&
+      !this.#disposed &&
+      !this.#ptSignedOut &&
+""",
+        replace="""      this.status.get("state") === undefined &&
+      !this.#ptSignedOut &&
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-after-signout',
+        what='a signed-out bridge still runs a startup',
+        file=E2EE_BRIDGE,
+        search="""      !this.#disposed &&
+      !this.#ptSignedOut &&
+      !!this.#client.user
+""",
+        replace="""      !this.#disposed &&
+      !!this.#client.user
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-without-user',
+        what='a bridge with no signed-in user still runs a startup',
+        file=E2EE_BRIDGE,
+        search="""      !this.#ptSignedOut &&
+      !!this.#client.user
+    );""",
+        replace="""      !this.#ptSignedOut
+    );""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-not-single-flight',
+        what='concurrent retries each start their own run instead of sharing one',
+        file=E2EE_BRIDGE,
+        search="""    this.#startupRetry ??= (async () => {""",
+        replace="""    this.#startupRetry = (async () => {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-ignores-run-in-flight',
+        what="the retry starts a second startup beside a ready's run still in flight",
+        file=E2EE_BRIDGE,
+        search="""        while (this.#startupRun) await this.#startupRun;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-no-recheck-after-wait',
+        what='after waiting for the run in flight the retry runs again without asking whether the status loaded or the bridge was signed out',
+        file=E2EE_BRIDGE,
+        search="""        if (this.#startupStillOwed()) await this.#runStartup();""",
+        replace="""        await this.#runStartup();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-rejects',
+        what='a failed startup rejects out of the retry',
+        file=E2EE_BRIDGE,
+        search="""        console.error("[e2ee] startup retry failed", error);""",
+        replace="""        throw error;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-sticks',
+        what='a settled retry is never forgotten, so the next join (after the unlock) gets the old failed retry back',
+        file=E2EE_BRIDGE,
+        search="""    })().finally(() => {
+      this.#startupRetry = null;
+    });""",
+        replace="""    })();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-ready-bypasses-run-record',
+        what="the socket's ready runs #onReady directly, so a retry cannot see it in flight and runs a second startup beside it",
+        file=E2EE_BRIDGE,
+        search="""      this.#invalidateProof();
+      void this.#runStartup();""",
+        replace="""      this.#invalidateProof();
+      void this.#onReady();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-startup-failure-coerced-off',
+        what='a startup that failed (a locked key store) records "encryption is off", which a join reads as needs_setup and joins in plain',
+        file=E2EE_BRIDGE,
+        search="""      console.error("[e2ee] startup failed", error);""",
+        replace="""      console.error("[e2ee] startup failed", error);
+      this.#setDisabledStatus();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+]
+
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -2925,6 +2925,29 @@ msgstr "Deafened by a moderator. They cannot hear this call."
 msgid "Decline"
 msgstr "Decline"
 
+#: components/ui/components/features/voice/IncomingCallOverlay.tsx
+msgid "Unlock to answer"
+msgstr "Unlock to answer"
+
+#: components/ui/components/features/voice/IncomingCallOverlay.tsx
+msgid "No answer"
+msgstr "No answer"
+
+#: components/ui/components/features/voice/IncomingCallOverlay.tsx
+msgid "Declined"
+msgstr "Declined"
+
+#: components/ui/components/features/voice/IncomingCallOverlay.tsx
+msgid "Call ended"
+msgstr "Call ended"
+
+#: components/ui/components/features/voice/IncomingCallOverlay.tsx
+msgid "Call back"
+msgstr "Call back"
+
+msgid "Missed call"
+msgstr "Missed call"
+
 #: components/ui/components/features/voice/VoiceChannelPreview.tsx
 msgid "Join the call, then press Watch to see their screen"
 msgstr "Join the call, then press Watch to see their screen"
@@ -3370,6 +3393,10 @@ msgstr "Dismiss"
 msgid "Dismiss incoming call"
 msgstr "Dismiss incoming call"
 
+#: components/app/interface/settings/user/Keybinds.tsx
+msgid "Decline incoming call"
+msgstr "Decline incoming call"
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 #~ msgid "Display & Text"
 #~ msgstr "Display & Text"
@@ -3681,6 +3708,14 @@ msgstr "Delivered through your UnifiedPush app"
 #: components/app/interface/settings/user/notifications/Notifications.tsx
 msgid "Background notifications (UnifiedPush)"
 msgstr "Background notifications (UnifiedPush)"
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "When off, this device does not ring for incoming calls. Your other devices still do."
+msgstr "When off, this device does not ring for incoming calls. Your other devices still do."
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Ring for calls on this device"
+msgstr "Ring for calls on this device"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Enable Push to Talk"
@@ -5897,6 +5932,22 @@ msgstr "Mute Channel"
 #: components/ui/components/features/voice/minigame/MinigameChip.tsx
 msgid "Mute game sounds"
 msgstr "Mute game sounds"
+
+#: components/ui/components/features/voice/slimCall/SlimCallScreen.tsx
+msgid "Speaker"
+msgstr "Speaker"
+
+#: components/ui/components/features/voice/slimCall/SlimCallScreen.tsx
+msgid "Flip camera"
+msgstr "Flip camera"
+
+#: components/ui/components/features/voice/slimCall/SlimCallScreen.tsx
+msgid "Minimize call"
+msgstr "Minimize call"
+
+#: components/ui/components/features/voice/callCard/VoiceCallCard.tsx
+msgid "Open call screen"
+msgstr "Open call screen"
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
@@ -9133,6 +9184,10 @@ msgstr "Stopping works while Sloga is not focused; starting does not, which is w
 #: components/app/interface/settings/user/Keybinds.tsx
 msgid "Stops the ringtone and clears the notification on this device. The person calling is not told anything."
 msgstr "Stops the ringtone and clears the notification on this device. The person calling is not told anything."
+
+#: components/app/interface/settings/user/Keybinds.tsx
+msgid "Declines the incoming call. In a one-to-one call, the caller sees that you declined."
+msgstr "Declines the incoming call. In a one-to-one call, the caller sees that you declined."
 
 #: components/app/interface/settings/user/notifications/Sounds.tsx
 msgid "Stream End"

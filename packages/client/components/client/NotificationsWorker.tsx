@@ -26,12 +26,22 @@ import {
 
 import { useNavigate, useSmartParams } from "@revolt/routing";
 import {
+  type IncomingCall,
+  deviceLocked,
   dismissIncomingCall,
+  incomingCall,
   outgoingRingOnVoiceJoin,
   outgoingRingOnVoiceLeave,
   presentIncomingCall,
+  ringDurationMs,
   useVoice,
 } from "@revolt/rtc";
+import {
+  type NativeRingPending,
+  nativeRingPending,
+  setNativeRingPending,
+} from "@revolt/rtc/incomingCall";
+import { serverCallRingSecs } from "@revolt/rtc/serverRingLength";
 import { useState } from "@revolt/state";
 import { streamerModeActive, streamerModeHides } from "@revolt/state/streamer";
 import { useSnackbar } from "@revolt/ui/components/design/Snackbar";
@@ -42,6 +52,7 @@ import { State } from "./Controller";
 import {
   isWebPushPlatform,
   pushProvider,
+  resyncPushPrefs,
   unifiedPushRegistered,
 } from "./NotificationsController";
 import type { E2EEBridge } from "./e2ee";
@@ -60,7 +71,7 @@ import {
 } from "./notificationPreviewPolicy";
 import { notificationCopy, toastCopy } from "./protectedCopy";
 import type { ProtectedToastKind } from "./protectedTextTypes";
-import { playsWebRingtone } from "./pushPolicy";
+import { webRingtoneAllowed } from "./pushPolicy";
 import { slimAllowsChannel, slimRedirectFor } from "./slimRoutePolicy";
 import { connectionUrl } from "./streamConnections";
 import { toastSurfaceFor } from "./toastPolicy";
@@ -149,6 +160,113 @@ function protectedToastIsAlert(kind: ProtectedToastKind): boolean {
   }
 }
 
+/** What a tapped native notification asks the web layer to do. */
+type NativeAction = {
+  /** In-app path of the chat the notification belongs to */
+  path: string;
+  /** The Answer button was pressed */
+  answer: boolean;
+  /** The ring was opened, so the Accept and Decline popup is wanted */
+  ring: boolean;
+  /** User who started the call, when the notification named one */
+  callerId?: string;
+  /** Id of the call, when the notification carried one */
+  callId?: string;
+  /** Whether the caller started it as a video call, when known */
+  video?: boolean;
+  /**
+   * Whether the lock screen was up when the phone handled the tap. This is
+   * what the phone saw then, not what is true now, so it never decides
+   * whether a call is answered.
+   */
+  locked?: boolean;
+};
+
+/** Where a native notification action reached the web layer from. */
+type NativeActionSource = "event" | "launch";
+
+/**
+ * Read a notification action the native layer handed over, from the launch
+ * slot or from a window event. Each field counts only as the exact type the
+ * bridge sends. `answer` and `ring` are on only when they are `true`, so a
+ * malformed value can open a chat at most and can never answer a call.
+ * Without a path there is no action.
+ *
+ * Kept to erasable TypeScript (no enums, no parameter properties), so a spec
+ * can run it with its types stripped.
+ * @param raw The launch slot's answer, or the event that carried the fields
+ * @returns The action, or nothing when there is none
+ */
+function readNativeAction(raw: unknown): NativeAction | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const fields = raw as Record<string, unknown>;
+  if (typeof fields.path !== "string" || !fields.path) return undefined;
+  const action: NativeAction = {
+    path: fields.path,
+    answer: fields.answer === true,
+    ring: fields.ring === true,
+  };
+  if (typeof fields.callerId === "string" && fields.callerId)
+    action.callerId = fields.callerId;
+  if (typeof fields.callId === "string" && fields.callId)
+    action.callId = fields.callId;
+  if (typeof fields.video === "boolean") action.video = fields.video;
+  if (typeof fields.locked === "boolean") action.locked = fields.locked;
+  return action;
+}
+
+/**
+ * How long an action taken from one source blocks the same action arriving
+ * from the other one.
+ */
+const NATIVE_ACTION_REPEAT_MS = 5_000;
+
+/**
+ * Native notification actions already taken, by source and identity, with
+ * the time each was taken. At module scope, so a remounted worker shares it.
+ */
+const takenNativeActions = new Map<string, number>();
+
+/**
+ * Whether to act on a native notification action, recording it when so.
+ *
+ * The phone both parks an action in the launch slot and sends it as a window
+ * event, so a worker that mounts just as one arrives can be handed the same
+ * action twice, once from each source. The second copy is refused here: an
+ * action is not taken when the same one (same chat, same call, same buttons)
+ * was taken from the other source moments ago. A taken action refuses one
+ * copy only, and the same action twice from one source is never a copy, so
+ * pressing the same button again is always acted on.
+ *
+ * Kept to erasable TypeScript (no enums, no parameter properties), so a spec
+ * can run it with its types stripped.
+ * @param taken Actions already taken (updated)
+ * @param source Where this one arrived from
+ * @param action The action
+ * @param now A monotonic time in milliseconds
+ * @returns Whether to act on it
+ */
+function takeNativeAction(
+  taken: Map<string, number>,
+  source: NativeActionSource,
+  action: NativeAction,
+  now: number,
+): boolean {
+  for (const [key, at] of taken) {
+    if (!(now - at < NATIVE_ACTION_REPEAT_MS)) taken.delete(key);
+  }
+  const identity = JSON.stringify([
+    action.path,
+    action.answer,
+    action.ring,
+    action.callId ?? null,
+  ]);
+  const other: NativeActionSource = source === "event" ? "launch" : "event";
+  if (taken.delete(`${other}:${identity}`)) return false;
+  taken.set(`${source}:${identity}`, now);
+  return true;
+}
+
 /**
  * Process and display desktop notifications
  */
@@ -235,6 +353,12 @@ export function NotificationsWorker() {
   const { initNotifications, resyncPushSubscription, retryWebPushOnGesture } =
     useNotifications();
 
+  // Post the push preferences again when Slim view, the ring setting or the
+  // signed-in user's loaded state changes. `resyncPushPrefs` reads all three
+  // before its first await, so this effect re-runs on each of them. It never
+  // rejects, and posts nothing until this device has a subscription.
+  createEffect(() => void resyncPushPrefs());
+
   /**
    * Whether Streamer Mode is suppressing notification popups right now.
    * Sounds are gated separately by the sound controller.
@@ -288,6 +412,45 @@ export function NotificationsWorker() {
   const tapTarget = (path: string) => {
     if (!slim()) return path;
     return slimRedirectFor(path) ?? path;
+  };
+
+  /**
+   * When a ring last ended here without being answered, by chat: a Decline
+   * (the notification's, ours from any session, the popup's) or the ring
+   * coming down while we are not in that call. The voice store reports an
+   * Answer cancelled by our own Decline as "failed", so a notification
+   * Answer that failed brings the popup back only if nothing is recorded
+   * for its chat since the tap.
+   */
+  const ringOverAt = new Map<string, number>();
+  const noteRingOver = (channelId?: string) => {
+    if (channelId) ringOverAt.set(channelId, Date.now());
+  };
+
+  /**
+   * A chat a call notification asked to open that is not open yet, because
+   * the phone was, or may have been, locked. One at a time: a newer tap
+   * replaces it (`pendingSeq` counts the taps). It never outlives the ring
+   * that parked it: it is dropped when that ring is declined or ends without
+   * being answered here, and silently at `until`, the ring length after the
+   * tap. Only the native app parks one.
+   */
+  let pendingOpen:
+    | { channelId?: string; until: number; open: () => void }
+    | undefined;
+  let pendingSeq = 0;
+
+  /**
+   * Drop the pending chat if it is the one for `channelId`, or whichever it
+   * is when no chat is named. Its ring is over, so the cover of a native
+   * ring still waiting to be presented for that chat goes too.
+   */
+  const dropPendingOpen = (channelId?: string) => {
+    if (pendingOpen && (!channelId || pendingOpen.channelId === channelId))
+      pendingOpen = undefined;
+    const ringCover = nativeRingPending();
+    if (ringCover && (!channelId || ringCover.channelId === channelId))
+      setNativeRingPending(undefined);
   };
 
   /**
@@ -659,18 +822,34 @@ export function NotificationsWorker() {
     // Only care about DM and Group channels (not server voice channels)
     if (channel.type !== "DirectMessage" && channel.type !== "Group") return;
 
-    // Outgoing leg: our own join OPENING the call means we are ringing peers
-    // — give the caller the audible feedback the callee already gets. Any
-    // other membership change we are part of stops the ring (answered, or we
-    // joined an ongoing call). Unlike the incoming leg below there is no
-    // native ringer for outgoing calls, so this is not gated on
-    // Capacitor.isNativePlatform(). Nobody-answers/decline needs no timer:
-    // the synthesized ringtone ends itself after 30 rings.
+    // Whether this session is the one joining or in this call. A join by our
+    // own user reaches every device of the account, so the user id alone
+    // cannot tell. The voice store names the channel from before its join
+    // request is sent until the call is left, so the event for our own join
+    // always finds it set on the device that made it.
+    const joinedHere = userId === us.id && voice.channel()?.id === channel.id;
+
+    // Outgoing leg: our own join opening the call means we are ringing
+    // peers, so the caller gets the audible feedback the callee already
+    // gets. Only the session that made the join rings. The account's other
+    // devices are not calling anybody, and a join made by pressing Answer
+    // never rings. Any other membership change we are part of stops the ring
+    // (answered, or we joined an ongoing call). Unlike the incoming leg below
+    // there is no native ringer for outgoing calls, so this is not gated on
+    // Capacitor.isNativePlatform().
+    //
+    // The ring is not ended from here when nobody picks up. In a direct
+    // message the voice store hangs the call up once the ring length has
+    // passed, or at once when the other person declines (the server reports
+    // that, see onVoiceCallDeclined), and hanging up stops the ring. A group
+    // call is never hung up that way, so there the synthesized ringtone
+    // stops by itself at the end of the ring length.
     const ringAction = outgoingRingOnVoiceJoin({
       channelType: channel.type,
-      joinerIsSelf: userId === us.id,
+      joinerIsSelf: joinedHere,
       selfIsParticipant: channel.voiceParticipants.has(us.id),
       participantCount: channel.voiceParticipants.size,
+      joinedAsAnswer: voice.joinedAsAnswer(),
     });
     if (ringAction === "play") {
       // false = the user disabled the outgoing ringtone; still enforce the
@@ -679,9 +858,11 @@ export function NotificationsWorker() {
       if (!sound.playSound("ringtoneOutgoing")) sound.stopRingtone();
     } else if (ringAction === "stop") sound.stopRingtone();
 
-    // We answered (or started) the call — dismiss any ringing popup
+    // Our own user is in this call now, so a ring for it is over on every
+    // device of the account: answered on the one that joined, and answered
+    // elsewhere on the others.
     if (userId === us.id) {
-      dismissIncomingCall(channel.id);
+      dismissIncomingCall(channel.id, joinedHere ? "answered" : "elsewhere");
       return;
     }
 
@@ -703,11 +884,20 @@ export function NotificationsWorker() {
     // web one is unstoppable from the notification's Decline button. The
     // Google-free build has that native ring only once UnifiedPush is
     // registered; until then nothing else rings, so it plays the web one.
-    if (playsWebRingtone(pushProvider(), unifiedPushRegistered()))
+    // A device set not to ring for calls plays no ringtone at all.
+    if (
+      webRingtoneAllowed({
+        provider: pushProvider(),
+        unifiedPushRegistered: unifiedPushRegistered(),
+        ringCalls:
+          state.settings.getValue("notifications:ring_calls") !== false,
+      })
+    )
       sound.playSound("ringtoneIncoming");
 
     // In-app ringing popup (IncomingCallOverlay) with Accept/Decline — shown
-    // regardless of desktop-notification permission so calls are answerable
+    // regardless of desktop-notification permission so calls are answerable,
+    // and on a device set not to ring too, where it appears without a sound
     presentIncomingCall({
       channel,
       caller: callerUser,
@@ -749,10 +939,48 @@ export function NotificationsWorker() {
     });
     if (ringAction === "stop") sound.stopRingtone();
 
+    // The call is over, so its ring is too. Only the ringtone of this chat's
+    // incoming ring is stopped: the one ringtone slot may be our own
+    // outgoing ring for another chat.
     if (channel.voiceParticipants.size === 0) {
-      sound.stopRingtone();
-      dismissIncomingCall(channel.id);
+      if (
+        incomingCall()?.channel.id === channel.id &&
+        sound.ringtoneKind() === "incoming"
+      )
+        sound.stopRingtone();
+      dismissIncomingCall(channel.id, "ended");
     }
+  }
+
+  /**
+   * Someone declined a ringing call. The server sends this to every session
+   * of the person who declined, and in a direct message to the other person
+   * too. It can arrive twice for one decline, and nothing here minds that.
+   */
+  function onVoiceCallDeclined(channel: Channel, userId: string) {
+    const selfId = client().user?.id;
+    // Without our own id a decline cannot be told from the other person's.
+    if (!selfId) return;
+
+    // We declined, here or on another device: the ring is over on this one.
+    // The ringtone stops only if it is this chat's incoming ring.
+    if (userId === selfId) {
+      if (
+        incomingCall()?.channel.id === channel.id &&
+        sound.ringtoneKind() === "incoming"
+      )
+        sound.stopRingtone();
+      dropPendingOpen(channel.id);
+      noteRingOver(channel.id);
+      dismissIncomingCall(channel.id, "declined");
+      return;
+    }
+
+    // The other person in a direct message declined our call. The voice
+    // store decides whether that ends a call of ours. A group never reports
+    // a decline to the caller, and one member declining ends nothing there.
+    if (channel.type === "DirectMessage" && channel.recipientIds.has(userId))
+      voice.noteCallDeclined(channel.id);
   }
 
   /**
@@ -829,74 +1057,336 @@ export function NotificationsWorker() {
   onMount(() => {
     if (!Capacitor.isNativePlatform()) return;
 
-    const handleAction = (
-      path?: string | null,
-      answer?: boolean,
-      ring?: boolean,
-      callerId?: string | null,
-    ) => {
-      if (!path) return;
-      // Only where the tap lands changes in Slim view. The call handling
-      // below still reads the path the notification carried.
-      navigate(tapTarget(path));
-      if (!answer && !ring) return;
+    // Unmounting ends whatever is still waiting below. This worker lives for
+    // one signed-in session, and an action must not carry over into the next.
+    // A native ring still waiting to be presented goes with it: nothing left
+    // would present it or take its cover down.
+    let mounted = true;
+    onCleanup(() => {
+      mounted = false;
+      setNativeRingPending(undefined);
+    });
 
-      const channelId = path.split("/").pop();
-      // Cold start: the client may still be connecting, so retry until the
-      // channel is hydrated (~10s) before giving up.
-      const withChannel = (fn: (channel: Channel) => void, attempt = 0) => {
-        const channel = channelId
-          ? client().channels.get(channelId)
-          : undefined;
-        if (channel) fn(channel);
-        else if (attempt < 20)
-          setTimeout(() => withChannel(fn, attempt + 1), 500);
-      };
-
-      if (answer) {
-        // Explicit "Answer" action button — the ONLY path that joins directly.
-        withChannel((channel) => voice.connect(channel).catch(console.error));
-        return;
-      }
-
-      // Ring: the notification was opened (or Android auto-launched the
-      // full-screen intent because the screen was off/locked). Show the
-      // Accept/Decline popup — NEVER auto-join.
-      withChannel((channel) => {
-        presentIncomingCall({
-          channel,
-          caller: callerId ? client().users.get(callerId) : undefined,
-          receivedAt: Date.now(),
-        });
-        // The native notification stays up (and keeps ringing) until the popup
-        // is resolved, so don't stack a second ringtone on top of it here.
-      });
-    };
-
-    /**
-     * The Decline action on the native notification. Cancelling the
-     * notification silences the system ringtone, but nothing else tells the
-     * web layer the call is over — the popup would stay on screen (and, on
-     * shells that ring in-app, keep ringing) until its 45s timer fired.
-     */
-    const handleDeclined = (channelId?: string | null) => {
-      sound.stopRingtone();
-      dismissIncomingCall(channelId ?? undefined);
-    };
-
-    // Cold start: consume the action stored before the web app was ready
-    registerPlugin<{
+    const pushToken = registerPlugin<{
       consumeLaunchAction(): Promise<{
         path?: string | null;
         answer: boolean;
         ring?: boolean;
         callerId?: string | null;
+        callId?: string | null;
+        video?: boolean;
+        locked?: boolean;
       }>;
-    }>("PushToken")
-      .consumeLaunchAction()
-      .then(({ path, answer, ring, callerId }) =>
-        handleAction(path, answer, ring, callerId),
+      dismissCallNotification(options: {
+        channelId: string;
+        reason: "ended";
+      }): Promise<void>;
+    }>("PushToken");
+
+    /**
+     * Open the pending chat if this app is on screen and the phone is
+     * unlocked right now. The lock is asked live each time, never taken from
+     * what the phone saw at the tap, and anything but a clear "unlocked"
+     * keeps the chat closed, so nothing of it is drawn over the lock screen.
+     * Asked again when the app becomes visible and when an Answer joined.
+     * Past its time limit the pending chat is dropped without opening.
+     */
+    const openPendingIfUnlocked = () => {
+      const pending = pendingOpen;
+      if (!pending) return;
+      if (!(Date.now() < pending.until)) {
+        pendingOpen = undefined;
+        return;
+      }
+      if (document.visibilityState !== "visible") return;
+      deviceLocked()
+        .then((locked) => {
+          if (locked !== false || !mounted || pendingOpen !== pending) return;
+          if (document.visibilityState !== "visible") return;
+          pendingOpen = undefined;
+          if (!(Date.now() < pending.until)) return;
+          if (params().channelId !== pending.channelId) pending.open();
+        })
+        .catch(console.error);
+    };
+
+    /**
+     * Park a chat to open once the phone is unlocked, for at most the ring
+     * length from `from`, and try at once.
+     * @returns The tap's number, to tell whether a newer tap came since
+     */
+    const parkOpen = (
+      channelId: string | undefined,
+      open: () => void,
+      from: number,
+    ) => {
+      pendingSeq += 1;
+      pendingOpen = {
+        channelId,
+        open,
+        until: from + ringDurationMs(serverCallRingSecs()),
+      };
+      openPendingIfUnlocked();
+      return pendingSeq;
+    };
+
+    // The pending chat goes with its ring. When the ring for it comes down
+    // and we are not in that call (declined here or elsewhere, timed out,
+    // the call ended, answered on another device), the chat is not opened.
+    // Only a connected call counts: the voice store names the channel from
+    // the start of a join, so a Decline pressed while our own Answer is
+    // still connecting must still count as the ring being over.
+    let ringShown: string | undefined;
+    createEffect(() => {
+      const shown = incomingCall()?.channel.id;
+      const gone = ringShown;
+      ringShown = shown;
+      const inThatCall = untrack(
+        () => voice.channel()?.id === gone && voice.state() === "CONNECTED",
+      );
+      if (gone && gone !== shown && !inThatCall) {
+        dropPendingOpen(gone);
+        noteRingOver(gone);
+      }
+    });
+
+    document.addEventListener("visibilitychange", openPendingIfUnlocked);
+    onCleanup(() =>
+      document.removeEventListener("visibilitychange", openPendingIfUnlocked),
+    );
+
+    // Once the chat is open anyway (the ring popup's Accept opens it after
+    // joining), there is nothing left to open: a later check must not take
+    // the user back to it from wherever they went next.
+    createEffect(() => {
+      const routeChannelId = params().channelId;
+      if (routeChannelId && pendingOpen?.channelId === routeChannelId)
+        pendingOpen = undefined;
+    });
+
+    /**
+     * The ring popup for a call a notification was about, with what the
+     * notification said about it.
+     */
+    const ringFor = (
+      action: NativeAction,
+      channel: Channel,
+      receivedAt: number,
+    ): IncomingCall => {
+      const call: IncomingCall = {
+        channel,
+        caller: action.callerId
+          ? client().users.get(action.callerId)
+          : undefined,
+        receivedAt,
+      };
+      if (action.callId) call.callId = action.callId;
+      if (action.video !== undefined) call.video = action.video;
+      return call;
+    };
+
+    /**
+     * An Answer from the notification that did not get into the call: bring
+     * the ring popup back for it while its ring is still running, so the
+     * user can try again or decline. The ring is counted from the tap, the
+     * earliest this layer knows of it. A popup already up (for this call or
+     * another one) is left alone, and a ring that was declined or ended
+     * since the tap is not brought back.
+     */
+    const ringAgain = (
+      action: NativeAction,
+      channel: Channel,
+      tappedAt: number,
+    ) => {
+      if (!mounted || incomingCall()) return;
+      if ((ringOverAt.get(channel.id) ?? -Infinity) >= tappedAt) return;
+      const elapsed = Date.now() - tappedAt;
+      if (!(elapsed >= 0 && elapsed < ringDurationMs(serverCallRingSecs())))
+        return;
+      presentIncomingCall(ringFor(action, channel, tappedAt));
+    };
+
+    const handleAction = (action: NativeAction) => {
+      const path = action.path;
+      // Only where the tap lands changes in Slim view. The call handling
+      // below still reads the path the notification carried.
+      const open = () => navigate(tapTarget(path));
+      const tappedAt = Date.now();
+
+      const channelId = path.split("/").pop();
+      // Cold start: the client may still be connecting, so retry until the
+      // channel is hydrated (~10s) before giving up. `settled` holds the
+      // call back further, while it says no, but never past that time.
+      // `gaveUp` runs once if the channel never loads.
+      const withChannel = (
+        fn: (channel: Channel) => void,
+        settled: () => boolean = () => true,
+        gaveUp: () => void = () => {},
+        attempt = 0,
+      ) => {
+        if (!mounted) return;
+        const channel = channelId
+          ? client()?.channels.get(channelId)
+          : undefined;
+        if (channel && (settled() || attempt >= 20)) fn(channel);
+        else if (attempt < 20)
+          setTimeout(() => withChannel(fn, settled, gaveUp, attempt + 1), 500);
+        else gaveUp();
+      };
+
+      if (action.answer) {
+        // The Answer button. Answering belongs to the voice store alone: it
+        // asks the phone whether it is locked at that moment, has it
+        // unlocked if so, joins, and says how that went. Nothing here joins
+        // a call any other way. The chat opens now only if the phone is
+        // unlocked now, asked live (`locked` is only what the phone saw when
+        // it handled the tap); otherwise once the call is joined, or later
+        // when the app is on screen with the phone unlocked. A channel that
+        // never loads is never answered. Joined after the pending chat's time
+        // ran out (unlocking can take a minute), it is parked once more from
+        // the join, unless a newer tap came meanwhile. An ended call drops it.
+        const parked = parkOpen(channelId, open, tappedAt);
+        withChannel((channel) => {
+          voice
+            .answerCall(channel)
+            .then((result) => {
+              if (!mounted) return;
+              if (result === "joined") {
+                if (pendingSeq === parked)
+                  parkOpen(channelId, open, Date.now());
+              } else if (result === "ended") dropPendingOpen(channelId);
+              else if (result === "failed" || result === "blocked")
+                ringAgain(action, channel, tappedAt);
+            })
+            .catch(console.error);
+        });
+        return;
+      }
+
+      // A plain tap opens its chat now, and a chat an earlier call tap left
+      // pending must not be opened over it later.
+      if (!action.ring) {
+        pendingSeq += 1;
+        pendingOpen = undefined;
+        open();
+        return;
+      }
+
+      // Ring: the notification was opened (or Android auto-launched the
+      // full-screen intent because the screen was off/locked). Show the
+      // Accept/Decline popup — NEVER auto-join. The chat behind it opens
+      // only once the phone is unlocked, asked live: the popup can be over
+      // the lock screen.
+      //
+      // The phone shows the app over its lock screen from the moment the
+      // ring arrived, but the popup can only be presented once the chat has
+      // loaded, which on a sleeping phone waits for the websocket. Until
+      // then the overlay covers the screen (who is calling, no buttons), so
+      // the chat that was last open is never drawn over the lock screen. It
+      // is set here, before anything waits, because nothing has said yet
+      // that the phone is unlocked. It goes when the popup is presented or
+      // the ring ends without one, and early only if both the phone's tap
+      // snapshot and a live answer say unlocked. It never opens anything.
+      const ringCover: NativeRingPending | undefined = channelId
+        ? { channelId }
+        : undefined;
+      if (ringCover && action.callerId) ringCover.callerId = action.callerId;
+      if (ringCover) setNativeRingPending(ringCover);
+      const dropRingCover = () => {
+        if (nativeRingPending() === ringCover) setNativeRingPending(undefined);
+      };
+      if (ringCover && action.locked === false) {
+        deviceLocked()
+          .then((locked) => {
+            if (locked === false) dropRingCover();
+          })
+          .catch(() => {});
+      }
+
+      parkOpen(channelId, open, tappedAt);
+
+      // Whether a Ready reaches the client after this tap. Only a Ready says
+      // for sure who is in a call (a client that was connected all along may
+      // have missed a join), so only then does an empty call count as over.
+      // The lifecycle enters Connected on the client's Ready alone.
+      const awaitsReady = lifecycle.state() !== State.Connected;
+      const rosterFresh = () =>
+        awaitsReady && lifecycle.state() === State.Connected;
+      const settled = () => !awaitsReady || rosterFresh();
+
+      const presentOrEnd = (channel: Channel) => {
+        // Nobody is in the call any more (cold start, so it was asked after
+        // the tap): the ring is over. No popup; the phone's ring notification
+        // is resolved as ended, which also lets the app fall back behind the
+        // lock screen. A popup the websocket raised for it goes the same way.
+        if (rosterFresh() && channel.voiceParticipants.size === 0) {
+          if (incomingCall()?.channel.id === channel.id) {
+            if (sound.ringtoneKind() === "incoming") sound.stopRingtone();
+            dismissIncomingCall(channel.id, "ended");
+          } else {
+            pushToken
+              .dismissCallNotification({
+                channelId: channel.id,
+                reason: "ended",
+              })
+              .catch(() => {});
+          }
+          dropPendingOpen(channel.id);
+          return;
+        }
+        presentIncomingCall(ringFor(action, channel, Date.now()));
+        // The native notification stays up (and keeps ringing) until the popup
+        // is resolved, so don't stack a second ringtone on top of it here.
+      };
+      withChannel(presentOrEnd, settled, dropRingCover);
+    };
+
+    /**
+     * Act on an action from one of the two native sources, unless the other
+     * source has just delivered the same one.
+     */
+    const deliver = (source: NativeActionSource, action: NativeAction) => {
+      if (
+        takeNativeAction(takenNativeActions, source, action, performance.now())
       )
+        handleAction(action);
+    };
+
+    /**
+     * The Decline action on the native notification. The phone has already
+     * told the server and cancelled its notification, which silences the
+     * system ringtone, but nothing else tells the web layer the call is
+     * over: the popup would stay on screen (and, on shells that ring in-app,
+     * keep ringing) until the ring length ran out. The voice store declines
+     * again, which the server ignores, and takes the ring down as declined.
+     * A chat this client does not have cannot be declined through the store,
+     * so only its ring is taken down. The ringtone stops only when it is
+     * the incoming ring being taken down, never our own outgoing ring.
+     */
+    const handleDeclined = (channelId?: string | null) => {
+      const ringing = incomingCall();
+      if (
+        ringing &&
+        (!channelId || ringing.channel.id === channelId) &&
+        sound.ringtoneKind() === "incoming"
+      )
+        sound.stopRingtone();
+      dropPendingOpen(channelId ?? undefined);
+      noteRingOver(channelId ?? ringing?.channel.id);
+      const channel = channelId ? client()?.channels.get(channelId) : undefined;
+      if (channel) voice.declineCall(channel).catch(console.error);
+      else dismissIncomingCall(channelId ?? undefined, "declined");
+    };
+
+    // Cold start: consume the action stored before the web app was ready.
+    // An action older than a minute arrives without its answer or ring, and
+    // then only opens the chat.
+    pushToken
+      .consumeLaunchAction()
+      .then((parked) => {
+        const action = readNativeAction(parked);
+        if (action) deliver("launch", action);
+      })
       .catch(() => {});
 
     // Warm app: actions arrive as window events. Capacitor's
@@ -909,40 +1399,43 @@ export function NotificationsWorker() {
     // a `.detail` JSON fallback in case a shell ever delivers it that way.
     const onAction = (event: Event) => {
       const e = event as Event & {
-        path?: unknown;
-        answer?: unknown;
-        ring?: unknown;
-        callerId?: unknown;
         declined?: unknown;
         channelId?: unknown;
         detail?: string | null;
       };
-      // Declines carry no path, so they must be handled before handleAction's
-      // `if (!path) return`.
+      // Declines carry no path, so they are handled before anything reads
+      // one.
       if (e.declined === true) {
         handleDeclined(
           typeof e.channelId === "string" ? e.channelId : undefined,
         );
         return;
       }
-      if (typeof e.path === "string") {
-        handleAction(
-          e.path,
-          e.answer === true,
-          e.ring === true,
-          typeof e.callerId === "string" ? e.callerId : undefined,
-        );
-        return;
-      }
-      try {
-        const data = JSON.parse(e.detail ?? "{}");
-        if (data.declined) {
-          handleDeclined(data.channelId);
-          return;
+      let action = readNativeAction(e);
+      if (!action) {
+        try {
+          const data = JSON.parse(e.detail ?? "{}");
+          if (data.declined) {
+            handleDeclined(
+              typeof data.channelId === "string" ? data.channelId : undefined,
+            );
+            return;
+          }
+          action = readNativeAction(data);
+        } catch {
+          /* ignore malformed payloads */
         }
-        handleAction(data.path, data.answer, data.ring, data.callerId);
-      } catch {
-        /* ignore malformed payloads */
+      }
+      if (!action) return;
+      try {
+        deliver("event", action);
+      } finally {
+        // The phone parked this same action in the launch slot as well as
+        // sending it here. Empty the slot, so a later remount or page reload
+        // does not read the action again and answer a call a second time.
+        // The answer is thrown away: an action that was parked meanwhile
+        // has its own event on the way.
+        pushToken.consumeLaunchAction().catch(() => {});
       }
     };
     window.addEventListener("slogaNotificationAction", onAction);
@@ -977,12 +1470,14 @@ export function NotificationsWorker() {
     client().addListener("messageCreate", onMessage);
     client().addListener("voiceChannelJoin", onVoiceChannelJoin);
     client().addListener("voiceChannelLeave", onVoiceChannelLeave);
+    client().addListener("voiceCallDeclined", onVoiceCallDeclined);
     client().addListener("userUpdate", onUserUpdate);
     client().addListener("reportCreate", onReport);
     onCleanup(() => {
       client().removeListener("messageCreate", onMessage);
       client().removeListener("voiceChannelJoin", onVoiceChannelJoin);
       client().removeListener("voiceChannelLeave", onVoiceChannelLeave);
+      client().removeListener("voiceCallDeclined", onVoiceCallDeclined);
       client().removeListener("userUpdate", onUserUpdate);
       client().removeListener("reportCreate", onReport);
     });
