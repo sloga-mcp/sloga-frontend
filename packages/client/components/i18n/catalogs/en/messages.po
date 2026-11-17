@@ -11065,16 +11065,16 @@ msgid "Create a server"
 msgstr "Create a server"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "Restore encryption on a second device"
-msgstr "Restore encryption on a second device"
+msgid "Decline a call, and see when nobody answered"
+msgstr "Decline a call, and see when nobody answered"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "Send a whole folder as a .zip"
-msgstr "Send a whole folder as a .zip"
+msgid "Choose which of your devices ring for calls"
+msgstr "Choose which of your devices ring for calls"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "Images open again in chat windows"
-msgstr "Images open again in chat windows"
+msgid "Full-screen incoming calls on Android"
+msgstr "Full-screen incoming calls on Android"
 
 #: src/interface/home/WhatsNewCard.tsx
 msgid "New in v{HIGHLIGHTS_RELEASE}"
