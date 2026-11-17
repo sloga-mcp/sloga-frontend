@@ -44,6 +44,8 @@ import {
 } from "../callCard/callTileSelection";
 import { participantUserId } from "../participantIdentity";
 import {
+  clampCornerPosition,
+  isCornerDrag,
   nextSlimCallMinimised,
   slimCallShown,
   slimCallVideoLayout,
@@ -110,10 +112,36 @@ export function SlimCallScreen() {
  * them. The notices are the call card's own components, mounted the way the
  * card mounts them: no props, no condition, each deciding for itself whether
  * it has something to show.
+ *
+ * A direct video call (`Tiles` reports it) is laid out like a phone's own
+ * video call instead: the picture runs from the top of the screen to the
+ * bottom, and the top and bottom parts lie over it. They are drawn above the
+ * picture, never under it, and the stage keeps clear of both by their
+ * measured heights, so the tiles' own marks, the corner tile and the roster
+ * panel all stay in the part of the picture nothing lies over.
  */
 function CallScreen() {
   const voice = useVoice();
   const { t } = useLingui();
+
+  const [video, setVideo] = createSignal(false);
+  const [screen, setScreen] = createSignal<HTMLDivElement>();
+  const [top, setTop] = createSignal<HTMLDivElement>();
+  const [bottom, setBottom] = createSignal<HTMLDivElement>();
+
+  // The heights of the two parts that lie over a video call's picture
+  createResizeObserver(top, (_rect, el) =>
+    screen()?.style.setProperty(
+      "--slim-top",
+      `${(el as HTMLElement).offsetHeight}px`,
+    ),
+  );
+  createResizeObserver(bottom, (_rect, el) =>
+    screen()?.style.setProperty(
+      "--slim-bottom",
+      `${(el as HTMLElement).offsetHeight}px`,
+    ),
+  );
 
   const title = () => {
     const channel = voice.channel();
@@ -121,34 +149,40 @@ function CallScreen() {
   };
 
   return (
-    <Screen>
-      <Header>
-        <IconButton
-          size="md"
-          variant="standard"
-          aria-label={t`Minimize call`}
-          onPress={() => setSlimCallMinimised(true)}
-        >
-          <Symbol>keyboard_arrow_down</Symbol>
-        </IconButton>
-        <Title>{title()}</Title>
-        <VoiceCallCardStatus />
-      </Header>
-      <Notices>
-        <ChipRow>
-          <VoiceCallEncryptionChip />
-        </ChipRow>
-        <VoiceCallDowngradeBanner />
-        <VoiceCallAudioBlockedBanner />
-        <VoiceCallRecordingBanner />
-        <VoiceCallWhisperBanner />
-      </Notices>
-      <Stage>
-        {/* Opened by a press on the chip above. It lies over the tiles. */}
-        <VoiceCallRosterPanel />
-        <Tiles />
+    <Screen ref={setScreen}>
+      <Top ref={setTop} video={video()}>
+        <Header video={video()}>
+          <IconButton
+            size="md"
+            variant="standard"
+            aria-label={t`Minimize call`}
+            onPress={() => setSlimCallMinimised(true)}
+          >
+            <Symbol>keyboard_arrow_down</Symbol>
+          </IconButton>
+          <Title>{title()}</Title>
+          <VoiceCallCardStatus />
+        </Header>
+        <Notices>
+          <ChipRow video={video()}>
+            <VoiceCallEncryptionChip />
+          </ChipRow>
+          <VoiceCallDowngradeBanner />
+          <VoiceCallAudioBlockedBanner />
+          <VoiceCallRecordingBanner />
+          <VoiceCallWhisperBanner />
+        </Notices>
+      </Top>
+      <Stage video={video()}>
+        <StageInner>
+          {/* Opened by a press on the chip above. It lies over the tiles. */}
+          <VoiceCallRosterPanel />
+          <Tiles onVideo={setVideo} />
+        </StageInner>
       </Stage>
-      <Controls />
+      <Bottom ref={setBottom} video={video()}>
+        <Controls />
+      </Bottom>
     </Screen>
   );
 }
@@ -165,6 +199,8 @@ const GRID_NARROWER_MARGIN = 1.05;
 const TILE_FALLBACK_WIDTH = "min(100%, 250px)";
 /** livekit-client `Track.Source.ScreenShare`, as `callTileSelection` reads it. */
 const SCREEN_SHARE_SOURCE = "screen_share";
+/** The closest a dragged corner tile gets to the edges of its area, in px. */
+const CORNER_MARGIN = 8;
 
 /**
  * The participants. Every tile is the call card's `ParticipantTile`, fed by
@@ -181,13 +217,25 @@ const SCREEN_SHARE_SOURCE = "screen_share";
  * instead (`slimCallVideoLayout`): the other side's picture fills the area
  * edge to edge and this device's own tile sits in the top right corner. A
  * press on the corner tile swaps the two, through the same focus the large
- * box uses.
+ * box uses. The corner tile can be dragged anywhere in the area, and hidden
+ * and brought back; hiding it only takes it off this screen, the camera
+ * keeps sending.
  */
-function Tiles() {
+function Tiles(props: { onVideo: (video: boolean) => void }) {
   const voice = useVoice();
+  const { t } = useLingui();
 
   const [area, setArea] = createSignal<HTMLDivElement>();
   const [size, setSize] = createSignal({ width: 0, height: 0 });
+
+  const [cornerHidden, setCornerHidden] = createSignal(false);
+  /** Where the user dragged the corner tile to, and the tile's size then. */
+  const [cornerAt, setCornerAt] = createSignal<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }>();
 
   // The tiles size themselves from these two properties
   createResizeObserver(area, ({ width, height }) => {
@@ -227,11 +275,133 @@ function Tiles() {
         screenShare: (track.source as string) === SCREEN_SHARE_SOURCE,
         focused: voice.isFocus(track),
       })),
+      cornerHidden: cornerHidden(),
     });
     return layout
       ? { main: tracks[layout.main], corner: tracks[layout.corner] }
       : undefined;
   });
+
+  // The screen arranges its top and bottom parts around the answer
+  createEffect(() => props.onVideo(!!videoLayout()));
+
+  /**
+   * Hide the corner tile, or bring it back. Either way a swap is undone
+   * first: hidden, there is nothing to swap with, and the tile comes back as
+   * this device's own picture.
+   */
+  function showCorner(show: boolean) {
+    if (untrack(voice.focusId)) voice.toggleFocus();
+    setCornerHidden(!show);
+  }
+
+  /** The corner tile's place once it has been dragged, kept inside the area. */
+  const cornerStyle = () => {
+    const at = cornerAt();
+    if (!at) return undefined;
+    const { width, height } = size();
+    // The tile's size follows the area's, so after a turn of the phone it is
+    // the size it has now that counts, not the one it had when dragged
+    const { x, y } = clampCornerPosition({
+      x: at.x,
+      y: at.y,
+      width: cornerEl?.offsetWidth || at.width,
+      height: cornerEl?.offsetHeight || at.height,
+      areaWidth: width,
+      areaHeight: height,
+      margin: CORNER_MARGIN,
+    });
+    return { left: `${x}px`, top: `${y}px`, right: "auto" };
+  };
+
+  // A drag of the corner tile. A press that stays put is left alone, and
+  // reaches the tile as the press that swaps the two pictures; one that
+  // travels moves the tile, and the click that ends it is swallowed.
+  let drag:
+    | {
+        pointer: number;
+        fromX: number;
+        fromY: number;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        moved: boolean;
+      }
+    | undefined;
+  let swallowClick = false;
+  let cornerEl: HTMLDivElement | undefined;
+
+  /**
+   * The corner tile's own listeners, in the capture phase so they run
+   * before anything inside the tile. Every new press starts clean: a drag by
+   * finger ends without a click, and the click it was waiting to swallow
+   * must not be the next press on the hide button.
+   */
+  function cornerMounted(el: HTMLDivElement) {
+    cornerEl = el;
+    el.addEventListener("pointerdown", () => (swallowClick = false), true);
+    el.addEventListener("click", cornerClick, true);
+  }
+
+  function cornerDown(event: PointerEvent & { currentTarget: HTMLElement }) {
+    const areaEl = area();
+    if (!areaEl || (event.pointerType === "mouse" && event.button !== 0))
+      return;
+    const box = event.currentTarget.getBoundingClientRect();
+    const areaBox = areaEl.getBoundingClientRect();
+    swallowClick = false;
+    drag = {
+      pointer: event.pointerId,
+      fromX: event.clientX,
+      fromY: event.clientY,
+      x: box.left - areaBox.left,
+      y: box.top - areaBox.top,
+      width: box.width,
+      height: box.height,
+      moved: false,
+    };
+  }
+
+  function cornerMove(event: PointerEvent & { currentTarget: HTMLElement }) {
+    if (!drag || drag.pointer !== event.pointerId) return;
+    // A mouse button let go outside the tile: that press is over
+    if (event.pointerType === "mouse" && event.buttons === 0) {
+      drag = undefined;
+      return;
+    }
+    const dx = event.clientX - drag.fromX;
+    const dy = event.clientY - drag.fromY;
+    if (!drag.moved) {
+      if (!isCornerDrag(dx, dy)) return;
+      drag.moved = true;
+      swallowClick = true;
+      try {
+        // Keeps the moves coming when the finger outruns the tile
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // The pointer is already gone; the drag ends with it
+      }
+    }
+    setCornerAt({
+      x: drag.x + dx,
+      y: drag.y + dy,
+      width: drag.width,
+      height: drag.height,
+    });
+  }
+
+  function cornerUp(event: PointerEvent) {
+    if (drag?.pointer === event.pointerId) drag = undefined;
+  }
+
+  /** In the capture phase, so the tile under the pointer never hears it. */
+  function cornerClick(event: MouseEvent) {
+    if (!swallowClick) return;
+    swallowClick = false;
+    event.stopPropagation();
+    event.preventDefault();
+  }
 
   // A swap is kept as the focus. When the video layout stops applying (both
   // cameras off, the other side gone) the focus goes with it, so the plain
@@ -297,7 +467,7 @@ function Tiles() {
   return (
     <TileArea
       ref={setArea}
-      focused={focused() || !!videoLayout()}
+      focused={focused() && !videoLayout()}
       video={!!videoLayout()}
     >
       <InRoom>
@@ -334,13 +504,44 @@ function Tiles() {
               </VideoMain>
             )}
           </TrackLoop>
-          <TrackLoop tracks={() => [videoLayout()!.corner]}>
-            {() => (
-              <VideoCorner>
-                <ParticipantTile />
-              </VideoCorner>
-            )}
-          </TrackLoop>
+          <Show
+            when={!cornerHidden()}
+            fallback={
+              <CornerShow
+                type="button"
+                aria-label={t`Camera Preview`}
+                onClick={() => showCorner(true)}
+              >
+                <Symbol size={20}>picture_in_picture</Symbol>
+              </CornerShow>
+            }
+          >
+            <TrackLoop tracks={() => [videoLayout()!.corner]}>
+              {() => (
+                <VideoCorner
+                  ref={cornerMounted}
+                  style={cornerStyle()}
+                  onPointerDown={cornerDown}
+                  onPointerMove={cornerMove}
+                  onPointerUp={cornerUp}
+                  onPointerCancel={cornerUp}
+                  onLostPointerCapture={cornerUp}
+                >
+                  <ParticipantTile />
+                  <CornerHide
+                    type="button"
+                    aria-label={t`Hide`}
+                    onPointerDown={(event: PointerEvent) =>
+                      event.stopPropagation()
+                    }
+                    onClick={() => showCorner(false)}
+                  >
+                    <Symbol size={16}>visibility_off</Symbol>
+                  </CornerHide>
+                </VideoCorner>
+              )}
+            </TrackLoop>
+          </Show>
         </Show>
       </InRoom>
     </TileArea>
@@ -556,6 +757,50 @@ const Screen = styled("div", {
   },
 });
 
+/**
+ * The top part: who the call is with, and the call's notices. Over a video
+ * call's picture it is drawn above the picture, on a dark fade.
+ */
+const Top = styled("div", {
+  base: {
+    flexShrink: 0,
+
+    display: "flex",
+    flexDirection: "column",
+  },
+  variants: {
+    video: {
+      true: {
+        position: "relative",
+        zIndex: 2,
+        paddingBottom: "var(--gap-lg)",
+        background: "linear-gradient(to bottom, #000000b3, #00000000)",
+      },
+      false: {},
+    },
+  },
+});
+
+/** The controls. Over a video call's picture they sit at its bottom edge. */
+const Bottom = styled("div", {
+  base: {
+    flexShrink: 0,
+  },
+  variants: {
+    video: {
+      true: {
+        position: "relative",
+        zIndex: 2,
+        // The stage is out of the flow, so nothing else pushes this down
+        marginTop: "auto",
+        paddingTop: "var(--gap-lg)",
+        background: "linear-gradient(to top, #000000b3, #00000000)",
+      },
+      false: {},
+    },
+  },
+});
+
 const Header = styled("div", {
   base: {
     flexShrink: 0,
@@ -564,6 +809,20 @@ const Header = styled("div", {
     alignItems: "center",
     gap: "var(--gap-md)",
     padding: "var(--gap-sm) var(--gap-md)",
+  },
+  variants: {
+    video: {
+      true: {
+        // Light on the dark fade, whatever the theme. The notices below
+        // keep the theme's colours and bring their own backgrounds.
+        color: "#fff",
+        textShadow: "0 1px 3px #000000b3",
+        "--md-sys-color-on-surface": "#fff",
+        "--md-sys-color-on-surface-variant": "#ffffffd9",
+        "--md-sys-color-outline": "#ffffffb3",
+      },
+      false: {},
+    },
   },
 });
 
@@ -603,11 +862,22 @@ const ChipRow = styled("div", {
       display: "none",
     },
   },
+  variants: {
+    video: {
+      true: {
+        // The chip has no background of its own, and over a picture it
+        // needs one to be read
+        alignSelf: "flex-start",
+        borderRadius: "var(--borderRadius-full)",
+        background: "var(--md-sys-color-surface)",
+      },
+      false: {},
+    },
+  },
 });
 
 const Stage = styled("div", {
   base: {
-    // Anchors the roster panel
     position: "relative",
 
     flex: "1 1 0",
@@ -616,6 +886,39 @@ const Stage = styled("div", {
     display: "flex",
     flexDirection: "column",
     padding: "var(--gap-md)",
+  },
+  variants: {
+    /**
+     * A direct video call: the stage is the whole screen, and what is in it
+     * keeps clear of the top and bottom parts lying over it.
+     */
+    video: {
+      true: {
+        position: "absolute",
+        inset: 0,
+        // Its own layer, under the top and bottom parts: nothing in the
+        // stage (the roster panel has a z-index) can be drawn over the
+        // call's notices
+        zIndex: 0,
+        padding: 0,
+        paddingTop: "var(--slim-top, 0px)",
+        paddingBottom: "var(--slim-bottom, 0px)",
+      },
+      false: {},
+    },
+  },
+});
+
+/** The part of the stage nothing lies over. Anchors the roster panel. */
+const StageInner = styled("div", {
+  base: {
+    position: "relative",
+
+    flex: "1 1 0",
+    minHeight: 0,
+
+    display: "flex",
+    flexDirection: "column",
   },
 });
 
@@ -641,12 +944,12 @@ const TileArea = styled("div", {
       },
       false: {},
     },
-    /** A direct video call: the picture runs to the edges of the stage. */
+    /** A direct video call: the picture runs past this area, to the edges. */
     video: {
       true: {
-        // Takes back the stage's padding
-        margin: "calc(-1 * var(--gap-md))",
         gap: 0,
+        overflowX: "visible",
+        overflowY: "visible",
       },
       false: {},
     },
@@ -654,36 +957,67 @@ const TileArea = styled("div", {
 });
 
 /**
- * The tile that fills the stage in a direct video call. The tile and its
+ * The tile that fills the screen in a direct video call. The tile and its
  * picture set their own size for a grid, inline, so the sizes here are
  * `!important`. The picture is cropped to fill, not letterboxed.
+ *
+ * The box reaches past its area, up under the screen's top part and down
+ * under the controls, by their measured heights. The tile is padded by the
+ * same heights, so its name, lock, mute and connection marks stay in the
+ * part of the picture nothing lies over; only the picture itself runs the
+ * whole way.
  */
 const VideoMain = styled("div", {
   base: {
     position: "absolute",
-    inset: 0,
+    top: "calc(-1 * var(--slim-top, 0px))",
+    bottom: "calc(-1 * var(--slim-bottom, 0px))",
+    left: 0,
+    right: 0,
     // Its own stacking context, so nothing inside the tile (a live caption
-    // has a z-index) is drawn over the corner tile
+    // has a z-index) is drawn over the corner tile, and the picture's
+    // negative z-index stays inside this box
     isolation: "isolate",
+    background: "#000",
 
     "& .vc_tile": {
+      position: "relative",
       width: "100% !important",
       maxWidth: "none !important",
       height: "100% !important",
       maxHeight: "none !important",
       aspectRatio: "auto !important",
       borderRadius: 0,
+      paddingTop: "var(--slim-top, 0px)",
+      paddingBottom: "var(--slim-bottom, 0px)",
+      // The picture is behind the tile, so the tile must not tint it, and a
+      // frame around the whole screen for "speaking" says nothing in a call
+      // of two
+      background: "transparent !important",
+      outlineColor: "transparent !important",
+      // Its marks are read against the picture, or against black while the
+      // camera is off, so they are light whatever the theme
+      color: "#fff",
+      textShadow: "0 1px 3px #000000b3",
+      "--md-sys-color-on-surface": "#fff",
+      // The padding follows the notices at once, not in the tile's own time
+      transition: "none !important",
     },
     "& video": {
+      position: "absolute !important",
+      inset: 0,
+      zIndex: -1,
+      width: "100% !important",
+      height: "100% !important",
       objectFit: "cover !important",
     },
   },
 });
 
 /**
- * The other tile of a direct video call, in the top right corner. The top,
- * because the large tile's name, lock, mute and connection marks are along
- * its bottom edge and must stay in view.
+ * The other tile of a direct video call. It starts in the top right corner
+ * (the top, because the large tile's name, lock, mute and connection marks
+ * are along its bottom edge) and goes wherever the user drags it.
  */
 const VideoCorner = styled("div", {
   base: {
@@ -691,6 +1025,10 @@ const VideoCorner = styled("div", {
     top: "var(--gap-md)",
     right: "var(--gap-md)",
     zIndex: 1,
+
+    // A finger on it drags it; the page under it does not scroll
+    touchAction: "none",
+    userSelect: "none",
 
     width: "clamp(88px, 28%, 150px)",
     aspectRatio: "3/4",
@@ -712,6 +1050,51 @@ const VideoCorner = styled("div", {
     "& video": {
       objectFit: "cover !important",
     },
+  },
+});
+
+/** On the corner tile: takes it off the screen. */
+const CornerHide = styled("button", {
+  base: {
+    position: "absolute",
+    top: "4px",
+    left: "4px",
+    // Over everything the tile draws on itself
+    zIndex: 10,
+
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "28px",
+    height: "28px",
+
+    border: "none",
+    borderRadius: "var(--borderRadius-full)",
+    cursor: "pointer",
+    color: "#fff",
+    background: "#00000099",
+  },
+});
+
+/** Where the corner tile starts, while it is hidden: brings it back. */
+const CornerShow = styled("button", {
+  base: {
+    position: "absolute",
+    top: "var(--gap-md)",
+    right: 0,
+    zIndex: 1,
+
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "44px",
+    height: "44px",
+
+    border: "none",
+    borderRadius: "var(--borderRadius-full) 0 0 var(--borderRadius-full)",
+    cursor: "pointer",
+    color: "#fff",
+    background: "#00000099",
   },
 });
 

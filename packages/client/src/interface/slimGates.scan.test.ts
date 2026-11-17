@@ -1474,6 +1474,35 @@ test("G18 SlimCallScreen.tsx: the chip and the three banners, once each, with no
     // Above the tiles, so they never cover it
     assert.ok(at < container, `<${name} must come before the tiles' container`);
   }
+
+  // In a direct video call the stage lies under the notices instead of
+  // below them. It must be a layer of its own at the bottom, and the part
+  // holding the notices a layer above it, or something in the stage with a
+  // z-index (the roster panel has one) could be drawn over them
+  const videoVariant = (name: string) => {
+    const decl = must(
+      new RegExp(`\\bconst\\s+${name}\\s*=\\s*styled\\(`).exec(src),
+      `${name} must be one of this file's styled tags`,
+    );
+    const from = decl.index + decl[0].length - 1;
+    const body = src.slice(from, matchClose(src, from) + 1);
+    const variant = must(
+      /\bvideo:\s*\{\s*true:\s*\{/.exec(body),
+      `${name} must have a video variant`,
+    );
+    const open = variant.index + variant[0].length - 1;
+    return squash(body.slice(open, matchClose(body, open) + 1));
+  };
+  assert.match(
+    videoVariant("Stage"),
+    /position:"absolute".*zIndex:0,/,
+    "the video stage must be its own layer at z-index 0",
+  );
+  assert.match(
+    videoVariant("Top"),
+    /position:"relative",zIndex:2,/,
+    "the notices must be a layer above the video stage",
+  );
 });
 
 /** The four facts the call screen is shown by, as every reader passes them. */

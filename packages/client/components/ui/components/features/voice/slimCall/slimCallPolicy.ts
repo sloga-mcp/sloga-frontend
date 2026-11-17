@@ -104,14 +104,17 @@ type SlimCallTile = {
  * tiles and at least one camera on. A group, a screen share, a call still
  * waiting for the other side, and a call with both cameras off keep the
  * plain arrangement. The other side fills the screen unless the user picked
- * their own tile, in which case the two swap.
- * @param input The channel type and the tiles, in the order they are drawn
+ * their own tile, in which case the two swap. While the corner tile is hidden
+ * there is nothing to swap with, so the other side always fills the screen.
+ * @param input The channel type, the tiles in the order they are drawn, and
+ * whether the user has hidden the corner tile
  * @returns The indexes of the tile that fills the screen and of the corner
  * tile, or `null` for the plain arrangement
  */
 export function slimCallVideoLayout(input: {
   channelType: string | undefined;
   tiles: readonly SlimCallTile[];
+  cornerHidden?: boolean;
 }): { main: number; corner: number } | null {
   if (input.channelType !== "DirectMessage") return null;
 
@@ -123,8 +126,54 @@ export function slimCallVideoLayout(input: {
   const own = tiles.findIndex((tile) => tile.own);
   if (own === -1 || tiles[1 - own].own) return null;
 
-  const focused = tiles.findIndex((tile) => tile.focused);
+  const focused = input.cornerHidden
+    ? -1
+    : tiles.findIndex((tile) => tile.focused);
   const main = focused === -1 ? 1 - own : focused;
 
   return { main, corner: 1 - main };
+}
+
+/** How far a press on the corner tile may travel, in px, and still be a press. */
+const CORNER_DRAG_SLOP = 8;
+
+/**
+ * Whether a pointer that has moved this far from where it went down is
+ * dragging the corner tile. Anything shorter is a press, which swaps the two
+ * pictures.
+ * @param dx Horizontal travel in px
+ * @param dy Vertical travel in px
+ * @returns Whether this is a drag
+ */
+export function isCornerDrag(dx: number, dy: number): boolean {
+  return Math.hypot(dx, dy) > CORNER_DRAG_SLOP;
+}
+
+/**
+ * Where the corner tile goes when the user drags it: anywhere, as long as
+ * all of it stays inside the area with a margin to the edges. An area too
+ * small for that keeps the tile at the margin from the top left.
+ * @param input The wanted top left corner, the tile's size, the area's size
+ * and the margin, all in px
+ * @returns The top left corner to use
+ */
+export function clampCornerPosition(input: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  areaWidth: number;
+  areaHeight: number;
+  margin: number;
+}): { x: number; y: number } {
+  const within = (value: number, room: number) => {
+    const max = Math.max(input.margin, room - input.margin);
+    if (!Number.isFinite(value)) return input.margin;
+    return Math.min(Math.max(value, input.margin), max);
+  };
+
+  return {
+    x: within(input.x, input.areaWidth - input.width),
+    y: within(input.y, input.areaHeight - input.height),
+  };
 }

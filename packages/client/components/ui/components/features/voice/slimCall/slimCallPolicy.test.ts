@@ -1,7 +1,7 @@
 // Unit spec for the Slim view call screen rules: run with Node's built-in
 // runner from packages/client:
 //   node --test --conditions=browser components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts
-// Declared test count: 22 (compare against the runner's pass count, since the
+// Declared test count: 27 (compare against the runner's pass count, since the
 // runner also exits 0 when it finds no tests at all).
 // Focus: the call screen is up only for a direct message or group call in
 // Slim view that is not minimised; a server channel, a channel that is not
@@ -9,11 +9,15 @@
 // same answer on every row; the minimised flag is cleared by leaving the call
 // or by a channel change and is otherwise left as it was; the video layout
 // applies only to a direct call with the two sides' camera tiles and a camera
-// on, the other side fills the screen, and a picked tile swaps the two.
+// on, the other side fills the screen, and a picked tile swaps the two
+// unless the corner tile is hidden; a short press on the corner tile is not a
+// drag, and a dragged corner tile always stays inside its area.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  clampCornerPosition,
+  isCornerDrag,
   nextSlimCallMinimised,
   slimCallOwnsTiles,
   slimCallShown,
@@ -458,4 +462,131 @@ test("video layout: anything but the two sides' camera tiles keeps the plain arr
     null,
   );
   assert.equal(slimCallVideoLayout({ channelType: dm, tiles: [] }), null);
+});
+
+test("video layout: a hidden corner tile never swaps, whichever tile was picked", () => {
+  const dm = "DirectMessage";
+  assert.deepEqual(
+    slimCallVideoLayout({
+      channelType: dm,
+      tiles: [THEM, { ...ME, liveVideo: true, focused: true }],
+      cornerHidden: true,
+    }),
+    { main: 0, corner: 1 },
+  );
+  assert.deepEqual(
+    slimCallVideoLayout({
+      channelType: dm,
+      tiles: [{ ...ME, focused: true }, THEM],
+      cornerHidden: true,
+    }),
+    { main: 1, corner: 0 },
+  );
+  // The other side picked, and nobody picked: the same answer
+  assert.deepEqual(
+    slimCallVideoLayout({
+      channelType: dm,
+      tiles: [{ ...THEM, focused: true }, ME],
+      cornerHidden: true,
+    }),
+    { main: 0, corner: 1 },
+  );
+  assert.deepEqual(
+    slimCallVideoLayout({
+      channelType: dm,
+      tiles: [ME, THEM],
+      cornerHidden: true,
+    }),
+    { main: 1, corner: 0 },
+  );
+  // Shown again, the pick counts as before
+  assert.deepEqual(
+    slimCallVideoLayout({
+      channelType: dm,
+      tiles: [{ ...ME, focused: true }, THEM],
+      cornerHidden: false,
+    }),
+    { main: 0, corner: 1 },
+  );
+});
+
+test("corner tile: a short press is not a drag, a longer move is", () => {
+  assert.equal(isCornerDrag(0, 0), false);
+  assert.equal(isCornerDrag(5, 5), false);
+  assert.equal(isCornerDrag(8, 0), false);
+  assert.equal(isCornerDrag(0, -8), false);
+  assert.equal(isCornerDrag(9, 0), true);
+  assert.equal(isCornerDrag(-6, 6), true);
+  assert.equal(isCornerDrag(0, -40), true);
+});
+
+/** A 100 x 130 tile in a 360 x 600 area with an 8px margin */
+const CORNER = {
+  width: 100,
+  height: 130,
+  areaWidth: 360,
+  areaHeight: 600,
+  margin: 8,
+};
+
+test("corner tile: a place inside the area is kept as it is", () => {
+  assert.deepEqual(clampCornerPosition({ ...CORNER, x: 120, y: 300 }), {
+    x: 120,
+    y: 300,
+  });
+  // The far corners themselves
+  assert.deepEqual(clampCornerPosition({ ...CORNER, x: 8, y: 8 }), {
+    x: 8,
+    y: 8,
+  });
+  assert.deepEqual(clampCornerPosition({ ...CORNER, x: 252, y: 462 }), {
+    x: 252,
+    y: 462,
+  });
+});
+
+test("corner tile: a place past any edge is pulled back inside the margin", () => {
+  assert.deepEqual(clampCornerPosition({ ...CORNER, x: -50, y: -50 }), {
+    x: 8,
+    y: 8,
+  });
+  assert.deepEqual(clampCornerPosition({ ...CORNER, x: 900, y: 900 }), {
+    x: 252,
+    y: 462,
+  });
+  assert.deepEqual(clampCornerPosition({ ...CORNER, x: 300, y: 100 }), {
+    x: 252,
+    y: 100,
+  });
+  assert.deepEqual(clampCornerPosition({ ...CORNER, x: 100, y: 599 }), {
+    x: 100,
+    y: 462,
+  });
+});
+
+test("corner tile: an area too small, or not measured, keeps the tile at the margin", () => {
+  assert.deepEqual(
+    clampCornerPosition({
+      ...CORNER,
+      areaWidth: 90,
+      areaHeight: 100,
+      x: 40,
+      y: 40,
+    }),
+    { x: 8, y: 8 },
+  );
+  assert.deepEqual(
+    clampCornerPosition({
+      ...CORNER,
+      areaWidth: 0,
+      areaHeight: 0,
+      x: 40,
+      y: 40,
+    }),
+    { x: 8, y: 8 },
+  );
+  assert.deepEqual(clampCornerPosition({ ...CORNER, x: NaN, y: Infinity }), {
+    x: 8,
+    y: 8,
+  });
 });
