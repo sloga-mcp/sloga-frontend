@@ -8,12 +8,14 @@ import {
   FILTER_ASSETS_BASE,
   addUpload,
   cameraBackgroundSupported,
+  cameraToneSupported,
   faceFiltersSupported,
   listBackgrounds,
   removeUpload,
   resolveBackgroundUrl,
   useVoice,
 } from "@revolt/rtc";
+import { TOUCH_UP_SWITCH_STRENGTH } from "@revolt/rtc/cameraTonePolicy";
 import { useState } from "@revolt/state";
 import {
   CameraBackgroundMode,
@@ -48,6 +50,8 @@ export function CameraOptions() {
   const cameraQualities = voiceContext.getEnabledCameraQualities();
 
   const bgSupported = cameraBackgroundSupported();
+  const faceSupported = faceFiltersSupported();
+  const toneSupported = cameraToneSupported();
 
   return (
     <Column>
@@ -103,7 +107,15 @@ export function CameraOptions() {
         <CameraBackgroundOptions />
       </Show>
 
-      <Show when={faceFiltersSupported()}>
+      <Show when={faceSupported || toneSupported}>
+        <CameraToneOptions
+          faceSupported={faceSupported}
+          toneSupported={toneSupported}
+          backgroundSupported={bgSupported}
+        />
+      </Show>
+
+      <Show when={faceSupported}>
         <CameraFilterOptions />
       </Show>
 
@@ -227,10 +239,100 @@ export function CameraOptions() {
 }
 
 /**
- * Face filters: AR sticker gallery + beautify slider + color looks. Settings
- * write through even while a background effect holds the processor slot —
- * they sit INERT with the "paused" badge until the background is turned off
- * (camera-face-filters plan §5).
+ * Low light and Touch up. Touch up is the `cameraBeautify` setting: a
+ * strength slider where face tracking is available, and a plain switch (a
+ * fixed strength, or off) where only the whole-picture smooth can run. Both
+ * write through the call's setters, so a change made here during a call
+ * reaches the published camera as well as the preview.
+ */
+function CameraToneOptions(props: {
+  faceSupported: boolean;
+  toneSupported: boolean;
+  backgroundSupported: boolean;
+}) {
+  const { voice } = useState();
+  const voiceContext = useVoice();
+
+  // A background only takes the camera's processor slot where backgrounds
+  // can run; a mode synced from another device does not pause anything here.
+  const pausedByBackground = () =>
+    props.backgroundSupported && voice.cameraBackgroundMode !== "none";
+
+  return (
+    <>
+      <CategoryButton.Group>
+        <Show when={props.toneSupported}>
+          <CategoryButton
+            icon={<Symbol>nightlight</Symbol>}
+            description={
+              <Trans>Brightens your picture when the room is dark.</Trans>
+            }
+            action={<Checkbox checked={voice.cameraLowLight} />}
+            onClick={() =>
+              voiceContext.setCameraLowLight(!voice.cameraLowLight)
+            }
+          >
+            <Trans>Low light</Trans>
+          </CategoryButton>
+        </Show>
+        <Show
+          when={props.faceSupported}
+          fallback={
+            <CategoryButton
+              icon={<Symbol>wand_stars</Symbol>}
+              description={<Trans>Gently smooths your picture.</Trans>}
+              action={<Checkbox checked={voice.cameraBeautify > 0} />}
+              onClick={() =>
+                voiceContext.setCameraFaceFilter({
+                  beautify:
+                    voice.cameraBeautify > 0 ? 0 : TOUCH_UP_SWITCH_STRENGTH,
+                })
+              }
+            >
+              <Trans>Touch up</Trans>
+            </CategoryButton>
+          }
+        >
+          <CategoryButton
+            icon={<Symbol>wand_stars</Symbol>}
+            description={
+              <Column gap="sm">
+                <Text class="label">
+                  <Trans>Gently smooths your picture.</Trans>
+                </Text>
+                <Slider
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={voice.cameraBeautify}
+                  onInput={(e) =>
+                    voiceContext.setCameraFaceFilter({
+                      beautify: Number(e.currentTarget.value),
+                    })
+                  }
+                  labelFormatter={(v) => `${v}%`}
+                />
+              </Column>
+            }
+          >
+            <Trans>Touch up</Trans>
+          </CategoryButton>
+        </Show>
+      </CategoryButton.Group>
+      <Show when={pausedByBackground()}>
+        <Text class="label">
+          <Trans>Low light and touch up pause while a background is on.</Trans>
+        </Text>
+      </Show>
+    </>
+  );
+}
+
+/**
+ * Face filters: AR sticker gallery + color looks. Settings write through even
+ * while a background effect holds the processor slot — they sit INERT with the
+ * "paused" badge until the background is turned off (camera-face-filters plan
+ * §5). Only rendered where face tracking is available.
  */
 function CameraFilterOptions() {
   const { voice } = useState();
@@ -239,9 +341,12 @@ function CameraFilterOptions() {
 
   const pausedByBackground = () => voice.cameraBackgroundMode !== "none";
   // Failure can come from the in-call controller OR the idle settings preview.
+  // Only a sticker or Touch up needs face tracking, so a color look on its own
+  // never shows the notice.
   const trackingFailed = () =>
-    voiceContext.cameraFaceFilterStatus() === "failed" ||
-    previewFaceFilterStatus() === "failed";
+    (!!voice.cameraFaceFilterId || voice.cameraBeautify > 0) &&
+    (voiceContext.cameraFaceFilterStatus() === "failed" ||
+      previewFaceFilterStatus() === "failed");
 
   // Solid theme-token chip (the shared Button "secondary" gradient is
   // illegible in dense pill rows — user report 2026-07-19).
@@ -325,22 +430,6 @@ function CameraFilterOptions() {
                 )}
               </For>
             </div>
-
-            <Text class="label">
-              <Trans>Beautify: {voice.cameraBeautify}%</Trans>
-            </Text>
-            <Slider
-              min={0}
-              max={100}
-              step={1}
-              value={voice.cameraBeautify}
-              onInput={(e) =>
-                voiceContext.setCameraFaceFilter({
-                  beautify: Number(e.currentTarget.value),
-                })
-              }
-              labelFormatter={(v) => `${v}%`}
-            />
 
             <Text class="label">
               <Trans>Color filter</Trans>

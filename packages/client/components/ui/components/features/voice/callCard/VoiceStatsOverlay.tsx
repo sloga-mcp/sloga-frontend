@@ -6,6 +6,7 @@ import { css } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
 import { useVoice } from "@revolt/rtc";
+import { toneStageSupported } from "@revolt/rtc/cameraToneStage";
 import { readRttMs } from "@revolt/rtc/rtt";
 import { IconButton } from "@revolt/ui/components/design";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -17,8 +18,43 @@ interface Stats {
   bitrate: number | null;
 }
 
+/** A capability probe must never take the overlay down with it. */
+function probe(test: () => boolean): boolean {
+  try {
+    return test();
+  } catch {
+    return false;
+  }
+}
+
+function yesNo(value: boolean) {
+  return value ? "yes" : "no";
+}
+
+/**
+ * What this device can do for camera effects, whatever the call is doing.
+ * None of it changes while the page lives. The WebGL2 answer is the one the
+ * camera pipeline itself goes by (it keeps it), so no second context is made.
+ */
+function readCameraCapabilities(): string {
+  const webgl2 = probe(() => toneStageSupported());
+  const captureStream = probe(
+    () => "captureStream" in HTMLCanvasElement.prototype,
+  );
+  const ctxFilter = probe(() => "filter" in CanvasRenderingContext2D.prototype);
+  const videoFrame = probe(() => "VideoFrame" in globalThis);
+
+  return [
+    `webgl2 ${yesNo(webgl2)}`,
+    `captureStream ${yesNo(captureStream)}`,
+    `ctx.filter ${yesNo(ctxFilter)}`,
+    `VideoFrame ${yesNo(videoFrame)}`,
+  ].join(" · ");
+}
+
 /**
  * Toggle button + overlay showing live WebRTC stats (RTT, jitter, packet loss, bitrate)
+ * and one line on what the camera effects are doing
  */
 export function VoiceStatsOverlay(props: { size: "xs" | "sm" }) {
   const voice = useVoice();
@@ -29,12 +65,69 @@ export function VoiceStatsOverlay(props: { size: "xs" | "sm" }) {
     packetsLost: null,
     bitrate: null,
   });
+  const [camera, setCamera] = createSignal("off");
 
   let interval: ReturnType<typeof setInterval> | undefined;
   let prevBytes = 0;
   let prevTime = 0;
+  /** Read once, the first time the overlay is opened. */
+  let cameraCapabilities: string | undefined;
+
+  /** What the tone stage is doing right now, or "off" while it has no part. */
+  function readCameraTone(): string {
+    try {
+      const tone = voice.cameraToneStats();
+      if (!tone) return "off";
+
+      return [
+        tone.toneLive ? "tone live" : "tone not live",
+        tone.stages.length ? tone.stages.join("+") : "no stages",
+        `src ${tone.sourceFps.toFixed(1)} / out ${tone.processedFps.toFixed(1)} fps`,
+        `page ${tone.pageMode}`,
+        `gain ${tone.lowLightGain.toFixed(2)}`,
+      ].join(" · ");
+    } catch {
+      return "off";
+    }
+  }
+
+  /**
+   * Whether the camera itself offers exposure compensation. Asked of the
+   * camera's own track: with an effect attached, the track the call sends
+   * is a canvas capture, which never has it. Asked on every tick, because a
+   * flip or a restart brings another camera.
+   */
+  function readExposureCapability(): string {
+    try {
+      const track = voice
+        .room()
+        ?.localParticipant.getTrackPublication(Track.Source.Camera)?.track;
+      if (!track) return "n/a";
+
+      const source =
+        (track as unknown as { _mediaStreamTrack?: MediaStreamTrack })
+          ._mediaStreamTrack ?? track.mediaStreamTrack;
+      const capabilities = source.getCapabilities?.();
+      if (!capabilities) return "n/a";
+
+      return yesNo("exposureCompensation" in capabilities);
+    } catch {
+      return "n/a";
+    }
+  }
+
+  /** The camera effects line. Reads plain values; touches nothing. */
+  function pollCamera() {
+    cameraCapabilities ??= readCameraCapabilities();
+    setCamera(
+      `${readCameraTone()}\n${cameraCapabilities} · exposure ${readExposureCapability()}`,
+    );
+  }
 
   async function poll() {
+    // First, and on its own: it does not wait on the network stats below
+    pollCamera();
+
     const room = voice.room();
     if (!room) return;
 
@@ -119,6 +212,11 @@ export function VoiceStatsOverlay(props: { size: "xs" | "sm" }) {
     fontSize: "0.75rem",
     fontFamily: "monospace",
   });
+  // The camera effects line is long: it wraps, one part per line at most
+  const wrapped = css({
+    textAlign: "right",
+    whiteSpace: "pre-line",
+  });
 
   function fmt(v: number | null, unit: string) {
     return v === null ? "—" : `${v} ${unit}`;
@@ -143,6 +241,10 @@ export function VoiceStatsOverlay(props: { size: "xs" | "sm" }) {
           <div class={row}>
             <span class={label}>Bitrate</span>
             <span class={value}>{fmt(stats().bitrate, "kbps")}</span>
+          </div>
+          <div class={row}>
+            <span class={label}>Camera effects</span>
+            <span class={`${value} ${wrapped}`}>{camera()}</span>
           </div>
         </Overlay>
       </Show>

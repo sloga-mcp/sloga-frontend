@@ -16287,6 +16287,192 @@ MUTATIONS += [
         replace="""      this.#cameraEffects.discardPrebuilt();""",
         specs=[STATE_WIRING_SPEC],
     ),
+    # ---- low light: the setter and the settings literals ----------------------
+    Mutation(
+        id='state-camfx-lowlight-setter-skips-sync',
+        what='the low light setter writes the store and never fires the sync, so the switch does nothing until some other sync runs',
+        file=STATE,
+        search="""    this.#settings.cameraLowLight = value;
+    void this.#applyCameraEffects();
+""",
+        replace="""    this.#settings.cameraLowLight = value;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-lowlight-setter-calls-controller',
+        what='the low light setter applies through the controller itself, past the attach driver and its gate check',
+        file=STATE,
+        search="""    this.#settings.cameraLowLight = value;
+    void this.#applyCameraEffects();
+""",
+        replace="""    this.#settings.cameraLowLight = value;
+    const track = this.#publishedCameraTrack();
+    if (track) void this.#cameraEffects.apply(track, this.#cameraEffectSettings());
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-lowlight-not-in-settings',
+        what="low light is left out of the settings the driver's plan and apply read, so the switch never reaches the processor",
+        file=STATE,
+        # The `};` under it is what tells this literal from `#faceSettings`'s.
+        search="""      lowLight: this.#settings.cameraLowLight ?? false,
+    };
+""",
+        replace="""    };
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-lowlight-not-in-face-settings',
+        what='low light is left out of the "any face setting active" literal',
+        file=STATE,
+        search="""      lowLight: this.#settings.cameraLowLight ?? false,
+    });
+""",
+        replace="""    });
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the processor's tone reports ------------------------------------------
+    Mutation(
+        id='state-camfx-tone-shed-not-wired',
+        what='a shed tone stage is reported to nobody: the effect goes off without a word',
+        file=STATE,
+        search="""    this.#cameraEffects.onToneShed = () => this.#noteCameraToneShed();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-tone-failed-not-wired',
+        what='a tone stage that failed for good is reported to nobody',
+        file=STATE,
+        search="""    this.#cameraEffects.onToneFailed = () => this.#noteCameraToneFailed();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-tone-shed-wrong-notice',
+        what='a shed tone stage raises the failed-effect notice instead of the slow one',
+        file=STATE,
+        search="""    this.#setCameraEffectNotice("effect-slow");""",
+        replace="""    this.#setCameraEffectNotice("effect-failed");""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-tone-shed-reraised',
+        what='every shed raises the slow notice again, putting back one the user dismissed in the same call',
+        file=STATE,
+        search="""    if (this.#cameraEffectSlowNoted) return;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-tone-shed-without-live-camera',
+        what="a shed reported with no live camera in the current room (a late report from a call that ended) still raises the notice",
+        file=STATE,
+        # The line under it is what makes this `if` unique.
+        search="""    if (!track || track.isMuted) return;
+    this.#cameraEffectSlowNoted = true;
+""",
+        replace="""    this.#cameraEffectSlowNoted = true;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-tone-failed-without-live-camera',
+        what='a failed tone stage reported with no live camera in the current room still raises the notice',
+        file=STATE,
+        # The line under it is what makes this `if` unique.
+        search="""    if (!track || track.isMuted) return;
+    const settings = this.#cameraEffectSettings();
+""",
+        replace="""    const settings = this.#cameraEffectSettings();
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-tone-failed-not-latched',
+        what='a failed tone stage raises its notice on every report, putting back one the user dismissed',
+        file=STATE,
+        search="""    if (this.#cameraEffectFailedWith.get("tone") === failedWith) return;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-leave-keeps-slow-latch',
+        what='a leave keeps the slow-notice latch, so the next call never reports a shed stage',
+        file=STATE,
+        search="""      this.#cameraEffectSlowNoted = false;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-leave-keeps-shed-stages',
+        what='a leave no longer re-arms the tone watchdog, so a stage shed in one call stays off in every later one, and that call never says why',
+        file=STATE,
+        search="""      this.#cameraEffects.resetToneWatchdog();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-notice-write-keeps-tone-mark',
+        what="a write of the notice (a dismiss, a leave, another notice taking its place) keeps the mark of the processor's notice, so a later notice a sync raised is never cleared by a sync that succeeds",
+        file=STATE,
+        search="""      this.#cameraToneNotice = undefined;
+      setEffectNotice(notice);
+""",
+        replace="""      setEffectNotice(notice);
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-tone-mark-set-before-write',
+        what="the slow notice's mark is set before the notice is written, and the write drops it: the next successful sync takes the notice down unread",
+        file=STATE,
+        search="""    this.#setCameraEffectNotice("effect-slow");
+    this.#cameraToneNotice = "effect-slow";
+""",
+        replace="""    this.#cameraToneNotice = "effect-slow";
+    this.#setCameraEffectNotice("effect-slow");
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-tone-failed-mark-set-before-write',
+        what="the failed tone notice's mark is set before the notice is written, and the write drops it",
+        file=STATE,
+        search="""    this.#setCameraEffectNotice("effect-failed");
+    this.#cameraToneNotice = "effect-failed";
+""",
+        replace="""    this.#cameraToneNotice = "effect-failed";
+    this.#setCameraEffectNotice("effect-failed");
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-sync-clears-tone-notice',
+        what='a successful sync (one fires on every gate edge) takes down the notice the processor raised before it is read',
+        file=STATE,
+        search="""      if (!this.#cameraToneNotice) this.#setCameraEffectNotice(undefined);""",
+        replace="""      this.#setCameraEffectNotice(undefined);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-tone-stats-not-forwarded',
+        what='the stats overlay read no longer reaches the controller',
+        file=STATE,
+        search="""    return this.#cameraEffects.toneStats();""",
+        replace="""    return undefined;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
 ]
 
 # --- Camera effects: the controller's sender operations (`camera-ctl-*`) -----
@@ -16623,6 +16809,58 @@ MUTATIONS += [
         search="""        backgroundUnresolved = true;
 """,
         replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-wanted-occupant-bypasses-slot-inputs',
+        what="the wanted occupant puts the raw background mode back over the slot reading, a second \"background wanted\" rule that the text pin inside #slotInputs cannot see",
+        file=CAMERA_CTL,
+        search="""    return pickSlotOccupant(slot, caps);""",
+        replace="""    return pickSlotOccupant({ ...slot, backgroundMode: settings.backgroundMode }, caps);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- tone: where it is offered, and how long a shed stage stays off -------
+    Mutation(
+        id='camera-ctl-tone-supported-ignores-platform',
+        what='tone work is offered wherever WebGL2 exists, iOS and the Mac Tauri shell included',
+        file=CAMERA_CTL,
+        search="""    return (
+      toneAllowedOnPlatform({ ios, macTauri, canvasCapture }) &&
+      toneStageSupported()
+    );""",
+        replace="""    return toneStageSupported();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-tone-supported-ios-hardcoded',
+        what='the platform rule is asked with iOS hard-coded false, so an iPhone is offered tone work',
+        file=CAMERA_CTL,
+        search="""    const ios = isIosTouch(
+      Capacitor.getPlatform(),
+      navigator.userAgent,
+      navigator.platform,
+      navigator.maxTouchPoints ?? 0,
+    );""",
+        replace="""    const ios = false;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-reset-rearms-watchdog',
+        what='reset() re-arms the tone watchdog, so a camera unpublished or republished mid-call brings back a stage that was shed for being slow',
+        file=CAMERA_CTL,
+        # The line above the two is what tells `reset()` from the other
+        # place that frees the image URL.
+        search="""    this.#brightness = undefined;
+    this.#revokeImg?.();
+    this.#revokeImg = undefined;
+  }
+""",
+        replace="""    this.#brightness = undefined;
+    this.#revokeImg?.();
+    this.#revokeImg = undefined;
+    this.#watchdog?.reset();
+  }
+""",
         specs=[STATE_WIRING_SPEC],
     ),
 ]

@@ -472,6 +472,8 @@ export interface SlotSettings {
   colorLookId?: CameraColorLookId;
   /** 0–200, 100 = neutral. */
   brightness: number;
+  /** Low light switch. Tone work: needs no landmarks. */
+  lowLight: boolean;
 }
 
 export interface SlotCaps {
@@ -479,6 +481,8 @@ export interface SlotCaps {
   faceFiltersSupported: boolean;
   /** Whether the RAW camera source exposes a hardware brightness constraint. */
   hwBrightness: boolean;
+  /** Whether the tone stage (low light, whole-frame touch up) can run here. */
+  toneSupported: boolean;
 }
 
 /** Whether any face-filter feature is requested (regardless of support). */
@@ -487,16 +491,39 @@ export function faceSettingsActive(s: SlotSettings): boolean {
 }
 
 /**
+ * Tone work the face pipeline can do WITHOUT landmarks: low light or touch
+ * up, on a tone-capable device.
+ */
+export function toneSettingsActive(s: SlotSettings, caps: SlotCaps): boolean {
+  return caps.toneSupported && (s.lowLight || s.beautify > 0);
+}
+
+/**
+ * True only when MediaPipe landmarks are really required AND allowed. A
+ * device without face-filter support never asks for them, whatever the
+ * settings say, so it never requests the MediaPipe files: its touch up is
+ * the whole-frame tone smooth, and a stored sticker id stays inert.
+ */
+export function needsLandmarks(s: SlotSettings, caps: SlotCaps): boolean {
+  return caps.faceFiltersSupported && (!!s.faceFilterId || s.beautify > 0);
+}
+
+/**
  * Decide which processor occupies the single LiveKit slot (plan §5 table).
  * Background wins over filters (v1 mutual exclusion — filters stay INERT and
- * the UI shows a "paused" badge). The canvas brightness fallback only ever
- * runs when NOTHING else holds the slot.
+ * the UI shows a "paused" badge). The face pipeline holds the slot for a
+ * face-filter setting the device supports, or for tone work (low light,
+ * touch up) on a tone-capable device. The canvas brightness fallback only
+ * ever runs when NOTHING else holds the slot. All defaults leave it empty.
  */
 export function pickSlotOccupant(s: SlotSettings, caps: SlotCaps): SlotOccupant {
   if (s.backgroundMode !== "none" && caps.backgroundSupported) {
     return "background";
   }
-  if (faceSettingsActive(s) && caps.faceFiltersSupported) {
+  if (
+    (caps.faceFiltersSupported && faceSettingsActive(s)) ||
+    toneSettingsActive(s, caps)
+  ) {
     return "face";
   }
   if (s.brightness !== 100 && !caps.hwBrightness) {

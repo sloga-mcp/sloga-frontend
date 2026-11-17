@@ -4807,6 +4807,196 @@ test("source pin (camera fx): a failed background takes the camera down by unpub
   );
 });
 
+test("source pin (camera fx): low light is read from the store into both settings literals, and its setter writes the store and fires the one sync, nothing else", () => {
+  const setter = bodyOf(`setCameraLowLight(value: boolean): void {`);
+  assert.equal(
+    setter,
+    codeOf(`this.#settings.cameraLowLight = value;
+      void this.#applyCameraEffects()`),
+    "setCameraLowLight",
+  );
+  // Said on its own as well: the setter reaches neither the controller nor
+  // the track. A sender operation is the attach driver's to issue, under the
+  // gate's rules, and the driver is reached through the sync alone.
+  assert.ok(!setter.includes("#cameraEffects"), "no controller call");
+  assert.ok(!setter.includes("#cameraAttach"), "no driver call of its own");
+  assert.ok(!/track|setProcessor|stopProcessor/i.test(setter), "no track");
+  // The same sync its sibling setters end in.
+  assert.ok(
+    bodyOf(`async setCameraBrightness(brightness: number) {`).endsWith(
+      codeOf(`await this.#applyCameraEffects()`),
+    ),
+    "setCameraBrightness ends in the same sync",
+  );
+  assert.equal(countWired(STATE_CODE, `this.#settings.cameraLowLight =`), 1);
+
+  // The one settings literal the driver's plan and apply share.
+  assert.equal(
+    bodyOf(`#cameraEffectSettings(): CameraEffectSettings {`),
+    codeOf(`return {
+        backgroundMode: this.#settings.cameraBackgroundMode ?? "none",
+        blurRadius: this.#settings.cameraBlurRadius ?? 10,
+        backgroundImageId: this.#settings.cameraBackgroundImageId,
+        brightness: this.#settings.cameraBrightness ?? 100,
+        faceFilterId: this.#settings.cameraFaceFilterId,
+        beautify: this.#settings.cameraBeautify ?? 0,
+        colorLookId: this.#settings.cameraColorLookId,
+        lowLight: this.#settings.cameraLowLight ?? false,
+      }`),
+    "#cameraEffectSettings",
+  );
+  assert.equal(
+    bodyOf(`#faceSettings(): boolean {`),
+    codeOf(`return faceSettingsActive({
+        backgroundMode: this.#settings.cameraBackgroundMode ?? "none",
+        faceFilterId: this.#settings.cameraFaceFilterId,
+        beautify: this.#settings.cameraBeautify ?? 0,
+        colorLookId: this.#settings.cameraColorLookId,
+        brightness: this.#settings.cameraBrightness ?? 100,
+        lowLight: this.#settings.cameraLowLight ?? false,
+      })`),
+    "#faceSettings",
+  );
+  // Count pin: every literal that reads touch up reads low light beside it,
+  // and there are two of them (a third literal would have to be added here).
+  const lowLightReads = countWired(
+    STATE_CODE,
+    `lowLight: this.#settings.cameraLowLight ?? false,`,
+  );
+  assert.equal(lowLightReads, 2);
+  assert.equal(
+    countWired(STATE_CODE, `beautify: this.#settings.cameraBeautify ?? 0,`),
+    lowLightReads,
+  );
+  assert.equal(countWired(STATE_CODE, `): CameraEffectSettings {`), 1);
+  assert.equal(countWired(STATE_CODE, `faceSettingsActive({`), 1);
+
+  // The stats overlay's read: forwarded, nothing more.
+  assert.equal(
+    bodyOf(`cameraToneStats(): CameraToneStats | undefined {`),
+    codeOf(`return this.#cameraEffects.toneStats()`),
+    "cameraToneStats",
+  );
+});
+
+test("source pin (camera fx): a shed tone stage raises effect-slow once per call and only for a live camera of the current room, a lost stage raises effect-failed, and a successful sync takes neither down", () => {
+  // Wired once each, where the controller's other callbacks are set.
+  assertWired(
+    "the tone callbacks",
+    `this.#cameraEffects.onToneShed = () => this.#noteCameraToneShed();
+      this.#cameraEffects.onToneFailed = () => this.#noteCameraToneFailed();`,
+  );
+  assert.equal(countWired(STATE_CODE, `#cameraEffects.onToneShed =`), 1);
+  assert.equal(countWired(STATE_CODE, `#cameraEffects.onToneFailed =`), 1);
+  assert.equal(countWired(STATE_CODE, `this.#noteCameraToneShed()`), 1);
+  assert.equal(countWired(STATE_CODE, `this.#noteCameraToneFailed()`), 1);
+
+  assert.equal(
+    bodyOf(`#noteCameraToneShed(): void {`),
+    codeOf(`if (this.#cameraEffectSlowNoted) return;
+      const track = this.#publishedCameraTrack();
+      if (!track || track.isMuted) return;
+      this.#cameraEffectSlowNoted = true;
+      this.#setCameraEffectNotice("effect-slow");
+      this.#cameraToneNotice = "effect-slow"`),
+    "#noteCameraToneShed",
+  );
+  // The one place the slow notice is raised, and the one place its latch is
+  // set.
+  assert.equal(
+    countWired(STATE_CODE, `this.#setCameraEffectNotice("effect-slow")`),
+    1,
+  );
+  assert.equal(
+    countWired(STATE_CODE, `this.#cameraEffectSlowNoted = true;`),
+    1,
+  );
+
+  const failed = bodyOf(`#noteCameraToneFailed(): void {`);
+  assert.ok(
+    failed.startsWith(
+      codeOf(`const track = this.#publishedCameraTrack();
+        if (!track || track.isMuted) return;
+        const settings = this.#cameraEffectSettings();`),
+    ),
+    "#noteCameraToneFailed: a live camera of the current room first",
+  );
+  assert.ok(
+    failed.endsWith(
+      codeOf(`if (this.#cameraEffectFailedWith.get("tone") === failedWith) return;
+        this.#cameraEffectFailedWith.set("tone", failedWith);
+        this.#setCameraEffectNotice("effect-failed");
+        this.#cameraToneNotice = "effect-failed"`),
+    ),
+    "#noteCameraToneFailed: latched on the settings it failed with",
+  );
+
+  // The mark of a processor-raised notice. EVERY write of the notice goes
+  // through the one setter, which drops the mark; the two handlers above put
+  // it back AFTER their own write (pinned in that order). So the mark is set
+  // exactly while the notice shown is the processor's, and a stale one can
+  // never keep up a notice a later sync raised.
+  assertWired(
+    "the notice setter",
+    `this.cameraEffectNotice = effectNotice;
+      this.#setCameraEffectNotice = (notice) => {
+        this.#cameraToneNotice = undefined;
+        setEffectNotice(notice);
+      };`,
+  );
+  assert.equal(countWired(STATE_CODE, `this.#setCameraEffectNotice =`), 1);
+  assert.equal(countWired(STATE_CODE, `setEffectNotice(`), 1);
+  assert.equal(
+    countWired(STATE_CODE, `this.#cameraToneNotice = undefined;`),
+    1,
+    "the mark is dropped by the setter alone",
+  );
+  assert.equal(
+    countWired(STATE_CODE, `this.#cameraToneNotice =`),
+    3,
+    "the setter and the two tone handlers",
+  );
+  // A sync that succeeded clears what a sync raised, never what the
+  // processor reported; the user's own dismiss clears either.
+  assertWired(
+    "the successful sync's clear",
+    `} else if (track && outcome.kind !== "deferred") {
+        if (!this.#cameraToneNotice) this.#setCameraEffectNotice(undefined);
+      }`,
+  );
+  assert.equal(
+    bodyOf(`dismissCameraEffectNotice(): void {`),
+    codeOf(`this.#setCameraEffectNotice(undefined)`),
+    "dismissCameraEffectNotice",
+  );
+  assert.equal(
+    bodyOf(`async turnOffCameraBackground(): Promise<void> {`),
+    codeOf(`await this.setCameraBackground("none");
+      this.#setCameraEffectNotice(undefined)`),
+    "turnOffCameraBackground",
+  );
+  // The leave: nothing the last call's processor reported reaches the next.
+  // The notice goes (and its mark with it), the slow latch is re-armed, and
+  // in the same place, so both have the call as their scope, so is every
+  // stage the watchdog shed.
+  assertWired(
+    "the leave's tone latches",
+    `this.#setCameraEffectNotice(undefined);
+      this.#cameraAttach = this.#newCameraAttach();
+      this.#cameraToggle = undefined;
+      this.#setCameraPending(false);
+      this.#cameraPublishingWith = undefined;
+      this.#cameraOwnUnpublish = undefined;
+      this.#cameraRepublishSince = undefined;
+      this.#cameraEffectFailedWith.clear();
+      this.#cameraEffectSlowNoted = false;
+      this.#cameraEffects.resetToneWatchdog();`,
+  );
+  // The watchdog is re-armed there and nowhere else: a camera unpublished or
+  // republished mid-call must not bring back a stage shed for being slow.
+  assert.equal(countWired(STATE_CODE, `resetToneWatchdog(`), 1);
+});
+
 // --- The camera effects controller's sender operations ----------------------
 //
 // `cameraEffects.ts` is the one file that calls `setProcessor` and
@@ -5198,8 +5388,22 @@ test("source pin (camera ctl): one rule says whether a background is wanted, and
         : "none",`,
     ),
     1,
+    "#slotInputs",
+  );
+  // And the wanted occupant is that reading handed on whole: the text above
+  // sits in `#slotInputs`, so it binds the wanted occupant only while this
+  // body passes `slot` on untouched (a `{ ...slot, backgroundMode:
+  // settings.backgroundMode }` here would be a second rule again).
+  assert.equal(
+    ctlBodyIn(
+      CTL_CODE,
+      `#wantedOccupant(settings: CameraEffectSettings, hw: boolean): CameraOccupant {`,
+    ),
+    codeOf(`const { slot, caps } = this.#slotInputs(settings, hw);
+      return pickSlotOccupant(slot, caps)`),
     "#wantedOccupant",
   );
+  assert.equal(countWired(CTL_CODE, `pickSlotOccupant(`), 1);
   // An image store that cannot be read plans as a background that does not
   // resolve, never as "show the camera".
   assert.equal(
@@ -5311,4 +5515,81 @@ test("source pin (camera ctl): a background failure is reported and removes noth
       ),
     "a background failure is returned before a refusal",
   );
+});
+
+test("source pin (camera ctl): tone work is offered only where the platform rule allows it, asked before the WebGL2 probe, with iOS, the Mac Tauri shell and canvas capture read from the device", () => {
+  // The rule itself (`toneAllowedOnPlatform`) is spec'd in
+  // cameraTonePolicy.test.ts; this holds the controller to asking it with
+  // what the device really is.
+  const supported = ctlBodyIn(
+    CTL_CODE,
+    `export function cameraToneSupported(): boolean {`,
+  );
+  assert.equal(
+    supported,
+    codeOf(`try {
+        if (typeof window === "undefined" || typeof navigator === "undefined") {
+          return false;
+        }
+        const ios = isIosTouch(
+          Capacitor.getPlatform(),
+          navigator.userAgent,
+          navigator.platform,
+          navigator.maxTouchPoints ?? 0,
+        );
+        const macTauri =
+          "__TAURI__" in window && navigator.platform.startsWith("Mac");
+        const canvasCapture =
+          typeof HTMLCanvasElement !== "undefined" &&
+          typeof HTMLCanvasElement.prototype.captureStream === "function";
+        return (
+          toneAllowedOnPlatform({ ios, macTauri, canvasCapture }) &&
+          toneStageSupported()
+        );
+      } catch {
+        return false;
+      }`),
+    "cameraToneSupported",
+  );
+  // Said on its own as well: the platform rule is the FIRST operand, so a
+  // device it refuses never creates the probe's WebGL2 context.
+  assert.ok(
+    firstAt("the platform rule", supported, `toneAllowedOnPlatform(`) <
+      firstAt("the probe", supported, `toneStageSupported()`),
+    "the platform rule before the probe",
+  );
+  assert.equal(countWired(CTL_CODE, `toneAllowedOnPlatform(`), 1);
+  assert.equal(countWired(CTL_CODE, `toneStageSupported()`), 1);
+});
+
+test("source pin (camera ctl): the tone watchdog lives for the call: reset() leaves it alone and only resetToneWatchdog re-arms it", () => {
+  // `reset()` runs mid-call too (the camera unpublished, a first publish),
+  // and a stage shed for being slow must stay off until the call is over.
+  const reset = ctlBodyIn(CTL_CODE, `reset() {`);
+  assert.equal(
+    reset,
+    codeOf(`this.#gen++;
+      this.#stopBgAnimation();
+      this.discardPrebuilt();
+      this.#bg = undefined;
+      this.#face = undefined;
+      this.#facePending = undefined;
+      this.#brightness = undefined;
+      this.#revokeImg?.();
+      this.#revokeImg = undefined`),
+    "reset",
+  );
+  assert.ok(!reset.includes("#watchdog"), "reset() does not touch it");
+  assert.equal(
+    ctlBodyIn(CTL_CODE, `resetToneWatchdog(): void {`),
+    codeOf(`this.#watchdog?.reset()`),
+    "resetToneWatchdog",
+  );
+  // The field, its lazy creation for a face config, and the one re-arm.
+  assert.equal(countWired(CTL_CODE, `#watchdog`), 3);
+  assert.equal(
+    countWired(CTL_CODE, `watchdog: (this.#watchdog ??= new ToneWatchdog()),`),
+    1,
+  );
+  assert.equal(countWired(CTL_CODE, `new ToneWatchdog(`), 1);
 });

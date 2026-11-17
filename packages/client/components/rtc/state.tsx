@@ -434,6 +434,7 @@ import {
   encryptionSetupAvailable,
 } from "./e2eeDeviceReadiness";
 import { faceSettingsActive } from "./faceFilterCatalog";
+import type { CameraToneStats } from "./faceFilterProcessor";
 import { type CallAudioBracket, createCallAudioBracket } from "./iosCallAudio";
 import { fetchIosCallSwitchValue, iosCallSwitch } from "./iosCallSwitch";
 import { keyTickEnabled, startKeyFreshnessTick } from "./keyFreshnessTick";
@@ -907,9 +908,16 @@ type CallEncryptionLatch = {
  * `background-failed`: a background could not be made active, so the camera
  * was turned off (or was not turned on) instead of sending the plain picture.
  * `effect-failed`: a face filter or the brightness fallback dropped and the
- * plain camera continues.
+ * plain camera continues; also raised when low light, touch up and the
+ * shader brightness stopped for good on this camera (the picture continues
+ * without them).
+ * `effect-slow`: one of those was slowing the video and was turned off for
+ * the rest of the call.
  */
-export type CameraEffectNotice = "background-failed" | "effect-failed";
+export type CameraEffectNotice =
+  | "background-failed"
+  | "effect-failed"
+  | "effect-slow";
 
 /**
  * What a camera-on is about to do, decided by `#planCameraOn` and checked
@@ -995,7 +1003,23 @@ class Voice {
    * (every later sync retries the effect and would re-raise a notice the
    * user has dismissed) until those settings change. Cleared on leave.
    */
-  #cameraEffectFailedWith = new Map<"face" | "brightness", string>();
+  #cameraEffectFailedWith = new Map<"face" | "brightness" | "tone", string>();
+  /**
+   * `effect-slow` has been raised in this call. It is raised once: the stage
+   * that was shed stays off until the call ends, so there is nothing new to
+   * say, and a notice the user dismissed must not come back. Cleared on leave.
+   */
+  #cameraEffectSlowNoted = false;
+  /**
+   * The notice the camera's own processor raised (`#noteCameraToneShed`,
+   * `#noteCameraToneFailed`), while it is the one shown. A sync that
+   * succeeds clears a notice a SYNC raised; these two report something no
+   * sync undoes, and syncs fire on every gate edge, so one would take the
+   * notice down before it was read. Dropped by EVERY other write of the
+   * notice (the signal's setter does it: a dismiss, a leave, another notice
+   * taking its place), so a stale mark can never keep a later notice up.
+   */
+  #cameraToneNotice: CameraEffectNotice | undefined;
 
   /** Runtime-only: whether the active camera exposes a hardware brightness control. */
   cameraHwBrightness: Accessor<boolean>;
@@ -1036,7 +1060,7 @@ class Voice {
    * native-fullscreen card.
    */
   cameraEffectNotice: Accessor<CameraEffectNotice | undefined>;
-  #setCameraEffectNotice: Setter<CameraEffectNotice | undefined>;
+  #setCameraEffectNotice: (notice: CameraEffectNotice | undefined) => void;
 
   /**
    * Runtime-only: a camera toggle is in flight. True from the press until
@@ -2858,7 +2882,13 @@ class Voice {
       CameraEffectNotice | undefined
     >();
     this.cameraEffectNotice = effectNotice;
-    this.#setCameraEffectNotice = setEffectNotice;
+    // Every write of the notice drops the mark of one the processor raised;
+    // the two tone handlers put it back after their own write. So the mark
+    // is set exactly while the notice shown is the processor's.
+    this.#setCameraEffectNotice = (notice) => {
+      this.#cameraToneNotice = undefined;
+      setEffectNotice(notice);
+    };
 
     const [cameraPending, setCameraPending] = createSignal(false);
     this.cameraPending = cameraPending;
@@ -3078,6 +3108,10 @@ class Voice {
       this.#setCameraFaceFilterStatus(s.landmarksFailed ? "failed" : "active");
       this.#setCameraFaceFilterDegraded(s.degraded);
     };
+    // The processor's own reports about low light, touch up and the shader
+    // brightness. Neither is a sync outcome and neither touches the sender.
+    this.#cameraEffects.onToneShed = () => this.#noteCameraToneShed();
+    this.#cameraEffects.onToneFailed = () => this.#noteCameraToneFailed();
 
     this.openModal = modals.openModal;
     this.#closeModalsOfType = modals.removeOfType;
@@ -6526,6 +6560,10 @@ class Voice {
       this.#cameraOwnUnpublish = undefined;
       this.#cameraRepublishSince = undefined;
       this.#cameraEffectFailedWith.clear();
+      // One scope for both: a stage shed "for the rest of the call" is
+      // re-armed where "the slow notice, once per call" is.
+      this.#cameraEffectSlowNoted = false;
+      this.#cameraEffects.resetToneWatchdog();
 
       // Not during the rejoin loop's own churn: tearing down the dead room
       // before an attempt (and after a failed one) is not the user leaving,
@@ -10512,6 +10550,7 @@ class Voice {
       faceFilterId: this.#settings.cameraFaceFilterId,
       beautify: this.#settings.cameraBeautify ?? 0,
       colorLookId: this.#settings.cameraColorLookId,
+      lowLight: this.#settings.cameraLowLight ?? false,
     };
   }
 
@@ -10648,7 +10687,7 @@ class Voice {
       const settings = this.#cameraEffectSettings();
       const failedWith =
         outcome.failed === "face"
-          ? `${settings.faceFilterId}|${settings.beautify}|${settings.colorLookId}`
+          ? `${settings.faceFilterId}|${settings.beautify}|${settings.colorLookId}|${settings.lowLight}`
           : `${settings.brightness}`;
       if (
         live &&
@@ -10660,9 +10699,44 @@ class Voice {
     } else if (track && outcome.kind !== "deferred") {
       // A sync that succeeded on a published camera. With no camera
       // published "none" says nothing, and must not clear a notice that
-      // explains why the camera is off.
-      this.#setCameraEffectNotice(undefined);
+      // explains why the camera is off. Nor one the processor raised itself:
+      // a stage it shed or lost stays that way whatever this sync did.
+      if (!this.#cameraToneNotice) this.#setCameraEffectNotice(undefined);
     }
+  }
+
+  /**
+   * The processor shed a tone stage (low light, touch up or the shader
+   * brightness) that was slowing the video; it stays off for the rest of the
+   * call. Raises `effect-slow`, once per call: a second stage shed later has
+   * nothing new to say, and a notice the user dismissed stays dismissed.
+   * Only for a camera that is published and on in the CURRENT room, so a
+   * late report from a call that has ended shows nothing in the next one.
+   */
+  #noteCameraToneShed(): void {
+    if (this.#cameraEffectSlowNoted) return;
+    const track = this.#publishedCameraTrack();
+    if (!track || track.isMuted) return;
+    this.#cameraEffectSlowNoted = true;
+    this.#setCameraEffectNotice("effect-slow");
+    this.#cameraToneNotice = "effect-slow";
+  }
+
+  /**
+   * The processor's tone stage failed for good and the picture continues
+   * without it. Raises `effect-failed` under the same latch a failed sync
+   * uses: once for the settings it failed with, so a rebuilt processor that
+   * fails the same way does not put back a notice the user has dismissed.
+   */
+  #noteCameraToneFailed(): void {
+    const track = this.#publishedCameraTrack();
+    if (!track || track.isMuted) return;
+    const settings = this.#cameraEffectSettings();
+    const failedWith = `${settings.lowLight}|${settings.beautify}|${settings.brightness}`;
+    if (this.#cameraEffectFailedWith.get("tone") === failedWith) return;
+    this.#cameraEffectFailedWith.set("tone", failedWith);
+    this.#setCameraEffectNotice("effect-failed");
+    this.#cameraToneNotice = "effect-failed";
   }
 
   /** The user has read the camera-effect notice. */
@@ -10753,7 +10827,29 @@ class Voice {
       beautify: this.#settings.cameraBeautify ?? 0,
       colorLookId: this.#settings.cameraColorLookId,
       brightness: this.#settings.cameraBrightness ?? 100,
+      lowLight: this.#settings.cameraLowLight ?? false,
     });
+  }
+
+  /**
+   * Turn low light on or off. Persists to the store and reapplies through
+   * the one sync every camera-effects setter uses: the attach driver decides
+   * from live state, and a change that would attach or remove the processor
+   * waits for an empty gate. Nothing here reaches the controller or the
+   * track.
+   */
+  setCameraLowLight(value: boolean): void {
+    this.#settings.cameraLowLight = value;
+    void this.#applyCameraEffects();
+  }
+
+  /**
+   * What the camera's tone stage is doing right now, for the stats overlay.
+   * A plain read, not reactive. Undefined when the face pipeline does not
+   * hold the camera's processor slot.
+   */
+  cameraToneStats(): CameraToneStats | undefined {
+    return this.#cameraEffects.toneStats();
   }
 
   /**

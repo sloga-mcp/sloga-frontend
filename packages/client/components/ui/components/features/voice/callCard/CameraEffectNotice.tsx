@@ -1,10 +1,31 @@
-import { Show, createSignal } from "solid-js";
+import { type JSX, Show, createSignal } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
 
+import type { CameraEffectNotice as CameraEffectNoticeKind } from "@revolt/rtc";
 import { useVoice } from "@revolt/rtc";
 import { Button } from "@revolt/ui/components/design";
+
+/**
+ * What each notice says. Keyed by the notice union, so a notice added to the
+ * store without its text here does not compile.
+ */
+const NOTICE_TEXT: Record<CameraEffectNoticeKind, () => JSX.Element> = {
+  "background-failed": () => (
+    <Trans>
+      Background effect could not start. Your camera was turned off.
+    </Trans>
+  ),
+  "effect-failed": () => (
+    <Trans>A camera effect could not start and was turned off.</Trans>
+  ),
+  "effect-slow": () => (
+    <Trans>
+      An effect was slowing your video and was turned off for this call.
+    </Trans>
+  ),
+};
 
 /**
  * Says that a camera effect could not start, and what was done about it.
@@ -53,20 +74,7 @@ export function CameraEffectNotice() {
           aria-live={notice() === "background-failed" ? "assertive" : "polite"}
           severe={notice() === "background-failed"}
         >
-          <Text>
-            <Show
-              when={notice() === "background-failed"}
-              fallback={
-                <Trans>
-                  A camera effect could not start and was turned off.
-                </Trans>
-              }
-            >
-              <Trans>
-                Background effect could not start. Your camera was turned off.
-              </Trans>
-            </Show>
-          </Text>
+          <Text>{NOTICE_TEXT[notice()]()}</Text>
           <Actions>
             <Show when={notice() === "background-failed"}>
               <Button

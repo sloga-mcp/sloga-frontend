@@ -1,3 +1,4 @@
+import { Capacitor } from "@capacitor/core";
 import { useNavigate } from "@solidjs/router";
 import { Show, createSignal, onCleanup } from "solid-js";
 
@@ -6,7 +7,13 @@ import { styled } from "styled-system/jsx";
 
 import { CONFIGURATION } from "@revolt/common";
 import { useModals } from "@revolt/modal";
-import { nativeScreenShareAvailable, useVoice } from "@revolt/rtc";
+import {
+  cameraBackgroundSupported,
+  cameraToneSupported,
+  faceFiltersSupported,
+  nativeScreenShareAvailable,
+  useVoice,
+} from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import { Button, IconButton } from "@revolt/ui/components/design";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -42,7 +49,7 @@ export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
     nativeScreenShareAvailable();
 
   // The docked bar keeps only the everyday controls visible — mic, camera,
-  // camera settings, share (plus give-control while sharing), record, hang up.
+  // camera effects, share (plus give-control while sharing), record, hang up.
   // Everything else starts hidden behind the More button and shows in a
   // floating panel while it is toggled open. Not persisted: every call starts
   // folded, which keeps the bar predictable and the panel one press away.
@@ -137,6 +144,8 @@ export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
       >
         <Symbol>camera_video</Symbol>
       </IconButton>
+      {/* Not on the PiP card: a seventh control there pushes hang up onto a
+          row of its own. The docked card and the settings page have it. */}
       <Show when={!compact()}>
         <CameraSettingsButton size={props.size} />
       </Show>
@@ -264,27 +273,67 @@ function DeafenButton(props: { size: "xs" | "sm" }) {
 }
 
 /**
- * Opens the camera settings modal. Sits beside the camera toggle.
+ * Opens the camera effects panel. Sits beside the camera toggle, and only
+ * while the camera is on: the panel changes the picture being sent.
+ *
+ * A toggle: a press while the panel is open closes it. The panel closes on
+ * any press outside itself, and this button is outside it, so the button is
+ * marked (`data-camera-effects-toggle`) for the panel to leave such a press
+ * to the button; otherwise the panel would close and this would open it
+ * again. The mark is on a wrapper because `IconButton` passes on only the
+ * attributes it knows; `display: contents` keeps the wrapper out of the
+ * bar's layout.
+ *
+ * Not in the phone apps where the device can run none of the effects (the
+ * iPhone app: no tone stage, no backgrounds, no face filters), where the
+ * panel would hold a brightness slider and nothing else. In a browser and in
+ * the desktop apps the button is there whatever the device answers: a
+ * desktop can answer no to all three too (no WebGL2, or the Mac app on a
+ * system web view without `VideoFrame`), and the camera button it has always
+ * had beside the camera toggle stays.
  */
 function CameraSettingsButton(props: { size: "xs" | "sm" }) {
+  const voice = useVoice();
   const modals = useModals();
   const { t } = useLingui();
 
+  // A device does not change its answer, so it is asked once, here, and not
+  // on every update of the bar. Anything unreadable leaves the button in.
+  let offered = true;
+  try {
+    offered =
+      !Capacitor.isNativePlatform() ||
+      cameraToneSupported() ||
+      cameraBackgroundSupported() ||
+      faceFiltersSupported();
+  } catch {
+    offered = true;
+  }
+
+  const open = () => modals.isOpen("camera_effects");
+
+  function toggle() {
+    if (open()) modals.removeOfType("camera_effects");
+    else modals.openModal({ type: "camera_effects" });
+  }
+
   return (
-    <Show when={CONFIGURATION.ENABLE_VIDEO}>
-      <IconButton
-        size={props.size}
-        variant="tonal"
-        onPress={() => modals.openModal({ type: "camera_settings" })}
-        use:floating={{
-          tooltip: {
-            placement: "top",
-            content: t`Camera settings`,
-          },
-        }}
-      >
-        <Symbol>tune</Symbol>
-      </IconButton>
+    <Show when={offered && CONFIGURATION.ENABLE_VIDEO && voice.video()}>
+      <span data-camera-effects-toggle style={{ display: "contents" }}>
+        <IconButton
+          size={props.size}
+          variant={open() ? "filled" : "tonal"}
+          onPress={toggle}
+          use:floating={{
+            tooltip: {
+              placement: "top",
+              content: t`Effects`,
+            },
+          }}
+        >
+          <Symbol>wand_stars</Symbol>
+        </IconButton>
+      </span>
     </Show>
   );
 }

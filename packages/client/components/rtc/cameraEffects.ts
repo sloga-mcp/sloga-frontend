@@ -61,6 +61,7 @@ import type {
   CameraColorLookId,
   CameraFaceFilterId,
 } from "@revolt/state/stores/Voice";
+import { isIosTouch } from "@revolt/ui/components/floating/longPress";
 
 import type {
   CameraApplyResult,
@@ -73,8 +74,21 @@ import {
   type BlackFrameSource,
   CameraProcessorGuard,
 } from "./cameraProcessorGuard";
-import { pickSlotOccupant } from "./faceFilterCatalog";
 import {
+  type ToneStageName,
+  ToneWatchdog,
+  toneAllowedOnPlatform,
+} from "./cameraTonePolicy";
+import { toneStageSupported } from "./cameraToneStage";
+import {
+  type SlotCaps,
+  type SlotSettings,
+  needsLandmarks,
+  pickSlotOccupant,
+} from "./faceFilterCatalog";
+import {
+  type CameraToneStats,
+  type FaceFilterConfig,
   type FaceFilterStatusReport,
   FaceFilterProcessor,
 } from "./faceFilterProcessor";
@@ -212,6 +226,46 @@ export function faceFiltersSupported(): boolean {
   return cameraBackgroundSupported();
 }
 
+/**
+ * Whether the tone stage (low light, whole-frame touch up) can run here:
+ * WebGL2, canvas capture, and neither an iPhone or iPad (the app or any
+ * browser there) nor the macOS desktop app, where it is not offered in this
+ * landing. Unlike backgrounds and face filters this includes Android.
+ *
+ * Nothing is memoized here. The platform rule (`toneAllowedOnPlatform`, pure
+ * and spec'd) is asked first, so a device it excludes never creates the
+ * WebGL2 probe context; `toneStageSupported` keeps its own answer. Never
+ * throws: anything unreadable reads as unsupported.
+ */
+export function cameraToneSupported(): boolean {
+  try {
+    if (typeof window === "undefined" || typeof navigator === "undefined") {
+      return false;
+    }
+    // The same check the long-press emulation uses: the Capacitor iOS app,
+    // Safari on an iPhone, and an iPad that reports itself as a Mac.
+    const ios = isIosTouch(
+      Capacitor.getPlatform(),
+      navigator.userAgent,
+      navigator.platform,
+      navigator.maxTouchPoints ?? 0,
+    );
+    // The shallow shell test on purpose (not `tauriInvoke`, which also asks
+    // whether the window may call commands): any Tauri window on a Mac counts.
+    const macTauri =
+      "__TAURI__" in window && navigator.platform.startsWith("Mac");
+    const canvasCapture =
+      typeof HTMLCanvasElement !== "undefined" &&
+      typeof HTMLCanvasElement.prototype.captureStream === "function";
+    return (
+      toneAllowedOnPlatform({ ios, macTauri, canvasCapture }) &&
+      toneStageSupported()
+    );
+  } catch {
+    return false;
+  }
+}
+
 export type { CameraBackgroundMode };
 
 export type CameraBackgroundStatus =
@@ -232,6 +286,11 @@ export interface CameraEffectSettings {
   beautify: number;
   /** Color look (undefined = none). */
   colorLookId?: CameraColorLookId;
+  /**
+   * Low light switch. Rides the face pipeline where `cameraToneSupported()`;
+   * inert elsewhere and while a background holds the slot.
+   */
+  lowLight: boolean;
 }
 
 /**
@@ -418,6 +477,12 @@ export class CameraEffectsController {
    * WASM segmenter).
    */
   #gen = 0;
+  /**
+   * The tone watchdog of this call. Created on first use and handed to every
+   * face config, so what it has shed outlives a processor rebuild, a camera
+   * mute and a republish (`reset()`); only `resetToneWatchdog()` clears it.
+   */
+  #watchdog: ToneWatchdog | undefined;
 
   /** Notified whenever hardware-brightness support is (re)detected. */
   onHwSupportChange?: (hw: boolean) => void;
@@ -425,6 +490,19 @@ export class CameraEffectsController {
   onImageMissing?: () => void;
   /** Forwarded from the live FaceFilterProcessor (landmark failure + degrade). */
   onFaceFilterStatus?: (s: FaceFilterStatusReport) => void;
+  /** The watchdog turned a tone stage off because it was slowing the video. */
+  onToneShed: ((stage: ToneStageName) => void) | undefined;
+  /** Tone failed open in the face pipeline; the picture continues without it. */
+  onToneFailed: (() => void) | undefined;
+
+  // Handed to every face config. They read the property at call time, so a
+  // handler assigned (or replaced) later is honored without a new config.
+  readonly #forwardToneShed = (stage: ToneStageName) => {
+    this.onToneShed?.(stage);
+  };
+  readonly #forwardToneFailed = () => {
+    this.onToneFailed?.();
+  };
 
   get hwBrightnessSupported(): boolean {
     return this.#hwSupported;
@@ -530,8 +608,21 @@ export class CameraEffectsController {
    * (A chosen image that no longer resolves IS one, and fails closed.)
    */
   #wantedOccupant(settings: CameraEffectSettings, hw: boolean): CameraOccupant {
-    return pickSlotOccupant(
-      {
+    const { slot, caps } = this.#slotInputs(settings, hw);
+    return pickSlotOccupant(slot, caps);
+  }
+
+  /**
+   * The settings and capabilities the slot rules are asked with. One reading
+   * for the wanted occupant (`plan` and `apply`) and for the face config's
+   * landmark decision, so the two cannot disagree.
+   */
+  #slotInputs(
+    settings: CameraEffectSettings,
+    hw: boolean,
+  ): { slot: SlotSettings; caps: SlotCaps } {
+    return {
+      slot: {
         backgroundMode: this.wantsBackground(settings)
           ? settings.backgroundMode
           : "none",
@@ -539,13 +630,15 @@ export class CameraEffectsController {
         beautify: settings.beautify,
         colorLookId: settings.colorLookId,
         brightness: settings.brightness,
+        lowLight: settings.lowLight,
       },
-      {
+      caps: {
         backgroundSupported: cameraBackgroundSupported(),
         faceFiltersSupported: faceFiltersSupported(),
         hwBrightness: hw,
+        toneSupported: cameraToneSupported(),
       },
-    );
+    };
   }
 
   /**
@@ -773,6 +866,13 @@ export class CameraEffectsController {
    * Create or live-update the face-filter processor. `hw` decides whether the
    * config carries the user brightness (non-HW source: applied in the filter's
    * ctx.filter chain) or neutral 100 (HW: exactly one mechanism, plan §5).
+   *
+   * Low light and touch up ride this occupant too. On an attached processor
+   * every settings change, those two included, is a `setConfig` and nothing
+   * else: no sender operation. Where face filters are not supported the
+   * sticker and the color look are withheld (the pipeline is there for tone
+   * only) and `landmarks` is false, so MediaPipe is never requested and touch
+   * up is the processor's whole-frame smooth.
    */
   async #ensureFace(
     track: LocalVideoTrack,
@@ -781,11 +881,18 @@ export class CameraEffectsController {
     hw: boolean,
     opGuard?: CameraOpGuard,
   ) {
-    const cfg = {
-      filterId: settings.faceFilterId,
+    const { slot, caps } = this.#slotInputs(settings, hw);
+    const cfg: FaceFilterConfig = {
+      filterId: caps.faceFiltersSupported ? settings.faceFilterId : undefined,
       beautify: settings.beautify,
-      lookId: settings.colorLookId,
+      lookId: caps.faceFiltersSupported ? settings.colorLookId : undefined,
       brightness: hw ? 100 : settings.brightness,
+      lowLight: settings.lowLight,
+      landmarks: needsLandmarks(slot, caps),
+      tone: caps.toneSupported,
+      watchdog: (this.#watchdog ??= new ToneWatchdog()),
+      onToneShed: this.#forwardToneShed,
+      onToneFailed: this.#forwardToneFailed,
     };
 
     if (this.#face) {
@@ -840,6 +947,15 @@ export class CameraEffectsController {
       }
       this.#face = undefined;
     }
+  }
+
+  /**
+   * What the tone stage of the attached face pipeline is doing, for the stats
+   * overlay. Undefined when no face-pipeline occupant is attached (nothing,
+   * a background, or the brightness fallback holds the slot).
+   */
+  toneStats(): CameraToneStats | undefined {
+    return this.#face?.toneStats();
   }
 
   /** Stop cycling animated-background frames (if running). */
@@ -1368,5 +1484,15 @@ export class CameraEffectsController {
     this.#brightness = undefined;
     this.#revokeImg?.();
     this.#revokeImg = undefined;
+  }
+
+  /**
+   * Re-arm every tone stage the watchdog shed. For the END of a call only:
+   * `reset()` also runs when the camera is unpublished or first published
+   * mid-call and deliberately leaves the watchdog alone, so a stage shed for
+   * being too slow stays off until the call is over.
+   */
+  resetToneWatchdog(): void {
+    this.#watchdog?.reset();
   }
 }

@@ -87,6 +87,7 @@ export {
   CameraEffectsController,
   SEGMENTATION_ASSET_PATHS,
   cameraBackgroundSupported,
+  cameraToneSupported,
   faceFiltersSupported,
 } from "./cameraEffects";
 export type {
@@ -100,6 +101,7 @@ export type {
 export { COLOR_LOOKS, FACE_FILTERS } from "./faceFilterCatalog";
 export type { ColorLookDef, FaceFilterDef } from "./faceFilterCatalog";
 export { FILTER_ASSETS_BASE } from "./faceFilterProcessor";
+export type { CameraToneStats } from "./faceFilterProcessor";
 
 export {
   addUpload,

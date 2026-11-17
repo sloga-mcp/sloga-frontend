@@ -5971,6 +5971,10 @@ msgstr "Speaker"
 msgid "Flip camera"
 msgstr "Flip camera"
 
+#: components/ui/components/features/voice/slimCall/SlimCallScreen.tsx
+msgid "Effects"
+msgstr "Effects"
+
 #: components/ui/components/features/voice/callCard/CameraEffectNotice.tsx
 msgid "Background effect could not start. Your camera was turned off."
 msgstr "Background effect could not start. Your camera was turned off."
@@ -5983,6 +5987,38 @@ msgstr "Turn off background"
 #: components/app/interface/settings/user/voice/CameraPreview.tsx
 msgid "A camera effect could not start and was turned off."
 msgstr "A camera effect could not start and was turned off."
+
+#: components/ui/components/features/voice/callCard/CameraEffectNotice.tsx
+msgid "An effect was slowing your video and was turned off for this call."
+msgstr "An effect was slowing your video and was turned off for this call."
+
+#: components/modal/modals/CameraEffectsSheet.tsx
+msgid "Camera effects"
+msgstr "Camera effects"
+
+#: components/modal/modals/CameraEffectsSheet.tsx
+msgid "Low light"
+msgstr "Low light"
+
+#: components/modal/modals/CameraEffectsSheet.tsx
+msgid "Brightens your picture when the room is dark."
+msgstr "Brightens your picture when the room is dark."
+
+#: components/modal/modals/CameraEffectsSheet.tsx
+msgid "Touch up"
+msgstr "Touch up"
+
+#: components/modal/modals/CameraEffectsSheet.tsx
+msgid "Gently smooths your picture."
+msgstr "Gently smooths your picture."
+
+#: components/modal/modals/CameraEffectsSheet.tsx
+msgid "Brightness"
+msgstr "Brightness"
+
+#: components/modal/modals/CameraEffectsSheet.tsx
+msgid "Low light and touch up pause while a background is on."
+msgstr "Low light and touch up pause while a background is on."
 
 #: components/ui/components/features/voice/slimCall/SlimCallScreen.tsx
 msgid "Minimize call"

@@ -229,8 +229,13 @@ EXPECTED=(
   # and what a leave resets. 108 with the pins over cameraEffects.ts: the op
   # guard's ask in front of every sender operation an apply can reach, the
   # active check, the one "background wanted" rule and the background failure
-  # that removes nothing.
-  "components/rtc/stateWiring.test.ts 108 0"
+  # that removes nothing. 110 with low light: its setter and the two settings
+  # literals that read it, and the processor's tone reports (a shed stage
+  # raises the slow notice once per call, a lost one the failed notice). 112
+  # with two more pins over cameraEffects.ts: where tone work is offered (the
+  # platform rule asked before the WebGL2 probe) and the tone watchdog's
+  # scope (a reset leaves it alone, only the leave re-arms it).
+  "components/rtc/stateWiring.test.ts 112 0"
   # The AFK channel and its merge with member moves (FE-2). Before it this
   # gate ran NO AFK spec, and none of the ladder that decides whether a
   # client follows a move. memberGate's opt-in skip is not in its row: see
@@ -254,10 +259,15 @@ EXPECTED=(
   # fails closed), and the processor guard that shows black instead of the
   # camera picture when a background cannot start. First measured at 47 and
   # 18. The face-filter policy's spec predates both and ran in no gate; first
-  # measured here at 16.
+  # measured here at 16; 28 with the slot rules for low light and touch up
+  # (tone work without landmarks). The tone policy (low light metering, the
+  # slow-stage watchdog, the page mode and the context-loss ladder) is new
+  # with that work; first measured at 38, 39 with the platform rule for
+  # where tone work is offered, 48 with the context-loss re-arm rules.
   "components/rtc/cameraAttachPolicy.test.ts 47 0"
   "components/rtc/cameraProcessorGuard.test.ts 18 0"
-  "components/rtc/faceFilterPolicy.test.ts 16 0"
+  "components/rtc/faceFilterPolicy.test.ts 28 0"
+  "components/rtc/cameraTonePolicy.test.ts 48 0"
   # The server's ring length, read from the root fetch.
   "components/rtc/serverRingLength.test.ts 17 0"
   "components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts 27 0"
@@ -538,11 +548,12 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   components/rtc/cameraFlip.test.ts
   components/rtc/deviceLock.test.ts
   # NOT matched by any glob: the camera attach policy, the camera processor
-  # guard and the face-filter policy. Without these literals they run nowhere
-  # and their EXPECTED rows trip "never ran".
+  # guard, the face-filter policy and the camera tone policy. Without these
+  # literals they run nowhere and their EXPECTED rows trip "never ran".
   components/rtc/cameraAttachPolicy.test.ts
   components/rtc/cameraProcessorGuard.test.ts
   components/rtc/faceFilterPolicy.test.ts
+  components/rtc/cameraTonePolicy.test.ts
   components/rtc/serverRingLength.test.ts
   components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts
   components/client/pushPolicy.test.ts
@@ -755,6 +766,15 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/cameraProcessorGuard.ts
   components/rtc/cameraProcessorGuard.test.ts
   components/rtc/cameraEffects.ts
+  # Low light and touch up: the tone policy, its spec and the WebGL2 stage
+  # that draws them. Enrolled because each is clean: `prettier --check` and
+  # `eslint --max-warnings 0` both exit 0 on it, one file at a time (measured
+  # on feat/call-video-effects, in wave B1). The face-filter processor, which
+  # now runs the stage, is enrolled on the same measurement.
+  components/rtc/cameraTonePolicy.ts
+  components/rtc/cameraTonePolicy.test.ts
+  components/rtc/cameraToneStage.ts
+  components/rtc/faceFilterProcessor.ts
   # The surfaces the same work adds or edits: the failed-effect notice, the
   # settings preview and the call card's buttons. Enrolled on the same
   # measurement, taken after the state.tsx wiring landed.
@@ -841,7 +861,9 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
 # above runs and counts it, but it fails `prettier --check` and eslint reports
 # seven prettier/prettier warnings on it, all in lines the camera-effects work
 # did not touch (the file is unedited there), so enrolling it would force a
-# whole-file reformat. tsc still type-checks it.
+# whole-file reformat. tsc still type-checks it. Measured again after the low
+# light work extended it (16 to 28 tests): `prettier --check` still fails and
+# eslint still reports seven warnings.
 # 🔴 NOT in FILES: components/app/interface/settings/user/Encryption.tsx. Fix
 # round F6 (L3w) edits it, but eslint reports four solid/components-return-once
 # warnings on it, the same four present at base 7de02a68 in lines that round

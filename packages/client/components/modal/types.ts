@@ -673,7 +673,7 @@ export type Modals =
       onCancel: () => void;
     }
   | {
-      type: "camera_settings";
+      type: "camera_effects";
     }
   | {
       /**

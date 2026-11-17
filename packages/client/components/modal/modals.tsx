@@ -10,7 +10,7 @@ import { AddMembersToGroupModal } from "./modals/AddMembersToGroup";
 import { AndroidScreenShareSheetModal } from "./modals/AndroidScreenShareSheet";
 import { BanMemberModal } from "./modals/BanMember";
 import { BanNonMemberModal } from "./modals/BanNonMember";
-import { CameraSettingsModal } from "./modals/CameraSettings";
+import { CameraEffectsSheet } from "./modals/CameraEffectsSheet";
 import { ChangelogHistoryModal, ChangelogModal } from "./modals/Changelog";
 import { ChannelInfoModal } from "./modals/ChannelInfo";
 import { ChannelToggleMatureModal } from "./modals/ChannelToggleMature";
@@ -325,8 +325,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <ScreenShareSettingsModal {...modalProps} />;
     case "screen_share_picker":
       return <ScreenSharePickerModal {...modalProps} />;
-    case "camera_settings":
-      return <CameraSettingsModal {...modalProps} />;
+    case "camera_effects":
+      return <CameraEffectsSheet {...modalProps} />;
     case "android_screen_share_sheet":
       return <AndroidScreenShareSheetModal {...modalProps} />;
     case "screen_share_audio_source":

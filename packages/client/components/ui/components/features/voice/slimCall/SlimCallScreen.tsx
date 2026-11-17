@@ -17,7 +17,14 @@ import { styled } from "styled-system/jsx";
 import { useSlimMode } from "@revolt/client/useSlimMode";
 import { useWindowCtx } from "@revolt/client/windowCtx";
 import { CONFIGURATION } from "@revolt/common";
-import { InRoom, useVoice } from "@revolt/rtc";
+import { useModals } from "@revolt/modal";
+import {
+  InRoom,
+  cameraBackgroundSupported,
+  cameraToneSupported,
+  faceFiltersSupported,
+  useVoice,
+} from "@revolt/rtc";
 import {
   type CallAudioRoutes,
   getCallAudioRoutes,
@@ -557,10 +564,12 @@ function Tiles(props: { onVideo: (video: boolean) => void }) {
  * The controls. Mute, camera and hang up do what the call card's buttons do,
  * with the card's labels: the same store calls, the same conditions. They are
  * written out here because the card exports its controls only as one whole
- * bar, sized for a pointer. Speaker and flip camera exist only here.
+ * bar, sized for a pointer. Speaker and flip camera exist only here. Effects
+ * opens the same panel the card's button opens.
  */
 function Controls() {
   const voice = useVoice();
+  const modals = useModals();
   const { t } = useLingui();
 
   const enableVideo = CONFIGURATION.ENABLE_VIDEO;
@@ -660,6 +669,24 @@ function Controls() {
     }
   }
 
+  // Whether the effects panel has anything to offer on this device besides
+  // its brightness slider. Where it has not (the iPhone app: no tone stage,
+  // no backgrounds, no face filters) there is no Effects button. A device
+  // does not change its answer, so it is asked once, here, and not on every
+  // update of the bar.
+  const effectsAvailable =
+    cameraToneSupported() ||
+    cameraBackgroundSupported() ||
+    faceFiltersSupported();
+
+  const effectsOpen = () => modals.isOpen("camera_effects");
+
+  /** Open the effects panel, or close it if it is the one that is open. */
+  function toggleEffects() {
+    if (effectsOpen()) modals.removeOfType("camera_effects");
+    else modals.openModal({ type: "camera_effects" });
+  }
+
   return (
     <Bar>
       <IconButton
@@ -724,6 +751,26 @@ function Controls() {
         >
           <Symbol>cameraswitch</Symbol>
         </IconButton>
+      </Show>
+      {/* Only while the camera is on: the panel changes the picture it
+          sends. And only where the device can run at least one effect (see
+          `effectsAvailable`). The wrapper carries the mark the panel looks
+          for, so a press here while the panel is open is this button's to answer (it closes
+          the panel) and not also the panel's "pressed outside". `IconButton`
+          passes on only the attributes it knows, hence a wrapper, and
+          `display: contents` keeps it out of the bar's layout. */}
+      <Show when={effectsAvailable && voice.video()}>
+        <span data-camera-effects-toggle style={{ display: "contents" }}>
+          <IconButton
+            size="md"
+            variant={effectsOpen() ? "filled" : "tonal"}
+            onPress={toggleEffects}
+            aria-label={t`Effects`}
+            aria-pressed={effectsOpen()}
+          >
+            <Symbol>wand_stars</Symbol>
+          </IconButton>
+        </span>
       </Show>
       <Button
         size="md"

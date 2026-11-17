@@ -95,6 +95,7 @@ export function CameraPreview() {
       faceFilterId: settings.cameraFaceFilterId,
       beautify: settings.cameraBeautify,
       colorLookId: settings.cameraColorLookId,
+      lowLight: settings.cameraLowLight,
     });
     // Torn down while the apply ran (stop / device change / call took over /
     // unmount): stopIdlePreview() already detached and stopped this track.
@@ -181,6 +182,7 @@ export function CameraPreview() {
         () => settings.cameraFaceFilterId,
         () => settings.cameraBeautify,
         () => settings.cameraColorLookId,
+        () => settings.cameraLowLight,
       ],
       () => {
         if (track && testing() && !liveTrack()) void applyEffects();
