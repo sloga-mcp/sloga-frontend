@@ -547,7 +547,7 @@ function Tiles(props: { onVideo: (video: boolean) => void }) {
                     }
                     onClick={() => showCorner(false)}
                   >
-                    <Symbol size={16}>visibility_off</Symbol>
+                    <Symbol size={20}>visibility_off</Symbol>
                   </CornerHide>
                 </VideoCorner>
               )}
@@ -1076,8 +1076,9 @@ const CornerHide = styled("button", {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    width: "28px",
-    height: "28px",
+    // Big enough for a thumb: a miss lands on the tile and swaps the pictures
+    width: "36px",
+    height: "36px",
 
     border: "none",
     borderRadius: "var(--borderRadius-full)",
