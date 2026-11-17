@@ -130,7 +130,10 @@ export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
               : t`Coming soon! 👀`,
           },
         }}
-        isDisabled={!enableVideo}
+        // Off while a press is still being carried out (a background effect
+        // can take seconds to start): a second press would only queue the
+        // opposite of the first.
+        isDisabled={!enableVideo || voice.cameraPending()}
       >
         <Symbol>camera_video</Symbol>
       </IconButton>

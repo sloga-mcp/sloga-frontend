@@ -223,8 +223,14 @@ EXPECTED=(
   # gate, the hang-up timers' re-ask while the Room reconnects and the
   # server's ring length. 90 with the locked cold start (M2 final audit): the
   # wait's one unawaited startup retry, the e2ee.ts run record and its catch,
-  # and three behaviour tests running the retry's own members.
-  "components/rtc/stateWiring.test.ts 90 0"
+  # and three behaviour tests running the retry's own members. 100 with the
+  # camera effects wiring: the camera-on plan and its re-check, the privacy
+  # hold, the attach driver's deps, where its sync is fired, the toggle lock
+  # and what a leave resets. 108 with the pins over cameraEffects.ts: the op
+  # guard's ask in front of every sender operation an apply can reach, the
+  # active check, the one "background wanted" rule and the background failure
+  # that removes nothing.
+  "components/rtc/stateWiring.test.ts 108 0"
   # The AFK channel and its merge with member moves (FE-2). Before it this
   # gate ran NO AFK spec, and none of the ladder that decides whether a
   # client follows a move. memberGate's opt-in skip is not in its row: see
@@ -243,6 +249,15 @@ EXPECTED=(
   # the phone's lock-screen reads the Answer path asks.
   "components/rtc/cameraFlip.test.ts 24 0"
   "components/rtc/deviceLock.test.ts 27 0"
+  # Camera effects under the publish gate: the attach decision and its driver
+  # (a wanted background that is not active keeps the camera paused, and
+  # fails closed), and the processor guard that shows black instead of the
+  # camera picture when a background cannot start. First measured at 47 and
+  # 18. The face-filter policy's spec predates both and ran in no gate; first
+  # measured here at 16.
+  "components/rtc/cameraAttachPolicy.test.ts 47 0"
+  "components/rtc/cameraProcessorGuard.test.ts 18 0"
+  "components/rtc/faceFilterPolicy.test.ts 16 0"
   # The server's ring length, read from the root fetch.
   "components/rtc/serverRingLength.test.ts 17 0"
   "components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts 27 0"
@@ -522,6 +537,12 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   components/rtc/ringDuration.test.ts
   components/rtc/cameraFlip.test.ts
   components/rtc/deviceLock.test.ts
+  # NOT matched by any glob: the camera attach policy, the camera processor
+  # guard and the face-filter policy. Without these literals they run nowhere
+  # and their EXPECTED rows trip "never ran".
+  components/rtc/cameraAttachPolicy.test.ts
+  components/rtc/cameraProcessorGuard.test.ts
+  components/rtc/faceFilterPolicy.test.ts
   components/rtc/serverRingLength.test.ts
   components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts
   components/client/pushPolicy.test.ts
@@ -724,6 +745,24 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/serverRingLength.test.ts
   components/rtc/cameraFlip.ts components/rtc/cameraFlip.test.ts
   components/rtc/deviceLock.ts components/rtc/deviceLock.test.ts
+  # Camera effects under the publish gate: the attach policy, the processor
+  # guard, their specs, and the controller that uses both. Enrolled because
+  # each is clean: `prettier --check` and `eslint --max-warnings 0` both exit
+  # 0 on it, one file at a time (measured on fix/camera-effects-trust, over
+  # wave A0).
+  components/rtc/cameraAttachPolicy.ts
+  components/rtc/cameraAttachPolicy.test.ts
+  components/rtc/cameraProcessorGuard.ts
+  components/rtc/cameraProcessorGuard.test.ts
+  components/rtc/cameraEffects.ts
+  # The surfaces the same work adds or edits: the failed-effect notice, the
+  # settings preview and the call card's buttons. Enrolled on the same
+  # measurement, taken after the state.tsx wiring landed.
+  # VoiceCallCardActiveRoom.tsx and VoiceCallCardPiP.tsx, which it also
+  # edits, were already enrolled above.
+  components/ui/components/features/voice/callCard/CameraEffectNotice.tsx
+  components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
+  components/app/interface/settings/user/voice/CameraPreview.tsx
   components/ui/components/features/voice/slimCall/SlimCallScreen.tsx
   components/ui/components/features/voice/slimCall/slimCallPolicy.ts
   components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts
@@ -798,6 +837,11 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
 # turn this gate permanently red or force a whole-file reformat. Its policy,
 # mlsDrainPolicy.ts, is clean and enrolled; tsc still type-checks the spec,
 # and its EXPECTED row above still runs and counts it.
+# 🔴 NOT in FILES: components/rtc/faceFilterPolicy.test.ts. Its EXPECTED row
+# above runs and counts it, but it fails `prettier --check` and eslint reports
+# seven prettier/prettier warnings on it, all in lines the camera-effects work
+# did not touch (the file is unedited there), so enrolling it would force a
+# whole-file reformat. tsc still type-checks it.
 # 🔴 NOT in FILES: components/app/interface/settings/user/Encryption.tsx. Fix
 # round F6 (L3w) edits it, but eslint reports four solid/components-return-once
 # warnings on it, the same four present at base 7de02a68 in lines that round
@@ -1099,7 +1143,9 @@ run "prettier --check" 12 "$ROOT/node_modules/.bin/prettier" --check "${FILES[@]
 # c219c107 and in no line that wave touched. The call-view suggestions files
 # enrolled in FILES add none: each was measured at `--max-warnings 0`. Nor do
 # the FE-2 files, measured the same way, nor the iOS call E2EE phase 2 files
-# (still four at wave 3c: the three above and e2ee.ts's, at moved lines).
+# (still four at wave 3c: the three above and e2ee.ts's, at moved lines), nor
+# the camera effects files (each measured at `--max-warnings 0`; state.tsx
+# still carried its two after that work's wiring).
 #
 # 🔴 This gate reads eslint's EXIT STATUS and eslint exits 0 on warnings, so
 # this step is WARNING-BLIND by construction. Do not read the count above as

@@ -3406,6 +3406,7 @@ msgid "Discover Sloga"
 msgstr "Discover Sloga"
 
 #: components/ui/components/features/voice/callCard/VoicePassControlPanel.tsx
+#: components/ui/components/features/voice/callCard/CameraEffectNotice.tsx
 #: components/app/interface/channels/text/Message.tsx
 msgid "Dismiss"
 msgstr "Dismiss"
@@ -5969,6 +5970,19 @@ msgstr "Speaker"
 #: components/ui/components/features/voice/slimCall/SlimCallScreen.tsx
 msgid "Flip camera"
 msgstr "Flip camera"
+
+#: components/ui/components/features/voice/callCard/CameraEffectNotice.tsx
+msgid "Background effect could not start. Your camera was turned off."
+msgstr "Background effect could not start. Your camera was turned off."
+
+#: components/ui/components/features/voice/callCard/CameraEffectNotice.tsx
+msgid "Turn off background"
+msgstr "Turn off background"
+
+#: components/ui/components/features/voice/callCard/CameraEffectNotice.tsx
+#: components/app/interface/settings/user/voice/CameraPreview.tsx
+msgid "A camera effect could not start and was turned off."
+msgstr "A camera effect could not start and was turned off."
 
 #: components/ui/components/features/voice/slimCall/SlimCallScreen.tsx
 msgid "Minimize call"

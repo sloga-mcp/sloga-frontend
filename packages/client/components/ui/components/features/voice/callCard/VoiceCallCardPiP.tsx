@@ -26,6 +26,7 @@ import {
   stripLeg,
 } from "../participantIdentity";
 
+import { CameraEffectNotice } from "./CameraEffectNotice";
 import { VoiceCallCardActions } from "./VoiceCallCardActions";
 import { VoiceCallCardStatus } from "./VoiceCallCardStatus";
 
@@ -99,6 +100,11 @@ export function VoiceCallCardPiP() {
   return (
     <MiniCard>
       <VoiceCallCardStatus pip />
+      {/* The card has none of the full card's notices, but this one says
+          why the camera just went off, so it is shown here too. */}
+      <NoticeOverlay>
+        <CameraEffectNotice />
+      </NoticeOverlay>
       <Show when={!hasFocusVideo()} fallback={<MiniVideoTile />}>
         <Roster>
           <TrackLoop tracks={shownTracks}>{() => <ConnectedUser />}</TrackLoop>
@@ -176,6 +182,27 @@ function MiniVideo() {
     />
   );
 }
+
+/**
+ * Holds the camera effect notice over the top of the card. Over it, not in
+ * the column: the card is a fixed 300x170, and a notice in the flow would
+ * push the controls, hang up among them, out of the bottom edge. Laid over
+ * the top it covers the status glyph and part of the roster until it is
+ * dismissed, and the controls stay where they are.
+ *
+ * Positioned against the float, as the status glyph and the video are, and
+ * above the video, which comes later in the card. Empty, it has no height
+ * and takes no clicks.
+ */
+const NoticeOverlay = styled("div", {
+  base: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 1,
+  },
+});
 
 /**
  * The strip of people. Centered in whatever height is left between the status

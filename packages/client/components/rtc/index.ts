@@ -4,7 +4,7 @@ export {
   platformMediaE2EESupported,
   useVoice,
 } from "./state";
-export type { DiceRollToast } from "./state";
+export type { CameraEffectNotice, DiceRollToast } from "./state";
 
 export {
   INCOMING_CALL_TIMEOUT_MS,
@@ -93,6 +93,8 @@ export type {
   CameraBackgroundMode,
   CameraBackgroundStatus,
   CameraEffectSettings,
+  PrebuildBackgroundResult,
+  PrebuiltBackground,
 } from "./cameraEffects";
 
 export { COLOR_LOOKS, FACE_FILTERS } from "./faceFilterCatalog";

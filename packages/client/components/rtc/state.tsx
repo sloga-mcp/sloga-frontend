@@ -400,7 +400,14 @@ import {
   saveRecording,
 } from "./callRecorder";
 import {
+  type CameraAttachOutcome,
+  CameraAttachDriver,
+  cameraNeedsHold,
+} from "./cameraAttachPolicy";
+import {
   type CameraBackgroundStatus,
+  type CameraEffectSettings,
+  type PrebuiltBackground,
   CameraEffectsController,
 } from "./cameraEffects";
 import { createCaptionEngine } from "./captions/captionEngine";
@@ -895,10 +902,100 @@ type CallEncryptionLatch = {
   mediaKeyed?: boolean;
 };
 
+/**
+ * What the call surfaces must tell the user about the camera's effects.
+ * `background-failed`: a background could not be made active, so the camera
+ * was turned off (or was not turned on) instead of sending the plain picture.
+ * `effect-failed`: a face filter or the brightness fallback dropped and the
+ * plain camera continues.
+ */
+export type CameraEffectNotice = "background-failed" | "effect-failed";
+
+/**
+ * What a camera-on is about to do, decided by `#planCameraOn` and checked
+ * again by `#cameraOnPlanHolds` at the moment it is done.
+ * `publish`: no camera publication exists; a first publish, carrying the
+ * prebuilt background when one is wanted. `unmute`: the publication is muted
+ * and may be unmuted as it is.
+ */
+type CameraOnPlan =
+  | { kind: "publish"; prebuilt?: PrebuiltBackground }
+  | { kind: "unmute"; track: LocalVideoTrack };
+
+/**
+ * How long a camera unpublish livekit issued on its own is taken for a
+ * republish still in flight. livekit gives up on a publish well inside this.
+ */
+const CAMERA_REPUBLISH_WAIT_MS = 30_000;
+
 class Voice {
   #settings: VoiceSettings;
   /** Shared engine that owns the camera track's processor slot + brightness. */
   #cameraEffects = new CameraEffectsController();
+  /**
+   * Reconciles the camera's processor slot with the settings while the
+   * publish gate may be held (`cameraAttachPolicy.ts`, where every rule is
+   * spec- and mutation-reachable; only the wiring to livekit lives here).
+   * Stores nothing between calls: `#applyCameraEffects` fires `sync()` after
+   * every settings change, every unmute, a device switch, the gate's 1->0
+   * edge and the camera publication landing under an empty gate, and each
+   * call decides again from live state.
+   *
+   * Built by `#newCameraAttach` and REPLACED on leave: the driver's only
+   * state is its promise chain, and a pass stuck on a livekit operation
+   * that never settles must not block the next call's camera.
+   */
+  #cameraAttach = this.#newCameraAttach();
+  /**
+   * The camera toggle in flight, if any: the one lock over `toggleCamera`.
+   * A press while it is set returns this same promise and starts nothing
+   * (no replay: a queued press would read "is the camera on" when it ran,
+   * so two presses during a slow background start turned the camera on and
+   * straight off again). It also keeps two camera-ons from interleaving: the
+   * controller holds ONE prebuilt processor, and a second build would free
+   * the one the first publish is starting with. Held until the publish,
+   * unmute or mute has settled, NOT across the effects sync that follows, so
+   * a camera-off press never waits behind a face-model load. Never rejects.
+   * Dropped on leave.
+   */
+  #cameraToggle: Promise<void> | undefined;
+  /**
+   * The prebuilt background the camera publish in flight was started with.
+   * Between livekit creating the sender and `adopt`, the controller does
+   * not yet report it as the occupant; `#cameraBackgroundAtBirth` reads
+   * this to recognize it on the new track.
+   */
+  #cameraPublishingWith: PrebuiltBackground | undefined;
+  /**
+   * The camera track this file is unpublishing itself
+   * (`#unpublishCameraForEffects`), so the `localTrackUnpublished` listener
+   * can tell that from an unpublish livekit issued.
+   */
+  #cameraOwnUnpublish: LocalVideoTrack | undefined;
+  /**
+   * When livekit unpublished the camera WITHOUT this file asking
+   * (`Date.now()`): the first half of `republishAllTracks` (the E2EE flip,
+   * a signal reconnect). Until a camera lands again the publication is
+   * missing from the map although the camera is still published as far as
+   * the user and livekit are concerned, and a camera-on in that window is
+   * refused: see `#cameraRepublishInFlight`.
+   */
+  #cameraRepublishSince: number | undefined;
+  /**
+   * Camera tracks paused by `#holdUnguardedCamera` (at sender birth or at a
+   * livekit resume) and not yet taken over by the attach driver. The driver
+   * releases only holds it took itself, so these are released by the
+   * driver's `plan` dep, inside its serialized pass, once the plan no
+   * longer needs a hold.
+   */
+  #cameraEarlyHold = new WeakSet<object>();
+  /**
+   * `effect-failed` raised once per call per failing occupant: the settings
+   * that occupant last failed with. The same failure is not announced again
+   * (every later sync retries the effect and would re-raise a notice the
+   * user has dismissed) until those settings change. Cleared on leave.
+   */
+  #cameraEffectFailedWith = new Map<"face" | "brightness", string>();
 
   /** Runtime-only: whether the active camera exposes a hardware brightness control. */
   cameraHwBrightness: Accessor<boolean>;
@@ -929,6 +1026,26 @@ class Voice {
    */
   cameraEffectsApplied: Accessor<number>;
   #setCameraEffectsApplied: Setter<number>;
+
+  /**
+   * Runtime-only: a camera effect failed and the user has not been told yet
+   * (see {@link CameraEffectNotice}). Set by a failed sync or a refused
+   * camera-on; cleared by a later sync that succeeds on a published camera,
+   * by {@link dismissCameraEffectNotice} and on leave. The call card and the
+   * Slim call screen draw it inline: a snackbar is hidden under a
+   * native-fullscreen card.
+   */
+  cameraEffectNotice: Accessor<CameraEffectNotice | undefined>;
+  #setCameraEffectNotice: Setter<CameraEffectNotice | undefined>;
+
+  /**
+   * Runtime-only: a camera toggle is in flight. True from the press until
+   * the publish, unmute or mute has settled, the background's build
+   * included. The camera buttons disable on it; a press that gets through
+   * anyway is coalesced (see `#cameraToggle`).
+   */
+  cameraPending: Accessor<boolean>;
+  #setCameraPending: Setter<boolean>;
 
   channel: Accessor<Channel | undefined>;
   #setChannel: Setter<Channel | undefined>;
@@ -2386,6 +2503,18 @@ class Voice {
    * unconsented. The born-paused mic is never added, so the wave-1 F1
    * strand stays resumed at 1->0. A WeakSet for the same reason as
    * `#bornPaused`.
+   *
+   * One more writer, outside the screen share: the camera's PRIVACY hold
+   * (`#setCameraHold`, driven by `cameraAttachPolicy.ts`). A camera whose
+   * background is wanted but not yet verified active is added here before
+   * its upstream is paused, so the same two resume paths skip it and the
+   * 1->0 sweep cannot resume it showing the room; the driver deletes it once
+   * the background is live (or no longer wanted) and resumes it itself, only
+   * over an empty gate. Same key, same reads, nothing new in `publishGate.ts`.
+   * It is a resume-SKIP like the consent pause, not a maintained pause:
+   * livekit's own unconditional resumes (unmute, restart, a processor swap)
+   * are not stopped by it, which is why `toggleCamera` never unmutes a
+   * camera that has no live background while one is wanted.
    */
   #consentHeld = new WeakSet<object>();
   /**
@@ -2725,6 +2854,16 @@ class Voice {
     this.cameraEffectsApplied = effectsApplied;
     this.#setCameraEffectsApplied = setEffectsApplied;
 
+    const [effectNotice, setEffectNotice] = createSignal<
+      CameraEffectNotice | undefined
+    >();
+    this.cameraEffectNotice = effectNotice;
+    this.#setCameraEffectNotice = setEffectNotice;
+
+    const [cameraPending, setCameraPending] = createSignal(false);
+    this.cameraPending = cameraPending;
+    this.#setCameraPending = setCameraPending;
+
     const [callEncryptionLatch, setCallEncryptionLatch] = createSignal<
       CallEncryptionLatch | undefined
     >();
@@ -2928,9 +3067,11 @@ class Voice {
 
     this.#cameraEffects.onHwSupportChange = (hw) =>
       this.#setCameraHwBrightness(hw);
-    this.#cameraEffects.onImageMissing = () => {
-      this.#settings.cameraBackgroundMode = "none";
-    };
+    // No `onImageMissing` handler: a selected background image that no
+    // longer resolves used to reset the mode to "none" here, which sent the
+    // plain picture without a word. It is a background failure now (the
+    // camera goes off and `cameraEffectNotice` says why) and the setting
+    // stays as the user chose it.
     this.#cameraEffects.onFaceFilterStatus = (s) => {
       // Live processor reports: landmark tracking died (→ failed, look-only
       // keeps drawing) or the degrade ladder moved.
@@ -5156,11 +5297,16 @@ class Voice {
                 landed: true,
               });
             this.#syncMicPipelineIfLanded(room, pub);
+            this.#syncCameraEffectsIfLanded(room, pub);
           },
-          () => this.#syncMicPipelineIfLanded(room, pub),
+          () => {
+            this.#syncMicPipelineIfLanded(room, pub);
+            this.#syncCameraEffectsIfLanded(room, pub);
+          },
         );
       } else {
         this.#syncMicPipelineIfLanded(room, pub);
+        this.#syncCameraEffectsIfLanded(room, pub);
       }
       // A publish that was in flight across the session's E2EE flip lands
       // here declared NONE (livekit stamps the type when it builds the
@@ -5205,6 +5351,27 @@ class Voice {
     });
     room.addListener("localTrackUnpublished", () => {
       this.#setSharePubVersion((v) => v + 1);
+    });
+
+    // A camera republish in flight (see `#cameraRepublishSince`). livekit emits
+    // `localTrackUnpublished` synchronously as `republishAllTracks` starts,
+    // while the publication still names its track, and the same track lands
+    // again through `localTrackPublished`. An unpublish this file issued is
+    // not a republish. Also a second handler on the camera track's own
+    // `UpstreamResumed`, registered here and not in the gate's listener
+    // above: livekit resumed the camera (a restart, a processor swap), and
+    // if a background is wanted but not live on it the hold goes straight
+    // back on. `off` before `on`, for the reason given there.
+    room.addListener("localTrackUnpublished", (pub) => {
+      if (pub.source !== Track.Source.Camera || !pub.track) return;
+      if (pub.track === this.#cameraOwnUnpublish) return;
+      this.#cameraRepublishSince = Date.now();
+    });
+    room.addListener("localTrackPublished", (pub) => {
+      if (pub.source !== Track.Source.Camera || !pub.track) return;
+      this.#cameraRepublishSince = undefined;
+      pub.track.off(TrackEvent.UpstreamResumed, this.#cameraUpstreamResumed);
+      pub.track.on(TrackEvent.UpstreamResumed, this.#cameraUpstreamResumed);
     });
 
     // Between `emit(LocalSenderCreated)` and the `LocalTrackPublished` that
@@ -5329,6 +5496,13 @@ class Voice {
             },
             () => undefined,
           );
+        // The camera's privacy hold, taken here and not a few frames later
+        // at the landing sync: a camera sender born while a background is
+        // wanted but not live on the track (a republish that caught a
+        // pending attach, a prebuilt processor that came up black) must not
+        // start sending. After the gate's own birth pause, so that op read
+        // the sender as livekit made it.
+        this.#holdUnguardedCamera(room, track);
       },
     );
 
@@ -6341,6 +6515,17 @@ class Voice {
       this.#setCameraBackgroundStatus("idle");
       this.#setCameraFaceFilterStatus("idle");
       this.#setCameraFaceFilterDegraded(0);
+      this.#setCameraEffectNotice(undefined);
+      // Nothing of this call's camera may reach the next one: a fresh
+      // driver (a pass stuck on a livekit operation dies with the old one),
+      // no toggle lock, no republish in flight, no remembered failure.
+      this.#cameraAttach = this.#newCameraAttach();
+      this.#cameraToggle = undefined;
+      this.#setCameraPending(false);
+      this.#cameraPublishingWith = undefined;
+      this.#cameraOwnUnpublish = undefined;
+      this.#cameraRepublishSince = undefined;
+      this.#cameraEffectFailedWith.clear();
 
       // Not during the rejoin loop's own churn: tearing down the dead room
       // before an attempt (and after a failed one) is not the user leaving,
@@ -7690,6 +7875,13 @@ class Voice {
     // the `track.processorUpdate` offset in rejoin-leak handoff 7.6/7.9).
     if (this.#publishGate.size === 0 && this.room() === room)
       this.#syncMicPipeline(room, this.#micPipelineWants());
+    // The camera's twin, at the same point for the same reasons: a processor
+    // attach, removal or swap deferred under the held gate is decided again
+    // now, from live state. It also finishes the privacy hold: the sweep
+    // above skipped a camera whose background is still pending
+    // (`#consentHeld`), and this sync attaches it, verifies it live and only
+    // then resumes that camera. Fire-and-forget, like the mic's.
+    this.#syncCameraEffectsOverEmptyGate(room);
   }
 
   /**
@@ -8066,6 +8258,33 @@ class Voice {
     if (pub.source !== Track.Source.Microphone) return;
     if (this.#gateHeld() || this.room() !== room) return;
     this.#syncMicPipeline(room, this.#micPipelineWants());
+  }
+
+  /**
+   * The camera's twin of `#syncMicPipelineIfLanded`: re-decide the camera's
+   * processor slot when the camera publication lands under an empty gate.
+   * It covers the same strand: a camera that was mid-republish at the gate's
+   * 1->0 edge was not in `trackPublications` when `#resumeGate` fired its
+   * sync, and no later edge would come. It also runs on a first publish,
+   * where it is what attaches a face filter or the brightness fallback (a
+   * wanted background is already on the track by then: `toggleCamera`
+   * publishes with it), and on every republish that lands under an empty
+   * gate. A held gate defers to its own 1->0 edge.
+   */
+  #syncCameraEffectsIfLanded(room: Room, pub: { source: Track.Source }) {
+    if (pub.source !== Track.Source.Camera) return;
+    this.#syncCameraEffectsOverEmptyGate(room);
+  }
+
+  /**
+   * Fire one camera-effects sync for `room`, unless the gate is held or the
+   * call has moved on. The two callers are the gate's 1->0 edge and the
+   * camera publication landing; neither awaits it (a background's first
+   * init is a model and wasm load).
+   */
+  #syncCameraEffectsOverEmptyGate(room: Room) {
+    if (this.room() !== room || this.#gateHeld()) return;
+    void this.#applyCameraEffects();
   }
 
   /**
@@ -8666,9 +8885,66 @@ class Voice {
     }
   }
 
+  /**
+   * Turn the camera on or off. One toggle at a time: a press while one is
+   * in flight joins it and starts nothing (see `#cameraToggle`). The lock
+   * and `cameraPending` cover the publish, unmute or mute; the effects sync
+   * a camera-on ends with runs after both are released.
+   */
   async toggleCamera() {
+    if (this.#cameraToggle) return this.#cameraToggle;
+    // `#toggleCameraOnce` reports its own failures; the catch is so that a
+    // throw from that reporting can never leave the lock taken.
+    const toggling = this.#toggleCameraOnce().catch(() => false);
+    const lock = toggling.then(() => undefined);
+    this.#cameraToggle = lock;
+    this.#setCameraPending(true);
+    const syncAfter = await toggling;
+    // Only this toggle's own lock: a leave in between dropped it already,
+    // and the next call may have taken a new one.
+    if (this.#cameraToggle === lock) {
+      this.#cameraToggle = undefined;
+      this.#setCameraPending(false);
+    }
+    // After the adopt and after every unmute: the unmute restarted the
+    // capture through the processor, and only a sync finds out whether that
+    // restart left the background live.
+    if (syncAfter) await this.#applyCameraEffects();
+  }
+
+  /**
+   * One camera toggle.
+   *
+   * Camera ON is where a background can leak the room, because of what
+   * livekit does and does not let a caller control (2.15.13):
+   *  - a FIRST publish honors the capture options' `processor`: the track is
+   *    processed before the sender exists, so the first frame sent is already
+   *    the processed one, and under a held gate that sender is born paused
+   *    like any other;
+   *  - a re-enable is an UNMUTE of the existing publication. It never reads
+   *    the capture options; it restarts the capture through whatever
+   *    processor the track still carries, writes the result (or the plain
+   *    track, when there is no processor) to the sender and resumes the
+   *    upstream unconditionally.
+   * So the one thing that must never happen is unmuting a camera that has no
+   * live background while one is wanted. `#planCameraOn` decides which of
+   * the two routes is safe and `#cameraOnPlanHolds` checks that decision
+   * again, with nothing awaited after it, right before the route is taken.
+   *
+   * Camera OFF is a mute: the track and its processor survive, so only the
+   * controller's timers stop (`onTrackMuted`). `reset()` is for a camera
+   * that was unpublished or a call that ended.
+   *
+   * Never rejects. Resolves true when the camera was turned on and an
+   * effects sync must follow; the caller runs that sync outside the lock.
+   */
+  async #toggleCameraOnce(): Promise<boolean> {
+    const room = this.room();
+    // Set once the camera-on reached livekit: from there a gate that filled
+    // while the publish or the unmute ran is put back over the camera.
+    let reassert = false;
+    let syncAfter = false;
     try {
-      const room = this.room();
       if (!room) throw "invalid state";
 
       const enabling = !room.localParticipant.isCameraEnabled;
@@ -8683,41 +8959,499 @@ class Voice {
       });
       if (refusal) {
         this.onErr(new Error(this.#publishRefusalText(refusal, "camera")));
-        return;
+        return false;
       }
 
       if (enabling) {
-        const { capture, publish } = this.#cameraCaptureOptions();
+        // Everything slow (the unpublish of a camera that cannot be unmuted,
+        // the background's image lookup and processor build) happens in
+        // here, BEFORE the iOS hold below is armed, so the hold does not
+        // stretch into a mic outage.
+        const plan = await this.#planCameraOn(room);
+        // Asked with nothing awaited between the answer and the call below.
+        if (!plan || !this.#cameraOnPlanHolds(room, plan)) {
+          // The controller is shared across calls: a toggle that outlived
+          // its call must not free what the next call has prebuilt.
+          if (this.room() === room) {
+            this.#cameraEffects.discardPrebuilt();
+            this.#setVideo(room.localParticipant.isCameraEnabled);
+          }
+          return false;
+        }
+        const prebuilt = plan.kind === "publish" ? plan.prebuilt : undefined;
+        reassert = true;
+        this.#cameraPublishingWith = prebuilt;
+        const { capture, publish } = this.#cameraCaptureOptions(
+          prebuilt?.processor,
+        );
         // A first camera publish is a NEW sender (R1 hold on iOS).
         const endHold = this.#webkitHoldForNewSender(room, Track.Source.Camera);
         const pub = await room.localParticipant
           .setCameraEnabled(true, capture, publish)
           .finally(endHold);
-        if (pub?.videoTrack) {
-          const mode = this.#settings.cameraBackgroundMode ?? "none";
+        let track =
+          pub?.videoTrack instanceof LocalVideoTrack
+            ? pub.videoTrack
+            : undefined;
+        // The call ended while livekit worked: nothing below is this
+        // call's, and the controller now belongs to the next one.
+        if (this.room() !== room) return false;
+        // An unmute that came back on ANOTHER track was not an unmute.
+        // livekit reads `republishPromise` once; a republish queued before
+        // that read can take the camera out of the map afterwards, and
+        // livekit then captures and publishes a NEW track from the capture
+        // options, with no processor on it. That camera-on has failed: the
+        // stray track comes down (stopped, so nothing more is sent), the
+        // controller forgets it, any hold taken at its birth is dropped, and
+        // the failure goes through the ordinary error path below.
+        if (plan.kind === "unmute" && track && track !== plan.track) {
+          const stray = track;
+          await this.#unpublishCameraForEffects(stray);
+          await this.#setCameraHold(stray, false).catch(() => undefined);
+          throw new Error(t`Try again in a moment.`);
+        }
+        if (prebuilt) {
+          // Hand the processor livekit published with to the controller. A
+          // failure here means the picture on the sender is not the
+          // background (black from a segmenter that did not start, or the
+          // plain camera if livekit did not attach it): camera off first,
+          // then down, and say so.
+          if (!track) {
+            this.#cameraEffects.discardPrebuilt();
+          } else {
+            const adopted = this.#cameraEffects.adopt(track, prebuilt);
+            if (!adopted.ok) {
+              await this.#failCameraClosed(room, track, adopted.error);
+              track = undefined;
+            }
+          }
+        }
+        if (track) {
+          const wantsBackground = this.#cameraEffects.wantsBackground(
+            this.#cameraEffectSettings(),
+          );
           this.#setCameraBackgroundStatus(
-            mode === "none" ? "idle" : "initializing",
+            wantsBackground ? "initializing" : "idle",
           );
           this.#setCameraFaceFilterStatus(
-            mode === "none" && this.#faceSettings() ? "initializing" : "idle",
+            !wantsBackground && this.#faceSettings() ? "initializing" : "idle",
           );
-          await this.#applyCameraEffects(pub.videoTrack as LocalVideoTrack);
+          syncAfter = true;
         }
       } else {
         await room.localParticipant.setCameraEnabled(false);
-        // The track is gone; LiveKit destroyed any attached processor. Drop the
-        // controller's now-stale references (and release the background image
-        // URL) so a later re-enable rebuilds cleanly rather than switching a
-        // dead wrapper.
-        this.#cameraEffects.reset();
+        // Camera off is a MUTE in livekit: the publication, the track and
+        // its processor all survive, and the next camera-on restarts the
+        // capture THROUGH that processor. So the controller keeps every
+        // reference and only stops its timers; dropping them here (as this
+        // used to, with `reset()`) is what made a re-enable send the plain
+        // picture until the background had been built again.
+        this.#cameraEffects.onTrackMuted();
         this.#setCameraBackgroundStatus("idle");
         this.#setCameraFaceFilterStatus("idle");
-        this.#setCameraFaceFilterDegraded(0);
       }
 
-      this.#setVideo(room.localParticipant.isCameraEnabled);
+      if (this.room() === room)
+        this.#setVideo(room.localParticipant.isCameraEnabled);
     } catch (e) {
+      // A publish that threw never handed its prebuilt background over;
+      // free it. A no-op when there is none or it was adopted. Only for the
+      // call this toggle started in: after a leave and a rejoin the
+      // controller holds the NEW call's prebuilt background.
+      if (this.room() === room) this.#cameraEffects.discardPrebuilt();
       this.#captureFailed(e, "camera");
+    } finally {
+      if (this.room() === room) this.#cameraPublishingWith = undefined;
+      // A gate that filled while the publish or the unmute ran: livekit
+      // resumed the camera whatever had paused it, so put the gate back over
+      // it now that the call has settled (no-op over an empty gate).
+      if (reassert && this.room() === room) this.#reassertPublishGate();
+    }
+    return syncAfter;
+  }
+
+  /**
+   * Decide how a camera-on may proceed, or refuse it (undefined). In order:
+   *
+   *  1. A muted publication exists and the publish gate is held: REFUSED,
+   *     for the reason `flipCamera` refuses. The re-enable is an unmute, and
+   *     livekit's unmute resumes the sender whatever paused it, so it would
+   *     send inside the held gate until the re-assert landed. A FIRST publish
+   *     under a held gate is not refused: its sender is born paused
+   *     (`LocalSenderCreated`), which is the gate's own path for a new
+   *     sender, and on iOS the hold armed for that publish is itself a gate
+   *     reason.
+   *  2. No background wanted: the route that existed before (unmute the
+   *     publication, or publish the plain camera).
+   *  3. A background is wanted and the muted publication still carries it,
+   *     attached and not failed: unmute. The restart runs through it.
+   *  4. A background is wanted and the publication does not carry a live
+   *     one: that publication can never be unmuted, so it is unpublished and
+   *     the camera-on becomes a first publish.
+   *  5. First publish with a background wanted: build the processor now. If
+   *     the image no longer resolves or the processor cannot be prepared the
+   *     camera is NOT published and the notice says why.
+   */
+  async #planCameraOn(room: Room): Promise<CameraOnPlan | undefined> {
+    // Row 0, before anything reads the publication map: while livekit is
+    // republishing the camera the map does not hold it, so every row below
+    // would take a camera that IS published (and may be muted, with no live
+    // background) for one that is not, and plan a first publish. livekit
+    // would then wait for the republish, find the publication and UNMUTE it,
+    // ignoring the processor in the capture options.
+    if (this.#cameraRepublishInFlight()) {
+      this.onErr(new Error(t`Try again in a moment.`));
+      return undefined;
+    }
+    const settings = this.#cameraEffectSettings();
+    const wantsBackground = this.#cameraEffects.wantsBackground(settings);
+    const existing = this.#publishedCameraTrack();
+
+    if (existing) {
+      if (this.#gateHeld()) {
+        this.onErr(new Error(t`Try again in a moment.`));
+        return undefined;
+      }
+      if (!wantsBackground || this.#cameraBackgroundHealthy(existing))
+        return { kind: "unmute", track: existing };
+      await this.#unpublishCameraForEffects(existing);
+      if (!this.#cameraOffAndIdle(room)) return undefined;
+    }
+    if (!wantsBackground) {
+      // No camera is published, so anything the controller still refers to
+      // belongs to a track that is gone; left there, the first sync would
+      // "tune" a processor that is not on the new track.
+      this.#cameraEffects.reset();
+      return { kind: "publish" };
+    }
+
+    // Let a sync still running for a camera that has just been taken down
+    // finish first: its teardown ends in `reset()`, which would free the
+    // processor built below while livekit is starting it. With no camera
+    // published this returns as soon as the driver is idle.
+    await this.#cameraAttach.sync().catch(() => undefined);
+    if (!this.#cameraOffAndIdle(room)) return undefined;
+    this.#cameraEffects.reset();
+
+    // Start the downloads before the build needs them.
+    this.#cameraEffects.prewarmBackgroundAssets();
+    const built = await this.#cameraEffects.prebuildBackground(settings);
+    if (built.kind === "ready")
+      return { kind: "publish", prebuilt: built.prebuilt };
+    // Not expected for a snapshot that asked for a background above. Should
+    // it happen, a plain publish is still not taken on this answer alone:
+    // `#cameraOnPlanHolds` reads the live settings before the publish.
+    if (built.kind === "not-wanted") return { kind: "publish" };
+
+    console.error(
+      "[rtc] camera not turned on: the background could not be prepared",
+      built.kind === "failed" ? built.error : built.kind,
+    );
+    // The build was awaited: say so only to the call it was for.
+    if (this.room() === room) {
+      this.#setCameraBackgroundStatus("failed");
+      this.#setCameraEffectNotice("background-failed");
+    }
+    return undefined;
+  }
+
+  /**
+   * Still this call, with no camera publication and no camera republish in
+   * flight: what `#planCameraOn` re-reads after each await on its way to a
+   * first publish.
+   */
+  #cameraOffAndIdle(room: Room): boolean {
+    return (
+      this.room() === room &&
+      !this.#publishedCameraTrack() &&
+      !this.#cameraRepublishInFlight()
+    );
+  }
+
+  /**
+   * livekit has unpublished the camera on its own and the track has not
+   * landed again (see `#cameraRepublishSince`). Bounded: a republish that
+   * failed never lands, and the camera must not stay refused for the rest
+   * of the call, so after `CAMERA_REPUBLISH_WAIT_MS` the mark is dropped.
+   * livekit gives up on a publish well inside that.
+   */
+  #cameraRepublishInFlight(): boolean {
+    // A room that is not connected is reconnecting, and a reconnect ends in
+    // a republish that can start long after the mark below has expired
+    // (livekit's reconnect has no bound of its own). Whatever the timer
+    // says, no camera-on while the room is anything but connected.
+    if (this.room()?.state !== ConnectionState.Connected) return true;
+    const since = this.#cameraRepublishSince;
+    if (since === undefined) return false;
+    if (Date.now() - since <= CAMERA_REPUBLISH_WAIT_MS) return true;
+    this.#cameraRepublishSince = undefined;
+    return false;
+  }
+
+  /**
+   * Whether `plan` is still safe to carry out, read synchronously right
+   * before it is. Everything `#planCameraOn` awaited is a chance for the
+   * call, the publication, the gate or the settings to have moved:
+   *  - `publish` needs no camera publication (with one, livekit would unmute
+   *    it instead and ignore the processor) and either the prebuilt
+   *    background or settings that still do not want one;
+   *  - `unmute` needs the same track still published, an empty gate, and,
+   *    when a background is wanted, that track still carrying a live one;
+   *  - neither may run while livekit is republishing the camera. This is
+   *    what keeps the answer in step with livekit's own: `setCameraEnabled`
+   *    waits for a republish before it reads the publication map, so with
+   *    one in flight it decides "unmute or publish" later than this does.
+   *    With none, it reads the map in the same synchronous run as the call.
+   * A plan that no longer holds is dropped without a second attempt; the
+   * camera stays off and the next press decides again.
+   */
+  #cameraOnPlanHolds(room: Room, plan: CameraOnPlan): boolean {
+    if (this.room() !== room) return false;
+    if (this.#cameraRepublishInFlight()) return false;
+    const live = this.#publishedCameraTrack();
+    const wantsBackground = this.#cameraEffects.wantsBackground(
+      this.#cameraEffectSettings(),
+    );
+    if (plan.kind === "publish")
+      return !live && (!!plan.prebuilt || !wantsBackground);
+    if (live !== plan.track || this.#gateHeld()) return false;
+    return !wantsBackground || this.#cameraBackgroundHealthy(live);
+  }
+
+  /** `track` carries the background processor, attached and not failed. */
+  #cameraBackgroundHealthy(track: LocalVideoTrack): boolean {
+    return (
+      this.#cameraEffects.occupant === "background" &&
+      this.#cameraEffects.isActive(track)
+    );
+  }
+
+  /**
+   * The camera track published in the CURRENT room, muted or not. Undefined
+   * once the call is gone, so nothing here acts on a disposed room's track.
+   */
+  #publishedCameraTrack(): LocalVideoTrack | undefined {
+    const track = this.room()?.localParticipant.getTrackPublication(
+      Track.Source.Camera,
+    )?.videoTrack;
+    return track instanceof LocalVideoTrack ? track : undefined;
+  }
+
+  /**
+   * The camera's privacy hold (`CameraAttachDeps.setHold`).
+   *
+   * Taking it: the track goes into `#consentHeld` FIRST, synchronously, so
+   * no resume path can pick the camera up between here and the pause; then
+   * the upstream is paused, and the pause is checked ON THE WIRE, not on
+   * livekit's flag. The flag goes stale-true whenever livekit puts a track
+   * on the sender without touching it (a republish onto a new sender,
+   * `setProcessor`), and `pauseUpstream()` is then a no-op over a sender
+   * that is sending. One resume-then-pause clears that, the same remedy the
+   * gate's own repause uses. A hold that still did not take (no sender, a
+   * rejected `replaceTrack`) must not be reported as one: rejecting makes
+   * the driver fail closed. Idempotent.
+   *
+   * Releasing it: the track leaves `#consentHeld`, and is resumed here only
+   * over an EMPTY gate and only while it is still the published, unmuted
+   * camera of the current room. Under a held gate the pause now belongs to
+   * the gate alone and its 1->0 sweep resumes it. A track that was replaced
+   * or unpublished is only forgotten.
+   *
+   * This is a resume-skip, not a maintained pause: see `#consentHeld`.
+   */
+  async #setCameraHold(track: LocalVideoTrack, held: boolean): Promise<void> {
+    if (held) {
+      this.#consentHeld.add(track);
+      await track.pauseUpstream();
+      if (track.isUpstreamPaused && upstreamOf(track.sender) !== "quiet") {
+        await track.resumeUpstream();
+        await track.pauseUpstream();
+      }
+      if (!track.isUpstreamPaused || upstreamOf(track.sender) !== "quiet")
+        throw new Error("camera upstream could not be paused");
+      return;
+    }
+    this.#consentHeld.delete(track);
+    if (this.#gateHeld()) return;
+    if (this.#publishedCameraTrack() !== track || track.isMuted) return;
+    await track.resumeUpstream();
+  }
+
+  /**
+   * Whether the attach driver must not touch the camera's sender right now:
+   * the publish gate is held, or the published camera is MUTED. This is the
+   * driver's `gateHeld`.
+   *
+   * Why muted counts. Camera off stops the capture track, and livekit's
+   * `setProcessor` holds the track's change lock across the processor's
+   * `init`. An init given an ended track can wait forever (a `video.play()`
+   * that never resolves), and the next unmute needs that same lock: the
+   * camera would be stuck until reload. So nothing is attached, removed or
+   * swapped on a muted camera. A tune is still applied (it issues no sender
+   * operation and takes no lock), which is how a setting changed while the
+   * camera is off reaches the processor the unmute restarts through. What
+   * was deferred is decided again by the sync that follows every unmute; a
+   * wanted background the muted publication does not carry never gets that
+   * far, because `#planCameraOn` unpublishes instead of unmuting.
+   */
+  #cameraSenderOpsBlocked(): boolean {
+    return this.#gateHeld() || !!this.#publishedCameraTrack()?.isMuted;
+  }
+
+  /** A fresh attach driver over this object's camera (see `#cameraAttach`). */
+  #newCameraAttach(): CameraAttachDriver<
+    LocalVideoTrack,
+    CameraEffectSettings
+  > {
+    // A leave replaces the driver, but a pass of the old one can still be
+    // parked on a livekit operation and wake up inside the NEXT call. Its
+    // deps read the live room and the shared controller, so from the moment
+    // it is no longer `#cameraAttach` it sees no camera and its hold, mute
+    // and teardown resolve without acting: an old call's failure must never
+    // mute or unpublish the new call's camera.
+    const current = (): boolean => this.#cameraAttach === driver;
+    const driver = new CameraAttachDriver<
+      LocalVideoTrack,
+      CameraEffectSettings
+    >({
+      gateHeld: () => this.#cameraSenderOpsBlocked(),
+      track: () => (current() ? this.#publishedCameraTrack() : undefined),
+      // The settings are read ONCE per pass: what `plan` judged is exactly
+      // what `apply` builds.
+      plan: async (track) => {
+        const snapshot = this.#cameraEffectSettings();
+        const plan = await this.#cameraEffects.plan(track, snapshot);
+        // An early hold (`#holdUnguardedCamera`) this plan no longer needs.
+        // Released here, inside the driver's serialized pass, because the
+        // driver releases only holds it took. One it does need stays: the
+        // driver's own `setHold(track, true)` follows and owns it from then.
+        if (!cameraNeedsHold(plan) && this.#cameraEarlyHold.delete(track))
+          await this.#setCameraHold(track, false).catch(() => undefined);
+        return { plan, snapshot };
+      },
+      apply: (track, snapshot, guard) =>
+        this.#cameraEffects.apply(track, snapshot, guard),
+      setHold: async (track, held) => {
+        if (current()) await this.#setCameraHold(track, held);
+      },
+      muteCamera: async () => {
+        if (current()) await this.#muteCameraForEffects();
+      },
+      teardown: async (track) => {
+        if (current()) await this.#unpublishCameraForEffects(track);
+      },
+    });
+    return driver;
+  }
+
+  /**
+   * `track` is showing the background: the controller's background occupant
+   * is attached and live on it, or it is the track of the publish in flight
+   * and carries that publish's prebuilt processor, started and not failed
+   * (the controller only names it the occupant at `adopt`).
+   */
+  #cameraBackgroundLiveOn(track: LocalVideoTrack): boolean {
+    if (!this.#cameraEffects.isActive(track)) return false;
+    if (this.#cameraEffects.occupant === "background") return true;
+    const prebuilt = this.#cameraPublishingWith;
+    return !!prebuilt && track.getProcessor() === prebuilt.processor;
+  }
+
+  /**
+   * Take the privacy hold EARLY, at the two moments a camera can start
+   * sending without the driver having looked: its sender's birth
+   * (`LocalSenderCreated`) and a resume livekit issued on its own
+   * (`UpstreamResumed`: a restart, a processor swap). Only when a background
+   * is wanted and is not live on the track; a muted camera sends nothing and
+   * is left alone. The pause is not awaited (both callers are synchronous
+   * emits), and a sync is fired so the driver decides what happens next:
+   * attach and release, keep holding, or fail closed.
+   */
+  #holdUnguardedCamera(room: Room, track: LocalTrack): void {
+    if (this.room() !== room) return;
+    if (!(track instanceof LocalVideoTrack)) return;
+    if (track.source !== Track.Source.Camera || track.isMuted) return;
+    if (!this.#cameraEffects.wantsBackground(this.#cameraEffectSettings()))
+      return;
+    if (this.#cameraBackgroundLiveOn(track)) return;
+    this.#cameraEarlyHold.add(track);
+    void this.#setCameraHold(track, true).catch((error) =>
+      console.error("[rtc] camera could not be held at birth", error),
+    );
+    void this.#applyCameraEffects();
+  }
+
+  /**
+   * ONE stable reference for the camera track's `UpstreamResumed`, so the
+   * registration can `off` before `on`. Reads the room from the signal, as
+   * `#reassertPublishGate` does.
+   */
+  #cameraUpstreamResumed = (track: LocalTrack): void => {
+    const room = this.room();
+    if (room) this.#holdUnguardedCamera(room, track);
+  };
+
+  /**
+   * Mute the camera because its background failed
+   * (`CameraAttachDeps.muteCamera`). A mute issues no sender operation, so
+   * it is allowed under a held gate; harmless on a camera already off.
+   */
+  async #muteCameraForEffects(): Promise<void> {
+    const room = this.room();
+    if (!room) return;
+    await room.localParticipant.setCameraEnabled(false);
+    this.#cameraEffects.onTrackMuted();
+    if (this.room() === room)
+      this.#setVideo(room.localParticipant.isCameraEnabled);
+  }
+
+  /**
+   * Take the muted camera down (`CameraAttachDeps.teardown` after a
+   * background failure, and a camera-on that may not unmute what is
+   * published): unpublish and stop the track, which destroys the processor
+   * with it, then drop the controller's references. Never a detach: removing
+   * the processor from a published track puts the plain picture on the
+   * sender. The next camera-on is a first publish.
+   */
+  async #unpublishCameraForEffects(track: LocalVideoTrack): Promise<void> {
+    // Named for the `localTrackUnpublished` listener, which livekit calls
+    // inside this unpublish: this one is not a republish.
+    this.#cameraOwnUnpublish = track;
+    try {
+      await this.room()?.localParticipant.unpublishTrack(track, true);
+    } finally {
+      if (this.#cameraOwnUnpublish === track)
+        this.#cameraOwnUnpublish = undefined;
+      this.#cameraEffects.reset();
+      // The face processor went with the track; so did its degrade step.
+      this.#setCameraFaceFilterDegraded(0);
+    }
+  }
+
+  /**
+   * A camera that has just been published is not showing the background it
+   * was published for. Same order as the driver's own failure path: mute
+   * first, then take it down, then tell the user. If the mute throws the
+   * camera is still unpublished and stopped, which ends the picture too.
+   */
+  async #failCameraClosed(room: Room, track: LocalVideoTrack, error: unknown) {
+    console.error(
+      "[rtc] camera turned off: its background is not active",
+      error,
+    );
+    try {
+      await this.#muteCameraForEffects();
+    } catch (muteError) {
+      console.error("[rtc] camera mute failed", muteError);
+    }
+    try {
+      await this.#unpublishCameraForEffects(track);
+    } finally {
+      if (this.room() === room) {
+        this.#setCameraBackgroundStatus("failed");
+        this.#setCameraFaceFilterStatus("idle");
+        this.#setCameraEffectNotice("background-failed");
+      }
     }
   }
 
@@ -9693,14 +10427,21 @@ class Voice {
    * Resolution is clamped to the server limit; bitrate is set ONLY when
    * non-auto — `maxBitrate` is required and in bps, so `0` would freeze video,
    * hence we omit `videoEncoding` entirely for "auto".
+   *
+   * `processor` is the prebuilt background of a FIRST publish with a
+   * background wanted. livekit attaches a capture-option processor to the
+   * new track before it creates the sender, so the first frame sent is
+   * already the processed one. Only a first publish reads it: an unmute
+   * never consults the capture options.
    */
-  #cameraCaptureOptions(): {
+  #cameraCaptureOptions(processor?: PrebuiltBackground["processor"]): {
     capture: VideoCaptureOptions;
     publish?: TrackPublishOptions;
   } {
     const capture: VideoCaptureOptions = {
       deviceId: this.#settings.preferredVideoDevice,
     };
+    if (processor) capture.processor = processor;
     const q =
       this.getEnabledCameraQualities()[this.#settings.cameraQuality ?? "auto"];
     if (q?.resolution) capture.resolution = q.resolution;
@@ -9761,47 +10502,182 @@ class Voice {
     };
   }
 
+  /** The camera-effect settings as the store holds them right now. */
+  #cameraEffectSettings(): CameraEffectSettings {
+    return {
+      backgroundMode: this.#settings.cameraBackgroundMode ?? "none",
+      blurRadius: this.#settings.cameraBlurRadius ?? 10,
+      backgroundImageId: this.#settings.cameraBackgroundImageId,
+      brightness: this.#settings.cameraBrightness ?? 100,
+      faceFilterId: this.#settings.cameraFaceFilterId,
+      beautify: this.#settings.cameraBeautify ?? 0,
+      colorLookId: this.#settings.cameraColorLookId,
+    };
+  }
+
   /**
-   * Apply all configured camera effects to a live camera track via the shared
-   * CameraEffectsController. Idempotent — safe on enable and on any live change.
-   * Fail-safe: on error the raw camera keeps publishing.
+   * Bring the published camera in line with the settings: one `sync()` of
+   * the attach driver, then what its outcome means for the UI. Safe to fire
+   * from anywhere and at any time; the driver serializes the calls, decides
+   * each one from live state and does nothing when no camera is published.
+   * Never throws.
+   *
+   * What the driver decides, in short (`cameraAttachPolicy.ts` has the
+   * rules): a change that needs no sender operation is applied whatever the
+   * gate says; one that needs to attach, remove or swap the processor waits
+   * for an empty gate; a background that cannot be made live turns the
+   * camera off (fail closed); a face filter or the brightness fallback that
+   * cannot start is dropped and the plain camera continues (fail open).
+   *
+   * `deferred` while nothing blocks the sender any more is retried ONCE. It
+   * means the gate was held (or the camera muted) when the driver looked,
+   * or the gate filled before a sender operation, and that has passed
+   * since; the edge's own sync may already have run and found this pass
+   * still in flight. One retry, not a loop: a gate that keeps refilling
+   * keeps producing edges, and each edge fires a sync of its own.
+   *
+   * A background failure whose mute was rejected leaves the camera under
+   * the hold, NOT off. The mute is tried once more here; if it takes, a
+   * second pass finishes the failure properly (down, hold released).
    */
-  async #applyCameraEffects(videoTrack: LocalVideoTrack) {
-    const mode = this.#settings.cameraBackgroundMode ?? "none";
-    const wantFace = this.#faceSettings();
+  async #applyCameraEffects(): Promise<void> {
+    // A failure on a camera that was already off must not announce that the
+    // camera "was turned off"; the next camera-on reports its own.
+    const cameraWasOn = this.room()?.localParticipant.isCameraEnabled ?? false;
+    // A leave replaces the driver; what an old one reports is not this
+    // call's to show.
+    const driver = this.#cameraAttach;
     try {
-      await this.#cameraEffects.apply(videoTrack, {
-        backgroundMode: mode,
-        blurRadius: this.#settings.cameraBlurRadius ?? 10,
-        backgroundImageId: this.#settings.cameraBackgroundImageId,
-        brightness: this.#settings.cameraBrightness ?? 100,
-        faceFilterId: this.#settings.cameraFaceFilterId,
-        beautify: this.#settings.cameraBeautify ?? 0,
-        colorLookId: this.#settings.cameraColorLookId,
-      });
-      this.#setCameraBackgroundStatus(
-        this.#cameraEffects.backgroundActive ? "active" : "idle",
-      );
-      // Inert (background holds the slot) and off both read as idle; the
-      // paused badge is derived from the store, not this signal.
-      this.#setCameraFaceFilterStatus(
-        this.#cameraEffects.faceFilterActive ? "active" : "idle",
-      );
-    } catch (e) {
-      console.error("camera effects failed", e);
-      this.#setCameraBackgroundStatus(mode === "none" ? "idle" : "failed");
-      // Attribute the failure to the occupant that was actually BUILT: with a
-      // background configured, filters were inert and never attempted — a
-      // segmenter failure must not read as "Face tracking failed"
-      // (diff-review finding 4).
-      this.#setCameraFaceFilterStatus(
-        wantFace && mode === "none" ? "failed" : "idle",
-      );
+      let outcome = await driver.sync();
+      if (outcome.kind === "deferred" && !this.#cameraSenderOpsBlocked())
+        outcome = await driver.sync();
+      if (driver !== this.#cameraAttach) return;
+      if (outcome.kind === "failed-closed" && !outcome.muted) {
+        const failed = outcome;
+        outcome = await this.#muteCameraForEffects().then(
+          () => driver.sync(),
+          () => failed,
+        );
+      }
+      if (driver !== this.#cameraAttach) return;
+      const track = this.#publishedCameraTrack();
+      // The driver ran no apply on these two, and an apply is what carries
+      // the brightness slider. The hardware control is not a sender
+      // operation, so it is safe under a held gate.
+      if (track && (outcome.kind === "none" || outcome.kind === "deferred"))
+        await this.#cameraEffects.applySourceBrightness(
+          track,
+          this.#cameraEffectSettings(),
+        );
+      this.#noteCameraEffectsOutcome(outcome, cameraWasOn);
+    } catch (error) {
+      // Not reachable through the driver's own contract (it rejects only if
+      // reading the room or the gate throws); logged so it is never silent.
+      console.error("[rtc] camera effects sync failed", error);
     } finally {
       // Signal that the (possibly track-swapping) apply has settled so the
       // preview re-reads mediaStreamTrack — covers brightness-only changes too.
       this.#setCameraEffectsApplied((n) => n + 1);
     }
+  }
+
+  /**
+   * Turn a sync outcome into the status signals and the notice. The statuses
+   * are read off the controller (what holds the slot, and whether it is
+   * live), never inferred from the settings: "active" must mean the
+   * processor is attached to the published camera and producing frames.
+   */
+  #noteCameraEffectsOutcome(
+    outcome: CameraAttachOutcome,
+    cameraWasOn: boolean,
+  ): void {
+    const track = this.#publishedCameraTrack();
+    const live = track && !track.isMuted ? track : undefined;
+    const occupant = this.#cameraEffects.occupant;
+    const wantsBackground = this.#cameraEffects.wantsBackground(
+      this.#cameraEffectSettings(),
+    );
+    // A deferred pass is waiting for the gate; with a background wanted the
+    // camera is under the privacy hold until then.
+    const pending = !!live && outcome.kind === "deferred";
+
+    let background: CameraBackgroundStatus = "idle";
+    if (outcome.kind === "failed-closed") {
+      if (cameraWasOn) background = "failed";
+    } else if (live && occupant === "background") {
+      background = this.#cameraEffects.isActive(live) ? "active" : "failed";
+    } else if (pending && wantsBackground) {
+      background = "initializing";
+    }
+    this.#setCameraBackgroundStatus(background);
+
+    // Inert (background holds the slot) and off both read as idle; the
+    // paused badge is derived from the store, not this signal. A background
+    // failure never reads as a face-filter one: with a background wanted the
+    // filters were inert and never attempted.
+    let face: CameraBackgroundStatus = "idle";
+    if (outcome.kind === "failed-open" && outcome.failed === "face") {
+      face = "failed";
+    } else if (live && occupant === "face") {
+      face = "active";
+    } else if (pending && !wantsBackground && this.#faceSettings()) {
+      face = "initializing";
+    }
+    this.#setCameraFaceFilterStatus(face);
+
+    if (outcome.kind === "failed-closed") {
+      console.error(
+        outcome.muted
+          ? "[rtc] camera turned off: its background could not be made active"
+          : "[rtc] camera background failed and the camera could not be muted; its upstream stays paused",
+        outcome.error,
+      );
+      // The notice says the camera was turned off, so it is raised only
+      // when that is what happened: the mute took, and the camera is in
+      // fact no longer on.
+      if (cameraWasOn && outcome.muted && !live)
+        this.#setCameraEffectNotice("background-failed");
+    } else if (outcome.kind === "failed-open") {
+      console.error(
+        `[rtc] camera ${outcome.failed} effect failed; the plain camera continues`,
+        outcome.error,
+      );
+      // Raised once per failing occupant and its settings, and never for a
+      // camera that is off: every later sync retries the effect, and would
+      // otherwise put back a notice the user has dismissed.
+      const settings = this.#cameraEffectSettings();
+      const failedWith =
+        outcome.failed === "face"
+          ? `${settings.faceFilterId}|${settings.beautify}|${settings.colorLookId}`
+          : `${settings.brightness}`;
+      if (
+        live &&
+        this.#cameraEffectFailedWith.get(outcome.failed) !== failedWith
+      ) {
+        this.#cameraEffectFailedWith.set(outcome.failed, failedWith);
+        this.#setCameraEffectNotice("effect-failed");
+      }
+    } else if (track && outcome.kind !== "deferred") {
+      // A sync that succeeded on a published camera. With no camera
+      // published "none" says nothing, and must not clear a notice that
+      // explains why the camera is off.
+      this.#setCameraEffectNotice(undefined);
+    }
+  }
+
+  /** The user has read the camera-effect notice. */
+  dismissCameraEffectNotice(): void {
+    this.#setCameraEffectNotice(undefined);
+  }
+
+  /**
+   * The notice's way out of a failed background: drop the background
+   * setting, then clear the notice. The camera is NOT turned back on; that
+   * stays the user's own press. If the setter throws the notice stays up.
+   */
+  async turnOffCameraBackground(): Promise<void> {
+    await this.setCameraBackground("none");
+    this.#setCameraEffectNotice(undefined);
   }
 
   /**
@@ -9845,33 +10721,28 @@ class Voice {
     return result.outcome === "flipped";
   }
 
-  /** Live-update camera brightness. Persists to the store and reapplies. */
+  /**
+   * Live-update camera brightness. Persists to the store and reapplies.
+   *
+   * Like every camera-effects setter this syncs whenever a camera is
+   * PUBLISHED, on or off. Camera off is a mute and the processor survives
+   * it, so a setting changed while the camera is off has to reach that
+   * processor before the next camera-on restarts the capture through it; a
+   * setter that returned early on a camera that is off would leave the old
+   * effect (or none) for the unmute to send.
+   */
   async setCameraBrightness(brightness: number) {
     this.#settings.cameraBrightness = brightness;
-    const room = this.room();
-    if (!room?.localParticipant.isCameraEnabled) return;
-    const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
-    if (pub?.videoTrack) {
-      await this.#applyCameraEffects(pub.videoTrack as LocalVideoTrack).catch(
-        (e) => this.onErr(e),
-      );
-    }
+    await this.#applyCameraEffects();
   }
 
   /**
-   * Re-apply camera effects to the current live camera track — used after a
+   * Re-apply camera effects to the published camera track — used after a
    * live device switch (the picker swaps the device; effects/brightness must be
    * re-established on the new source).
    */
   async reapplyCameraEffects() {
-    const room = this.room();
-    if (!room?.localParticipant.isCameraEnabled) return;
-    const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
-    if (pub?.videoTrack) {
-      await this.#applyCameraEffects(pub.videoTrack as LocalVideoTrack).catch(
-        (e) => this.onErr(e),
-      );
-    }
+    await this.#applyCameraEffects();
   }
 
   /** Whether any face-filter setting is active in the store. */
@@ -9906,21 +10777,15 @@ class Voice {
       this.#settings.cameraColorLookId = opts.colorLookId ?? undefined;
     }
 
-    const room = this.room();
-    if (!room?.localParticipant.isCameraEnabled) return;
-    const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
-    if (pub?.videoTrack) {
-      if (
-        this.#faceSettings() &&
-        !this.#cameraEffects.faceFilterActive &&
-        (this.#settings.cameraBackgroundMode ?? "none") === "none"
-      ) {
-        this.#setCameraFaceFilterStatus("initializing");
-      }
-      await this.#applyCameraEffects(pub.videoTrack as LocalVideoTrack).catch(
-        (e) => this.onErr(e),
-      );
+    if (
+      this.room()?.localParticipant.isCameraEnabled &&
+      this.#faceSettings() &&
+      !this.#cameraEffects.faceFilterActive &&
+      (this.#settings.cameraBackgroundMode ?? "none") === "none"
+    ) {
+      this.#setCameraFaceFilterStatus("initializing");
     }
+    await this.#applyCameraEffects();
   }
 
   /** Live-update the camera background mode/options. Persists and reapplies. */
@@ -9934,15 +10799,9 @@ class Voice {
     if (opts?.imageId !== undefined)
       this.#settings.cameraBackgroundImageId = opts.imageId;
 
-    const room = this.room();
-    if (!room?.localParticipant.isCameraEnabled) return;
-    const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
-    if (pub?.videoTrack) {
-      if (mode !== "none") this.#setCameraBackgroundStatus("initializing");
-      await this.#applyCameraEffects(pub.videoTrack as LocalVideoTrack).catch(
-        (e) => this.onErr(e),
-      );
-    }
+    if (this.room()?.localParticipant.isCameraEnabled && mode !== "none")
+      this.#setCameraBackgroundStatus("initializing");
+    await this.#applyCameraEffects();
   }
 
   /**

@@ -91,7 +91,8 @@ HARNESS = "mlsCallSession.harness.ts"
 #: `state-keyprovider-*`, `state-encryptedlegs-*`, `state-sfu-*`,
 #: `state-trackpublished-*`, `state-pausegate-*`), and the push-to-talk block
 #: (`state-ptt-*`, killed by `pttMicPolicy.test.ts`'s pins of the same
-#: kind). They reach nothing but the
+#: kind), and the camera-effects block (`state-camfx-*`). They reach nothing
+#: but the
 #: statements `stateWiring.test.ts` pins as TEXT — the voice-move and
 #: chip-publication wiring, and since wave 4 the screen leg's roster inputs,
 #: its stop and gate notices, the start path's mode re-reads and binding key
@@ -15711,6 +15712,917 @@ MUTATIONS += [
         search="""      console.error("[e2ee] startup failed", error);""",
         replace="""      console.error("[e2ee] startup failed", error);
       this.#setDisabledStatus();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+]
+
+# --- Camera effects under the publish gate (fix/camera-effects-trust) --------
+#
+# The two pure modules only: the attach decision and its driver
+# (`cameraAttachPolicy.ts`) and the processor guard (`cameraProcessorGuard.ts`).
+# A background is a privacy control, so the driver fails CLOSED (camera muted
+# before anything is torn down, upstream held while the background is not
+# active) and the guard shows black, never the camera picture, when a
+# background cannot start.
+#
+# No entry in THIS block reaches the other two files. The `state.tsx` side (the
+# deps the driver is handed, the `#consentHeld` add in `setHold`, the `sync()`
+# call sites, the camera-on order) is the `state-camfx-*` block below, and
+# `cameraEffects.ts` (every `setProcessor` / `stopProcessor` and the
+# `maySenderOp()` ask in front of each) is the `camera-ctl-*` block after it.
+# 🔴 Both of those are held by source pins, so what they measure is that each
+# statement is PRESENT and in its place; neither file can be loaded by a spec,
+# and what the controller does at runtime is still proved by a live leg only.
+CAMERA_ATTACH = "cameraAttachPolicy.ts"
+CAMERA_GUARD = "cameraProcessorGuard.ts"
+CAMERA_ATTACH_SPEC = "components/rtc/cameraAttachPolicy.test.ts"
+CAMERA_GUARD_SPEC = "components/rtc/cameraProcessorGuard.test.ts"
+
+MUTATIONS += [
+    # ---- cameraAttachPolicy.ts: the sender-op guard ---------------------------
+    Mutation(
+        id='camera-attach-guard-allows-tune',
+        what='the op guard no longer asks whether the decision was "apply", so a tune may issue a sender op',
+        file=CAMERA_ATTACH,
+        search="""      maySenderOp: () => action === "apply" && !deps.gateHeld(),""",
+        replace="""      maySenderOp: () => !deps.gateHeld(),""",
+        specs=[CAMERA_ATTACH_SPEC],
+    ),
+    Mutation(
+        id='camera-attach-guard-ignores-gate',
+        what='the op guard no longer reads the gate at the moment of the sender op, so an apply still issues one after the gate has filled',
+        file=CAMERA_ATTACH,
+        search="""      maySenderOp: () => action === "apply" && !deps.gateHeld(),""",
+        replace="""      maySenderOp: () => action === "apply",""",
+        specs=[CAMERA_ATTACH_SPEC],
+    ),
+    Mutation(
+        id='camera-attach-gate-refusal-not-deferred',
+        what='a sender op the guard refused is no longer a deferred pass: it falls through to the failed-open arm, which releases the hold',
+        file=CAMERA_ATTACH,
+        search="""      if (result.failed === "gate") return { kind: "deferred" };
+""",
+        replace="""""",
+        specs=[CAMERA_ATTACH_SPEC],
+    ),
+    # ---- cameraAttachPolicy.ts: stale tracks -------------------------------
+    Mutation(
+        id='camera-attach-stale-after-apply-acted-on',
+        what='a camera replaced or unpublished while apply ran is no longer dropped, so the old apply result can mute or tear down the new camera',
+        file=CAMERA_ATTACH,
+        # The comment line above the check is what makes this occurrence
+        # unique: the same `if` stands after `plan` too (see
+        # `camera-attach-stale-after-plan-acted-on`).
+        search="""    // down for it; only a hold on the old track is dropped.
+    if (deps.track() !== track) {""",
+        replace="""    // down for it; only a hold on the old track is dropped.
+    if (false) {""",
+        specs=[CAMERA_ATTACH_SPEC],
+    ),
+    Mutation(
+        id='camera-attach-stale-after-plan-acted-on',
+        what='a camera that changed under the plan is no longer dropped, so the pass holds, applies to or fails closed over a track that is no longer the camera',
+        file=CAMERA_ATTACH,
+        search="""    // the new one.
+    if (deps.track() !== track) {""",
+        replace="""    // the new one.
+    if (false) {""",
+        specs=[CAMERA_ATTACH_SPEC],
+    ),
+    # ---- cameraAttachPolicy.ts: fail closed --------------------------------
+    Mutation(
+        id='camera-attach-inactive-background-needs-hold',
+        what='a background that is attached but not live fails closed only when this pass took the hold; otherwise it is reported as a normal outcome over a camera that is not showing the background',
+        file=CAMERA_ATTACH,
+        search="""    if (result.occupant === "background" && !result.active) {""",
+        replace="""    if (needsHold && result.occupant === "background" && !result.active) {""",
+        specs=[CAMERA_ATTACH_SPEC],
+    ),
+    Mutation(
+        id='camera-attach-teardown-before-mute',
+        what='the fail-closed sequence tears the occupant down BEFORE muting the camera, which puts raw video on a live sender',
+        file=CAMERA_ATTACH,
+        search="""    try {
+      await deps.muteCamera();
+    } catch {""",
+        replace="""    try {
+      await deps.teardown(track);
+      await deps.muteCamera();
+    } catch {""",
+        specs=[CAMERA_ATTACH_SPEC],
+    ),
+    # ---- cameraAttachPolicy.ts: defer under a held gate --------------------
+    Mutation(
+        id='camera-attach-held-gate-applies',
+        what='a held gate no longer defers: the decision is "apply", and sender ops are planned inside the window the gate keeps every sender paused',
+        file=CAMERA_ATTACH,
+        search="""  if (i.gateHeld) return "defer";""",
+        replace="""  if (i.gateHeld) return "apply";""",
+        specs=[CAMERA_ATTACH_SPEC],
+    ),
+    Mutation(
+        id='camera-attach-defer-releases-hold',
+        what="a deferred pass releases the privacy hold, so the gate's 1→0 resume sends the raw camera behind a background that is still pending",
+        file=CAMERA_ATTACH,
+        search="""    if (action === "defer") return { kind: "deferred" };""",
+        replace="""    if (action === "defer") { await this.#release(track); return { kind: "deferred" }; }""",
+        specs=[CAMERA_ATTACH_SPEC],
+    ),
+    # ---- cameraProcessorGuard.ts: the start timeout --------------------------
+    Mutation(
+        id='camera-guard-timeout-never-fires',
+        what='the start timeout never resolves, so a processor start that never settles holds the camera publish (or the unmute) forever',
+        file=CAMERA_GUARD,
+        search="""        () => resolve("timeout"),""",
+        replace="""        () => undefined,""",
+        specs=[CAMERA_GUARD_SPEC],
+    ),
+    Mutation(
+        id='camera-guard-late-start-not-freed',
+        what='a processor that comes up after its start timed out is never destroyed',
+        file=CAMERA_GUARD,
+        search="""      void work.then((late) => this.#freeIfUnowned(inner, startNo, late));
+""",
+        replace="""""",
+        specs=[CAMERA_GUARD_SPEC],
+    ),
+    Mutation(
+        id='camera-guard-timeout-not-failed',
+        what='a timed-out start is not marked failed, so the guard does not switch to the black track',
+        file=CAMERA_GUARD,
+        search="""        this.#fail(new Error("camera processor start timed out"));
+""",
+        replace="""""",
+        specs=[CAMERA_GUARD_SPEC],
+    ),
+    Mutation(
+        id='camera-guard-late-free-kills-newer-start',
+        what="an overtaken start's late cleanup destroys the processor even after a newer start has taken it over",
+        file=CAMERA_GUARD,
+        search="""    if (!outcome.ok || startNo !== this.#starts) return;""",
+        replace="""    if (!outcome.ok) return;""",
+        specs=[CAMERA_GUARD_SPEC],
+    ),
+    # ---- cameraProcessorGuard.ts: black, never the camera picture -----------
+    Mutation(
+        id='camera-guard-failed-exposes-inner-track',
+        what="a failed guard still hands out the inner processor's output track instead of the black one",
+        file=CAMERA_GUARD,
+        search="""    if (this.failed) return this.#black?.track;
+""",
+        replace="""""",
+        specs=[CAMERA_GUARD_SPEC],
+    ),
+    Mutation(
+        id='camera-guard-dead-output-accepted',
+        what='a start whose output track is not live is accepted as running',
+        file=CAMERA_GUARD,
+        search="""    if (inner.processedTrack?.readyState !== "live") {""",
+        replace="""    if (false) {""",
+        specs=[CAMERA_GUARD_SPEC],
+    ),
+    Mutation(
+        id='camera-guard-retry-unbounded',
+        what='a failed guard retries the real start on every restart instead of once',
+        file=CAMERA_GUARD,
+        search="""      if (this.#retried) {""",
+        replace="""      if (false) {""",
+        specs=[CAMERA_GUARD_SPEC],
+    ),
+]
+
+# --- Camera effects: the state.tsx wiring (`state-camfx-*`) ------------------
+#
+# What the block above could not reach. `stateWiring.test.ts` pins this wiring
+# as TEXT (its "camera fx" tests), most of it as whole method bodies, so each
+# entry here is one line of one of those bodies put wrong. The limits are the
+# ones the header gives for every `state-*` entry: a pin proves a statement is
+# PRESENT and in its place, never what it does at runtime, and the same text
+# in dead code would still satisfy it.
+MUTATIONS += [
+    # ---- camera-on: the plan and its re-check ------------------------------
+    Mutation(
+        id='state-camfx-plan-not-rechecked',
+        what='the camera-on plan is carried out without the synchronous re-check, so a plan the awaits made stale still runs',
+        file=STATE,
+        search="""        if (!plan || !this.#cameraOnPlanHolds(room, plan)) {""",
+        replace="""        if (!plan) {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-plan-ignores-republish',
+        what='a camera-on is planned while livekit republishes the camera, so a published (maybe muted) camera is taken for none and a first publish is planned',
+        file=STATE,
+        search="""    if (this.#cameraRepublishInFlight()) {""",
+        replace="""    if (false) {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-recheck-ignores-republish',
+        what='the re-check before the camera-on no longer refuses while a republish is in flight',
+        file=STATE,
+        search="""    if (this.#cameraRepublishInFlight()) return false;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-republish-mark-never-set',
+        what="livekit's own unpublish of the camera no longer marks a republish in flight",
+        file=STATE,
+        search="""      this.#cameraRepublishSince = Date.now();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-own-unpublish-marks-republish',
+        what='an unpublish this file issued is taken for a republish, so the camera-on that follows it is refused',
+        file=STATE,
+        search="""      if (pub.track === this.#cameraOwnUnpublish) return;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-unmute-under-held-gate',
+        what='a muted camera is unmuted while the publish gate is held: livekit resumes the sender whatever paused it',
+        file=STATE,
+        # The line above it is what makes this `if` unique.
+        search="""    if (existing) {
+      if (this.#gateHeld()) {""",
+        replace="""    if (existing) {
+      if (false) {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-unmute-without-background',
+        what='a muted camera with no live background is unmuted while a background is wanted: the plain picture goes out',
+        file=STATE,
+        search="""      if (!wantsBackground || this.#cameraBackgroundHealthy(existing))""",
+        replace="""      if (true)""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-recheck-plain-publish',
+        what='the re-check lets a plain first publish through while a background is wanted and none was prebuilt',
+        file=STATE,
+        search="""      return !live && (!!plan.prebuilt || !wantsBackground);""",
+        replace="""      return !live;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-recheck-ignores-track-swap',
+        what='the re-check lets an unmute through after the published camera track changed',
+        file=STATE,
+        search="""    if (live !== plan.track || this.#gateHeld()) return false;""",
+        replace="""    if (this.#gateHeld()) return false;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-recheck-ignores-gate',
+        what='the re-check lets an unmute through after the publish gate filled',
+        file=STATE,
+        search="""    if (live !== plan.track || this.#gateHeld()) return false;""",
+        replace="""    if (live !== plan.track) return false;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-recheck-ignores-lost-background',
+        what='the re-check lets an unmute through after the track lost its live background during the plan',
+        file=STATE,
+        search="""    return !wantsBackground || this.#cameraBackgroundHealthy(live);""",
+        replace="""    return true;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-not-connected-allows-camera-on',
+        what='a camera-on is allowed while the room reconnects, ahead of a republish that has not started yet',
+        file=STATE,
+        search="""    if (this.room()?.state !== ConnectionState.Connected) return true;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-prebuild-not-after-driver-idle',
+        what="the background is prebuilt without waiting for a sync still running, whose teardown ends in reset() and frees it",
+        file=STATE,
+        search="""    await this.#cameraAttach.sync().catch(() => undefined);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the privacy hold ----------------------------------------------------
+    Mutation(
+        id='state-camfx-hold-not-marked',
+        what="the hold pauses the camera without adding it to #consentHeld, so the gate's next empty sweep resumes it",
+        file=STATE,
+        search="""      this.#consentHeld.add(track);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-hold-marked-after-pause',
+        what='the hold is added to #consentHeld only AFTER the awaited pause, so a sweep during the pause resumes the camera',
+        file=STATE,
+        search="""      this.#consentHeld.add(track);
+      await track.pauseUpstream();
+""",
+        replace="""      await track.pauseUpstream();
+      this.#consentHeld.add(track);
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-hold-stale-flag-not-cleared',
+        what="a stale-true paused flag over a sending sender is not cleared by a resume-then-pause, so the hold never lands",
+        file=STATE,
+        search="""      if (track.isUpstreamPaused && upstreamOf(track.sender) !== "quiet") {""",
+        replace="""      if (false) {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-hold-not-checked-on-wire',
+        what="the hold is reported as taken on livekit's flag alone, not on the wire",
+        file=STATE,
+        search="""      if (!track.isUpstreamPaused || upstreamOf(track.sender) !== "quiet")""",
+        replace="""      if (!track.isUpstreamPaused)""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-hold-never-released',
+        what='a released hold stays in #consentHeld, so the gate never resumes that camera again',
+        file=STATE,
+        search="""    this.#consentHeld.delete(track);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-hold-release-resumes-under-gate',
+        what="releasing the hold resumes the camera while the publish gate is held",
+        file=STATE,
+        search="""    this.#consentHeld.delete(track);
+    if (this.#gateHeld()) return;
+""",
+        replace="""    this.#consentHeld.delete(track);
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-hold-release-resumes-stale-track',
+        what='releasing the hold resumes a track that is muted or no longer the published camera',
+        file=STATE,
+        search="""    if (this.#publishedCameraTrack() !== track || track.isMuted) return;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the early hold ------------------------------------------------------
+    Mutation(
+        id='state-camfx-early-hold-over-live-background',
+        what='the early hold is taken over a camera whose background is live, pausing a camera that shows what it should',
+        file=STATE,
+        search="""    if (this.#cameraBackgroundLiveOn(track)) return;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-early-hold-on-muted-camera',
+        what='the early hold is taken on a muted camera',
+        file=STATE,
+        search="""    if (track.source !== Track.Source.Camera || track.isMuted) return;""",
+        replace="""    if (track.source !== Track.Source.Camera) return;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-resume-not-held',
+        what="a resume livekit issued on its own no longer puts the hold back over a camera with no live background",
+        file=STATE,
+        search="""    if (room) this.#holdUnguardedCamera(room, track);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-resume-listener-not-registered',
+        what="the camera track's UpstreamResumed handler is never registered",
+        file=STATE,
+        search="""      pub.track.on(TrackEvent.UpstreamResumed, this.#cameraUpstreamResumed);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-needed-early-hold-released',
+        what='the plan dep releases an early hold the plan still needs',
+        file=STATE,
+        search="""        if (!cameraNeedsHold(plan) && this.#cameraEarlyHold.delete(track))""",
+        replace="""        if (this.#cameraEarlyHold.delete(track))""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the attach driver's deps ----------------------------------------------
+    Mutation(
+        id='state-camfx-driver-gate-ignores-mute',
+        what="the driver's gateHeld is the publish gate alone, so a processor is attached or swapped on a muted camera",
+        file=STATE,
+        search="""      gateHeld: () => this.#cameraSenderOpsBlocked(),""",
+        replace="""      gateHeld: () => this.#gateHeld(),""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-sender-ops-block-ignores-mute',
+        what='sender operations are blocked by the publish gate alone, not by a muted camera',
+        file=STATE,
+        search="""    return this.#gateHeld() || !!this.#publishedCameraTrack()?.isMuted;""",
+        replace="""    return this.#gateHeld();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-apply-without-guard',
+        what='the op guard is not handed to the controller, so no sender operation asks the gate at the moment it is issued',
+        file=STATE,
+        search="""        this.#cameraEffects.apply(track, snapshot, guard),""",
+        replace="""        this.#cameraEffects.apply(track, snapshot),""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-teardown-keeps-capture',
+        what='the fail-closed unpublish does not stop the track, so the capture is left running',
+        file=STATE,
+        search="""      await this.room()?.localParticipant.unpublishTrack(track, true);""",
+        replace="""      await this.room()?.localParticipant.unpublishTrack(track, false);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-old-driver-always-current',
+        what="a replaced driver still counts as current, so an old call's pass acts on the new call",
+        file=STATE,
+        search="""    const current = (): boolean => this.#cameraAttach === driver;""",
+        replace="""    const current = (): boolean => true;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-old-driver-sees-camera',
+        what="a replaced driver still sees the published camera, which is the new call's",
+        file=STATE,
+        search="""      track: () => (current() ? this.#publishedCameraTrack() : undefined),""",
+        replace="""      track: () => this.#publishedCameraTrack(),""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-old-driver-holds',
+        what="a replaced driver's setHold still acts",
+        file=STATE,
+        search="""        if (current()) await this.#setCameraHold(track, held);""",
+        replace="""        await this.#setCameraHold(track, held);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-old-driver-mutes',
+        what="a replaced driver's muteCamera still acts, muting the new call's camera for the old call's failure",
+        file=STATE,
+        search="""        if (current()) await this.#muteCameraForEffects();""",
+        replace="""        await this.#muteCameraForEffects();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-old-driver-unpublishes',
+        what="a replaced driver's teardown still acts",
+        file=STATE,
+        search="""        if (current()) await this.#unpublishCameraForEffects(track);""",
+        replace="""        await this.#unpublishCameraForEffects(track);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-leave-keeps-driver',
+        what='a leave keeps the old attach driver, so a pass wedged on a livekit operation outlives the call',
+        file=STATE,
+        search="""      this.#cameraAttach = this.#newCameraAttach();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-deferred-retried-while-blocked',
+        what='a deferred sync is retried at once even while sender operations are still blocked',
+        file=STATE,
+        search="""      if (outcome.kind === "deferred" && !this.#cameraSenderOpsBlocked())""",
+        replace="""      if (outcome.kind === "deferred")""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the toggle ------------------------------------------------------------
+    Mutation(
+        id='state-camfx-toggle-not-coalesced',
+        what='a press while a camera toggle is in flight starts a second toggle',
+        file=STATE,
+        search="""    if (this.#cameraToggle) return this.#cameraToggle;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-toggle-clobbers-next-lock',
+        what="a finished toggle clears the lock even when it is the next call's",
+        file=STATE,
+        search="""    if (this.#cameraToggle === lock) {""",
+        replace="""    if (true) {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-toggle-sync-inside-lock',
+        what='the effects sync runs BEFORE the toggle lock is released, so the lock is held across a slow background start',
+        file=STATE,
+        # Two edits: the line leaves its place after the release, then goes
+        # back in directly under the await, above the release block.
+        search="""    if (syncAfter) await this.#applyCameraEffects();
+""",
+        replace="""""",
+        also=[
+            (
+                """    const syncAfter = await toggling;
+""",
+                """    const syncAfter = await toggling;
+    if (syncAfter) await this.#applyCameraEffects();
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the prebuilt background -----------------------------------------------
+    Mutation(
+        id='state-camfx-prebuilt-not-in-capture-options',
+        what='the prebuilt processor is not put in the capture options, so the first frame of a first publish is the plain picture',
+        file=STATE,
+        search="""    if (processor) capture.processor = processor;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-adopt-failure-ignored',
+        what='a failed adopt no longer turns the camera off and takes it down',
+        file=STATE,
+        search="""              await this.#failCameraClosed(room, track, adopted.error);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-stray-track-kept',
+        what='an unmute that came back on another track (no processor on it) is kept as the camera',
+        file=STATE,
+        search="""        if (plan.kind === "unmute" && track && track !== plan.track) {""",
+        replace="""        if (false) {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-late-toggle-frees-next-prebuilt',
+        what="a toggle that threw after its call ended frees the next call's prebuilt background",
+        file=STATE,
+        search="""      if (this.room() === room) this.#cameraEffects.discardPrebuilt();""",
+        replace="""      this.#cameraEffects.discardPrebuilt();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+]
+
+# --- Camera effects: the controller's sender operations (`camera-ctl-*`) -----
+#
+# `cameraEffects.ts` holds every `setProcessor` / `stopProcessor` on the camera
+# and the op guard's ask in front of each one an `apply` can reach. No spec can
+# load it (livekit, the track processors, Capacitor), so `stateWiring.test.ts`
+# pins it as TEXT (its "camera ctl" tests) and each entry here is one of those
+# lines put wrong. Same limits as every `state-*` entry: a pin proves a
+# statement is PRESENT and in its place, never what it does at runtime, and
+# the same text in dead code would still satisfy it.
+CAMERA_CTL = "cameraEffects.ts"
+
+MUTATIONS += [
+    # ---- the guard itself, and how it reaches the helpers ---------------------
+    Mutation(
+        id='camera-ctl-guard-never-refuses',
+        what='a refusing op guard no longer stops the sender operation behind it',
+        file=CAMERA_CTL,
+        search="""    if (opGuard && !opGuard.maySenderOp()) throw GATE_REFUSED;""",
+        replace="""    if (opGuard && !opGuard.maySenderOp()) return;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-apply-drops-guard',
+        what="apply does not hand the caller's op guard on, so nothing it issues is checked",
+        file=CAMERA_CTL,
+        search="""      .then(() => this.#applyInner(track, settings, opGuard));""",
+        replace="""      .then(() => this.#applyInner(track, settings, undefined));""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-gate-refusal-reported-ok',
+        what='a refused sender operation is reported as a normal result, so the driver releases the privacy hold over a camera with no background',
+        file=CAMERA_CTL,
+        search="""    if (gated) return { ok: false, failed: "gate", error: undefined };
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-ensure-background-drops-guard',
+        what='the background attach is called without the op guard',
+        file=CAMERA_CTL,
+        search="""          await this.#ensureBackground(track, myGen, settings, opGuard);""",
+        replace="""          await this.#ensureBackground(track, myGen, settings);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-ensure-face-drops-guard',
+        what='the face-filter attach is called without the op guard',
+        file=CAMERA_CTL,
+        search="""          await this.#ensureFace(track, myGen, settings, hw, opGuard);""",
+        replace="""          await this.#ensureFace(track, myGen, settings, hw);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-teardown-drops-guard',
+        what='the "no occupant wanted" arm removes a background and a face filter without the op guard',
+        file=CAMERA_CTL,
+        search="""          await this.#teardownBackground(track, opGuard);
+          await this.#teardownFace(track, opGuard);""",
+        replace="""          await this.#teardownBackground(track);
+          await this.#teardownFace(track);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-brightness-drops-guard',
+        what='the brightness pass is called without the op guard',
+        file=CAMERA_CTL,
+        search="""          !gated && failure?.failed !== "background",
+          opGuard,
+""",
+        replace="""          !gated && failure?.failed !== "background",
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the guard's ask in front of each sender operation ---------------------
+    Mutation(
+        id='camera-ctl-background-attach-unguarded',
+        what='the background is attached (setProcessor) without asking the op guard first',
+        file=CAMERA_CTL,
+        search="""      try {
+        this.#assertMayOp(opGuard);
+        await track.setProcessor(guard);""",
+        replace="""      try {
+        await track.setProcessor(guard);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-face-attach-unguarded',
+        what='the face filter is attached (setProcessor) without asking the op guard first',
+        file=CAMERA_CTL,
+        search="""    this.#assertMayOp(opGuard);
+    const proc = new FaceFilterProcessor(cfg);""",
+        replace="""    const proc = new FaceFilterProcessor(cfg);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-brightness-attach-unguarded',
+        what='the canvas brightness fallback is attached (setProcessor) without asking the op guard first',
+        file=CAMERA_CTL,
+        search="""      try {
+        this.#assertMayOp(opGuard);
+        await track.setProcessor(proc);""",
+        replace="""      try {
+        await track.setProcessor(proc);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-background-removal-unguarded',
+        what='the background is removed (stopProcessor, which puts the plain track on the sender) without asking the op guard first',
+        file=CAMERA_CTL,
+        search="""    if (this.#bg) this.#assertMayOp(opGuard);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-face-removal-unguarded',
+        what='the face filter is removed (stopProcessor) without asking the op guard first',
+        file=CAMERA_CTL,
+        search="""    if (this.#face) {
+      this.#assertMayOp(opGuard);
+""",
+        replace="""    if (this.#face) {
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-hw-fallback-removal-unguarded',
+        what='the canvas fallback is removed for a hardware brightness control (stopProcessor) without asking the op guard first',
+        file=CAMERA_CTL,
+        # The `if` above it is what makes this ask unique: the back-to-neutral
+        # removal below reads the same from the ask on.
+        search="""      if (this.#brightness && slotOps) {
+        // The canvas fallback never coexists with #bg/#face, so if it exists
+        // it holds the slot — safe to stop.
+        this.#assertMayOp(opGuard);
+""",
+        replace="""      if (this.#brightness && slotOps) {
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-neutral-fallback-removal-unguarded',
+        what='the canvas fallback is removed at neutral brightness (stopProcessor) without asking the op guard first',
+        file=CAMERA_CTL,
+        search="""      if (this.#brightness) {
+        this.#assertMayOp(opGuard);
+""",
+        replace="""      if (this.#brightness) {
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-face-removal-guard-not-synchronous',
+        what='something is awaited between the op guard answering and the stopProcessor it allowed, so the gate can fill in between',
+        file=CAMERA_CTL,
+        search="""    if (this.#face) {
+      this.#assertMayOp(opGuard);
+""",
+        replace="""    if (this.#face) {
+      this.#assertMayOp(opGuard);
+      await Promise.resolve();
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-unguarded-sender-op-added',
+        what='a new stopProcessor with no guard call of its own (after a superseded face-filter attach) goes unnoticed',
+        file=CAMERA_CTL,
+        search="""      proc.onStatus = undefined;
+      await proc.destroy().catch(() => {});
+      return;
+""",
+        replace="""      proc.onStatus = undefined;
+      await proc.destroy().catch(() => {});
+      await track.stopProcessor();
+      return;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the brightness pass after a background failure ------------------------
+    Mutation(
+        id='camera-ctl-brightness-slot-ops-after-background-failure',
+        what='after a background failure the brightness pass may still attach or remove the canvas fallback, which replaces the failed background on the sender',
+        file=CAMERA_CTL,
+        search="""          !gated && failure?.failed !== "background",""",
+        replace="""          !gated,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-brightness-ignores-slot-ops',
+        what='the brightness pass attaches or removes the canvas fallback even when told to leave the slot alone',
+        file=CAMERA_CTL,
+        search="""    if (!slotOps) return;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- isActive -----------------------------------------------------------------
+    Mutation(
+        id='camera-ctl-active-ignores-failed-guard',
+        what='a background whose segmenter failed (black frames, live track) counts as active',
+        file=CAMERA_CTL,
+        search="""    if (proc instanceof CameraProcessorGuard && proc.failed) return false;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-active-ignores-attachment',
+        what='an occupant livekit no longer has on the track counts as active',
+        file=CAMERA_CTL,
+        search="""    if ((track.getProcessor() as unknown) !== proc) return false;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-active-dead-output',
+        what='an occupant whose output track has ended counts as active on an unmuted camera',
+        file=CAMERA_CTL,
+        search="""    return proc.processedTrack?.readyState === "live";""",
+        replace="""    return true;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- a background failure removes nothing ----------------------------------
+    Mutation(
+        id='camera-ctl-background-failure-stops-processor',
+        what='the background-failure arm detaches the processor itself, which puts the plain camera track on a live sender',
+        file=CAMERA_CTL,
+        search="""          else failure = { failed: "background", error };""",
+        replace="""          else {
+            failure = { failed: "background", error };
+            await track.stopProcessor().catch(() => {});
+          }""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-background-failure-tears-down',
+        what='the background-failure arm tears the background down through the unguarded helper',
+        file=CAMERA_CTL,
+        search="""          else failure = { failed: "background", error };""",
+        replace="""          else {
+            failure = { failed: "background", error };
+            await this.#teardownBackground(track);
+          }""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-background-attach-stops-occupant-first',
+        what='the background attach stops the occupant before it, so the plain track is on the sender for the whole segmenter start',
+        file=CAMERA_CTL,
+        search="""      const guard = guardedBackground(resolved.target);
+      try {
+        this.#assertMayOp(opGuard);""",
+        replace="""      const guard = guardedBackground(resolved.target);
+      await track.stopProcessor();
+      try {
+        this.#assertMayOp(opGuard);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-inactive-background-not-a-failure',
+        what='a background that is attached but not active after the attach is reported as a success',
+        file=CAMERA_CTL,
+        search="""        occupant === "background" &&
+        !this.isActive(track)""",
+        replace="""        occupant === "background" &&
+        false""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-refusal-outranks-background-failure',
+        what='a background failure that comes with a refused operation is reported as the refusal, so the driver defers instead of failing closed',
+        file=CAMERA_CTL,
+        search="""    if (failure?.failed === "background") return { ok: false, ...failure };
+    if (gated) return { ok: false, failed: "gate", error: undefined };""",
+        replace="""    if (gated) return { ok: false, failed: "gate", error: undefined };
+    if (failure?.failed === "background") return { ok: false, ...failure };""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the one "background wanted" rule ---------------------------------------
+    Mutation(
+        id='camera-ctl-wants-background-no-image-inverted',
+        what='"no image chosen" is read the wrong way round: a chosen image is not a background request and an empty one is',
+        file=CAMERA_CTL,
+        search="""      !noImageChosen &&""",
+        replace="""      noImageChosen &&""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-wants-background-empty-image-counts',
+        what='image mode WITH an image chosen is taken for "no image chosen", so a selected virtual background is not wanted and the plain camera is planned',
+        file=CAMERA_CTL,
+        search="""      settings.backgroundMode === "image" && !settings.backgroundImageId;""",
+        replace="""      settings.backgroundMode === "image" && !!settings.backgroundImageId;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-wants-background-ignores-mode-none',
+        what='a background is wanted even with the mode set to "none"',
+        file=CAMERA_CTL,
+        search="""      settings.backgroundMode !== "none" &&
+      !noImageChosen &&""",
+        replace="""      !noImageChosen &&""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-wants-background-ignores-support',
+        what='a background is wanted on a platform that cannot run one',
+        file=CAMERA_CTL,
+        search="""      !noImageChosen &&
+      cameraBackgroundSupported()""",
+        replace="""      !noImageChosen""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-wanted-occupant-second-rule',
+        what='the wanted occupant reads the background mode straight from the settings, a second "background wanted" rule beside the one the wiring asks',
+        file=CAMERA_CTL,
+        search="""        backgroundMode: this.wantsBackground(settings)
+          ? settings.backgroundMode
+          : "none",""",
+        replace="""        backgroundMode: settings.backgroundMode,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-unreadable-image-store-plans-raw',
+        what='an image store that cannot be read plans as a resolved background, so no failure is raised for an image that may be gone',
+        file=CAMERA_CTL,
+        search="""        backgroundUnresolved = true;
+""",
+        replace="""""",
         specs=[STATE_WIRING_SPEC],
     ),
 ]

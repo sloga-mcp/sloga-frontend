@@ -4221,3 +4221,1094 @@ test("source pin (ring fix S4/S5): a timer that fires while the Room reconnects 
   assert.equal(countWired(STATE_CODE, `serverCallRingSecs(`), 1);
   assert.equal(countWired(STATE_CODE, `call_ring_duration`), 0);
 });
+
+// --- Camera effects under the publish gate ----------------------------------
+//
+// The decisions live in `cameraAttachPolicy.ts` and `cameraProcessorGuard.ts`,
+// where their own specs hold them. These pins hold `state.tsx` to the wiring
+// around them: how a camera-on is decided and checked again, the privacy hold
+// (a camera whose wanted background is not live stays paused, and the publish
+// gate's resume skips it), what the attach driver is handed, and where its
+// sync is fired. A background is a privacy control, so each of these is a
+// place where a wrong line sends the plain camera picture.
+//
+// Most are a whole method body, compared token for token (the `flipCamera`
+// pin above is the model), so the ORDER of its statements is pinned with
+// them. `rtc-mutations.py`'s `state-camfx-*` entries break each line.
+
+/** `#toggleCameraOnce`'s body. */
+function toggleCameraOnce(): string {
+  return bodyOf(`async #toggleCameraOnce(): Promise<boolean> {`);
+}
+
+test("source pin (camera fx): one camera toggle at a time, and the sync runs after the lock is released", () => {
+  const toggle = bodyOf(`async toggleCamera() {`);
+  assert.equal(
+    toggle,
+    codeOf(`if (this.#cameraToggle) return this.#cameraToggle;
+      const toggling = this.#toggleCameraOnce().catch(() => false);
+      const lock = toggling.then(() => undefined);
+      this.#cameraToggle = lock;
+      this.#setCameraPending(true);
+      const syncAfter = await toggling;
+      if (this.#cameraToggle === lock) {
+        this.#cameraToggle = undefined;
+        this.#setCameraPending(false);
+      }
+      if (syncAfter) await this.#applyCameraEffects()`),
+    "toggleCamera",
+  );
+  // Said on its own as well: the sync is the LAST statement, after the block
+  // that releases the lock, so a press during a slow background start is not
+  // swallowed by a lock the sync still holds.
+  assert.ok(
+    firstAt("release", toggle, `this.#setCameraPending(false);`) <
+      firstAt(
+        "sync",
+        toggle,
+        `if (syncAfter) await this.#applyCameraEffects()`,
+      ),
+    "the sync after the release",
+  );
+  assert.ok(
+    toggle.endsWith(codeOf(`}if (syncAfter) await this.#applyCameraEffects()`)),
+    "nothing between the release and the sync, and nothing after it",
+  );
+  // The lock is dropped in two places only: its own toggle, and the leave.
+  assert.equal(countWired(STATE_CODE, `this.#cameraToggle = undefined;`), 2);
+  assert.equal(countWired(STATE_CODE, `this.#toggleCameraOnce()`), 1);
+});
+
+test("source pin (camera fx): a camera-on is refused, unmuted or published in a fixed order, and never unmutes a camera with no live background", () => {
+  assert.equal(
+    bodyOf(
+      `async #planCameraOn(room: Room): Promise<CameraOnPlan | undefined> {`,
+    ),
+    codeOf(`if (this.#cameraRepublishInFlight()) {
+        this.onErr(new Error(t\`Try again in a moment.\`));
+        return undefined;
+      }
+      const settings = this.#cameraEffectSettings();
+      const wantsBackground = this.#cameraEffects.wantsBackground(settings);
+      const existing = this.#publishedCameraTrack();
+
+      if (existing) {
+        if (this.#gateHeld()) {
+          this.onErr(new Error(t\`Try again in a moment.\`));
+          return undefined;
+        }
+        if (!wantsBackground || this.#cameraBackgroundHealthy(existing))
+          return { kind: "unmute", track: existing };
+        await this.#unpublishCameraForEffects(existing);
+        if (!this.#cameraOffAndIdle(room)) return undefined;
+      }
+      if (!wantsBackground) {
+        this.#cameraEffects.reset();
+        return { kind: "publish" };
+      }
+
+      await this.#cameraAttach.sync().catch(() => undefined);
+      if (!this.#cameraOffAndIdle(room)) return undefined;
+      this.#cameraEffects.reset();
+
+      this.#cameraEffects.prewarmBackgroundAssets();
+      const built = await this.#cameraEffects.prebuildBackground(settings);
+      if (built.kind === "ready")
+        return { kind: "publish", prebuilt: built.prebuilt };
+      if (built.kind === "not-wanted") return { kind: "publish" };
+
+      console.error(
+        "[rtc] camera not turned on: the background could not be prepared",
+        built.kind === "failed" ? built.error : built.kind,
+      );
+      if (this.room() === room) {
+        this.#setCameraBackgroundStatus("failed");
+        this.#setCameraEffectNotice("background-failed");
+      }
+      return undefined`),
+    "#planCameraOn",
+  );
+  // Re-read after each await on the way to a first publish.
+  assert.equal(
+    countWired(
+      STATE_CODE,
+      `if (!this.#cameraOffAndIdle(room)) return undefined;`,
+    ),
+    2,
+  );
+  assert.equal(
+    bodyOf(`#cameraOffAndIdle(room: Room): boolean {`),
+    codeOf(`return this.room() === room &&
+      !this.#publishedCameraTrack() &&
+      !this.#cameraRepublishInFlight()`),
+    "#cameraOffAndIdle",
+  );
+  assert.equal(
+    bodyOf(`#cameraBackgroundHealthy(track: LocalVideoTrack): boolean {`),
+    codeOf(`return this.#cameraEffects.occupant === "background" &&
+      this.#cameraEffects.isActive(track)`),
+    "#cameraBackgroundHealthy",
+  );
+  assert.equal(countWired(STATE_CODE, `this.#planCameraOn(`), 1);
+});
+
+test("source pin (camera fx): the camera-on plan is checked again, with nothing awaited, right before it is carried out", () => {
+  assert.equal(
+    bodyOf(`#cameraOnPlanHolds(room: Room, plan: CameraOnPlan): boolean {`),
+    codeOf(`if (this.room() !== room) return false;
+      if (this.#cameraRepublishInFlight()) return false;
+      const live = this.#publishedCameraTrack();
+      const wantsBackground = this.#cameraEffects.wantsBackground(
+        this.#cameraEffectSettings(),
+      );
+      if (plan.kind === "publish")
+        return !live && (!!plan.prebuilt || !wantsBackground);
+      if (live !== plan.track || this.#gateHeld()) return false;
+      return !wantsBackground || this.#cameraBackgroundHealthy(live)`),
+    "#cameraOnPlanHolds",
+  );
+  // From the plan to livekit: the re-check, then the call, no await between.
+  const enabling = bodyAfter(toggleCameraOnce(), `if (enabling) {`);
+  assert.ok(
+    enabling.startsWith(
+      codeOf(`const plan = await this.#planCameraOn(room);
+        if (!plan || !this.#cameraOnPlanHolds(room, plan)) {
+          if (this.room() === room) {
+            this.#cameraEffects.discardPrebuilt();
+            this.#setVideo(room.localParticipant.isCameraEnabled);
+          }
+          return false;
+        }
+        const prebuilt = plan.kind === "publish" ? plan.prebuilt : undefined;
+        reassert = true;
+        this.#cameraPublishingWith = prebuilt;
+        const { capture, publish } = this.#cameraCaptureOptions(
+          prebuilt?.processor,
+        );
+        const endHold = this.#webkitHoldForNewSender(room, Track.Source.Camera);
+        const pub = await room.localParticipant
+          .setCameraEnabled(true, capture, publish)
+          .finally(endHold);
+        let track =
+          pub?.videoTrack instanceof LocalVideoTrack
+            ? pub.videoTrack
+            : undefined;
+        if (this.room() !== room) return false;`),
+    ),
+    "the enabling branch, up to livekit's answer",
+  );
+  assert.equal(countWired(STATE_CODE, `this.#cameraOnPlanHolds(`), 1);
+  assert.equal(countWired(STATE_CODE, `.setCameraEnabled(true`), 1);
+});
+
+test("source pin (camera fx): the prebuilt background goes out with the first publish, and a failed adopt or a stray track turns the camera off", () => {
+  // livekit reads the processor from the capture options of a first publish.
+  assertWired(
+    "the capture options carry the processor",
+    `const capture: VideoCaptureOptions = {
+        deviceId: this.#settings.preferredVideoDevice,
+      };
+      if (processor) capture.processor = processor;`,
+  );
+  const enabling = bodyAfter(toggleCameraOnce(), `if (enabling) {`);
+  assert.ok(
+    enabling.endsWith(
+      codeOf(`if (this.room() !== room) return false;
+        if (plan.kind === "unmute" && track && track !== plan.track) {
+          const stray = track;
+          await this.#unpublishCameraForEffects(stray);
+          await this.#setCameraHold(stray, false).catch(() => undefined);
+          throw new Error(t\`Try again in a moment.\`);
+        }
+        if (prebuilt) {
+          if (!track) {
+            this.#cameraEffects.discardPrebuilt();
+          } else {
+            const adopted = this.#cameraEffects.adopt(track, prebuilt);
+            if (!adopted.ok) {
+              await this.#failCameraClosed(room, track, adopted.error);
+              track = undefined;
+            }
+          }
+        }
+        if (track) {
+          const wantsBackground = this.#cameraEffects.wantsBackground(
+            this.#cameraEffectSettings(),
+          );
+          this.#setCameraBackgroundStatus(
+            wantsBackground ? "initializing" : "idle",
+          );
+          this.#setCameraFaceFilterStatus(
+            !wantsBackground && this.#faceSettings() ? "initializing" : "idle",
+          );
+          syncAfter = true;
+        }`),
+    ),
+    "the enabling branch, after livekit's answer",
+  );
+  // Adopt first, and only then the failure path over the same track.
+  assert.ok(
+    firstAt("adopt", enabling, `this.#cameraEffects.adopt(track, prebuilt);`) <
+      firstAt(
+        "fail closed",
+        enabling,
+        `await this.#failCameraClosed(room, track, adopted.error);`,
+      ),
+    "adopt, then fail closed",
+  );
+  assert.equal(countWired(STATE_CODE, `this.#cameraEffects.adopt(`), 1);
+  assert.equal(countWired(STATE_CODE, `this.#failCameraClosed(`), 1);
+  // Mute first, then down, then the notice.
+  assert.equal(
+    bodyOf(
+      `async #failCameraClosed(room: Room, track: LocalVideoTrack, error: unknown) {`,
+    ),
+    codeOf(`console.error(
+        "[rtc] camera turned off: its background is not active",
+        error,
+      );
+      try {
+        await this.#muteCameraForEffects();
+      } catch (muteError) {
+        console.error("[rtc] camera mute failed", muteError);
+      }
+      try {
+        await this.#unpublishCameraForEffects(track);
+      } finally {
+        if (this.room() === room) {
+          this.#setCameraBackgroundStatus("failed");
+          this.#setCameraFaceFilterStatus("idle");
+          this.#setCameraEffectNotice("background-failed");
+        }
+      }`),
+    "#failCameraClosed",
+  );
+  // A publish that threw frees its prebuilt background, for its own call
+  // only: after a leave the controller holds the next call's.
+  assert.ok(
+    toggleCameraOnce().endsWith(
+      codeOf(`} catch (e) {
+        if (this.room() === room) this.#cameraEffects.discardPrebuilt();
+        this.#captureFailed(e, "camera");
+      } finally {
+        if (this.room() === room) this.#cameraPublishingWith = undefined;
+        if (reassert && this.room() === room) this.#reassertPublishGate();
+      }
+      return syncAfter`),
+    ),
+    "#toggleCameraOnce's catch and finally",
+  );
+});
+
+test("source pin (camera fx): no camera-on while livekit republishes the camera or the room is not connected", () => {
+  assert.equal(
+    bodyOf(`#cameraRepublishInFlight(): boolean {`),
+    codeOf(`if (this.room()?.state !== ConnectionState.Connected) return true;
+      const since = this.#cameraRepublishSince;
+      if (since === undefined) return false;
+      if (Date.now() - since <= CAMERA_REPUBLISH_WAIT_MS) return true;
+      this.#cameraRepublishSince = undefined;
+      return false`),
+    "#cameraRepublishInFlight",
+  );
+  // The mark is set by livekit's own unpublish, never by one this file
+  // issued, and cleared when the camera lands again; the same landing puts
+  // the early hold's listener on the track.
+  assertWired(
+    "the republish listeners",
+    `room.addListener("localTrackUnpublished", (pub) => {
+        if (pub.source !== Track.Source.Camera || !pub.track) return;
+        if (pub.track === this.#cameraOwnUnpublish) return;
+        this.#cameraRepublishSince = Date.now();
+      });
+      room.addListener("localTrackPublished", (pub) => {
+        if (pub.source !== Track.Source.Camera || !pub.track) return;
+        this.#cameraRepublishSince = undefined;
+        pub.track.off(TrackEvent.UpstreamResumed, this.#cameraUpstreamResumed);
+        pub.track.on(TrackEvent.UpstreamResumed, this.#cameraUpstreamResumed);
+      });`,
+  );
+  assert.equal(countWired(STATE_CODE, `this.#cameraRepublishSince = `), 4);
+  assert.equal(countWired(STATE_CODE, `this.#cameraRepublishInFlight()`), 3);
+});
+
+test("source pin (camera fx): the privacy hold is marked before it pauses, is checked on the wire, and is released only over an empty gate", () => {
+  const hold = bodyOf(
+    `async #setCameraHold(track: LocalVideoTrack, held: boolean): Promise<void> {`,
+  );
+  assert.equal(
+    hold,
+    codeOf(`if (held) {
+        this.#consentHeld.add(track);
+        await track.pauseUpstream();
+        if (track.isUpstreamPaused && upstreamOf(track.sender) !== "quiet") {
+          await track.resumeUpstream();
+          await track.pauseUpstream();
+        }
+        if (!track.isUpstreamPaused || upstreamOf(track.sender) !== "quiet")
+          throw new Error("camera upstream could not be paused");
+        return;
+      }
+      this.#consentHeld.delete(track);
+      if (this.#gateHeld()) return;
+      if (this.#publishedCameraTrack() !== track || track.isMuted) return;
+      await track.resumeUpstream()`),
+    "#setCameraHold",
+  );
+  // The mark goes in FIRST, synchronously: the publish gate's sweep reads it
+  // to skip this camera, and a sweep can run during the awaited pause.
+  assert.ok(
+    hold.startsWith(
+      codeOf(`if (held) {
+        this.#consentHeld.add(track);
+        await track.pauseUpstream();`),
+    ),
+    "added before the pause",
+  );
+  assert.ok(
+    firstAt("the add", hold, `this.#consentHeld.add(track);`) <
+      firstAt("the pause", hold, `await track.pauseUpstream();`),
+    "added before the pause",
+  );
+  assert.equal(countWired(hold, `this.#consentHeld.add(track);`), 1);
+  assert.equal(countWired(hold, `await track.pauseUpstream();`), 2);
+  assert.equal(countWired(hold, `await track.resumeUpstream();`), 2);
+  // The sweep's side of the same set.
+  assert.equal(
+    countWired(STATE_CODE, `(t) => this.#consentHeld.has(t)`),
+    1,
+    "the gate's sweep skips what the set holds",
+  );
+});
+
+test("source pin (camera fx): the attach driver gets the muted-or-gated block, the op guard and deps that act only for the current driver", () => {
+  assert.equal(
+    bodyOf(
+      `#newCameraAttach(): CameraAttachDriver<
+        LocalVideoTrack,
+        CameraEffectSettings
+      > {`,
+    ),
+    codeOf(`const current = (): boolean => this.#cameraAttach === driver;
+      const driver = new CameraAttachDriver<
+        LocalVideoTrack,
+        CameraEffectSettings
+      >({
+        gateHeld: () => this.#cameraSenderOpsBlocked(),
+        track: () => (current() ? this.#publishedCameraTrack() : undefined),
+        plan: async (track) => {
+          const snapshot = this.#cameraEffectSettings();
+          const plan = await this.#cameraEffects.plan(track, snapshot);
+          if (!cameraNeedsHold(plan) && this.#cameraEarlyHold.delete(track))
+            await this.#setCameraHold(track, false).catch(() => undefined);
+          return { plan, snapshot };
+        },
+        apply: (track, snapshot, guard) =>
+          this.#cameraEffects.apply(track, snapshot, guard),
+        setHold: async (track, held) => {
+          if (current()) await this.#setCameraHold(track, held);
+        },
+        muteCamera: async () => {
+          if (current()) await this.#muteCameraForEffects();
+        },
+        teardown: async (track) => {
+          if (current()) await this.#unpublishCameraForEffects(track);
+        },
+      });
+      return driver`),
+    "#newCameraAttach",
+  );
+  assert.equal(
+    bodyOf(`#cameraSenderOpsBlocked(): boolean {`),
+    codeOf(
+      `return this.#gateHeld() || !!this.#publishedCameraTrack()?.isMuted`,
+    ),
+    "#cameraSenderOpsBlocked",
+  );
+  // One driver per call: built with the object, rebuilt on leave, nowhere
+  // else. And the controller's sender operations are reached through the
+  // driver alone: one `apply`, with the guard, and never a detach.
+  assert.equal(countWired(STATE_CODE, `new CameraAttachDriver<`), 1);
+  assert.equal(countWired(STATE_CODE, `this.#newCameraAttach()`), 2);
+  assert.equal(countWired(STATE_CODE, `#cameraEffects.apply(`), 1);
+  assert.equal(countWired(STATE_CODE, `#cameraEffects.detach(`), 0);
+  assert.equal(countWired(STATE_CODE, `onImageMissing =`), 0);
+});
+
+test("source pin (camera fx): a camera that starts sending without a live background is held at once, at its sender's birth and at a resume", () => {
+  assert.equal(
+    bodyOf(`#holdUnguardedCamera(room: Room, track: LocalTrack): void {`),
+    codeOf(`if (this.room() !== room) return;
+      if (!(track instanceof LocalVideoTrack)) return;
+      if (track.source !== Track.Source.Camera || track.isMuted) return;
+      if (!this.#cameraEffects.wantsBackground(this.#cameraEffectSettings()))
+        return;
+      if (this.#cameraBackgroundLiveOn(track)) return;
+      this.#cameraEarlyHold.add(track);
+      void this.#setCameraHold(track, true).catch((error) =>
+        console.error("[rtc] camera could not be held at birth", error),
+      );
+      void this.#applyCameraEffects()`),
+    "#holdUnguardedCamera",
+  );
+  assert.equal(
+    bodyOf(`#cameraBackgroundLiveOn(track: LocalVideoTrack): boolean {`),
+    codeOf(`if (!this.#cameraEffects.isActive(track)) return false;
+      if (this.#cameraEffects.occupant === "background") return true;
+      const prebuilt = this.#cameraPublishingWith;
+      return !!prebuilt && track.getProcessor() === prebuilt.processor`),
+    "#cameraBackgroundLiveOn",
+  );
+  assert.equal(
+    bodyOf(`#cameraUpstreamResumed = (track: LocalTrack): void => {`),
+    codeOf(`const room = this.room();
+      if (room) this.#holdUnguardedCamera(room, track)`),
+    "#cameraUpstreamResumed",
+  );
+  // The two callers: the sender's birth and livekit's own resume.
+  assert.equal(
+    countWired(STATE_CODE, `this.#holdUnguardedCamera(room, track);`),
+    2,
+  );
+  assert.equal(countWired(STATE_CODE, `this.#cameraUpstreamResumed);`), 2);
+  // The early hold is handed over inside the driver's own pass, nowhere else.
+  assert.equal(countWired(STATE_CODE, `this.#cameraEarlyHold.add(`), 1);
+  assert.equal(countWired(STATE_CODE, `this.#cameraEarlyHold.delete(`), 1);
+});
+
+test("source pin (camera fx): the sync is fired at the gate's 1->0 edge and at the camera's landing, over an empty gate only, and retries a deferral once", () => {
+  assert.equal(
+    bodyOf(
+      `#syncCameraEffectsIfLanded(room: Room, pub: { source: Track.Source }) {`,
+    ),
+    codeOf(`if (pub.source !== Track.Source.Camera) return;
+      this.#syncCameraEffectsOverEmptyGate(room)`),
+    "#syncCameraEffectsIfLanded",
+  );
+  assert.equal(
+    bodyOf(`#syncCameraEffectsOverEmptyGate(room: Room) {`),
+    codeOf(`if (this.room() !== room || this.#gateHeld()) return;
+      void this.#applyCameraEffects()`),
+    "#syncCameraEffectsOverEmptyGate",
+  );
+  // The landing: beside the mic's, on all three ways out of the landing sweep.
+  assert.equal(
+    countWired(
+      STATE_CODE,
+      `this.#syncMicPipelineIfLanded(room, pub);
+      this.#syncCameraEffectsIfLanded(room, pub);`,
+    ),
+    3,
+  );
+  assert.equal(
+    countWired(STATE_CODE, `#syncCameraEffectsIfLanded(room, pub);`),
+    3,
+  );
+  // The gate's edge: beside the mic's re-sync, and the helper's other caller.
+  assertWired(
+    "the 1->0 edge",
+    `if (this.#publishGate.size === 0 && this.room() === room)
+        this.#syncMicPipeline(room, this.#micPipelineWants());
+      this.#syncCameraEffectsOverEmptyGate(room);`,
+  );
+  assert.equal(
+    countWired(STATE_CODE, `this.#syncCameraEffectsOverEmptyGate(room);`),
+    2,
+  );
+  // One retry of a deferral, only once nothing blocks a sender operation,
+  // and nothing an old call's driver reports is acted on.
+  assert.ok(
+    bodyOf(`async #applyCameraEffects(): Promise<void> {`).startsWith(
+      codeOf(`const cameraWasOn =
+          this.room()?.localParticipant.isCameraEnabled ?? false;
+        const driver = this.#cameraAttach;
+        try {
+          let outcome = await driver.sync();
+          if (outcome.kind === "deferred" && !this.#cameraSenderOpsBlocked())
+            outcome = await driver.sync();
+          if (driver !== this.#cameraAttach) return;
+          if (outcome.kind === "failed-closed" && !outcome.muted) {
+            const failed = outcome;
+            outcome = await this.#muteCameraForEffects().then(
+              () => driver.sync(),
+              () => failed,
+            );
+          }
+          if (driver !== this.#cameraAttach) return;
+          const track = this.#publishedCameraTrack();`),
+    ),
+    "#applyCameraEffects, up to the outcome",
+  );
+  assert.equal(
+    countWired(STATE_CODE, `if (driver !== this.#cameraAttach) return;`),
+    2,
+  );
+});
+
+test("source pin (camera fx): a failed background takes the camera down by unpublishing it, camera off only mutes, and a leave starts the next call clean", () => {
+  assert.equal(
+    bodyOf(
+      `async #unpublishCameraForEffects(track: LocalVideoTrack): Promise<void> {`,
+    ),
+    codeOf(`this.#cameraOwnUnpublish = track;
+      try {
+        await this.room()?.localParticipant.unpublishTrack(track, true);
+      } finally {
+        if (this.#cameraOwnUnpublish === track)
+          this.#cameraOwnUnpublish = undefined;
+        this.#cameraEffects.reset();
+        this.#setCameraFaceFilterDegraded(0);
+      }`),
+    "#unpublishCameraForEffects",
+  );
+  assert.equal(
+    bodyOf(`async #muteCameraForEffects(): Promise<void> {`),
+    codeOf(`const room = this.room();
+      if (!room) return;
+      await room.localParticipant.setCameraEnabled(false);
+      this.#cameraEffects.onTrackMuted();
+      if (this.room() === room)
+        this.#setVideo(room.localParticipant.isCameraEnabled)`),
+    "#muteCameraForEffects",
+  );
+  // Camera off keeps the track and its processor: timers only, no reset.
+  assert.equal(
+    countWired(
+      toggleCameraOnce(),
+      `} else {
+        await room.localParticipant.setCameraEnabled(false);
+        this.#cameraEffects.onTrackMuted();
+        this.#setCameraBackgroundStatus("idle");
+        this.#setCameraFaceFilterStatus("idle");
+      }`,
+    ),
+    1,
+  );
+  assert.equal(countWired(STATE_CODE, `#cameraEffects.onTrackMuted();`), 2);
+  // `reset()` is for a camera that is gone: the leave, the two first-publish
+  // routes of `#planCameraOn`, and the unpublish above.
+  assert.equal(countWired(STATE_CODE, `#cameraEffects.reset();`), 4);
+  // The leave: a fresh driver (a pass stuck on a livekit operation dies with
+  // the old one), no toggle lock, no republish mark, no remembered failure.
+  assertWired(
+    "the leave",
+    `this.#cameraEffects.reset();
+      this.#setCameraBackgroundStatus("idle");
+      this.#setCameraFaceFilterStatus("idle");
+      this.#setCameraFaceFilterDegraded(0);
+      this.#setCameraEffectNotice(undefined);
+      this.#cameraAttach = this.#newCameraAttach();
+      this.#cameraToggle = undefined;
+      this.#setCameraPending(false);
+      this.#cameraPublishingWith = undefined;
+      this.#cameraOwnUnpublish = undefined;
+      this.#cameraRepublishSince = undefined;
+      this.#cameraEffectFailedWith.clear();`,
+  );
+});
+
+// --- The camera effects controller's sender operations ----------------------
+//
+// `cameraEffects.ts` is the one file that calls `setProcessor` and
+// `stopProcessor` on the camera, and `node --test` cannot load it either
+// (livekit, the track processors, Capacitor). The attach driver's own spec
+// proves the op guard it hands over answers correctly; these pins hold the
+// controller to ASKING it, with nothing awaited in between, in front of every
+// sender operation an `apply` can reach, and to the rules the wiring above
+// leans on: what counts as an active occupant, the one "background wanted"
+// rule, and a background failure that never removes a processor (that would
+// put the plain camera track on a live sender). `rtc-mutations.py`'s
+// `camera-ctl-*` entries break each line. The limits are the ones at the top
+// of this file: a pin proves a statement is present and in its place, never
+// what it does at runtime.
+
+const CTL_SOURCE = readFileSync(
+  new URL("./cameraEffects.ts", import.meta.url),
+  "utf8",
+);
+const CTL_CODE = codeOf(CTL_SOURCE);
+
+/** The ONE body `head` opens in `code`, cameraEffects.ts or a slice of it. */
+function ctlBodyIn(code: string, head: string): string {
+  const bodies = bodiesAfter(code, head);
+  assert.equal(
+    bodies.length,
+    1,
+    `cameraEffects.ts must contain this exactly once, ` +
+      `found ${bodies.length}:\n${codeOf(head)}`,
+  );
+  return bodies[0];
+}
+
+/** `#applyInner`'s body: where an `apply` decides what to touch. */
+function ctlApplyInner(): string {
+  return ctlBodyIn(
+    CTL_CODE,
+    `async #applyInner(
+      track: LocalVideoTrack,
+      settings: CameraEffectSettings,
+      opGuard: CameraOpGuard | undefined,
+    ): Promise<CameraApplyResult> {`,
+  );
+}
+
+/** `#ensureBackground`'s body. */
+function ctlEnsureBackground(): string {
+  return ctlBodyIn(
+    CTL_CODE,
+    `async #ensureBackground(
+      track: LocalVideoTrack,
+      myGen: number,
+      settings: CameraEffectSettings,
+      opGuard?: CameraOpGuard,
+    ) {`,
+  );
+}
+
+/** Every `setProcessor(` / `stopProcessor(` call in `code`, in order. */
+function senderOpsIn(code: string): { op: string; at: number }[] {
+  return [...code.matchAll(/(?<![\w$])(setProcessor|stopProcessor)\(/g)].map(
+    (m) => ({ op: m[1], at: m.index }),
+  );
+}
+
+test("source pin (camera ctl): cameraEffects.ts lexes in sync, and every sender operation outside detach has its own guard call in front of it, nothing awaited between", () => {
+  assertLexesInSync("cameraEffects.ts", CTL_SOURCE, CTL_CODE, 30);
+
+  const ops = senderOpsIn(CTL_CODE);
+  assert.deepEqual(
+    ops.map(({ op }) => op),
+    [
+      "setProcessor", // #ensureFace
+      "stopProcessor", // #teardownFace
+      "setProcessor", // #ensureBackground
+      "stopProcessor", // #teardownBackground
+      "stopProcessor", // #applyBrightness: a hardware control took over
+      "stopProcessor", // #applyBrightness: back to neutral
+      "setProcessor", // #applyBrightness: the canvas fallback
+      "stopProcessor", // detach
+    ],
+    "the sender operations, in file order",
+  );
+
+  const detachHead = codeOf(`async detach(track: LocalVideoTrack) {`);
+  const detachAt = CTL_CODE.indexOf(detachHead);
+  assert.ok(detachAt !== -1, "detach");
+  assert.equal(CTL_CODE.indexOf(detachHead, detachAt + 1), -1, "one detach");
+  const detachEnd = closerOf(CTL_CODE, detachAt + detachHead.length - 1);
+
+  const ask = codeOf(`this.#assertMayOp(opGuard)`);
+  const awaited = codeOf(`await track.`);
+  const asks = new Set<number>();
+  let unguarded = 0;
+  for (const { op, at } of ops) {
+    assert.equal(
+      CTL_CODE.slice(at - awaited.length, at),
+      awaited,
+      `${op} is awaited on the track`,
+    );
+    if (at > detachAt && at < detachEnd) {
+      unguarded++;
+      continue;
+    }
+    // The nearest guard call before the operation is ITS guard call only if
+    // nothing was awaited since (the gate can fill during any await) and no
+    // other async function starts in between.
+    const askAt = CTL_CODE.lastIndexOf(ask, at);
+    assert.ok(askAt !== -1, `no guard call before this ${op}`);
+    const between = CTL_CODE.slice(askAt + ask.length, at - awaited.length);
+    assert.ok(
+      !/await|async/.test(between),
+      `between the guard call and this ${op}: ${between}`,
+    );
+    asks.add(askAt);
+  }
+  // Eight sender operations: seven an `apply` can reach, each behind a guard
+  // call of its own, and the one in detach, which the in-call wiring never
+  // calls (`#cameraEffects.detach(` is pinned at 0 above).
+  assert.equal(unguarded, 1, "detach's own stopProcessor");
+  assert.equal(asks.size, 7, "one guard call per guarded operation");
+  assert.equal(countWired(CTL_CODE, ask), 7, "the guard calls");
+  assert.equal(
+    CTL_CODE.split("#assertMayOp(").length - 1,
+    8,
+    "seven calls with the op guard, and the method itself",
+  );
+});
+
+test("source pin (camera ctl): the guard refuses by throwing, apply hands it to every helper that touches the sender, and a refusal is reported as one", () => {
+  assert.equal(
+    ctlBodyIn(CTL_CODE, `#assertMayOp(opGuard: CameraOpGuard | undefined) {`),
+    codeOf(`if (opGuard && !opGuard.maySenderOp()) throw GATE_REFUSED`),
+    "#assertMayOp",
+  );
+  assert.equal(
+    ctlBodyIn(
+      CTL_CODE,
+      `apply(
+        track: LocalVideoTrack,
+        settings: CameraEffectSettings,
+        opGuard?: CameraOpGuard,
+      ): Promise<CameraApplyResult> {`,
+    ),
+    codeOf(`const result = this.#chain
+        .catch(() => {})
+        .then(() => this.#applyInner(track, settings, opGuard));
+      this.#chain = result.catch(() => {});
+      return result`),
+    "apply",
+  );
+  assert.equal(countWired(CTL_CODE, `this.#applyInner(`), 1);
+
+  const inner = ctlApplyInner();
+  assert.equal(
+    countWired(
+      inner,
+      `await this.#ensureBackground(track, myGen, settings, opGuard);`,
+    ),
+    1,
+  );
+  assert.equal(
+    countWired(
+      inner,
+      `await this.#ensureFace(track, myGen, settings, hw, opGuard);`,
+    ),
+    1,
+  );
+  assert.equal(
+    countWired(inner, `await this.#teardownBackground(track, opGuard);`),
+    2,
+  );
+  assert.equal(
+    countWired(inner, `await this.#teardownFace(track, opGuard);`),
+    2,
+  );
+  assert.equal(
+    argumentsOf(ctlBodyIn(inner, `await this.#applyBrightness(`)).at(-1),
+    "opGuard",
+    "the brightness pass gets the guard too",
+  );
+  // No other caller: a helper called without the guard is not restricted.
+  // The two teardowns' third calls are detach's.
+  assert.equal(countWired(CTL_CODE, `this.#ensureBackground(`), 1);
+  assert.equal(countWired(CTL_CODE, `this.#ensureFace(`), 1);
+  assert.equal(countWired(CTL_CODE, `this.#applyBrightness(`), 1);
+  assert.equal(countWired(CTL_CODE, `this.#teardownBackground(`), 3);
+  assert.equal(countWired(CTL_CODE, `this.#teardownFace(`), 3);
+  const detach = ctlBodyIn(CTL_CODE, `async detach(track: LocalVideoTrack) {`);
+  assert.equal(countWired(detach, `await this.#teardownBackground(track);`), 1);
+  assert.equal(countWired(detach, `await this.#teardownFace(track);`), 1);
+
+  // A refused operation is "gate", which the driver defers on (its hold
+  // stays), never a success.
+  assert.equal(
+    countWired(
+      inner,
+      `if (gated) return { ok: false, failed: "gate", error: undefined };`,
+    ),
+    1,
+  );
+});
+
+test("source pin (camera ctl): a background and a face filter are attached only after the guard is asked", () => {
+  // The background: asked directly before the attach, and nothing is stopped
+  // between building the guarded processor and handing it to livekit.
+  assert.equal(
+    countWired(
+      ctlEnsureBackground(),
+      `const guard = guardedBackground(resolved.target);
+      try {
+        this.#assertMayOp(opGuard);
+        await track.setProcessor(guard);
+      } catch (e) {`,
+    ),
+    1,
+    "#ensureBackground's attach",
+  );
+  // The face filter: asked before the processor is built or referenced, so a
+  // refusal leaves nothing behind; a live filter is only re-configured.
+  assert.equal(
+    countWired(
+      ctlBodyIn(
+        CTL_CODE,
+        `async #ensureFace(
+          track: LocalVideoTrack,
+          myGen: number,
+          settings: CameraEffectSettings,
+          hw: boolean,
+          opGuard?: CameraOpGuard,
+        ) {`,
+      ),
+      `if (this.#face) {
+        this.#face.setConfig(cfg);
+        return;
+      }
+
+      this.#assertMayOp(opGuard);
+      const proc = new FaceFilterProcessor(cfg);
+      this.#facePending = proc;
+      proc.onStatus = (s) => {
+        if (this.#face === proc || this.#facePending === proc) {
+          this.onFaceFilterStatus?.(s);
+        }
+      };
+      try {
+        await track.setProcessor(proc);
+      } catch (e) {`,
+    ),
+    1,
+    "#ensureFace's attach",
+  );
+});
+
+test("source pin (camera ctl): a background and a face filter are removed only after the guard is asked", () => {
+  assert.equal(
+    ctlBodyIn(
+      CTL_CODE,
+      `async #teardownBackground(track: LocalVideoTrack, opGuard?: CameraOpGuard) {`,
+    ),
+    codeOf(`if (this.#bg) this.#assertMayOp(opGuard);
+      this.#stopBgAnimation();
+      if (this.#bg) {
+        try {
+          await track.stopProcessor();
+        } catch {}
+        this.#bg = undefined;
+      }
+      this.#revokeImg?.();
+      this.#revokeImg = undefined`),
+    "#teardownBackground",
+  );
+  assert.equal(
+    ctlBodyIn(
+      CTL_CODE,
+      `async #teardownFace(track: LocalVideoTrack, opGuard?: CameraOpGuard) {`,
+    ),
+    codeOf(`if (this.#face) {
+        this.#assertMayOp(opGuard);
+        this.#face.onStatus = undefined;
+        try {
+          await track.stopProcessor();
+        } catch {}
+        this.#face = undefined;
+      }`),
+    "#teardownFace",
+  );
+});
+
+test("source pin (camera ctl): the brightness pass asks the guard before each of its three sender operations, and issues none when told not to touch the slot", () => {
+  assert.equal(
+    ctlBodyIn(
+      CTL_CODE,
+      `async #applyBrightness(
+        track: LocalVideoTrack,
+        brightness: number,
+        hw: boolean,
+        myGen: number,
+        slotOps: boolean,
+        opGuard?: CameraOpGuard,
+      ) {`,
+    ),
+    codeOf(`const source = this.#rawSource(track);
+      this.#noteHwSupport(hw);
+
+      if (hw) {
+        if (this.#brightness && slotOps) {
+          this.#assertMayOp(opGuard);
+          try {
+            await track.stopProcessor();
+          } catch {}
+          this.#brightness = undefined;
+        }
+        await this.#applyHardwareBrightness(source, brightness);
+        return;
+      }
+
+      if (this.#bg) return;
+      if (this.#face) return;
+      if (!slotOps) return;
+
+      if (brightness === 100) {
+        if (this.#brightness) {
+          this.#assertMayOp(opGuard);
+          try {
+            await track.stopProcessor();
+          } catch {}
+          this.#brightness = undefined;
+        }
+        return;
+      }
+
+      if (this.#brightness) {
+        this.#brightness.setBrightness(brightness);
+      } else {
+        const proc = new BrightnessVideoProcessor(brightness);
+        try {
+          this.#assertMayOp(opGuard);
+          await track.setProcessor(proc);
+        } catch (e) {
+          await proc.destroy().catch(() => {});
+          throw e;
+        }
+        if (myGen !== this.#gen) {
+          await proc.destroy().catch(() => {});
+          return;
+        }
+        this.#brightness = proc;
+      }`),
+    "#applyBrightness",
+  );
+});
+
+test("source pin (camera ctl): an occupant is active only while attached, not failed and, unless the camera is muted, producing frames", () => {
+  assert.equal(
+    ctlBodyIn(CTL_CODE, `isActive(track: LocalVideoTrack): boolean {`),
+    codeOf(`const proc = this.#slotProcessor(track);
+      if (!proc) return false;
+      if ((track.getProcessor() as unknown) !== proc) return false;
+      if (proc instanceof CameraProcessorGuard && proc.failed) return false;
+      if (track.isMuted) return true;
+      return proc.processedTrack?.readyState === "live"`),
+    "isActive",
+  );
+});
+
+test("source pin (camera ctl): one rule says whether a background is wanted, and plan, apply and the prebuild all go through it", () => {
+  assert.equal(
+    ctlBodyIn(
+      CTL_CODE,
+      `wantsBackground(settings: CameraEffectSettings): boolean {`,
+    ),
+    codeOf(`const noImageChosen =
+        settings.backgroundMode === "image" && !settings.backgroundImageId;
+      return (
+        settings.backgroundMode !== "none" &&
+        !noImageChosen &&
+        cameraBackgroundSupported()
+      )`),
+    "wantsBackground",
+  );
+  // The wanted occupant (plan and apply both read it) takes the mode from
+  // the rule, never straight from the settings.
+  assert.equal(
+    countWired(
+      CTL_CODE,
+      `backgroundMode: this.wantsBackground(settings)
+        ? settings.backgroundMode
+        : "none",`,
+    ),
+    1,
+    "#wantedOccupant",
+  );
+  // An image store that cannot be read plans as a background that does not
+  // resolve, never as "show the camera".
+  assert.equal(
+    countWired(
+      CTL_CODE,
+      `} catch {
+        if (this.wantsBackground(settings)) {
+          wanted = "background";
+          backgroundUnresolved = true;
+        }
+      }`,
+    ),
+    1,
+    "#planInner's catch",
+  );
+  assert.equal(
+    countWired(
+      CTL_CODE,
+      `if (!this.wantsBackground(settings)) return { kind: "not-wanted" };`,
+    ),
+    1,
+    "prebuildBackground",
+  );
+  assert.equal(
+    countWired(
+      ctlApplyInner(),
+      `let stage: "background" | "face" | "brightness" = this.wantsBackground(
+        settings,
+      )
+        ? "background"
+        : "brightness";`,
+    ),
+    1,
+    "#applyInner's first reading",
+  );
+  assert.equal(countWired(CTL_CODE, `this.wantsBackground(`), 4);
+});
+
+test("source pin (camera ctl): a background failure is reported and removes nothing, and the brightness pass after it leaves the slot alone", () => {
+  const inner = ctlApplyInner();
+  // The arm itself: record the failure (or the refusal) and go on. No
+  // stopProcessor, no teardown, no detach.
+  assert.equal(
+    countWired(
+      inner,
+      `if (occupant === "background") {
+        try {
+          await this.#ensureBackground(track, myGen, settings, opGuard);
+        } catch (error) {
+          if (error === GATE_REFUSED) gated = true;
+          else failure = { failed: "background", error };
+        }
+      } else if (occupant === "face") {`,
+    ),
+    1,
+    "the background arm",
+  );
+  // Nothing in `#applyInner` touches the sender directly, the background's
+  // own helper only ever attaches, and no path calls detach.
+  assert.deepEqual(senderOpsIn(inner), []);
+  const background = ctlEnsureBackground();
+  assert.deepEqual(
+    senderOpsIn(background).map(({ op }) => op),
+    ["setProcessor"],
+  );
+  assert.equal(countWired(background, `this.#teardownBackground(`), 0);
+  assert.equal(countWired(background, `this.#teardownFace(`), 0);
+  assert.equal(countWired(CTL_CODE, `.detach(`), 0);
+  // After a background failure (or a refusal) the brightness pass may not
+  // attach or remove the canvas fallback: that is a sender operation too.
+  assert.deepEqual(
+    argumentsOf(ctlBodyIn(inner, `await this.#applyBrightness(`)),
+    [
+      "track",
+      "settings.brightness",
+      "hw",
+      "myGen",
+      codeOf(`!gated && failure?.failed !== "background"`),
+      "opGuard",
+    ],
+  );
+  // A background that is attached but not active is a failure as well.
+  assert.equal(
+    countWired(
+      inner,
+      `if (
+        !failure &&
+        !gated &&
+        occupant === "background" &&
+        !this.isActive(track)
+      ) {
+        failure = {
+          failed: "background",`,
+    ),
+    1,
+    "not active after the attach",
+  );
+  // And it outranks a refusal: the picture is not protected.
+  assert.ok(
+    firstAt(
+      "the background failure",
+      inner,
+      `if (failure?.failed === "background") return { ok: false, ...failure };`,
+    ) <
+      firstAt(
+        "the refusal",
+        inner,
+        `if (gated) return { ok: false, failed: "gate", error: undefined };`,
+      ),
+    "a background failure is returned before a refusal",
+  );
+});

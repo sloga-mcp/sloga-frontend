@@ -245,21 +245,34 @@
  * held gate or on `op === "repause"` and this carries neither, but it is a
  * mis-labelled report rather than a designed one.
  *
- * 🔴 AND THE ONE PAUSE THE `resume` ARM MUST NOT UNDO: the screen-share
- * CONSENT pause. `state.tsx` pauses a freshly published screen share while
- * its consent modal is open, and that is the only non-gate pause ever placed
- * on a publication the gate also sweeps. An empty-gate sweep that resumed it
- * would put the share on the wire BEFORE the user answered — and every
- * `local_confirm` press produces exactly that 1→0 edge. So a publication
- * flagged {@link GatedPublication.consentHeld} is SKIPPED by the `resume`
- * arm (`null`, "not this sweep's promise"; the pause stays in place) and by
- * nothing else: under a HELD gate it is paused and repaused like any other,
- * because the gate's own invariant does not care why a sender is quiet. The
- * flag is keyed by the `LocalTrack` object in `state.tsx`, not by name — a
+ * 🔴 AND THE PAUSES THE `resume` ARM MUST NOT UNDO. Two owners in `state.tsx`
+ * place a non-gate pause on a publication the gate also sweeps, and they are
+ * the only two:
+ *
+ *  - the screen-share CONSENT pause. A freshly published screen share is
+ *    paused while its consent modal is open. An empty-gate sweep that resumed
+ *    it would put the share on the wire BEFORE the user answered — and every
+ *    `local_confirm` press produces exactly that 1→0 edge.
+ *  - the camera PRIVACY hold. A camera whose wanted background processor is
+ *    not yet verifiably active is paused by the camera attach driver (see the
+ *    header of `cameraAttachPolicy.ts`). An empty-gate sweep that resumed it
+ *    would send the raw camera picture behind a background the user asked
+ *    for.
+ *
+ * So a publication flagged {@link GatedPublication.consentHeld} is SKIPPED by
+ * the `resume` arm (`null`, "not this sweep's promise"; the pause stays in
+ * place) and by nothing else: under a HELD gate it is paused and repaused like
+ * any other, because the gate's own invariant does not care why a sender is
+ * quiet. The flag carries the first owner's name; both owners set it the same
+ * way. It is keyed by the `LocalTrack` object in `state.tsx`, not by name — a
  * republish (the E2EE flip the same press causes) lands the SAME track under
  * a NEW `trackSid`, so a per-name hold would be re-owned under a name it
- * never saw. The consent callback clears the hold, and the next empty-gate
- * sweep — or the callback's own direct resume — is what puts the share live.
+ * never saw. Each owner clears its own hold. For the share it is the consent
+ * callback, and the next empty-gate sweep — or the callback's own direct
+ * resume — is what puts the share live. For the camera it is the attach
+ * driver, once the background is active or the camera has been muted because
+ * it could not be made active; its release resumes the camera only while the
+ * gate is empty, and otherwise leaves that to the next empty-gate sweep.
  *
  * WHY THE POST-CONDITION IS MANDATORY, not defensive. Two clauses of
  * `docs/e2ee-media-mls-plan.md` are unqualified absolutes — §1.4: a desynced
@@ -352,15 +365,17 @@ export interface GatedPublication {
   pauseUpstream(): Promise<void>;
   resumeUpstream(): Promise<void>;
   /**
-   * TRUE while this publication is a screen share whose consent modal has not
-   * been answered. `state.tsx` keys it by the `LocalTrack` object (which
-   * survives a republish; a `trackSid` does not), so a republished share
-   * reads held under its new name. The `resume` arm — and ONLY the `resume`
-   * arm — leaves such a publication paused; under a held gate it is swept
-   * like any other. OPTIONAL and read `=== true`: an adapter that omits it
-   * is a publication the gate may resume, which is today's behaviour for
-   * every microphone and camera, and for a share whose consent was never
-   * asked.
+   * TRUE while this publication carries a pause that is not the gate's to
+   * lift: a screen share whose consent modal has not been answered, or a
+   * camera under the privacy hold (a wanted background processor that is not
+   * yet active; see `cameraAttachPolicy.ts`). `state.tsx` keys it by the
+   * `LocalTrack` object (which survives a republish; a `trackSid` does not),
+   * so a republished share reads held under its new name. The `resume` arm —
+   * and ONLY the `resume` arm — leaves such a publication paused; under a
+   * held gate it is swept like any other. OPTIONAL and read `=== true`: an
+   * adapter that omits it is a publication the gate may resume, which is the
+   * behaviour for every microphone, for a camera with no hold, and for a
+   * share whose consent was never asked.
    */
   readonly consentHeld?: boolean;
 }
@@ -606,9 +621,12 @@ async function runOne(
         // resume early-returns and the track is muted upstream for the rest of
         // the call. Only a `setMediaStreamTrack` (a device switch) recovers it.
         //
-        // Except a screen share whose consent is still pending: that pause is
-        // not the gate's to undo, and resuming it would stream the share
-        // before the modal is answered. `null` is the existing "not this
+        // Except a publication paused for a reason that is not the gate's: a
+        // screen share whose consent is still pending, or a camera whose
+        // wanted background is not yet active. That pause is not the gate's
+        // to undo, and resuming it would stream the share before the modal
+        // is answered, or the raw camera picture behind the background the
+        // user asked for. `null` is the existing "not this
         // sweep's promise" verdict — nothing is issued, nothing is reported,
         // the pause stays in place — and the flag is track-keyed upstream so
         // it survives the republish that precedes this very edge. Sits ABOVE

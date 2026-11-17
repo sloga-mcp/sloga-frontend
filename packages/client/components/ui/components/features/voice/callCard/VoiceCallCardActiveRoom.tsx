@@ -28,6 +28,7 @@ import {
   liveVideoCount,
   selectCallTiles,
 } from "./callTileSelection";
+import { CameraEffectNotice } from "./CameraEffectNotice";
 import { ParticipantTile, tile } from "./ParticipantTile";
 import { VoiceCallAudioBlockedBanner } from "./VoiceCallAudioBlockedBanner";
 import { VoiceCallCardActions } from "./VoiceCallCardActions";
@@ -68,6 +69,11 @@ export function VoiceCallCardActiveRoom() {
         <VoiceCallAudioBlockedBanner />
         <VoiceCallRecordingBanner />
         <VoiceCallWhisperBanner />
+        {/* A camera effect that could not start. In this stack because it is
+            drawn in fullscreen and theater mode too, where a snackbar (the
+            floating layer) is not. Last: it is the one notice here that can
+            be dismissed, so the others keep their places when it goes. */}
+        <CameraEffectNotice />
       </TopBanners>
       <VoiceCallRosterPanel />
       {/* The transcript panel is NOT here — it lives in

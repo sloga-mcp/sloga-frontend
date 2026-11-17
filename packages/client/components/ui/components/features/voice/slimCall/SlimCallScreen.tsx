@@ -27,6 +27,7 @@ import { type CameraDevice, cameraFlipTarget } from "@revolt/rtc/cameraFlip";
 import { Button, IconButton } from "@revolt/ui/components/design";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { CameraEffectNotice } from "../callCard/CameraEffectNotice";
 import { ParticipantTile } from "../callCard/ParticipantTile";
 import { VoiceCallAudioBlockedBanner } from "../callCard/VoiceCallAudioBlockedBanner";
 import {
@@ -171,6 +172,10 @@ function CallScreen() {
           <VoiceCallAudioBlockedBanner />
           <VoiceCallRecordingBanner />
           <VoiceCallWhisperBanner />
+          {/* Last, so the notices above keep their places when it comes and
+              goes. Here and not in a snackbar: this is the one place a call
+              on this screen is sure to show it. */}
+          <CameraEffectNotice />
         </Notices>
       </Top>
       <Stage video={video()}>
@@ -701,7 +706,10 @@ function Controls() {
               : t`Start camera`
             : t`Coming soon! 👀`
         }
-        isDisabled={!enableVideo}
+        // Off while a press is still being carried out (a background effect
+        // can take seconds to start): a second press would only queue the
+        // opposite of the first.
+        isDisabled={!enableVideo || voice.cameraPending()}
       >
         <Symbol>camera_video</Symbol>
       </IconButton>
@@ -712,7 +720,7 @@ function Controls() {
           variant="tonal"
           onPress={() => void flip()}
           aria-label={t`Flip camera`}
-          isDisabled={flipBusy()}
+          isDisabled={flipBusy() || voice.cameraPending()}
         >
           <Symbol>cameraswitch</Symbol>
         </IconButton>
