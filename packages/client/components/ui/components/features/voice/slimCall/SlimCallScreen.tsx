@@ -348,7 +348,7 @@ function Tiles(props: { onVideo: (video: boolean) => void }) {
       "pointerdown",
       (event) => {
         swallowClick = false;
-        fingerPress = event.pointerType !== "mouse";
+        fingerPress = event.pointerType === "touch";
       },
       true,
     );
@@ -1085,6 +1085,9 @@ const VideoCorner = styled("div", {
     touchAction: "none",
     userSelect: "none",
 
+    // At its widest the tile is 200px tall, which is all the height Android
+    // lets one side of the screen keep from the Back swipe: a larger tile
+    // would have a strip a finger cannot pick it up by
     width: "clamp(88px, 28%, 150px)",
     aspectRatio: "3/4",
     // Never taller than the stage: a clipped picture stops being received

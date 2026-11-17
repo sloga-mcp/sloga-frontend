@@ -1,4 +1,4 @@
-import { onCleanup, onMount } from "solid-js";
+import { createEffect, createSignal, onCleanup, onMount } from "solid-js";
 
 import { Capacitor, registerPlugin } from "@capacitor/core";
 
@@ -6,6 +6,7 @@ import {
   useDismissOverlay,
   useDismissTopmost,
 } from "@revolt/keybinds/keybindHandler";
+import { useModals } from "@revolt/modal";
 import { incomingCall, useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import { slimCallShown } from "@revolt/ui/components/features/voice/slimCall/slimCallPolicy";
@@ -48,21 +49,32 @@ const SlogaBackNative = Capacitor.isNativePlatform()
     }>("SlogaBack")
   : undefined;
 
+type GestureBox = { left: number; top: number; width: number; height: number };
+
+/** What the page last asked to keep from the Back swipe. */
+const [backGestureBoxes, setBackGestureBoxes] = createSignal<GestureBox[]>([]);
+
 /**
- * Tells Android which parts of the page a swipe in from the side of the
- * screen must not take as Back, so a finger that lands there reaches the
+ * Asks Android not to take a swipe in from the side of the screen as Back
+ * over these parts of the page, so a finger that lands there reaches the
  * page. Each call replaces the last list; an empty one gives the edges back.
  * The boxes are in CSS pixels of the viewport. Android honours at most 200dp
  * of height on each side, so this is for one small thing that is dragged, not
  * for a whole column.
  *
- * Android only. A shell without the method rejects the call, and the swipe
- * stays Back as it was.
+ * This only records the wish. `AndroidBackWorker` passes it on, and holds it
+ * back while a dialog is open over the page: what is asked for here is then
+ * covered, and the swipe is how the dialog is closed.
  */
-export function excludeBackGesture(
-  boxes: { left: number; top: number; width: number; height: number }[],
-) {
-  if (Capacitor.getPlatform() !== "android") return;
+export function excludeBackGesture(boxes: GestureBox[]) {
+  setBackGestureBoxes(boxes);
+}
+
+/**
+ * Hands the list to the shell. A shell without the method rejects the call,
+ * and the swipe stays Back as it was.
+ */
+function sendGestureExclusion(boxes: GestureBox[]) {
   // The shell lays the boxes over the web view, which it measures in device
   // pixels
   const ratio = window.devicePixelRatio || 1;
@@ -135,6 +147,16 @@ export function AndroidBackWorker() {
   // asks it whether this device is in a call, and on which channel. The
   // ring (`incomingCall`) is a module signal and needs no context.
   const voice = useVoice();
+
+  // The Back swipe exclusion the page asked for (`excludeBackGesture`), kept
+  // from the shell while any dialog is open. The first run sends an empty
+  // list: the list belongs to the native web view and outlives a reload of
+  // the page, so one left by the page before this one is cleared here.
+  const modals = useModals();
+  createEffect(() => {
+    if (Capacitor.getPlatform() !== "android") return;
+    sendGestureExclusion(modals.isOpen() ? [] : backGestureBoxes());
+  });
 
   onMount(() => {
     if (
