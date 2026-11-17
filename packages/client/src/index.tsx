@@ -4,7 +4,15 @@
 import "./polyfills";
 import "./sentry";
 
-import { JSX, createEffect, createRoot, on, onMount, untrack } from "solid-js";
+import {
+  JSX,
+  Show,
+  createEffect,
+  createRoot,
+  on,
+  onMount,
+  untrack,
+} from "solid-js";
 import { render } from "solid-js/web";
 
 import { useLingui } from "@lingui-solid/solid/macro";
@@ -37,7 +45,9 @@ import {
 import { AndroidBackWorker } from "@revolt/client/AndroidBackWorker";
 import { State } from "@revolt/client/Controller";
 import { IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW } from "@revolt/client/popout";
+import { SLIM_ROOT, slimRedirectFor } from "@revolt/client/slimRoutePolicy";
 import { completeStreamLink } from "@revolt/client/streamConnections";
+import { useSlimMode } from "@revolt/client/useSlimMode";
 import { DeviceContext } from "@revolt/common";
 import { normalizeReferralCode } from "@revolt/common/lib/referralCode";
 import { I18nProvider } from "@revolt/i18n";
@@ -102,12 +112,43 @@ if (IS_OVERLAY_WINDOW) {
 // keyboard is up (no-op everywhere else) — see src/iosViewport.ts.
 mountIosViewportFix();
 
+// Slim view in this file. Every component below that asks `useSlimMode` is a
+// route under `Interface`, which renders its routed children only once the
+// client has loaded (the `lifecycle.loadedOnce()` match in src/Interface.tsx).
+// By then the signed-in user is known, so a staff account, which never gets
+// Slim view, cannot read as Slim here for a moment while it loads.
+
 /**
  * Redirect PWA start to the last active path
+ *
+ * In Slim view a saved path that Slim view does not show (a server, Discover)
+ * goes to the Slim view root instead. A saved /channel/:id path is kept: the
+ * channel page decides whether it may show that channel.
  */
 function PWARedirect() {
   const state = useState();
-  return <Navigate href={state.layout.getLastActivePath()} />;
+  const slim = useSlimMode();
+
+  // Decided once: this route only ever redirects
+  const href = untrack(() => {
+    const path = state.layout.getLastActivePath();
+    return slim() ? (slimRedirectFor(path) ?? path) : path;
+  });
+
+  return <Navigate href={href} />;
+}
+
+/**
+ * Developer page (/dev). Slim view does not show it and goes to its root.
+ */
+function DevelopmentRoute() {
+  const slim = useSlimMode();
+
+  return (
+    <Show when={!slim()} fallback={<Navigate href={SLIM_ROOT} />}>
+      <DevelopmentPage />
+    </Show>
+  );
 }
 
 /**
@@ -213,13 +254,24 @@ function SettingsRedirect() {
 
 /**
  * Open invite and redirect to last active path
+ *
+ * In Slim view the invite is neither looked up nor shown: a short notice
+ * says why, and the route goes to the Slim view root.
  */
 function InviteRedirect() {
   const params = useParams();
   const client = useClient();
   const { openModal, showError } = useModals();
+  const { t } = useLingui();
+  const snackbar = useSnackbar();
+  const slim = useSlimMode();
 
   onMount(() => {
+    if (slim()) {
+      snackbar.show({ message: t`Server invites are hidden in Slim view.` });
+      return;
+    }
+
     if (params.code) {
       client()
         // TODO: add a helper to stoat.js for this
@@ -230,19 +282,29 @@ function InviteRedirect() {
     }
   });
 
-  return <PWARedirect />;
+  return (
+    <Show when={slim()} fallback={<PWARedirect />}>
+      <Navigate href={SLIM_ROOT} />
+    </Show>
+  );
 }
 
 /**
  * Open a discoverable server's join prompt and redirect to last active path
  * (landing route for sloga.gg/discover "Open Sloga" buttons)
+ *
+ * In Slim view the server is neither looked up nor shown, and the route goes
+ * to the Slim view root.
  */
 function DiscoverRedirect() {
   const params = useParams();
   const client = useClient();
   const { openModal, showError } = useModals();
+  const slim = useSlimMode();
 
   onMount(() => {
+    if (slim()) return;
+
     if (params.id) {
       DiscoverableServer.fetch(client(), params.id)
         .then((server) => openModal({ type: "discover_join", server }))
@@ -250,18 +312,28 @@ function DiscoverRedirect() {
     }
   });
 
-  return <PWARedirect />;
+  return (
+    <Show when={slim()} fallback={<PWARedirect />}>
+      <Navigate href={SLIM_ROOT} />
+    </Show>
+  );
 }
 
 /**
  * Open bot invite and redirect to last active path
+ *
+ * In Slim view the bot is neither looked up nor shown, and the route goes to
+ * the Slim view root.
  */
 function BotRedirect() {
   const params = useParams();
   const client = useClient();
   const { openModal, showError } = useModals();
+  const slim = useSlimMode();
 
   onMount(() => {
+    if (slim()) return;
+
     if (params.code) {
       client()
         // TODO: add a helper to stoat.js for this
@@ -272,7 +344,11 @@ function BotRedirect() {
     }
   });
 
-  return <PWARedirect />;
+  return (
+    <Show when={slim()} fallback={<PWARedirect />}>
+      <Navigate href={SLIM_ROOT} />
+    </Show>
+  );
 }
 
 /**
@@ -440,7 +516,7 @@ render(
           <Route path="/r/:code" component={ReferralRedirect} />
           <Route path="/" component={Interface as never}>
             <Route path="/pwa" component={PWARedirect} />
-            <Route path="/dev" component={DevelopmentPage} />
+            <Route path="/dev" component={DevelopmentRoute} />
             <Route
               path={["/discover", "/discover/servers"]}
               component={Discover}

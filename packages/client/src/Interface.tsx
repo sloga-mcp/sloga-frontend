@@ -1,12 +1,14 @@
 import {
   createEffect,
   createSignal,
+  ErrorBoundary,
   JSX,
   lazy,
   Match,
   onCleanup,
   Show,
   Switch,
+  untrack,
 } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
@@ -32,13 +34,26 @@ import {
   SIGN_OUT_OFFER_AFTER_MS,
 } from "@revolt/client/connectionPolicy";
 import { IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW } from "@revolt/client/popout";
+import { slimIsRoot, slimRedirectFor } from "@revolt/client/slimRoutePolicy";
+import { useSlimMode } from "@revolt/client/useSlimMode";
 import { useModals } from "@revolt/modal";
-import { Navigate, useBeforeLeave, useLocation } from "@revolt/routing";
+import {
+  Navigate,
+  useBeforeLeave,
+  useLocation,
+  useNavigate,
+} from "@revolt/routing";
 import { OverlayBridgeWorker } from "@revolt/rtc/overlay/OverlayBridgeWorker";
 import { useState } from "@revolt/state";
 import { LAYOUT_SECTIONS } from "@revolt/state/stores/Layout";
 import { streamerModeActive } from "@revolt/state/streamer";
-import { Button, CircularProgress, Column, useLayoutSides } from "@revolt/ui";
+import {
+  Button,
+  CircularProgress,
+  Column,
+  Text,
+  useLayoutSides,
+} from "@revolt/ui";
 import { IncomingCallOverlay } from "@revolt/ui/components/features/voice/IncomingCallOverlay";
 import { CallRecordingNotices } from "@revolt/ui/components/features/voice/callCard/CallRecordingNotices";
 import { RemoteControlOverlays } from "@revolt/ui/components/features/voice/callCard/RemoteControlOverlays";
@@ -94,8 +109,17 @@ const Interface = (props: { children: JSX.Element }) => {
   const { t } = useLingui();
   const { openModal } = useModals();
   const { isLoggedIn, lifecycle } = useClientLifecycle();
-  const { pathname, search } = useLocation();
+  const routeLocation = useLocation();
+  // These two are read once, as before: the router's location is an object
+  // of getters, so destructuring it keeps the path this component mounted
+  // on. The Slim view effects below read `routeLocation.pathname` instead,
+  // which follows the route.
+  const { pathname, search } = routeLocation;
+  const navigate = useNavigate();
   const sides = useLayoutSides();
+  // Whether Slim view is active on this device. With it off, nothing added
+  // for it below acts, and the tree renders exactly as it did before.
+  const slim = useSlimMode();
 
   useBeforeLeave((e) => {
     if (!e.defaultPrevented) {
@@ -147,6 +171,53 @@ const Interface = (props: { children: JSX.Element }) => {
   onCleanup(() => {
     sDrawer?.delete();
     state.setAppDrawer((sDrawer = undefined));
+  });
+
+  // Slim view route gate. Slim view does not show server routes, so one that
+  // is reached any way at all (a link, a saved path, the back stack, or Slim
+  // view being switched on while sitting on one) goes to the Slim view root.
+  // `replace` keeps the blocked page out of the back stack. The policy never
+  // redirects the root itself, so this cannot loop.
+  //
+  // It waits for `loadedOnce`: a staff account never gets Slim view, but that
+  // is only known once the signed-in user has loaded, and until then `slim()`
+  // can read true on a device whose stored setting is on. `isLoggedIn` covers
+  // signing out, where the lifecycle leaves the signed-in states a moment
+  // before `loadedOnce` is cleared and the `/login` redirect below owns the
+  // route.
+  createEffect(() => {
+    if (!isLoggedIn() || !lifecycle.loadedOnce() || !slim()) return;
+
+    const target = slimRedirectFor(routeLocation.pathname);
+    if (target !== null) navigate(target, { replace: true });
+  });
+
+  // Slim view on the phone layout: at the root the content pane is only a
+  // placeholder, so the drawer rests on the navigation column, which is the
+  // chat list. `setShown(false)` is what shows it: the drawer is built over
+  // the content pane, so `show` means "content shown".
+  //
+  // This runs when the drawer is published (a cold start, or the layout
+  // narrowing to a phone), when the path becomes the root (the gate above
+  // redirecting there included) and when Slim view is switched on at the
+  // root. It does not hold the drawer there: opening a chat changes the path,
+  // and the list entry's own `setShown(true)` slides to it as before.
+  //
+  // `state.appDrawer()` is `undefined` unless the drawer is enabled, so this
+  // does nothing on wide layouts.
+  createEffect(() => {
+    const drawer = state.appDrawer();
+    if (!drawer || !isLoggedIn() || !lifecycle.loadedOnce() || !slim()) return;
+    // `/app` is where login lands and where the wordmark links; it renders
+    // the same placeholder as the root, so it rests the same way.
+    if (!slimIsRoot(routeLocation.pathname)) return;
+
+    // `setShown` reads the drawer's own signals, which are not this effect's
+    // business. It refuses mid-swipe and mid-animation; only then is the
+    // drawer state followed, so this runs again once it settles. After a call
+    // that went through nothing here reads the state, and a later swipe to
+    // the content pane is left alone.
+    if (!untrack(() => drawer.setShown(false))) void drawer.state;
   });
 
   return (
@@ -209,14 +280,51 @@ const Interface = (props: { children: JSX.Element }) => {
               <Content
                 ref={setContRef}
                 class="app_body"
-                sidebar={state.layout.getSectionState(
-                  LAYOUT_SECTIONS.PRIMARY_SIDEBAR,
-                  true,
-                )}
+                // Slim view keeps the sidebar open whatever the stored
+                // collapse state says (see `showSidebar` in Sidebar.tsx)
+                sidebar={
+                  slim() ||
+                  state.layout.getSectionState(
+                    LAYOUT_SECTIONS.PRIMARY_SIDEBAR,
+                    true,
+                  )
+                }
                 navRight={sides().nav === "right"}
               >
                 <PaneErrorBoundary pane="content">
-                  {props.children}
+                  {/* Slim view only: a crash in the routed content offers the
+                      way out of Slim view. With Slim view off there is no
+                      extra boundary, so an error reaches the pane boundary
+                      above exactly as before. Switching Slim view builds the
+                      routed content again: a boundary catches for what was
+                      created under it, so one cannot be put around, or taken
+                      off, a page that is already mounted. */}
+                  <Show when={slim()} fallback={props.children}>
+                    <ErrorBoundary
+                      fallback={(error, reset) => {
+                        console.error("[slim-error]", error);
+
+                        return (
+                          <SlimCrashed
+                            error={error}
+                            onTurnOff={() => {
+                              // Slim view going off swaps this boundary for
+                              // the plain content, which is what brings the
+                              // full app back. The reset covers a build
+                              // where Slim view stays on regardless.
+                              state.settings.setValue(
+                                "appearance:slim_view",
+                                false,
+                              );
+                              reset();
+                            }}
+                          />
+                        );
+                      }}
+                    >
+                      {props.children}
+                    </ErrorBoundary>
+                  </Show>
                 </PaneErrorBoundary>
               </Content>
             </Layout>
@@ -324,11 +432,62 @@ function LoadingScreen() {
   );
 }
 
+/**
+ * Shown in place of the routed content when it throws while Slim view is on.
+ * Slim view hides most of the app, so a crash inside it always offers the
+ * way back to the full app; the toggle in settings is the other one. The
+ * error is shown for the same reason `PaneErrorBoundary` shows it: Slim view
+ * runs on phones we cannot attach a debugger to.
+ */
+function SlimCrashed(props: { error: unknown; onTurnOff: () => void }) {
+  return (
+    <SlimCrash>
+      <Text class="title" size="large">
+        <Trans>Something went wrong in Slim view.</Trans>
+      </Text>
+      <SlimCrashDetail>
+        {props.error instanceof Error
+          ? `${props.error.name}: ${props.error.message}`
+          : String(props.error)}
+      </SlimCrashDetail>
+      <Button onPress={props.onTurnOff}>
+        <Trans>Turn off Slim view</Trans>
+      </Button>
+    </SlimCrash>
+  );
+}
+
 const AppRoot = styled("div", {
   base: {
     display: "flex",
     flexDirection: "column",
     height: "100%",
+  },
+});
+
+/**
+ * Slim view crash screen, sized like the content pane's own error fallback
+ */
+const SlimCrash = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: "var(--gap-md)",
+    flexGrow: 1,
+    padding: "var(--gap-lg)",
+    minWidth: 0,
+    color: "var(--md-sys-color-on-surface)",
+  },
+});
+
+const SlimCrashDetail = styled("code", {
+  base: {
+    maxWidth: "100%",
+    overflowWrap: "anywhere",
+    userSelect: "text",
+    fontSize: "0.8em",
+    color: "var(--md-sys-color-on-surface-variant)",
   },
 });
 
