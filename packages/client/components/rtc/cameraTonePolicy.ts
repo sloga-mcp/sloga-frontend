@@ -1,6 +1,6 @@
 /**
- * Camera tone (low light, touch up, brightness): the PURE decisions behind
- * the WebGL tone stage. Extracted so `node --test` can load it (the house
+ * Camera tone (glam, low light, touch up, brightness): the PURE decisions
+ * behind the WebGL tone stage. Extracted so `node --test` can load it (the house
  * no-vitest split; this module must stay dependency-free: no DOM, no i18n,
  * no imports).
  *
@@ -24,7 +24,10 @@
  *    for a whole window. It is ratio-only on purpose (an absolute floor
  *    would misfire in a dark room, where the camera itself slows down), it
  *    sheds one stage per window, and it never re-arms a shed stage: an
- *    effect that slowed the video once stays off for the call.
+ *    effect that slowed the video once stays off for the call. A stage that
+ *    was given up for a reason the frame rate does not show (the face
+ *    tracker running over its own time budget) is recorded in the same
+ *    place with `shedNow`, so there is one list of what is off.
  *
  * 4. Robustness tables. `tonePageMode` says how frames are driven while the
  *    page is hidden (`toneTimerHolds` is its "the timer still delivers"
@@ -158,7 +161,7 @@ export class LowLightMeter {
   }
 }
 
-export type ToneStageName = "touchUp" | "lowLight" | "brightness";
+export type ToneStageName = "glam" | "touchUp" | "lowLight" | "brightness";
 
 /** What the tone stage draws. Neutral = { lowLightGain: 1, brightness: 1, smooth: 0 }. */
 export interface ToneConfig {
@@ -193,8 +196,12 @@ export function plainTouchUpStrength(beautify: number): number {
   return Math.min(beautify / 100, TOUCH_UP_PLAIN_MAX);
 }
 
-/** Costliest first: the order stages are shed in. */
-const TONE_SHED_ORDER: readonly ToneStageName[] = Object.freeze([
+/**
+ * Costliest first: the order stages are shed in. Glam leads because it adds
+ * face tracking on top of its drawing.
+ */
+export const TONE_SHED_ORDER: readonly ToneStageName[] = Object.freeze([
+  "glam",
   "touchUp",
   "lowLight",
   "brightness",
@@ -231,7 +238,7 @@ export class ToneWatchdog {
     this.#windowMs = positiveOr(opts?.windowMs, WATCHDOG_DEFAULT_WINDOW_MS);
   }
 
-  /** Returns the stage shed by THIS sample, else undefined. Cost order: touchUp, lowLight, brightness. */
+  /** Returns the stage shed by THIS sample, else undefined. Cost order: glam, touchUp, lowLight, brightness. */
   sample(
     sourceFps: number,
     processedFps: number,
@@ -275,6 +282,26 @@ export class ToneWatchdog {
     this.#shed.add(stage);
     this.#windowStart = nowMs;
     return stage;
+  }
+
+  /**
+   * Records a shed that was decided somewhere else (the face tracker ran
+   * over its own time budget). True only when the stage was not shed
+   * already. From here on it is a shed like any other: it shows in `shed`,
+   * `sample` never picks it again and only `reset()` clears it.
+   *
+   * A newly recorded shed also closes the open window, the same as a shed
+   * made by `sample`. A slow face tracker is exactly what drags the frame
+   * rate down, so the slow time measured so far belongs to the stage that
+   * has just gone: the next one gets a full window of its own, and one bad
+   * window still costs one stage, never two. A stage that was shed already
+   * changes nothing, the window included.
+   */
+  shedNow(stage: ToneStageName): boolean {
+    if (this.#shed.has(stage)) return false;
+    this.#shed.add(stage);
+    this.#windowStart = undefined;
+    return true;
   }
 
   /** Survives processor rebuilds (the controller owns the instance). */
@@ -359,6 +386,8 @@ export interface ToneWants {
   lowLight: boolean;
   /** Whole-frame touch up (the stage's smooth), not the landmark beautify. */
   touchUp: boolean;
+  /** The face-tracked look. Left out means off. */
+  glam?: boolean;
 }
 
 /**
@@ -367,7 +396,11 @@ export interface ToneWants {
  * attempt. A setting that stays on (a slider drag) or goes off is not one.
  */
 export function toneTurnedOn(was: ToneWants, now: ToneWants): boolean {
-  return (now.lowLight && !was.lowLight) || (now.touchUp && !was.touchUp);
+  return (
+    (now.lowLight && !was.lowLight) ||
+    (now.touchUp && !was.touchUp) ||
+    (now.glam === true && was.glam !== true)
+  );
 }
 
 export type ContextLossAction = "rebuild" | "fail-open";

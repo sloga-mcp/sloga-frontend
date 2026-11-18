@@ -50,8 +50,32 @@
  * Hidden page: rVFC/rAF stop firing, so a timer drives the frames instead.
  * If that timer is throttled past the stall limit the stage is bypassed (raw
  * frames) until the page is visible again.
+ *
+ * The face-tracked look (`glam` in the config) is drawn by the tone stage
+ * and follows the face with the same tracker stickers use, whatever
+ * `landmarks` says. Its frame order is: detect, smooth, paint the coverage
+ * map, hand the look to the stage, then the stage draws. Three rules keep
+ * the tracker from getting in the way of the call:
+ *  - It is loaded for the look only on a visible page and only while
+ *    `gateHeld()` answers false. That is asked again on every frame; nothing
+ *    is queued. `setConfig` never loads it for the look. It is asked once
+ *    more when the files are in, right before the tracker is created: a load
+ *    that may not create it then ends without one, and a later frame starts
+ *    the next (the files are kept, so that one goes straight to the create).
+ *  - The look's detection cadence and its time budget belong to `glamPolicy`,
+ *    and so does every yes or no above: this file only passes the facts in.
+ *    A frame callback runs at most one detect, and stickers reuse its result.
+ *    The degrade ladder neither slows the cadence nor counts the look's time.
+ *  - Running over the budget sheds the look for the call: it is recorded in
+ *    the watchdog, reported through `onToneShed("glam")`, and the tracker is
+ *    closed unless stickers still need it.
+ * A look that cannot run (the tracker cannot be loaded, it throws, or the
+ * stage cannot draw the look) is dropped and reported once through
+ * `onGlamFailed`. Stickers, tone and the published picture carry on. A
+ * tracker that died while the page was hidden is loaded again once, under
+ * the same rules, before the look is given up.
  */
-import type { FaceLandmarker } from "@mediapipe/tasks-vision";
+import type { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 
 import { CONFIGURATION } from "@revolt/common";
 import type {
@@ -76,7 +100,7 @@ import {
   toneTimerHolds,
   toneTurnedOn,
 } from "./cameraTonePolicy";
-import { CameraToneStage } from "./cameraToneStage";
+import { type GlamStageInput, CameraToneStage } from "./cameraToneStage";
 import {
   type NormalizedLandmark,
   beautifyAlpha,
@@ -90,6 +114,20 @@ import {
   MASK_CUTOUTS,
   placeLayer,
 } from "./faceFilterCatalog";
+import { GlamMaskPainter } from "./glamMaskPainter";
+import {
+  type GlamGeometry,
+  type GlamLevels,
+  GlamBudget,
+  GlamDetectLatch,
+  glamGeometry,
+  glamLevels,
+  glamMayCreateTracker,
+  glamPresence,
+  GlamRecovery,
+  glamTrackerLoadMustWait,
+  LandmarkSmoother,
+} from "./glamPolicy";
 
 /**
  * Base URL for the self-hosted MediaPipe assets. Mirrors SEGMENTATION_BASE in
@@ -150,6 +188,12 @@ export interface FaceFilterConfig {
    * the whole-frame shader smooth (`plainTouchUpStrength(beautify)`).
    */
   landmarks: boolean;
+  /**
+   * The face-tracked look, 0–100; 0 = off. It is drawn by the tone stage, so
+   * it needs `tone`, and it uses the face tracker whatever `landmarks` says:
+   * `landmarks` only covers stickers and the masked touch up.
+   */
+  glam: number;
   /** Tone stage allowed on this device (`cameraToneSupported()`). */
   tone: boolean;
   /**
@@ -160,6 +204,40 @@ export interface FaceFilterConfig {
   onToneShed?: (stage: ToneStageName) => void;
   /** Tone failed open for this processor; the raw 2D path continues. */
   onToneFailed?: () => void;
+  /**
+   * True while the call is in the middle of work the face tracker must not
+   * hold up. While it answers true the tracker is not loaded for the look
+   * and the look runs no detect. Asked again on every frame; a throw counts
+   * as true.
+   */
+  gateHeld?: () => boolean;
+  /**
+   * The look cannot run on this processor. Called at most once per
+   * processor; from then on it behaves as if `glam` were 0. Stickers, tone
+   * and the published picture are not affected.
+   */
+  onGlamFailed?: () => void;
+}
+
+/**
+ * - "off": not asked for (`glam` 0, or no tone stage on this device).
+ * - "waiting": asked for, the face tracker is not loaded yet.
+ * - "on": the tracker is loaded (a face may or may not be in view).
+ * - "shed": given up for the call because it was too slow.
+ * - "failed": it cannot run here (also while tone itself has failed open).
+ */
+export type GlamState = "off" | "waiting" | "on" | "shed" | "failed";
+
+export interface GlamStats {
+  /** Rolling mean and slowest time of one detect, in ms; 0 before the first. */
+  detectMeanMs: number;
+  detectMaxMs: number;
+  /** A detect runs every this many frames. */
+  every: number;
+  /** What the loaded tracker runs on; "none" while there is no tracker. */
+  delegate: "GPU" | "CPU" | "none";
+  /** How long the last tracker took to create, in ms; 0 before the first. */
+  initMs: number;
 }
 
 export interface CameraToneStats {
@@ -181,10 +259,41 @@ export interface FaceFilterStatusReport {
   degraded: number;
 }
 
+/** A freshly created face tracker, with what it runs on and how long it took. */
+interface CreatedTracker {
+  tracker: FaceLandmarker;
+  delegate: "GPU" | "CPU";
+  ms: number;
+}
+
+/** What a tracker is created from. Kept, so a second load fetches nothing. */
+interface TrackerKit {
+  FL: typeof FaceLandmarker;
+  fileset: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>;
+  /** A load stopped between a failed GPU try and the CPU one: skip the GPU. */
+  gpuFailed: boolean;
+}
+
 /**
- * Whether this config needs face landmarks at all. `landmarks: false` wins
- * over every setting: it is the one gate in front of every MediaPipe path
- * (import, wasm/model fetch, creation, detection).
+ * A diagnostic switch with no UI: `sloga:glam-delegate` set to `cpu` in
+ * localStorage makes every tracker load skip the GPU try, so a device whose
+ * GPU delegate gives bad results can be checked on the CPU one without a new
+ * build. Read at each load. Unreadable storage reads as "not forced".
+ */
+function trackerCpuForced(): boolean {
+  try {
+    return localStorage.getItem("sloga:glam-delegate") === "cpu";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether stickers or the masked touch up need face landmarks.
+ * `landmarks: false` wins over both: for them it is the one gate in front of
+ * every MediaPipe path (import, wasm/model fetch, creation, detection). The
+ * face-tracked look is not part of this test; it asks for the tracker on its
+ * own terms (`#wantsGlam`).
  */
 function wantsLandmarks(cfg: FaceFilterConfig): boolean {
   return cfg.landmarks && (!!cfg.filterId || cfg.beautify > 0);
@@ -192,18 +301,22 @@ function wantsLandmarks(cfg: FaceFilterConfig): boolean {
 
 /**
  * Whether this config has tone work that needs the stage built: low light,
- * or touch up on a device without landmarks. Brightness alone never builds
- * it (it stays on the 2D filter), but rides in the shader once it is live.
+ * touch up on a device without landmarks, or the face-tracked look (`glam`:
+ * it is asked for and not given up). Brightness alone never builds it (it
+ * stays on the 2D filter), but rides in the shader once it is live.
  */
-function wantsToneStage(cfg: FaceFilterConfig): boolean {
-  return cfg.tone && (cfg.lowLight || (!cfg.landmarks && cfg.beautify > 0));
+function wantsToneStage(cfg: FaceFilterConfig, glam: boolean): boolean {
+  return (
+    cfg.tone && (cfg.lowLight || (!cfg.landmarks && cfg.beautify > 0) || glam)
+  );
 }
 
 /** The same test as `wantsToneStage`, one setting at a time. */
-function toneWants(cfg: FaceFilterConfig): ToneWants {
+function toneWants(cfg: FaceFilterConfig, glam: boolean): ToneWants {
   return {
     lowLight: cfg.tone && cfg.lowLight,
     touchUp: cfg.tone && !cfg.landmarks && cfg.beautify > 0,
+    glam: cfg.tone && glam,
   };
 }
 
@@ -295,6 +408,78 @@ export class FaceFilterProcessor {
   /** Reused every frame: the stages the last frame drew. */
   #activeStages: ToneStageName[] = [];
 
+  // --- Face-tracked look (drawn by the stage; see the file header) ---
+  /** The look cannot run on this processor. Never cleared. */
+  #glamFailed = false;
+  /** A frame found the look wanted and nothing has wound it down since. */
+  #glamLive = false;
+  /** Not reset by a rebuild: a shed lasts for the call. */
+  #glamBudget = new GlamBudget();
+  #glamRecovery = new GlamRecovery();
+  #glamSmoother = new LandmarkSmoother();
+  /** Made at the first paint, released on destroy. */
+  #glamPainter: GlamMaskPainter | undefined;
+  /** What the coverage map was last painted from. */
+  #glamGeometry: GlamGeometry | undefined;
+  /** Width / height of the frame `#glamGeometry` was measured on. */
+  #glamAspect = 0;
+  /** When the face behind `#glamGeometry` was seen. */
+  #glamSeenAt = 0;
+  /** When a detect last ran while the look was on; -Infinity = never. */
+  #glamDetectAt = -Infinity;
+  /** The stage holds a look: the last `setGlam` was not null. */
+  #glamSet = false;
+  /** Reused every frame: what the stage is handed. */
+  #glamInput: GlamStageInput | undefined;
+  #glamLevels: GlamLevels | undefined;
+  /** The `glam` setting `#glamLevels` was worked out from. */
+  #glamLevelsFor = 0;
+  /** Reused every frame: what `#detectLatch.mayDetect` is asked. */
+  #glamDetectArgs = {
+    frame: 0,
+    every: 0,
+    hidden: false,
+    shed: false,
+    gateHeld: false,
+    msSinceDetect: 0,
+  };
+  /** Reused: what the two tracker-creation rules are asked (`#trackerAsk`). */
+  #trackerArgs = {
+    stickers: false,
+    forGlam: false,
+    wanted: false,
+    gateHeld: false,
+    hidden: false,
+    shed: false,
+    failed: false,
+  };
+  /** The first frame this stage build draws with the look is unchecked. */
+  #glamBlindCheckDue = false;
+  /** The page is visible again and no frame has been drawn since. */
+  #glamReturnDue = false;
+  /** The tracker is to be loaded again as soon as that is allowed. */
+  #glamRecreateDue = false;
+  /** The tracker load in flight is that second load. */
+  #glamRecreateInFlight = false;
+  /**
+   * Names the tracker load in flight. Bumped when a load starts and when
+   * one is abandoned; a load that finishes under an old number is closed
+   * and says nothing.
+   */
+  #trackerGen = 0;
+  #trackerDelegate: "GPU" | "CPU" = "GPU";
+  #trackerInitMs = 0;
+  /** The library and its file set, once a load has fetched them. */
+  #trackerKit: TrackerKit | undefined;
+
+  // --- This frame callback only (reset at the top of every frame) ---
+  /** Owns "the one detect a frame callback may run has run". */
+  #detectLatch = new GlamDetectLatch();
+  /** Its result: the face, null for no face, undefined if it threw or never ran. */
+  #frameFace: NormalizedLandmark[] | null | undefined;
+  /** Time the look took that the degrade ladder must not count. */
+  #frameGlamMs = 0;
+
   // --- Frame driver + page mode ---
   #timerId: ReturnType<typeof setInterval> | undefined;
   /** True while requestVideoFrameCallback drives the loop. */
@@ -340,6 +525,30 @@ export class FaceFilterProcessor {
     };
   }
 
+  /** Where the face-tracked look stands; see `GlamState`. */
+  get glamState(): GlamState {
+    const cfg = this.#cfg;
+    if (!cfg.tone || !(cfg.glam > 0)) return "off";
+    if (this.#glamFailed) return "failed";
+    if (this.#glamShed()) return "shed";
+    if (this.#toneFailed || this.#stage?.glamAvailable === false) {
+      return "failed";
+    }
+    return this.#landmarker ? "on" : "waiting";
+  }
+
+  /** Numbers for the diagnostic line. */
+  get glamStats(): GlamStats {
+    const stats = this.#glamBudget.stats();
+    return {
+      detectMeanMs: stats.mean,
+      detectMaxMs: stats.max,
+      every: stats.every,
+      delegate: this.#landmarker ? this.#trackerDelegate : "none",
+      initMs: this.#trackerInitMs,
+    };
+  }
+
   /**
    * Live config update (slider drags, sticker swaps) — no processor rebuild.
    * May lazily start landmarker init when landmarks become needed, and frees
@@ -347,20 +556,28 @@ export class FaceFilterProcessor {
    * tone stage follows the same rule. A pure tune: the processed track and
    * its canvas are never replaced here.
    *
-   * Switching a tone setting on (low light, or whole-frame touch up) after
-   * tone failed open gives tone one fresh attempt with a fresh recovery
-   * budget; `onToneFailed` fires again only if that attempt fails too.
+   * Switching a tone setting on (low light, whole-frame touch up, or the
+   * face-tracked look) after tone failed open gives tone one fresh attempt
+   * with a fresh recovery budget; `onToneFailed` fires again only if that
+   * attempt fails too.
+   *
+   * The face tracker is never loaded for the look from here: the frame loop
+   * does that, when the page is visible and `gateHeld()` allows it.
    */
   setConfig(config: FaceFilterConfig) {
     const lowLightWas = this.#cfg.lowLight;
-    const wantsWas = toneWants(this.#cfg);
+    const wantsWas = toneWants(this.#cfg, this.#glamRequested());
+    const stickersWere = wantsLandmarks(this.#cfg);
     this.#cfgGen++;
     this.#cfg = { ...config };
     if (this.#disposed) return;
     // Low light switched off: forget the room, so the gain is 1 at once and
     // the next switch-on ramps up from 1.
     if (lowLightWas && !this.#cfg.lowLight) this.#resetMeter();
-    if (this.#toneFailed && toneTurnedOn(wantsWas, toneWants(this.#cfg))) {
+    if (
+      this.#toneFailed &&
+      toneTurnedOn(wantsWas, toneWants(this.#cfg, this.#glamRequested()))
+    ) {
       this.#toneFailed = false;
       this.#lossLadder.reset();
       this.#stuckLadder.reset();
@@ -368,12 +585,23 @@ export class FaceFilterProcessor {
     void this.#syncBitmaps();
     if (wantsLandmarks(this.#cfg)) {
       this.#ensureLandmarker();
+      // Stickers joining a tracker that was loaded for the look on the CPU
+      // start pre-degraded, as they would had it been loaded for them.
+      if (
+        !stickersWere &&
+        this.#landmarker &&
+        this.#trackerDelegate === "CPU"
+      ) {
+        this.#ladder.reset(Math.max(1, this.#ladder.step));
+      }
     } else if (this.#landmarker) {
-      // Look-only config: release detection resources (lazily re-inits later).
-      this.#landmarker.close();
-      this.#landmarker = undefined;
+      // Look-only config: release detection resources (lazily re-inits
+      // later), unless the face-tracked look is still using them.
+      if (!this.#wantsGlam()) this.#releaseLandmarker();
       this.#lastLandmarks = undefined;
     }
+    // The look was switched off: wind it down now, not at the next frame.
+    if (this.#glamLive && !this.#wantsGlam()) this.#endGlam();
     this.#syncStage();
     this.#reportStatus();
   }
@@ -397,6 +625,15 @@ export class FaceFilterProcessor {
     this.#pageMode = "frame";
     this.#drawnMediaTime = -1;
     this.#resetFpsWindow();
+    // The face-tracked look starts over too, apart from two things that
+    // last longer than a build: a look that failed stays failed, and a look
+    // that was shed stays shed. A budget that is shed while the watchdog no
+    // longer says so belongs to a call that is over.
+    this.#clearGlamLook();
+    this.#cancelGlamRecovery();
+    this.#glamLive = false;
+    this.#glamDetectAt = -Infinity;
+    if (!this.#glamShed()) this.#glamBudget.reset();
 
     this.source = opts.track;
 
@@ -426,6 +663,7 @@ export class FaceFilterProcessor {
     // A destroy() that ran during the awaits above must not leave a listener.
     if (!this.#disposed) {
       document.addEventListener("visibilitychange", this.#onVisibility);
+      this.#noteGlamVisibility();
     }
     this.#scheduleFrame();
     this.#reportStatus();
@@ -457,6 +695,11 @@ export class FaceFilterProcessor {
     if (this.#disposed || this.#video !== video) return;
     this.#lastLandmarks = undefined;
     this.#detectFails = 0;
+    // The face-tracked look starts over on the new camera: nothing of it is
+    // drawn until the first detect there, and a second tracker load that was
+    // pending or in flight for the old one is called off.
+    this.#clearGlamLook();
+    this.#cancelGlamRecovery();
     // The new device counts its frames and its media time from scratch.
     this.#drawnMediaTime = -1;
     this.#resetFpsWindow();
@@ -477,6 +720,13 @@ export class FaceFilterProcessor {
     this.#cancelFrame();
     document.removeEventListener("visibilitychange", this.#onVisibility);
     this.#dropStage();
+    this.#clearGlamLook();
+    this.#cancelGlamRecovery();
+    this.#glamLive = false;
+    this.#glamPainter?.dispose();
+    this.#glamPainter = undefined;
+    // It holds the painter's canvas.
+    this.#glamInput = undefined;
     // LiveKit's stopProcessor stops processedTrack on the normal path; stop it
     // here too so the controller's direct destroy() paths (superseded init,
     // failed setProcessor) don't leave a live canvas-capture track dangling.
@@ -493,8 +743,7 @@ export class FaceFilterProcessor {
     this.#probeCtx = undefined;
     this.processedTrack = undefined;
     this.source = undefined;
-    this.#landmarker?.close();
-    this.#landmarker = undefined;
+    this.#releaseLandmarker();
     for (const bmp of this.#bitmaps.values()) bmp.close();
     this.#bitmaps.clear();
     this.#lastLandmarks = undefined;
@@ -591,6 +840,7 @@ export class FaceFilterProcessor {
   /** Swap the frame driver when the page is hidden or shown. */
   #onVisibility = () => {
     if (this.#disposed || this.#stopped) return;
+    this.#noteGlamVisibility();
     // A new hidden spell gets a fresh chance at the timer; a visible page
     // never bypasses.
     this.#bypass = false;
@@ -641,6 +891,12 @@ export class FaceFilterProcessor {
     const start = performance.now();
     this.#frameCounter++;
     this.#drawnMediaTime = video.currentTime;
+    // One call of this function is one frame callback, and each callback is
+    // a task of its own: this line is what "at most one detect per task"
+    // rests on, and nothing else may open the latch again.
+    this.#detectLatch.beginTask();
+    this.#frameFace = undefined;
+    this.#frameGlamMs = 0;
 
     // Track source resolution changes (LiveKit restarts/simulcast, a camera
     // flip that swaps the aspect ratio). The stage is resized to the same
@@ -677,12 +933,19 @@ export class FaceFilterProcessor {
         ? COLOR_LOOKS[cfg.lookId].cssFilter
         : undefined;
 
+    // 0b. Face-tracked look: tracker upkeep, this frame's detect and the
+    //     coverage map, all BEFORE the stage draws, so the look is drawn
+    //     from landmarks of the frame it is drawn on.
+    const stickers = this.#stickersLive();
+    const glamOn = this.#glamBeforeDraw(video, start, hidden, step);
+
     // 1a. Tone base layer: the stage draws the video and its canvas is copied
     //     here in the SAME task (its drawing buffer does not outlive it).
     const stage = this.#stage;
     const shed = cfg.watchdog?.shed;
     const tone = this.#tone;
     let stageDrew = false;
+    let glamBlind = false;
     let toneMs = 0;
     if (stage && !this.#stageLost && pageMode !== "bypass") {
       const metering = cfg.lowLight && !shed?.has("lowLight");
@@ -708,10 +971,14 @@ export class FaceFilterProcessor {
       const sampleDue = metering && this.#framesToSample <= 0;
       if (metering && !sampleDue) this.#framesToSample--;
       const neutral = toneIsNeutral(tone);
+      // The stage holds a look to draw: it draws even with nothing else to
+      // do. While no face is in view it holds none, and a neutral frame is
+      // the raw video as before.
+      const glamDraw = glamOn && stage.glamWanted;
       // A neutral config skips the stage, except for the frames low light
       // needs to see the room: those upload the source for the meter only
       // and the raw video is still what gets drawn.
-      if (!neutral || sampleDue) {
+      if (!neutral || sampleDue || glamDraw) {
         const toneStart = performance.now();
         let drew = false;
         try {
@@ -731,7 +998,17 @@ export class FaceFilterProcessor {
               drew = false;
             }
           }
-          if (drew && !neutral) {
+          // The same check once more, on the first frame the look is really
+          // drawn on (the stage draws plain frames while it holds the look
+          // back, and those leave this check waiting). Black here is the
+          // look's fault, not the stage's (its plain draws passed): the
+          // frame is not copied and the look is dropped below, while the
+          // stage carries on.
+          if (drew && stage.lastDrawUsedGlam && this.#glamBlindCheckDue) {
+            this.#glamBlindCheckDue = false;
+            glamBlind = this.#stageDrewBlind(stage, video, tone.brightness);
+          }
+          if (drew && !glamBlind && (!neutral || glamDraw)) {
             ctx.filter = look ?? "none";
             ctx.drawImage(stage.canvas, 0, 0, canvas.width, canvas.height);
             stageDrew = true;
@@ -754,6 +1031,7 @@ export class FaceFilterProcessor {
     const active = this.#activeStages;
     active.length = 0;
     if (stageDrew) {
+      if (stage?.lastDrawUsedGlam) active.push("glam");
       if (tone.smooth > 0) active.push("touchUp");
       if (tone.lowLightGain > 1) active.push("lowLight");
       if (tone.brightness !== 1) active.push("brightness");
@@ -773,31 +1051,27 @@ export class FaceFilterProcessor {
       ctx.filter = "none";
     }
 
+    // Asked on every frame the look is on: its first frame came out black,
+    // or the stage gave up on it during the draw (that frame was drawn
+    // again without it) or a rebuild. Only the look is dropped.
+    if (glamOn && (glamBlind || this.#stage?.glamAvailable === false)) {
+      this.#failGlam();
+    }
+
     // 2. Landmarks (only when needed; cadence-halved at ladder step ≥ 1).
+    //    With the face-tracked look on, this frame's detect has usually run
+    //    already (step 0b) and its result is reused: never a second detect.
     let landmarks: NormalizedLandmark[] | undefined;
-    if (wantsLandmarks(cfg) && this.#landmarker) {
+    if (stickers && this.#landmarker) {
       const skipDetect = step >= 1 && this.#frameCounter % 2 === 1;
-      if (!skipDetect) {
-        // detectForVideo timestamps must be strictly monotonic.
-        const ts = Math.max(start, this.#lastTimestampMs + 1);
-        this.#lastTimestampMs = ts;
-        try {
-          const result = this.#landmarker.detectForVideo(video, ts);
-          this.#detectFails = 0;
-          const face = result.faceLandmarks?.[0];
-          if (face && face.length) {
-            this.#lastLandmarks = face as NormalizedLandmark[];
-            this.#lastLandmarksAge = 0;
-          } else {
-            this.#lastLandmarksAge++;
-          }
-        } catch (e) {
-          if (++this.#detectFails >= DETECT_FAIL_LIMIT) {
-            console.error("face-filter: landmark detection died", e);
-            this.#failLandmarker();
-          }
-        }
-      } else {
+      if (!skipDetect) this.#runDetect(video, start);
+      const face = this.#frameFace;
+      if (face) {
+        this.#lastLandmarks = face;
+        this.#lastLandmarksAge = 0;
+      } else if (face === null || !this.#detectLatch.ran()) {
+        // No face found, or no detect on this frame. A detect that threw
+        // leaves the age alone.
         this.#lastLandmarksAge++;
       }
       if (this.#lastLandmarksAge <= LANDMARK_HOLD_FRAMES) {
@@ -829,15 +1103,392 @@ export class FaceFilterProcessor {
     }
 
     // The degrade ladder judges the landmark path only: tone time is the
-    // watchdog's to judge, so it is taken out of the frame cost here.
+    // watchdog's to judge, so it is taken out of the frame cost here, and
+    // so is the time the face-tracked look took (its own budget judges it).
     const prevStep = this.#ladder.step;
     const newStep = this.#ladder.record(
-      performance.now() - start - toneMs,
+      performance.now() - start - toneMs - this.#frameGlamMs,
       start,
     );
     if (newStep !== prevStep) this.#reportStatus();
 
     this.#measureFrameRate(start, hidden);
+  }
+
+  // -------------------------------------------------------------------------
+  // Face-tracked look (every failure drops the look and nothing else)
+  // -------------------------------------------------------------------------
+
+  /** Stickers or the masked touch up are using the tracker right now. */
+  #stickersLive(): boolean {
+    return wantsLandmarks(this.#cfg) && !this.#landmarkerFailed;
+  }
+
+  /** Shed for the call. The watchdog's list is the record when there is one. */
+  #glamShed(): boolean {
+    const watchdog = this.#cfg.watchdog;
+    return watchdog ? watchdog.shed.has("glam") : this.#glamBudget.shed();
+  }
+
+  /** The look is asked for and has not been given up (shed or failed). */
+  #glamRequested(): boolean {
+    const cfg = this.#cfg;
+    if (!cfg.tone || !(cfg.glam > 0) || this.#glamFailed) return false;
+    return !this.#glamShed();
+  }
+
+  /** `#glamRequested`, and the stage that has to draw it still can. */
+  #wantsGlam(): boolean {
+    return (
+      this.#glamRequested() &&
+      !this.#toneFailed &&
+      (this.#stage?.glamAvailable ?? true)
+    );
+  }
+
+  #gateHeld(): boolean {
+    const held = this.#cfg.gateHeld;
+    if (!held) return false;
+    try {
+      return !!held();
+    } catch (e) {
+      console.error("face-filter: gateHeld threw", e);
+      return true;
+    }
+  }
+
+  /**
+   * The facts the two tracker-creation rules are asked with, read now.
+   * `forGlam`: the look is asking, or started the load that is asking.
+   */
+  #trackerAsk(forGlam: boolean) {
+    const ask = this.#trackerArgs;
+    ask.stickers = this.#stickersLive();
+    ask.forGlam = forGlam;
+    ask.wanted = this.#wantsGlam();
+    ask.gateHeld = this.#gateHeld();
+    ask.hidden = document.visibilityState === "hidden";
+    ask.shed = this.#glamShed();
+    ask.failed = this.#glamFailed;
+    return ask;
+  }
+
+  /** The page was hidden or shown (also called once at the start). */
+  #noteGlamVisibility() {
+    if (document.visibilityState === "hidden") {
+      this.#glamRecovery.noteHidden();
+    } else {
+      // Acted on at the next frame, not here: only a frame can tell whether
+      // the tracker survived the time in the background.
+      this.#glamReturnDue = true;
+    }
+  }
+
+  /**
+   * The look's part of a frame that comes before the stage draw. Returns
+   * whether the look is on for this frame. With `glam` 0 this is two cheap
+   * tests and nothing else.
+   */
+  #glamBeforeDraw(
+    video: HTMLVideoElement,
+    now: number,
+    hidden: boolean,
+    step: number,
+  ): boolean {
+    // The first frame since the page came back.
+    let recover = false;
+    if (this.#glamReturnDue && !hidden) {
+      this.#glamReturnDue = false;
+      // The first detects after a spell in the background are slow.
+      this.#glamBudget.noteWarmup();
+      recover = this.#glamRecovery.onVisible(now) === "recreate";
+    }
+    if (!this.#glamRequested() || this.#toneFailed) {
+      if (recover) this.#glamRecovery.cancel();
+      if (this.#glamLive) this.#endGlam();
+      return false;
+    }
+
+    const began = performance.now();
+    let on = false;
+    try {
+      on = this.#glamStep(video, now, hidden, step, recover);
+    } catch (e) {
+      // A throw here would end the frame loop and freeze the picture.
+      console.error("face-filter: the face-tracked look threw", e);
+      this.#failGlam();
+    }
+    // `+=`: the step has already taken out a detect that stickers share.
+    this.#frameGlamMs += performance.now() - began;
+    return on;
+  }
+
+  #glamStep(
+    video: HTMLVideoElement,
+    now: number,
+    hidden: boolean,
+    step: number,
+    recover: boolean,
+  ): boolean {
+    // The look came back without a config change (a new call cleared the
+    // shed list): the stage it draws on may not be built.
+    if (!this.#stage) this.#syncStage();
+    if (this.#stage?.glamAvailable === false) {
+      this.#failGlam();
+      return false;
+    }
+    // A budget that is shed while the watchdog does not say so: record it.
+    if (this.#glamBudget.shed()) {
+      this.#shedGlam();
+      return false;
+    }
+    this.#glamLive = true;
+    if (recover) this.#recreateTracker();
+
+    const stickers = this.#stickersLive();
+    if (!this.#landmarker) {
+      // Loading starts only on a visible page with the gate empty. Nothing
+      // is queued: a frame that may not start it leaves it to a later one.
+      if (glamMayCreateTracker(this.#trackerAsk(true))) {
+        this.#ensureLandmarker(true);
+      }
+    } else {
+      const args = this.#glamDetectArgs;
+      args.frame = this.#frameCounter;
+      args.every = this.#glamBudget.every();
+      args.hidden = hidden;
+      args.shed = this.#glamBudget.shed();
+      args.gateHeld = this.#gateHeld();
+      args.msSinceDetect = now - this.#glamDetectAt;
+      // Stickers keep the cadence they have without the look (every frame,
+      // or every second one once degraded); the look only adds detects.
+      const forStickers =
+        stickers && !(step >= 1 && this.#frameCounter % 2 === 1);
+      if (this.#detectLatch.mayDetect(args) || forStickers) {
+        const detectStart = performance.now();
+        const ok = this.#runDetect(video, now);
+        const detectMs = performance.now() - detectStart;
+        this.#glamDetectAt = now;
+        // A detect stickers use too stays in the degrade ladder's frame
+        // cost, where it is without the look.
+        if (stickers) this.#frameGlamMs = -detectMs;
+        if (!ok) {
+          const action = this.#glamRecovery.noteFailure(now);
+          if (action === "recreate") {
+            this.#recreateTracker();
+          } else if (!hidden) {
+            this.#failGlam();
+            return false;
+          }
+          // A throw on a hidden page waits for the page to come back.
+        } else {
+          this.#glamBudget.noteDetect(detectMs, now);
+          if (this.#glamBudget.shed()) {
+            this.#shedGlam();
+            return false;
+          }
+        }
+      }
+    }
+
+    const aspect = video.videoWidth / video.videoHeight;
+    // Geometry measured on another frame shape (a rotated camera) is void.
+    if (this.#glamGeometry && this.#glamAspect !== aspect) {
+      this.#clearGlamLook();
+    }
+    let painted = false;
+    const face = this.#frameFace;
+    if (face) {
+      const geometry = glamGeometry(
+        this.#glamSmoother.smooth(face, now),
+        aspect,
+      );
+      if (geometry) {
+        const painter = (this.#glamPainter ??= new GlamMaskPainter());
+        painter.paint(geometry, aspect);
+        this.#glamGeometry = geometry;
+        this.#glamAspect = aspect;
+        this.#glamSeenAt = now;
+        painted = true;
+      }
+    }
+    this.#sendGlam(now, painted);
+    // The stage compiles the look's shader when it is first handed a look,
+    // so this is where it finds out that it cannot. Asked through a fresh
+    // name: the same question was answered "yes" at the top of this step,
+    // and the answer can have changed since.
+    const stage = this.#stage;
+    if (stage && !stage.glamAvailable) {
+      this.#failGlam();
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Hands the stage the look for this frame: the geometry the coverage map
+   * was last painted from, faded by how long ago that face was seen. The
+   * map itself goes along only when it was just repainted or the stage has
+   * lost its copy.
+   */
+  #sendGlam(now: number, painted: boolean) {
+    const geometry = this.#glamGeometry;
+    const painter = this.#glamPainter;
+    // No face seen yet, or it faded out: the stage already holds no look.
+    if (!geometry || !painter) return;
+    const presence = glamPresence(now - this.#glamSeenAt);
+    if (!(presence > 0)) {
+      // Faded out: one `setGlam(null)`, and the next face starts unsmoothed.
+      this.#clearGlamLook();
+      return;
+    }
+    const stage = this.#stage;
+    if (!stage) return;
+    const setting = this.#cfg.glam;
+    let levels = this.#glamLevels;
+    if (!levels || this.#glamLevelsFor !== setting) {
+      levels = this.#glamLevels = glamLevels(setting);
+      this.#glamLevelsFor = setting;
+    }
+    const map = painted || stage.needsGlamMap ? painter.canvas : null;
+    let input = this.#glamInput;
+    if (!input) {
+      input = this.#glamInput = {
+        levels,
+        presence,
+        warp: geometry.warp,
+        box: geometry.box,
+        aspect: this.#glamAspect,
+        map,
+      };
+    } else {
+      input.levels = levels;
+      input.presence = presence;
+      input.warp = geometry.warp;
+      input.box = geometry.box;
+      input.aspect = this.#glamAspect;
+      input.map = map;
+    }
+    stage.setGlam(input);
+    this.#glamSet = true;
+  }
+
+  /** Nothing of the look is drawn until a face is detected again. */
+  #clearGlamLook() {
+    if (this.#glamSet) {
+      this.#stage?.setGlam(null);
+      this.#glamSet = false;
+    }
+    this.#glamGeometry = undefined;
+    this.#glamSmoother.reset();
+  }
+
+  /**
+   * The look is no longer wanted (switched off, shed or failed): clear it
+   * from the stage, call off a pending second tracker load, close the
+   * tracker unless stickers use it, and release a stage nothing else needs.
+   */
+  #endGlam() {
+    this.#glamLive = false;
+    // Never throws. Frames call this outside any guard of their own, where a
+    // throw would end the frame loop and freeze the picture, and the shed and
+    // failed reports come after it and must not be lost to one. The tracker
+    // goes first, so nothing that throws further down can leave it loaded.
+    try {
+      if (!this.#stickersLive()) this.#releaseLandmarker();
+      this.#clearGlamLook();
+      this.#cancelGlamRecovery();
+      this.#syncStage();
+    } catch (e) {
+      console.error("face-filter: winding the face-tracked look down threw", e);
+    }
+  }
+
+  /**
+   * Tracking ran over its time budget: the look is off for the rest of the
+   * call. Nothing but the notice follows from it.
+   */
+  #shedGlam() {
+    const watchdog = this.#cfg.watchdog;
+    const newly = watchdog ? watchdog.shedNow("glam") : true;
+    this.#endGlam();
+    if (!newly || this.#disposed) return;
+    try {
+      this.#cfg.onToneShed?.("glam");
+    } catch (e) {
+      console.error("face-filter: onToneShed threw", e);
+    }
+  }
+
+  /** The look cannot run on this processor; everything else carries on. */
+  #failGlam() {
+    if (this.#glamFailed) return;
+    this.#glamFailed = true;
+    this.#endGlam();
+    if (this.#disposed) return;
+    try {
+      this.#cfg.onGlamFailed?.();
+    } catch (e) {
+      console.error("face-filter: onGlamFailed threw", e);
+    }
+  }
+
+  /**
+   * The one second chance: close the tracker and have it loaded again. The
+   * load itself starts from the frame loop, under the same rules as the
+   * first one.
+   */
+  #recreateTracker() {
+    this.#releaseLandmarker();
+    if (this.#landmarkerInitInFlight) this.#glamRecreateInFlight = true;
+    else this.#glamRecreateDue = true;
+  }
+
+  /**
+   * Calls off a second tracker load that is pending or in flight, without
+   * spending the allowance. A load in flight is abandoned: its result is
+   * closed when it arrives and is never reported.
+   */
+  #cancelGlamRecovery() {
+    this.#glamRecovery.cancel();
+    const pending = this.#glamRecreateDue || this.#glamRecreateInFlight;
+    this.#glamRecreateDue = false;
+    if (this.#glamRecreateInFlight) {
+      this.#glamRecreateInFlight = false;
+      this.#trackerGen++;
+      this.#landmarkerInitInFlight = false;
+    }
+    // Stickers lost their tracker to that second load: give it back.
+    if (pending) this.#ensureLandmarker();
+  }
+
+  /**
+   * The one detect a frame callback may run; a second call in the same
+   * frame does nothing. The result is left in `#frameFace`. False when the
+   * tracker threw.
+   */
+  #runDetect(video: HTMLVideoElement, now: number): boolean {
+    const tracker = this.#landmarker;
+    if (!tracker || !this.#detectLatch.claim()) return true;
+    // detectForVideo timestamps must be strictly monotonic.
+    const ts = Math.max(now, this.#lastTimestampMs + 1);
+    this.#lastTimestampMs = ts;
+    try {
+      const result = tracker.detectForVideo(video, ts);
+      this.#detectFails = 0;
+      const face = result.faceLandmarks?.[0];
+      this.#frameFace =
+        face && face.length ? (face as NormalizedLandmark[]) : null;
+      return true;
+    } catch (e) {
+      // Stickers put up with a few throws in a row; the look's own rule is
+      // the caller's.
+      if (this.#stickersLive() && ++this.#detectFails >= DETECT_FAIL_LIMIT) {
+        console.error("face-filter: landmark detection died", e);
+        this.#failLandmarker();
+      }
+      return false;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -851,7 +1502,7 @@ export class FaceFilterProcessor {
   #syncStage() {
     const canvas = this.#canvas;
     if (this.#disposed || !canvas) return;
-    if (!wantsToneStage(this.#cfg)) {
+    if (!wantsToneStage(this.#cfg, this.#glamRequested())) {
       if (this.#stage) this.#dropStage();
       return;
     }
@@ -863,6 +1514,7 @@ export class FaceFilterProcessor {
       stage.onContextRestored = this.#onStageRestored;
       stage.resize(canvas.width, canvas.height);
       this.#blindCheckDue = true;
+      this.#glamBlindCheckDue = true;
     } catch (e) {
       console.error("face-filter: tone stage unavailable", e);
       this.#failTone();
@@ -906,6 +1558,7 @@ export class FaceFilterProcessor {
     this.#stageLost = false;
     this.#stageBlind = false;
     this.#blindCheckDue = true;
+    this.#glamBlindCheckDue = true;
     this.#missSince = -1;
   }
 
@@ -981,6 +1634,9 @@ export class FaceFilterProcessor {
     this.#stageLost = false;
     this.#stageBlind = false;
     this.#blindCheckDue = false;
+    this.#glamBlindCheckDue = false;
+    // A stage built later starts without a look.
+    this.#glamSet = false;
     this.#missSince = -1;
     this.#activeStages.length = 0;
     this.#resetMeter();
@@ -1021,7 +1677,9 @@ export class FaceFilterProcessor {
    * the frame count into `processedFps` and the rVFC `presentedFrames` delta
    * into `sourceFps` (0 without rVFC: unknown), then feeds the watchdog, but
    * only on a visible page, only while a tone stage is being drawn, and never
-   * while the landmarker shares the frame.
+   * while stickers or the masked touch up have the landmarker in the frame.
+   * The face-tracked look does not stop the feed: it is a stage like the
+   * others here ("glam"), and the first to be shed.
    */
   #measureFrameRate(now: number, hidden: boolean) {
     if (this.#fpsWindowStart < 0) {
@@ -1045,21 +1703,23 @@ export class FaceFilterProcessor {
 
     const watchdog = this.#cfg.watchdog;
     if (!watchdog || hidden || this.#activeStages.length === 0) return;
-    // With the landmarker in the frame (loading or detecting) a slow frame
-    // is not evidence against tone: the degrade ladder owns that case.
-    if (wantsLandmarks(this.#cfg) && !this.#landmarkerFailed) return;
-    const shedNow = watchdog.sample(
+    // With the landmarker in the frame for stickers or the masked touch up
+    // (loading or detecting) a slow frame is not evidence against tone: the
+    // degrade ladder owns that case. The face-tracked look alone does not
+    // count as that.
+    if (this.#stickersLive()) return;
+    const shedStage = watchdog.sample(
       this.#sourceFps,
       this.#processedFps,
       now,
       this.#activeStages,
     );
-    if (!shedNow) return;
+    if (!shedStage) return;
     // The stage is in `watchdog.shed` already, so the very next frame draws
-    // it neutral.
-    if (shedNow === "lowLight") this.#resetMeter();
+    // it neutral (for the look: winds it down and closes its tracker).
+    if (shedStage === "lowLight") this.#resetMeter();
     try {
-      this.#cfg.onToneShed?.(shedNow);
+      this.#cfg.onToneShed?.(shedStage);
     } catch (e) {
       console.error("face-filter: onToneShed threw", e);
     }
@@ -1147,28 +1807,56 @@ export class FaceFilterProcessor {
   // Landmarker lifecycle (lazy, guarded by #cfgGen/#disposed — plan §2)
   // -------------------------------------------------------------------------
 
-  #ensureLandmarker() {
+  /**
+   * `forGlam` false: stickers or the masked touch up ask (any time).
+   * `forGlam` true: the face-tracked look asks; only the frame loop does,
+   * once the page is visible and the gate is empty. One tracker serves both,
+   * so whoever asks first loads it. A load that may not create the tracker
+   * when its files are in ends with nothing loaded and nothing failed.
+   */
+  #ensureLandmarker(forGlam = false) {
     if (
-      !wantsLandmarks(this.#cfg) ||
       this.#landmarker ||
-      this.#landmarkerFailed ||
       this.#landmarkerInitInFlight ||
-      this.#disposed
+      this.#disposed ||
+      (forGlam
+        ? !this.#wantsGlam()
+        : !wantsLandmarks(this.#cfg) || this.#landmarkerFailed)
     ) {
       return;
     }
     this.#landmarkerInitInFlight = true;
+    const gen = ++this.#trackerGen;
+    // Any load that starts while a second load is owed is that load.
+    this.#glamRecreateInFlight = this.#glamRecreateDue;
+    this.#glamRecreateDue = false;
     void (async () => {
-      let lm: FaceLandmarker | undefined;
+      let made: CreatedTracker | "wait" | undefined;
       try {
-        lm = await this.#createLandmarker();
+        made = await this.#createLandmarker(forGlam);
       } catch (e) {
         console.error("face-filter: landmarker init failed", e);
-      } finally {
-        this.#landmarkerInitInFlight = false;
       }
-      if (!lm) {
-        this.#failLandmarker();
+      // Abandoned while it loaded: close it and say nothing to anyone.
+      if (gen !== this.#trackerGen) {
+        if (made !== "wait") this.#closeTracker(made?.tracker);
+        return;
+      }
+      this.#landmarkerInitInFlight = false;
+      const recreate = this.#glamRecreateInFlight;
+      this.#glamRecreateInFlight = false;
+      if (made === "wait") {
+        // Not created and not failed. Nothing is queued and no timer runs:
+        // the next frame that may start a load starts one. A second load
+        // that had to wait is still owed, and its allowance is not spent.
+        if (recreate) this.#glamRecreateDue = true;
+        return;
+      }
+      if (recreate) this.#glamRecovery.noteRecreated(!!made);
+      if (!made) {
+        // Each user of the tracker fails on its own account.
+        if (!forGlam || wantsLandmarks(this.#cfg)) this.#failLandmarker();
+        if (!this.#disposed && this.#glamRequested()) this.#failGlam();
         return;
       }
       // Post-destroy resolve: free immediately — this is the leak class the
@@ -1177,26 +1865,43 @@ export class FaceFilterProcessor {
       // during the ~1s init is NOT staleness — discarding on #cfgGen would
       // chain throwaway 3.7MB model re-inits on every slider tick.
       if (this.#disposed) {
-        lm.close();
+        this.#closeTracker(made.tracker);
         return;
       }
-      if (!wantsLandmarks(this.#cfg)) {
+      if (!wantsLandmarks(this.#cfg) && !this.#wantsGlam()) {
         // Config dropped to look-only while we were initializing.
-        lm.close();
+        this.#closeTracker(made.tracker);
         return;
       }
-      this.#landmarker = lm;
+      this.#landmarker = made.tracker;
+      this.#trackerDelegate = made.delegate;
+      this.#trackerInitMs = made.ms;
+      // The first detects of a new tracker are slow whatever the device.
+      this.#glamBudget.noteWarmup();
       this.#reportStatus();
     })();
   }
 
-  /** GPU first, one CPU retry — tasks-vision has NO internal fallback (plan §2). */
-  async #createLandmarker(): Promise<FaceLandmarker> {
-    const { FaceLandmarker: FL, FilesetResolver } =
-      await import("@mediapipe/tasks-vision");
-    const fileset = await FilesetResolver.forVisionTasks(
-      `${MEDIAPIPE_BASE}/wasm`,
-    );
+  /**
+   * GPU first, one CPU retry — tasks-vision has NO internal fallback (plan §2).
+   * `ms` is the wait for the tracker to be created, a failed GPU try
+   * included; loading the library before it is not counted.
+   *
+   * "wait": the tracker would be created for the face-tracked look alone
+   * and the look may not have one created right now (see
+   * `glamTrackerLoadMustWait`). That is asked right before each create, not
+   * only when the load starts: the library can take seconds to arrive, and
+   * the create is the part that blocks the thread. The library and the file
+   * set are kept, so the load that follows asks again at once.
+   */
+  async #createLandmarker(forGlam: boolean): Promise<CreatedTracker | "wait"> {
+    let kit = this.#trackerKit;
+    if (!kit) {
+      const { FaceLandmarker: FL, FilesetResolver: resolver } =
+        await import("@mediapipe/tasks-vision");
+      const fileset = await resolver.forVisionTasks(`${MEDIAPIPE_BASE}/wasm`);
+      kit = this.#trackerKit = { FL, fileset, gpuFailed: false };
+    }
     const options = (delegate: "GPU" | "CPU") => ({
       baseOptions: {
         modelAssetPath: `${MEDIAPIPE_BASE}/models/face_landmarker.task`,
@@ -1207,21 +1912,67 @@ export class FaceFilterProcessor {
       outputFaceBlendshapes: false,
       outputFacialTransformationMatrixes: false,
     });
-    try {
-      return await FL.createFromOptions(fileset, options("GPU"));
-    } catch (e) {
-      console.warn("face-filter: GPU delegate failed, retrying CPU", e);
-      const lm = await FL.createFromOptions(fileset, options("CPU"));
-      // CPU sessions start pre-degraded (landmark cadence halved, plan §8).
+    // The diagnostic switch: this load and the ones after it go straight to
+    // the CPU try, which has its own check in front of it.
+    if (trackerCpuForced()) kit.gpuFailed = true;
+    const began = performance.now();
+    if (!kit.gpuFailed) {
+      if (glamTrackerLoadMustWait(this.#trackerAsk(forGlam))) return "wait";
+      try {
+        const tracker = await kit.FL.createFromOptions(
+          kit.fileset,
+          options("GPU"),
+        );
+        return { tracker, delegate: "GPU", ms: performance.now() - began };
+      } catch (e) {
+        console.warn("face-filter: GPU delegate failed, retrying CPU", e);
+      }
+    }
+    // The GPU try can have taken a while too: ask again before the CPU one.
+    if (glamTrackerLoadMustWait(this.#trackerAsk(forGlam))) {
+      // The load that follows goes straight to the CPU.
+      kit.gpuFailed = true;
+      return "wait";
+    }
+    const tracker = await kit.FL.createFromOptions(kit.fileset, options("CPU"));
+    // CPU sessions start pre-degraded (landmark cadence halved, plan §8).
+    // Not when only the face-tracked look uses the tracker: its cadence
+    // has one owner, its own time budget. Stickers that join such a
+    // tracker later are pre-degraded then (`setConfig`).
+    if (wantsLandmarks(this.#cfg) || !this.#wantsGlam()) {
       this.#ladder.reset(Math.max(1, this.#ladder.step));
-      return lm;
+    }
+    return { tracker, delegate: "CPU", ms: performance.now() - began };
+  }
+
+  /**
+   * The one place a tracker is closed. A close that throws is logged and
+   * nothing more: several of the callers are inside a frame callback, where
+   * a throw would end the frame loop and freeze the published picture.
+   */
+  #closeTracker(tracker: FaceLandmarker | undefined) {
+    if (!tracker) return;
+    try {
+      tracker.close();
+    } catch (e) {
+      console.error("face-filter: closing the face tracker threw", e);
     }
   }
 
+  /** Lets go of the loaded tracker, then closes it. */
+  #releaseLandmarker() {
+    const tracker = this.#landmarker;
+    this.#landmarker = undefined;
+    this.#closeTracker(tracker);
+  }
+
+  /**
+   * Stickers and the masked touch up have lost tracking for good. The
+   * tracker itself stays while the face-tracked look is using it.
+   */
   #failLandmarker() {
     this.#landmarkerFailed = true;
-    this.#landmarker?.close();
-    this.#landmarker = undefined;
+    if (!this.#wantsGlam()) this.#releaseLandmarker();
     this.#lastLandmarks = undefined;
     this.#reportStatus();
   }

@@ -87,8 +87,10 @@ export {
   CameraEffectsController,
   SEGMENTATION_ASSET_PATHS,
   cameraBackgroundSupported,
+  cameraGlamSupported,
   cameraToneSupported,
   faceFiltersSupported,
+  probeCameraGlam,
 } from "./cameraEffects";
 export type {
   CameraBackgroundMode,

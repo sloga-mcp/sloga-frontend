@@ -474,6 +474,11 @@ export interface SlotSettings {
   brightness: number;
   /** Low light switch. Tone work: needs no landmarks. */
   lowLight: boolean;
+  /**
+   * The face-tracked look is switched on. It follows the face, so unlike
+   * low light it needs landmarks.
+   */
+  glam: boolean;
 }
 
 export interface SlotCaps {
@@ -483,6 +488,12 @@ export interface SlotCaps {
   hwBrightness: boolean;
   /** Whether the tone stage (low light, whole-frame touch up) can run here. */
   toneSupported: boolean;
+  /**
+   * Whether this build and device can run the face-tracked look. Where it
+   * cannot, a stored switch stays inert and never asks for the slot or for
+   * landmarks.
+   */
+  glamSupported: boolean;
 }
 
 /** Whether any face-filter feature is requested (regardless of support). */
@@ -502,10 +513,15 @@ export function toneSettingsActive(s: SlotSettings, caps: SlotCaps): boolean {
  * True only when MediaPipe landmarks are really required AND allowed. A
  * device without face-filter support never asks for them, whatever the
  * settings say, so it never requests the MediaPipe files: its touch up is
- * the whole-frame tone smooth, and a stored sticker id stays inert.
+ * the whole-frame tone smooth, and a stored sticker id stays inert. The
+ * face-tracked look asks for them on its own capability, because a device
+ * can support it without supporting stickers.
  */
 export function needsLandmarks(s: SlotSettings, caps: SlotCaps): boolean {
-  return caps.faceFiltersSupported && (!!s.faceFilterId || s.beautify > 0);
+  return (
+    (caps.faceFiltersSupported && (!!s.faceFilterId || s.beautify > 0)) ||
+    (!!caps.glamSupported && !!s.glam)
+  );
 }
 
 /**
@@ -513,13 +529,16 @@ export function needsLandmarks(s: SlotSettings, caps: SlotCaps): boolean {
  * Background wins over filters (v1 mutual exclusion — filters stay INERT and
  * the UI shows a "paused" badge). The face pipeline holds the slot for a
  * face-filter setting the device supports, or for tone work (low light,
- * touch up) on a tone-capable device. The canvas brightness fallback only
- * ever runs when NOTHING else holds the slot. All defaults leave it empty.
+ * touch up) on a tone-capable device, or for the face-tracked look where
+ * that can run (a running background still outranks it). The canvas
+ * brightness fallback only ever runs when NOTHING else holds the slot. All
+ * defaults leave it empty.
  */
 export function pickSlotOccupant(s: SlotSettings, caps: SlotCaps): SlotOccupant {
   if (s.backgroundMode !== "none" && caps.backgroundSupported) {
     return "background";
   }
+  if (caps.glamSupported && s.glam) return "face";
   if (
     (caps.faceFiltersSupported && faceSettingsActive(s)) ||
     toneSettingsActive(s, caps)

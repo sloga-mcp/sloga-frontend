@@ -5,7 +5,11 @@ import { Trans } from "@lingui-solid/solid/macro";
 import { LocalVideoTrack } from "livekit-client";
 
 import type { CameraBackgroundStatus } from "@revolt/rtc";
-import { CameraEffectsController, useVoice } from "@revolt/rtc";
+import {
+  CameraEffectsController,
+  probeCameraGlam,
+  useVoice,
+} from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import { Button, CategoryButton, Column, Text } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -86,6 +90,12 @@ export function CameraPreview() {
     const t = track;
     if (!t) return;
     const seq = ++applySeq;
+    // A phone has to find the face tracker's files before Glam can run, and
+    // the controller asks about them synchronously. Never rejects; answers
+    // at once everywhere else. The settings are read after it.
+    await probeCameraGlam();
+    // Torn down during the wait: nothing may be attached to a stopped track.
+    if (t !== track) return;
     // apply() never throws; the outcome is the result it resolves with.
     const result = await effects.apply(t, {
       backgroundMode: settings.cameraBackgroundMode,
@@ -95,6 +105,7 @@ export function CameraPreview() {
       faceFilterId: settings.cameraFaceFilterId,
       beautify: settings.cameraBeautify,
       colorLookId: settings.cameraColorLookId,
+      glam: settings.cameraGlam ?? 0,
       lowLight: settings.cameraLowLight,
     });
     // Torn down while the apply ran (stop / device change / call took over /
@@ -162,6 +173,9 @@ export function CameraPreview() {
           stream = s;
           track = new LocalVideoTrack(s.getVideoTracks()[0]);
           setError(false);
+          // A new preview is a new try: a Glam that failed or was turned off
+          // for being slow in the last one is not held against this one.
+          effects.resetToneWatchdog();
           await applyEffects();
           // No stale re-check here: if we were superseded, stopIdlePreview() has
           // already torn this run down and started the newer one — re-running it
@@ -182,6 +196,7 @@ export function CameraPreview() {
         () => settings.cameraFaceFilterId,
         () => settings.cameraBeautify,
         () => settings.cameraColorLookId,
+        () => settings.cameraGlam,
         () => settings.cameraLowLight,
       ],
       () => {

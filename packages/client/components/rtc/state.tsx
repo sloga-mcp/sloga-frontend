@@ -409,7 +409,9 @@ import {
   type CameraEffectSettings,
   type PrebuiltBackground,
   CameraEffectsController,
+  probeCameraGlam,
 } from "./cameraEffects";
+import type { ToneStageName } from "./cameraTonePolicy";
 import { createCaptionEngine } from "./captions/captionEngine";
 import { LiveCaptions } from "./captions/liveCaptions";
 import {
@@ -434,7 +436,11 @@ import {
   encryptionSetupAvailable,
 } from "./e2eeDeviceReadiness";
 import { faceSettingsActive } from "./faceFilterCatalog";
-import type { CameraToneStats } from "./faceFilterProcessor";
+import type {
+  CameraToneStats,
+  GlamState,
+  GlamStats,
+} from "./faceFilterProcessor";
 import { type CallAudioBracket, createCallAudioBracket } from "./iosCallAudio";
 import { fetchIosCallSwitchValue, iosCallSwitch } from "./iosCallSwitch";
 import { keyTickEnabled, startKeyFreshnessTick } from "./keyFreshnessTick";
@@ -910,14 +916,16 @@ type CallEncryptionLatch = {
  * `effect-failed`: a face filter or the brightness fallback dropped and the
  * plain camera continues; also raised when low light, touch up and the
  * shader brightness stopped for good on this camera (the picture continues
- * without them).
+ * without them), and when the face-tracked look could not run.
  * `effect-slow`: one of those was slowing the video and was turned off for
  * the rest of the call.
+ * `glam-slow`: the same for the face-tracked look, which has its own text.
  */
 export type CameraEffectNotice =
   | "background-failed"
   | "effect-failed"
-  | "effect-slow";
+  | "effect-slow"
+  | "glam-slow";
 
 /**
  * What a camera-on is about to do, decided by `#planCameraOn` and checked
@@ -1002,8 +1010,13 @@ class Voice {
    * that occupant last failed with. The same failure is not announced again
    * (every later sync retries the effect and would re-raise a notice the
    * user has dismissed) until those settings change. Cleared on leave.
+   * The face-tracked look has its own entry, set once when it could not run:
+   * it stays off for the rest of the call, so it is said once.
    */
-  #cameraEffectFailedWith = new Map<"face" | "brightness" | "tone", string>();
+  #cameraEffectFailedWith = new Map<
+    "face" | "brightness" | "tone" | "glam",
+    string
+  >();
   /**
    * `effect-slow` has been raised in this call. It is raised once: the stage
    * that was shed stays off until the call ends, so there is nothing new to
@@ -1011,13 +1024,20 @@ class Voice {
    */
   #cameraEffectSlowNoted = false;
   /**
+   * `glam-slow` has been raised in this call. Kept apart from the latch
+   * above so that neither notice swallows the other: each says something
+   * different and each is said once. Cleared on leave.
+   */
+  #cameraGlamSlowNoted = false;
+  /**
    * The notice the camera's own processor raised (`#noteCameraToneShed`,
-   * `#noteCameraToneFailed`), while it is the one shown. A sync that
-   * succeeds clears a notice a SYNC raised; these two report something no
-   * sync undoes, and syncs fire on every gate edge, so one would take the
-   * notice down before it was read. Dropped by EVERY other write of the
-   * notice (the signal's setter does it: a dismiss, a leave, another notice
-   * taking its place), so a stale mark can never keep a later notice up.
+   * `#noteCameraGlamShed`, `#noteCameraToneFailed`, `#noteCameraGlamFailed`),
+   * while it is the one shown. A sync that succeeds clears a notice a SYNC
+   * raised; these report something no sync undoes, and syncs fire on every
+   * gate edge, so one would take the notice down before it was read. Dropped
+   * by EVERY other write of the notice (the signal's setter does it: a
+   * dismiss, a leave, another notice taking its place), so a stale mark can
+   * never keep a later notice up.
    */
   #cameraToneNotice: CameraEffectNotice | undefined;
 
@@ -2883,7 +2903,7 @@ class Voice {
     >();
     this.cameraEffectNotice = effectNotice;
     // Every write of the notice drops the mark of one the processor raised;
-    // the two tone handlers put it back after their own write. So the mark
+    // the processor's handlers put it back after their own write. So the mark
     // is set exactly while the notice shown is the processor's.
     this.#setCameraEffectNotice = (notice) => {
       this.#cameraToneNotice = undefined;
@@ -3108,10 +3128,12 @@ class Voice {
       this.#setCameraFaceFilterStatus(s.landmarksFailed ? "failed" : "active");
       this.#setCameraFaceFilterDegraded(s.degraded);
     };
-    // The processor's own reports about low light, touch up and the shader
-    // brightness. Neither is a sync outcome and neither touches the sender.
-    this.#cameraEffects.onToneShed = () => this.#noteCameraToneShed();
+    // The processor's own reports about low light, touch up, the shader
+    // brightness and the face-tracked look. None is a sync outcome, none
+    // touches the sender and none writes a setting.
+    this.#cameraEffects.onToneShed = (stage) => this.#noteCameraToneShed(stage);
     this.#cameraEffects.onToneFailed = () => this.#noteCameraToneFailed();
+    this.#cameraEffects.onGlamFailed = () => this.#noteCameraGlamFailed();
 
     this.openModal = modals.openModal;
     this.#closeModalsOfType = modals.removeOfType;
@@ -6564,6 +6586,7 @@ class Voice {
       // re-armed where "the slow notice, once per call" is.
       this.#cameraEffectSlowNoted = false;
       this.#cameraEffects.resetToneWatchdog();
+      this.#cameraGlamSlowNoted = false;
 
       // Not during the rejoin loop's own churn: tearing down the dead room
       // before an attempt (and after a failed one) is not the user leaving,
@@ -9357,6 +9380,12 @@ class Voice {
       // The settings are read ONCE per pass: what `plan` judged is exactly
       // what `apply` builds.
       plan: async (track) => {
+        // A phone has to find the face tracker's files before the look can
+        // be planned, and the controller asks about them synchronously.
+        // Waited for BEFORE the settings are read: the snapshot and the
+        // plan are of the moment after the wait, and the driver reads the
+        // gate after this whole function. Answers at once everywhere else.
+        await probeCameraGlam();
         const snapshot = this.#cameraEffectSettings();
         const plan = await this.#cameraEffects.plan(track, snapshot);
         // An early hold (`#holdUnguardedCamera`) this plan no longer needs.
@@ -10550,6 +10579,7 @@ class Voice {
       faceFilterId: this.#settings.cameraFaceFilterId,
       beautify: this.#settings.cameraBeautify ?? 0,
       colorLookId: this.#settings.cameraColorLookId,
+      glam: this.#settings.cameraGlam ?? 0,
       lowLight: this.#settings.cameraLowLight ?? false,
     };
   }
@@ -10687,7 +10717,7 @@ class Voice {
       const settings = this.#cameraEffectSettings();
       const failedWith =
         outcome.failed === "face"
-          ? `${settings.faceFilterId}|${settings.beautify}|${settings.colorLookId}|${settings.lowLight}`
+          ? `${settings.faceFilterId}|${settings.beautify}|${settings.colorLookId}|${settings.lowLight}|${settings.glam > 0}`
           : `${settings.brightness}`;
       if (
         live &&
@@ -10703,6 +10733,10 @@ class Voice {
       // a stage it shed or lost stays that way whatever this sync did.
       if (!this.#cameraToneNotice) this.#setCameraEffectNotice(undefined);
     }
+    // A look that failed while the camera was off is reported now that it
+    // is on: the controller reports it once and will not say it again.
+    if (live && this.#cameraEffectFailedWith.get("glam") === "unsaid")
+      this.#noteCameraGlamFailed();
   }
 
   /**
@@ -10712,14 +10746,35 @@ class Voice {
    * nothing new to say, and a notice the user dismissed stays dismissed.
    * Only for a camera that is published and on in the CURRENT room, so a
    * late report from a call that has ended shows nothing in the next one.
+   * The face-tracked look has its own notice and its own latch. Nothing is
+   * written to the store and nothing is synced: the switch stays as the
+   * user left it and the sender is not touched.
    */
-  #noteCameraToneShed(): void {
+  #noteCameraToneShed(stage: ToneStageName): void {
+    if (stage === "glam") {
+      this.#noteCameraGlamShed();
+      return;
+    }
     if (this.#cameraEffectSlowNoted) return;
     const track = this.#publishedCameraTrack();
     if (!track || track.isMuted) return;
     this.#cameraEffectSlowNoted = true;
     this.#setCameraEffectNotice("effect-slow");
     this.#cameraToneNotice = "effect-slow";
+  }
+
+  /**
+   * The face-tracked look was shed for being slow. Raises `glam-slow`, once
+   * per call and whether or not `effect-slow` was raised before it; the same
+   * live-camera rule as above. A report only: no store write, no sync.
+   */
+  #noteCameraGlamShed(): void {
+    if (this.#cameraGlamSlowNoted) return;
+    const track = this.#publishedCameraTrack();
+    if (!track || track.isMuted) return;
+    this.#cameraGlamSlowNoted = true;
+    this.#setCameraEffectNotice("glam-slow");
+    this.#cameraToneNotice = "glam-slow";
   }
 
   /**
@@ -10736,6 +10791,30 @@ class Voice {
     if (this.#cameraEffectFailedWith.get("tone") === failedWith) return;
     this.#cameraEffectFailedWith.set("tone", failedWith);
     this.#setCameraEffectNotice("effect-failed");
+    this.#cameraToneNotice = "effect-failed";
+  }
+
+  /**
+   * The face-tracked look could not run and the picture continues without
+   * it. Raises `effect-failed`, once per call: it stays off until the call
+   * ends, so a notice the user dismissed must not come back. A report only:
+   * no store write, no sync.
+   *
+   * The tracker loads outside the frame loop, so its failure can arrive
+   * while the camera is off, and the controller reports it once. That one
+   * is remembered ("unsaid") and raised by the sync that follows the unmute
+   * (`#noteCameraEffectsOutcome`). The leave forgets it with the map.
+   */
+  #noteCameraGlamFailed(): void {
+    const track = this.#publishedCameraTrack();
+    if (!track) return;
+    if (this.#cameraEffectFailedWith.get("glam") === "failed") return;
+    if (track.isMuted) {
+      this.#cameraEffectFailedWith.set("glam", "unsaid");
+      return;
+    }
+    this.#setCameraEffectNotice("effect-failed");
+    this.#cameraEffectFailedWith.set("glam", "failed");
     this.#cameraToneNotice = "effect-failed";
   }
 
@@ -10827,6 +10906,7 @@ class Voice {
       beautify: this.#settings.cameraBeautify ?? 0,
       colorLookId: this.#settings.cameraColorLookId,
       brightness: this.#settings.cameraBrightness ?? 100,
+      glam: (this.#settings.cameraGlam ?? 0) > 0,
       lowLight: this.#settings.cameraLowLight ?? false,
     });
   }
@@ -10844,12 +10924,31 @@ class Voice {
   }
 
   /**
+   * Set the strength of the face-tracked look (0 turns it off). Persists to
+   * the store and reapplies through the same one sync as low light, under
+   * the same rules. Nothing here reaches the controller or the track.
+   */
+  setCameraGlam(value: number): void {
+    this.#settings.cameraGlam = value;
+    void this.#applyCameraEffects();
+  }
+
+  /**
    * What the camera's tone stage is doing right now, for the stats overlay.
    * A plain read, not reactive. Undefined when the face pipeline does not
    * hold the camera's processor slot.
    */
   cameraToneStats(): CameraToneStats | undefined {
     return this.#cameraEffects.toneStats();
+  }
+
+  /**
+   * Where the face-tracked look stands and what its tracking costs, for the
+   * diagnostic line. A plain read, not reactive. Undefined when the face
+   * pipeline does not hold the camera's processor slot.
+   */
+  cameraGlamInfo(): { state: GlamState; stats: GlamStats } | undefined {
+    return this.#cameraEffects.glamInfo;
   }
 
   /**

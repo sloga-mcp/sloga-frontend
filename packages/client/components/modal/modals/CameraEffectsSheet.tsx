@@ -2,6 +2,7 @@ import {
   For,
   Show,
   createEffect,
+  createMemo,
   createResource,
   createSignal,
   onCleanup,
@@ -21,13 +22,17 @@ import {
   FACE_FILTERS,
   addUpload,
   cameraBackgroundSupported,
+  cameraGlamSupported,
   cameraToneSupported,
   faceFiltersSupported,
   listBackgrounds,
+  probeCameraGlam,
   resolveBackgroundUrl,
   useVoice,
 } from "@revolt/rtc";
 import { TOUCH_UP_SWITCH_STRENGTH } from "@revolt/rtc/cameraTonePolicy";
+import type { GlamState, GlamStats } from "@revolt/rtc/faceFilterProcessor";
+import { GLAM_SWITCH_STRENGTH } from "@revolt/rtc/glamPolicy";
 import { useState } from "@revolt/state";
 import {
   CameraColorLookIds,
@@ -139,6 +144,23 @@ function describeTone(stats: CameraToneStats | undefined): string {
   ].join(" · ");
 }
 
+/** Where the face-tracked look stands in the call, and its tracking numbers. */
+type GlamInfo = { state: GlamState; stats: GlamStats } | undefined;
+
+/** The face-tracked look's state as a second line of the same kind. */
+function describeGlam(info: GlamInfo): string {
+  if (!info) return "glam: no face pipeline";
+
+  const { state, stats } = info;
+  return [
+    `glam ${state}`,
+    `detect ${stats.detectMeanMs.toFixed(1)} / ${stats.detectMaxMs.toFixed(1)} ms`,
+    `every ${stats.every}`,
+    `delegate ${stats.delegate}`,
+    `init ${Math.round(stats.initMs)} ms`,
+  ].join(" · ");
+}
+
 /** Presses on the panel's title, and the time they must fall within. */
 const DIAGNOSTIC_PRESSES = 5;
 const DIAGNOSTIC_PRESS_WINDOW_MS = 3000;
@@ -168,6 +190,65 @@ function Sheet(props: { onClose: () => void }) {
   const tone = cameraToneSupported();
   const background = cameraBackgroundSupported();
   const faceFilters = faceFiltersSupported();
+
+  // The face-tracked look is the exception: a phone has to find the face
+  // tracker's files before it can say yes, so the answer may arrive after
+  // the panel has opened.
+  const [glam, setGlam] = createSignal(cameraGlamSupported());
+  let open = true;
+  onCleanup(() => {
+    open = false;
+  });
+  onMount(() => {
+    probeCameraGlam().then(
+      (ok) => {
+        if (open) setGlam(ok);
+      },
+      () => {
+        // No answer: the row stays as it was
+      },
+    );
+  });
+
+  /** The stored switch, apart from the strength it is stored with. */
+  const glamOn = createMemo(() => voice.cameraGlam > 0);
+
+  const readGlam = (): GlamInfo => {
+    try {
+      return untrack(() => voiceContext.cameraGlamInfo());
+    } catch {
+      return undefined;
+    }
+  };
+
+  // Where the look stands in this call, read on a timer while it is switched
+  // on: nothing announces a change. The first read is taken at the moment
+  // the switch went on (or the panel opened), when the picture may not have
+  // caught up yet, so an "off" there says nothing and is left out.
+  const [glamState, setGlamState] = createSignal<GlamState>();
+  createEffect(() => {
+    if (!glam() || !glamOn()) {
+      setGlamState(undefined);
+      return;
+    }
+
+    const first = readGlam()?.state;
+    setGlamState(first === "off" ? undefined : first);
+    const timer = setInterval(() => setGlamState(readGlam()?.state), 1000);
+    onCleanup(() => clearInterval(timer));
+  });
+
+  /**
+   * Whether the look is standing in for touch up. It does while it is
+   * switched on, until it is no longer drawn in this call: turned off for
+   * being slow, failed, or left out of the picture although the switch is on
+   * (what a failure leaves behind). Touch up is then drawn again by itself.
+   */
+  const touchUpInGlam = () => {
+    if (!glam() || !glamOn()) return false;
+    const state = glamState();
+    return state !== "shed" && state !== "failed" && state !== "off";
+  };
 
   let panel: HTMLDivElement | undefined;
 
@@ -205,13 +286,18 @@ function Sheet(props: { onClose: () => void }) {
     }
   };
   const [toneLine, setToneLine] = createSignal("");
+  const [glamLine, setGlamLine] = createSignal("");
 
-  // The timer runs only while the line is shown
+  // The timer runs only while the lines are shown
   createEffect(() => {
     if (!diagnosticShown()) return;
 
-    setToneLine(readTone());
-    const timer = setInterval(() => setToneLine(readTone()), 1000);
+    const read = () => {
+      setToneLine(readTone());
+      setGlamLine(describeGlam(readGlam()));
+    };
+    read();
+    const timer = setInterval(read, 1000);
     onCleanup(() => clearInterval(timer));
   });
 
@@ -286,7 +372,10 @@ function Sheet(props: { onClose: () => void }) {
           <SwitchRow
             title={t`Touch up`}
             description={t`Gently smooths your picture.`}
-            checked={voice.cameraBeautify > 0}
+            // The stored touch up is left alone while the look stands in
+            // for it, and is drawn again by itself when the look stops
+            checked={!touchUpInGlam() && voice.cameraBeautify > 0}
+            disabled={touchUpInGlam()}
             onToggle={() =>
               settle(
                 voiceContext.setCameraFaceFilter({
@@ -296,15 +385,59 @@ function Sheet(props: { onClose: () => void }) {
               )
             }
           />
+          <Show when={touchUpInGlam()}>
+            <Muted>
+              <Trans>Touch up is part of Glam.</Trans>
+            </Muted>
+          </Show>
+        </Show>
+
+        <Show when={glam()}>
+          <SwitchRow
+            title={t`Glam`}
+            description={t`Follows your face: smooth skin, soft makeup.`}
+            checked={glamOn()}
+            onToggle={() =>
+              voiceContext.setCameraGlam(glamOn() ? 0 : GLAM_SWITCH_STRENGTH)
+            }
+          />
+          <Show when={glamOn()}>
+            <Label>
+              <Trans>Strength</Trans>
+            </Label>
+            <Slider
+              min={1}
+              max={100}
+              step={1}
+              value={voice.cameraGlam}
+              onInput={(e) =>
+                voiceContext.setCameraGlam(Number(e.currentTarget.value))
+              }
+            />
+            <Show when={glamState() === "failed"}>
+              <Muted>
+                <Trans>Glam could not start on this device.</Trans>
+              </Muted>
+            </Show>
+          </Show>
         </Show>
 
         <Show
           when={tone && background && voice.cameraBackgroundMode !== "none"}
         >
           <Muted>
-            <Trans>
-              Low light and touch up pause while a background is on.
-            </Trans>
+            <Show
+              when={glam()}
+              fallback={
+                <Trans>
+                  Low light and touch up pause while a background is on.
+                </Trans>
+              }
+            >
+              <Trans>
+                Low light, touch up and Glam pause while a background is on.
+              </Trans>
+            </Show>
           </Muted>
         </Show>
 
@@ -421,6 +554,9 @@ function Sheet(props: { onClose: () => void }) {
 
         <Show when={diagnosticShown()}>
           <Diagnostic aria-hidden="true">{toneLine()}</Diagnostic>
+          <Show when={glam()}>
+            <Diagnostic aria-hidden="true">{glamLine()}</Diagnostic>
+          </Show>
         </Show>
       </Body>
     </Panel>
@@ -435,6 +571,8 @@ function SwitchRow(props: {
   title: string;
   description: string;
   checked: boolean;
+  /** Shown but not pressable: something else decides it for now. */
+  disabled?: boolean;
   onToggle: () => void;
 }) {
   return (
@@ -443,7 +581,10 @@ function SwitchRow(props: {
       role="switch"
       class={switchRow}
       aria-checked={props.checked}
-      onClick={() => props.onToggle()}
+      disabled={props.disabled}
+      onClick={() => {
+        if (!props.disabled) props.onToggle();
+      }}
     >
       <SwitchText>
         <SwitchTitle>{props.title}</SwitchTitle>
@@ -838,6 +979,10 @@ const switchRow = css({
   background: "transparent",
   borderRadius: "var(--borderRadius-md)",
 
+  "&:disabled": {
+    cursor: "default",
+    opacity: 0.5,
+  },
   "&:focus-visible": focusRing,
 });
 

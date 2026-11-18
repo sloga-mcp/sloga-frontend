@@ -25,6 +25,9 @@ const NOTICE_TEXT: Record<CameraEffectNoticeKind, () => JSX.Element> = {
       An effect was slowing your video and was turned off for this call.
     </Trans>
   ),
+  "glam-slow": () => (
+    <Trans>Glam was turned off to keep the video smooth.</Trans>
+  ),
 };
 
 /**

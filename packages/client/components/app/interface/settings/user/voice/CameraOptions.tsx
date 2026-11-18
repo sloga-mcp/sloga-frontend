@@ -1,4 +1,11 @@
-import { For, Show, createResource, createSignal, onCleanup } from "solid-js";
+import {
+  For,
+  Show,
+  createResource,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
@@ -8,14 +15,17 @@ import {
   FILTER_ASSETS_BASE,
   addUpload,
   cameraBackgroundSupported,
+  cameraGlamSupported,
   cameraToneSupported,
   faceFiltersSupported,
   listBackgrounds,
+  probeCameraGlam,
   removeUpload,
   resolveBackgroundUrl,
   useVoice,
 } from "@revolt/rtc";
 import { TOUCH_UP_SWITCH_STRENGTH } from "@revolt/rtc/cameraTonePolicy";
+import { GLAM_SWITCH_STRENGTH } from "@revolt/rtc/glamPolicy";
 import { useState } from "@revolt/state";
 import {
   CameraBackgroundMode,
@@ -239,11 +249,12 @@ export function CameraOptions() {
 }
 
 /**
- * Low light and Touch up. Touch up is the `cameraBeautify` setting: a
+ * Low light, Glam and Touch up. Touch up is the `cameraBeautify` setting: a
  * strength slider where face tracking is available, and a plain switch (a
- * fixed strength, or off) where only the whole-picture smooth can run. Both
- * write through the call's setters, so a change made here during a call
- * reaches the published camera as well as the preview.
+ * fixed strength, or off) where only the whole-picture smooth can run. Glam
+ * is the `cameraGlam` setting: a switch and, while it is on, a strength
+ * slider. All of them write through the call's setters, so a change made
+ * here during a call reaches the published camera as well as the preview.
  */
 function CameraToneOptions(props: {
   faceSupported: boolean;
@@ -252,6 +263,25 @@ function CameraToneOptions(props: {
 }) {
   const { voice } = useState();
   const voiceContext = useVoice();
+  const { t } = useLingui();
+
+  // On a phone the answer is only known once the face tracker's files have
+  // been looked for, so the first read can be a "no" that turns into a "yes".
+  const [glam, setGlam] = createSignal(cameraGlamSupported());
+  let disposed = false;
+  onCleanup(() => {
+    disposed = true;
+  });
+  onMount(() => {
+    // Never rejects. The page may be gone by the time it answers.
+    void probeCameraGlam().then((supported) => {
+      if (!disposed) setGlam(supported);
+    });
+  });
+
+  // A strength synced from a device that can run Glam must not lock Touch up
+  // on one that cannot.
+  const glamOn = () => glam() && voice.cameraGlam > 0;
 
   // A background only takes the camera's processor slot where backgrounds
   // can run; a mode synced from another device does not pause anything here.
@@ -275,13 +305,61 @@ function CameraToneOptions(props: {
             <Trans>Low light</Trans>
           </CategoryButton>
         </Show>
+        <Show when={glam()}>
+          <CategoryButton
+            icon={<Symbol>spa</Symbol>}
+            description={t`Follows your face: smooth skin, soft makeup.`}
+            action={<Checkbox checked={voice.cameraGlam > 0} />}
+            onClick={() =>
+              voiceContext.setCameraGlam(
+                voice.cameraGlam > 0 ? 0 : GLAM_SWITCH_STRENGTH,
+              )
+            }
+          >
+            {t`Glam`}
+          </CategoryButton>
+          {/* Its own row: a click anywhere on the switch row above toggles
+              the switch, and dragging the slider must not. */}
+          <Show when={voice.cameraGlam > 0}>
+            <CategoryButton
+              icon="blank"
+              description={
+                <Slider
+                  min={1}
+                  max={100}
+                  step={1}
+                  value={voice.cameraGlam}
+                  onInput={(e) =>
+                    voiceContext.setCameraGlam(Number(e.currentTarget.value))
+                  }
+                  labelFormatter={(v) => `${v}%`}
+                />
+              }
+            >
+              {t`Strength`}
+            </CategoryButton>
+          </Show>
+        </Show>
         <Show
           when={props.faceSupported}
           fallback={
             <CategoryButton
               icon={<Symbol>wand_stars</Symbol>}
-              description={<Trans>Gently smooths your picture.</Trans>}
-              action={<Checkbox checked={voice.cameraBeautify > 0} />}
+              description={
+                <Column gap="sm">
+                  <Trans>Gently smooths your picture.</Trans>
+                  <Show when={glamOn()}>
+                    <Text class="label">{t`Touch up is part of Glam.`}</Text>
+                  </Show>
+                </Column>
+              }
+              disabled={glamOn()}
+              action={
+                <Checkbox
+                  checked={voice.cameraBeautify > 0}
+                  disabled={glamOn()}
+                />
+              }
               onClick={() =>
                 voiceContext.setCameraFaceFilter({
                   beautify:
@@ -300,18 +378,29 @@ function CameraToneOptions(props: {
                 <Text class="label">
                   <Trans>Gently smooths your picture.</Trans>
                 </Text>
-                <Slider
-                  min={0}
-                  max={100}
-                  step={1}
-                  value={voice.cameraBeautify}
-                  onInput={(e) =>
-                    voiceContext.setCameraFaceFilter({
-                      beautify: Number(e.currentTarget.value),
-                    })
-                  }
-                  labelFormatter={(v) => `${v}%`}
-                />
+                {/* The slider has no disabled state of its own. `inert` takes
+                    it out of pointer and keyboard reach; the stored strength
+                    is left alone and shows again when Glam is turned off. */}
+                <div
+                  inert={glamOn()}
+                  style={{ opacity: glamOn() ? "0.5" : undefined }}
+                >
+                  <Slider
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={voice.cameraBeautify}
+                    onInput={(e) =>
+                      voiceContext.setCameraFaceFilter({
+                        beautify: Number(e.currentTarget.value),
+                      })
+                    }
+                    labelFormatter={(v) => `${v}%`}
+                  />
+                </div>
+                <Show when={glamOn()}>
+                  <Text class="label">{t`Touch up is part of Glam.`}</Text>
+                </Show>
               </Column>
             }
           >
@@ -321,7 +410,16 @@ function CameraToneOptions(props: {
       </CategoryButton.Group>
       <Show when={pausedByBackground()}>
         <Text class="label">
-          <Trans>Low light and touch up pause while a background is on.</Trans>
+          <Show
+            when={glam()}
+            fallback={
+              <Trans>
+                Low light and touch up pause while a background is on.
+              </Trans>
+            }
+          >
+            {t`Low light, touch up and Glam pause while a background is on.`}
+          </Show>
         </Text>
       </Show>
     </>

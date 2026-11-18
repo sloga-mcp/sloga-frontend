@@ -241,6 +241,8 @@ export interface TypeVoice extends TypeVoiceOverlay {
   cameraFaceFilterId?: CameraFaceFilterId;
   /** Skin-smoothing strength 0–100; 0 (default) = off. */
   cameraBeautify: number;
+  /** Strength of the face-tracked look in calls, 0 to 100; 0 (default) = off. */
+  cameraGlam: number;
   /** Brighten the picture automatically in a dark room; off by default. */
   cameraLowLight: boolean;
   /** One-tap color grade; undefined = none. */
@@ -380,6 +382,7 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
       cameraBackgroundMode: "none",
       cameraBlurRadius: 10,
       cameraBeautify: 0,
+      cameraGlam: 0,
       cameraLowLight: false,
       inputVolume: 1.0,
       outputVolume: 1.0,
@@ -627,6 +630,14 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
     if (typeof input.cameraBeautify === "number") {
       data.cameraBeautify = Number.isFinite(input.cameraBeautify)
         ? Math.max(0, Math.min(100, input.cameraBeautify))
+        : 0;
+    }
+
+    // Missing (a blob saved before this key existed) or non-number stays at
+    // the default, 0 (off).
+    if (typeof input.cameraGlam === "number") {
+      data.cameraGlam = Number.isFinite(input.cameraGlam)
+        ? Math.max(0, Math.min(100, input.cameraGlam))
         : 0;
     }
 
@@ -986,6 +997,14 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
 
   set cameraBeautify(value: number) {
     this.set("cameraBeautify", value);
+  }
+
+  get cameraGlam(): number {
+    return this.get().cameraGlam ?? 0;
+  }
+
+  set cameraGlam(value: number) {
+    this.set("cameraGlam", value);
   }
 
   get cameraLowLight(): boolean {

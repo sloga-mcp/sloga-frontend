@@ -235,7 +235,7 @@ EXPECTED=(
   # with two more pins over cameraEffects.ts: where tone work is offered (the
   # platform rule asked before the WebGL2 probe) and the tone watchdog's
   # scope (a reset leaves it alone, only the leave re-arms it).
-  "components/rtc/stateWiring.test.ts 112 0"
+  "components/rtc/stateWiring.test.ts 121 0"
   # The AFK channel and its merge with member moves (FE-2). Before it this
   # gate ran NO AFK spec, and none of the ladder that decides whether a
   # client follows a move. memberGate's opt-in skip is not in its row: see
@@ -266,8 +266,18 @@ EXPECTED=(
   # where tone work is offered, 48 with the context-loss re-arm rules.
   "components/rtc/cameraAttachPolicy.test.ts 47 0"
   "components/rtc/cameraProcessorGuard.test.ts 18 0"
-  "components/rtc/faceFilterPolicy.test.ts 28 0"
-  "components/rtc/cameraTonePolicy.test.ts 48 0"
+  # Glam (the face-tracking look): 32 with its slot arm and landmark rule,
+  # 55 with the watchdog's direct shed of one named stage. The Glam policy
+  # (geometry, smoothing, the detect budget, presence and recovery) is new,
+  # first measured at 88, 101 with the tracker-load and detect-latch rules,
+  # 116 with what the tracker-file check's answers mean (stateWiring stays at
+  # 121: its tracker-file pins changed inside the one test they were in);
+  # the tone stage's source pins (the shaders that
+  # must not change when Glam is off) at 6.
+  "components/rtc/faceFilterPolicy.test.ts 32 0"
+  "components/rtc/cameraTonePolicy.test.ts 55 0"
+  "components/rtc/glamPolicy.test.ts 116 0"
+  "components/rtc/cameraToneStageSource.test.ts 6 0"
   # The server's ring length, read from the root fetch.
   "components/rtc/serverRingLength.test.ts 17 0"
   "components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts 27 0"
@@ -554,6 +564,9 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   components/rtc/cameraProcessorGuard.test.ts
   components/rtc/faceFilterPolicy.test.ts
   components/rtc/cameraTonePolicy.test.ts
+  # Glam: its policy spec and the tone stage's source pins, same reason.
+  components/rtc/glamPolicy.test.ts
+  components/rtc/cameraToneStageSource.test.ts
   components/rtc/serverRingLength.test.ts
   components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts
   components/client/pushPolicy.test.ts
@@ -775,6 +788,12 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/cameraTonePolicy.test.ts
   components/rtc/cameraToneStage.ts
   components/rtc/faceFilterProcessor.ts
+  # Glam: the policy, its spec, the mask painter and the stage source pins.
+  # Enrolled on the same measurement, taken on feat/call-glam.
+  components/rtc/glamPolicy.ts
+  components/rtc/glamPolicy.test.ts
+  components/rtc/glamMaskPainter.ts
+  components/rtc/cameraToneStageSource.test.ts
   # The surfaces the same work adds or edits: the failed-effect notice, the
   # settings preview and the call card's buttons. Enrolled on the same
   # measurement, taken after the state.tsx wiring landed.

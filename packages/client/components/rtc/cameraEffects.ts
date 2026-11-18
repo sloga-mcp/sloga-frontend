@@ -90,8 +90,18 @@ import {
   type CameraToneStats,
   type FaceFilterConfig,
   type FaceFilterStatusReport,
+  type GlamState,
+  type GlamStats,
   FaceFilterProcessor,
 } from "./faceFilterProcessor";
+import {
+  type GlamProbeAnswer,
+  type GlamProbeVerdict,
+  GLAM_PROBE_NO_ANSWER,
+  glamProbeCapability,
+  glamProbeNeedsRange,
+  glamProbeVerdict,
+} from "./glamPolicy";
 
 /**
  * Canvas brightness fallback for cameras without a hardware brightness control
@@ -266,6 +276,193 @@ export function cameraToneSupported(): boolean {
   }
 }
 
+/**
+ * The two files the face tracker cannot start without, at the addresses the
+ * face pipeline loads them from.
+ */
+const GLAM_FILE_URLS = [
+  `${SEGMENTATION_BASE}/models/face_landmarker.task`,
+  `${SEGMENTATION_BASE}/wasm/vision_wasm_internal.wasm`,
+];
+
+/** How long one check may take, both files together, before it gives up. */
+const GLAM_PROBE_TIMEOUT_MS = 3000;
+/** After a check that got no answer, how long until another may be sent. */
+const GLAM_PROBE_RETRY_MS = 30_000;
+
+/** Both files were found. Only ever goes from false to true. */
+let _glamFilesReachable = false;
+/**
+ * The server answered and a file is not there. Final as well: a build that
+ * was made without the files does not grow them while it runs.
+ */
+let _glamFilesMissing = false;
+/** The check in flight. */
+let _glamProbe: Promise<boolean> | undefined;
+/** No new check before this time (`Date.now()`); set when one got no answer. */
+let _glamRetryAt = 0;
+
+/**
+ * Whether the tracker files have to be looked for before the look is
+ * offered. The phone apps are built in more than one way and not every
+ * build carries the files; the desktop app and the web always ship them.
+ * Unreadable reads as "look for them".
+ */
+function glamFilesNeedProbe(): boolean {
+  try {
+    return Capacitor.isNativePlatform();
+  } catch {
+    return true;
+  }
+}
+
+/** What a response says, for `glamProbeVerdict` to read. */
+function glamProbeAnswer(res: Response, bodyBytes: number): GlamProbeAnswer {
+  return {
+    threw: false,
+    status: res.status,
+    contentType: res.headers.get("content-type"),
+    contentLength: res.headers.get("content-length"),
+    contentRange: res.headers.get("content-range"),
+    bodyBytes,
+  };
+}
+
+/**
+ * How many bytes the first piece of a body holds, 0 for a body with nothing
+ * in it. One byte was asked for; a server that ignores the range starts
+ * sending the whole file, which is megabytes, so the rest is stopped.
+ * Rejects when the body cannot be read.
+ */
+async function glamFirstBodyBytes(res: Response): Promise<number> {
+  const reader = res.body?.getReader();
+  if (!reader) return 0;
+  try {
+    for (;;) {
+      const piece = await reader.read();
+      if (piece.done) return 0;
+      if (piece.value.byteLength > 0) return piece.value.byteLength;
+    }
+  } finally {
+    void reader.cancel().catch(() => {});
+  }
+}
+
+/**
+ * Whether one tracker file is there, without downloading it. This only
+ * sends the requests and hands what came back to `glamProbeVerdict`, which
+ * decides. Never rejects: a request that failed or was stopped through
+ * `signal` is one more thing the verdict reads.
+ */
+async function glamFileReachable(
+  url: string,
+  signal: AbortSignal,
+): Promise<GlamProbeVerdict> {
+  let head = GLAM_PROBE_NO_ANSWER;
+  try {
+    head = glamProbeAnswer(await fetch(url, { method: "HEAD", signal }), 0);
+  } catch {
+    // No answer to the HEAD; the read below is sent.
+  }
+  if (!glamProbeNeedsRange(head)) return glamProbeVerdict(head, undefined);
+  let range = GLAM_PROBE_NO_ANSWER;
+  try {
+    const res = await fetch(url, { headers: { Range: "bytes=0-0" }, signal });
+    range = glamProbeAnswer(res, await glamFirstBodyBytes(res));
+  } catch {
+    // No answer to this one either.
+  }
+  return glamProbeVerdict(head, range);
+}
+
+/**
+ * One check of both tracker files, bounded in time. Resolves with whether
+ * both are there once that is settled: true when both are, false as soon as
+ * the answers show one is not. Rejects when it could not be told, which
+ * includes `GLAM_PROBE_TIMEOUT_MS` passing with a request still out: the
+ * requests are stopped then, and what the others answered still counts.
+ */
+async function glamFilesPresent(): Promise<boolean> {
+  const abort = new AbortController();
+  const verdicts = GLAM_FILE_URLS.map((): GlamProbeVerdict => "unknown");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      abort.abort();
+      resolve();
+    }, GLAM_PROBE_TIMEOUT_MS);
+  });
+  const all = Promise.all(
+    GLAM_FILE_URLS.map(async (url, at) => {
+      verdicts[at] = await glamFileReachable(url, abort.signal);
+    }),
+  );
+  try {
+    await Promise.race([all, timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
+  // Taken once, here: a request that answers after the time limit is not
+  // read any more.
+  const verdict = glamProbeCapability([...verdicts]);
+  if (verdict === "unknown") throw new Error("tracker file check: no answer");
+  return verdict === "present";
+}
+
+/**
+ * Look for the face tracker's files and say whether the face-tracked look
+ * can run here. Never rejects, and never takes longer than one bounded
+ * check. Where no check is needed it answers at once.
+ *
+ * It is awaited on every camera sync, so it sends requests rarely. Calls
+ * share the check in flight. An answer is kept for as long as the app runs,
+ * whether the files are there or not, and later calls resolve at once with
+ * no request. A check that got no answer (a failed request, a timeout)
+ * resolves false and may be repeated, but not within `GLAM_PROBE_RETRY_MS`:
+ * until then calls resolve false at once.
+ */
+export function probeCameraGlam(): Promise<boolean> {
+  if (!cameraToneSupported()) return Promise.resolve(false);
+  if (!glamFilesNeedProbe() || _glamFilesReachable) {
+    return Promise.resolve(true);
+  }
+  if (_glamFilesMissing) return Promise.resolve(false);
+  if (_glamProbe) return _glamProbe;
+  if (Date.now() < _glamRetryAt) return Promise.resolve(false);
+  const probe = glamFilesPresent().then(
+    (present) => {
+      _glamProbe = undefined;
+      if (present) _glamFilesReachable = true;
+      else _glamFilesMissing = true;
+      return present;
+    },
+    () => {
+      _glamProbe = undefined;
+      _glamRetryAt = Date.now() + GLAM_PROBE_RETRY_MS;
+      return false;
+    },
+  );
+  _glamProbe = probe;
+  return probe;
+}
+
+/**
+ * Whether the face-tracked look can run here: everything the tone stage
+ * needs (`cameraToneSupported()`), and the face tracker's files.
+ *
+ * Synchronous, so on the phone apps it answers false until a check has found
+ * the files. It only reads the answer and never starts a check: the slot
+ * rules ask it while planning, and planning must not send a request. Every
+ * `CameraEffectsController` starts the check when it is created; a caller
+ * that wants to wait for the answer uses `probeCameraGlam()`. Once true for
+ * the files it stays true. Never throws.
+ */
+export function cameraGlamSupported(): boolean {
+  if (!cameraToneSupported()) return false;
+  if (!glamFilesNeedProbe()) return true;
+  return _glamFilesReachable;
+}
+
 export type { CameraBackgroundMode };
 
 export type CameraBackgroundStatus =
@@ -286,6 +483,12 @@ export interface CameraEffectSettings {
   beautify: number;
   /** Color look (undefined = none). */
   colorLookId?: CameraColorLookId;
+  /**
+   * The face-tracked look, 0-100 (0 = off). Rides the face pipeline where
+   * `cameraGlamSupported()`; inert elsewhere and while a background holds
+   * the slot. While it is drawn it stands in for touch up.
+   */
+  glam: number;
   /**
    * Low light switch. Rides the face pipeline where `cameraToneSupported()`;
    * inert elsewhere and while a background holds the slot.
@@ -483,6 +686,39 @@ export class CameraEffectsController {
    * mute and a republish (`reset()`); only `resetToneWatchdog()` clears it.
    */
   #watchdog: ToneWatchdog | undefined;
+  /**
+   * The face-tracked look could not run in this call. Like a shed stage it
+   * outlives a processor rebuild, a camera mute and a republish, and is
+   * cleared only where the watchdog is (`resetToneWatchdog()`).
+   */
+  #glamFailed = false;
+  /**
+   * Tone failed open on the face pipeline that holds the slot now. The
+   * processor can try tone again by itself, so each tune checks this against
+   * what the processor says (`#ensureFace`).
+   */
+  #toneFailed = false;
+  /**
+   * What the face config was last built from. Kept so a report from the
+   * processor can build it again without anyone re-reading the settings.
+   */
+  #faceInputs: { settings: CameraEffectSettings; hw: boolean } | undefined;
+  /**
+   * The op guard of the pass that attached the face pipeline. That pass was
+   * allowed a sender operation, so from then on its guard refuses for one
+   * reason only: the caller's gate is held. The guard of a later tune is no
+   * use for this, because a tune is refused whatever the gate does.
+   */
+  #faceGuard: CameraOpGuard | undefined;
+
+  constructor() {
+    // Look for the face tracker's files now, long before a camera is turned
+    // on: `cameraGlamSupported()` answers false on the phone apps until this
+    // has found them, and a stored look would sit out the first camera-on.
+    // Two small requests to the app's own files there, nothing elsewhere.
+    // It neither throws nor rejects, so creating the controller cannot fail.
+    void probeCameraGlam();
+  }
 
   /** Notified whenever hardware-brightness support is (re)detected. */
   onHwSupportChange?: (hw: boolean) => void;
@@ -494,14 +730,41 @@ export class CameraEffectsController {
   onToneShed: ((stage: ToneStageName) => void) | undefined;
   /** Tone failed open in the face pipeline; the picture continues without it. */
   onToneFailed: (() => void) | undefined;
+  /**
+   * The face-tracked look cannot run; the picture continues without it.
+   * Called once per call, however many processors report it.
+   */
+  onGlamFailed: (() => void) | undefined;
 
   // Handed to every face config. They read the property at call time, so a
   // handler assigned (or replaced) later is honored without a new config.
+  //
+  // The look stands in for touch up while it is drawn, so each report that
+  // ends it also has the config sent again: touch up is back in it. That is
+  // all a report does here. No setting is written and the wanted occupant
+  // is not asked again.
   readonly #forwardToneShed = (stage: ToneStageName) => {
+    if (stage === "glam") this.#retuneFaceSoon();
     this.onToneShed?.(stage);
   };
   readonly #forwardToneFailed = () => {
+    this.#toneFailed = true;
+    this.#retuneFaceSoon();
     this.onToneFailed?.();
+  };
+  readonly #forwardGlamFailed = () => {
+    const first = !this.#glamFailed;
+    this.#glamFailed = true;
+    this.#retuneFaceSoon();
+    if (first) this.onGlamFailed?.();
+  };
+  /**
+   * Handed to every face config: whether the face tracker has to stay out of
+   * the way right now. No guard (the settings preview) means never.
+   */
+  readonly #faceGateHeld = (): boolean => {
+    const guard = this.#faceGuard;
+    return !!guard && !guard.maySenderOp();
   };
 
   get hwBrightnessSupported(): boolean {
@@ -630,6 +893,10 @@ export class CameraEffectsController {
         beautify: settings.beautify,
         colorLookId: settings.colorLookId,
         brightness: settings.brightness,
+        // The stored switch and nothing else. A look that was shed or
+        // failed still asks for the slot: leaving it out here would turn
+        // "the look stopped" into removing or swapping the processor.
+        glam: settings.glam > 0,
         lowLight: settings.lowLight,
       },
       caps: {
@@ -637,6 +904,7 @@ export class CameraEffectsController {
         faceFiltersSupported: faceFiltersSupported(),
         hwBrightness: hw,
         toneSupported: cameraToneSupported(),
+        glamSupported: cameraGlamSupported(),
       },
     };
   }
@@ -873,6 +1141,10 @@ export class CameraEffectsController {
    * sticker and the color look are withheld (the pipeline is there for tone
    * only) and `landmarks` is false, so MediaPipe is never requested and touch
    * up is the processor's whole-frame smooth.
+   *
+   * The face-tracked look rides it as well, and is a `setConfig` like the
+   * rest once the processor is attached. The processor loads the face
+   * tracker for it by itself, and only while `gateHeld` answers false.
    */
   async #ensureFace(
     track: LocalVideoTrack,
@@ -881,22 +1153,28 @@ export class CameraEffectsController {
     hw: boolean,
     opGuard?: CameraOpGuard,
   ) {
-    const { slot, caps } = this.#slotInputs(settings, hw);
-    const cfg: FaceFilterConfig = {
-      filterId: caps.faceFiltersSupported ? settings.faceFilterId : undefined,
-      beautify: settings.beautify,
-      lookId: caps.faceFiltersSupported ? settings.colorLookId : undefined,
-      brightness: hw ? 100 : settings.brightness,
-      lowLight: settings.lowLight,
-      landmarks: needsLandmarks(slot, caps),
-      tone: caps.toneSupported,
-      watchdog: (this.#watchdog ??= new ToneWatchdog()),
-      onToneShed: this.#forwardToneShed,
-      onToneFailed: this.#forwardToneFailed,
-    };
+    if (!this.#face) {
+      // Nothing to tune, so this pass attaches a new processor. It is asked
+      // about the gate through this pass's guard, and it starts with a tone
+      // stage that has not failed.
+      this.#faceGuard = opGuard;
+      this.#toneFailed = false;
+    }
+    this.#faceInputs = { settings, hw };
+    const cfg = this.#faceConfig(settings, hw);
 
     if (this.#face) {
       this.#face.setConfig(cfg);
+      // The processor gives a failed tone stage a fresh attempt when a tone
+      // setting is switched on, and whenever it is built again. If the look
+      // is running again, the failure noted here is out of date: forget it
+      // and send the config once more, without the touch up that was put
+      // back while the look was gone.
+      const look = this.#face.glamState;
+      if (this.#toneFailed && (look === "on" || look === "waiting")) {
+        this.#toneFailed = false;
+        this.#face.setConfig(this.#faceConfig(settings, hw));
+      }
       return;
     }
 
@@ -933,6 +1211,110 @@ export class CameraEffectsController {
     // start, the fallback would still be attached and must stay reachable.
     this.#brightness = undefined;
     this.#face = proc;
+    // A report that came while the processor was starting found no occupant
+    // to tune. If it changed what the config should say, send it now.
+    if (this.#faceConfig(settings, hw).beautify !== cfg.beautify) {
+      this.#retuneFaceSoon();
+    }
+  }
+
+  /**
+   * The config of the face pipeline for these settings: the one place it is
+   * built, for the attach, for every tune and for the config sent again after
+   * the processor reports that the face-tracked look has ended.
+   *
+   * `landmarks` is asked without the look: it only says whether stickers and
+   * the masked touch up use the face tracker. The look asks the processor
+   * for the tracker on its own terms.
+   *
+   * Once the look has been given up in this call (shed for being too slow,
+   * or failed), touch up no longer asks for the tracker either. It comes
+   * back as the whole-frame smooth: the masked one would load the tracker
+   * again and run it on every frame, which is at least the work the look was
+   * just stopped for. A sticker still asks for it, because the user chose
+   * the sticker itself, and touch up is then masked as before since the
+   * tracker is running anyway. Only the config changes here; what the
+   * settings ask the slot for (`#slotInputs`) does not.
+   */
+  #faceConfig(settings: CameraEffectSettings, hw: boolean): FaceFilterConfig {
+    const { slot: stored, caps } = this.#slotInputs(settings, hw);
+    const watchdog = (this.#watchdog ??= new ToneWatchdog());
+    const glamOver = this.#glamFailed || watchdog.shed.has("glam");
+    const slot = glamOver ? { ...stored, beautify: 0 } : stored;
+    const cfg: FaceFilterConfig = {
+      filterId: caps.faceFiltersSupported ? settings.faceFilterId : undefined,
+      beautify: settings.beautify,
+      lookId: caps.faceFiltersSupported ? settings.colorLookId : undefined,
+      brightness: hw ? 100 : settings.brightness,
+      // Once the look has failed in this call a processor built later is not
+      // asked for it again: it would run on top of the touch up that came
+      // back when it failed
+      glam: caps.glamSupported && !this.#glamFailed ? settings.glam : 0,
+      lowLight: settings.lowLight,
+      landmarks: needsLandmarks({ ...slot, glam: false }, caps),
+      tone: caps.toneSupported,
+      watchdog,
+      onToneShed: this.#forwardToneShed,
+      onToneFailed: this.#forwardToneFailed,
+      gateHeld: this.#faceGateHeld,
+      onGlamFailed: this.#forwardGlamFailed,
+    };
+    // The look includes its own skin smoothing, so touch up is not drawn
+    // under it.
+    if (this.#glamDrawn(cfg)) cfg.beautify = 0;
+    return cfg;
+  }
+
+  /**
+   * Whether the processor will draw the face-tracked look for this config:
+   * it is asked for (`glam` is 0 where the look cannot run), it was not shed
+   * and it has not failed in this call.
+   *
+   * A tone stage that failed open ends the look as well, but that only
+   * counts where touch up can be drawn without the stage (the masked touch
+   * up, `landmarks`). The whole-frame touch up is the stage's own work:
+   * putting it back in the config would not bring it back, it would ask the
+   * failed stage to start again.
+   */
+  #glamDrawn(cfg: FaceFilterConfig): boolean {
+    if (!(cfg.glam > 0) || this.#glamFailed) return false;
+    if (cfg.watchdog?.shed.has("glam")) return false;
+    return !(this.#toneFailed && cfg.landmarks);
+  }
+
+  /**
+   * Send the face config again, built from the settings it was last built
+   * from. A tune and nothing more: `setConfig` on the attached processor,
+   * which cannot reach the sender.
+   *
+   * Not done from inside the processor's report (it may be in the middle of
+   * a `setConfig` of its own) but right after it, in the same task. Skipped
+   * while the gate is held, because touch up coming back can load the face
+   * tracker; the caller's sync when the gate opens sends the config anyway.
+   */
+  #retuneFaceSoon() {
+    queueMicrotask(() => {
+      const face = this.#face;
+      const last = this.#faceInputs;
+      if (!face || !last || this.#faceGateHeld()) return;
+      face.setConfig(this.#faceConfig(last.settings, last.hw));
+    });
+  }
+
+  /**
+   * Where the face-tracked look stands on the attached face pipeline, and
+   * its tracking numbers, for the diagnostic line. Undefined when no
+   * face-pipeline occupant is attached.
+   */
+  get glamInfo(): { state: GlamState; stats: GlamStats } | undefined {
+    const face = this.#face;
+    if (!face) return undefined;
+    // After a failure the pipeline is no longer asked for the look, so it
+    // would answer "off"; the failure is remembered here for the call
+    return {
+      state: this.#glamFailed ? "failed" : face.glamState,
+      stats: face.glamStats,
+    };
   }
 
   /** Remove the face-filter processor (if any). */
@@ -1490,9 +1872,11 @@ export class CameraEffectsController {
    * Re-arm every tone stage the watchdog shed. For the END of a call only:
    * `reset()` also runs when the camera is unpublished or first published
    * mid-call and deliberately leaves the watchdog alone, so a stage shed for
-   * being too slow stays off until the call is over.
+   * being too slow stays off until the call is over. The same goes for a
+   * face-tracked look that failed, and it is forgotten here too.
    */
   resetToneWatchdog(): void {
     this.#watchdog?.reset();
+    this.#glamFailed = false;
   }
 }

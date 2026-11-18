@@ -31,6 +31,7 @@ import {
   LowLightMeter,
   NEUTRAL_TONE,
   TONE_BLIND_SOURCE_FLOOR,
+  TONE_SHED_ORDER,
   TONE_TIMER_STALL_MS,
   TOUCH_UP_PLAIN_MAX,
   TOUCH_UP_SWITCH_STRENGTH,
@@ -828,6 +829,167 @@ test("ToneWatchdog: options override the defaults; bad ones fall back", () => {
   }
 });
 
+// ---- ToneWatchdog: glam and sheds decided elsewhere ------------------------
+
+/** Every stage with glam among them, in the wrong order on purpose. */
+const GLAM_STAGES: readonly ToneStageName[] = [...ALL_STAGES, "glam"];
+
+test("TONE_SHED_ORDER: glam is first, then the rest in cost order", () => {
+  assert.equal(TONE_SHED_ORDER[0], "glam");
+  assert.deepEqual(
+    [...TONE_SHED_ORDER],
+    ["glam", "touchUp", "lowLight", "brightness"],
+  );
+  // Each stage once, and nobody can reorder the list at run time.
+  assert.equal(new Set(TONE_SHED_ORDER).size, TONE_SHED_ORDER.length);
+  assert.ok(Object.isFrozen(TONE_SHED_ORDER));
+});
+
+test("ToneWatchdog: glam is shed before touchUp when both are active", () => {
+  const dog = new ToneWatchdog();
+  assert.deepEqual(run(dog, SLOW, 0, 60_000, GLAM_STAGES), [
+    [5000, "glam"],
+    [10_000, "touchUp"],
+    [15_000, "lowLight"],
+    [20_000, "brightness"],
+  ]);
+  assert.deepEqual([...dog.shed].sort(), [...GLAM_STAGES].sort());
+
+  // Just the two of them, touchUp named first by the caller.
+  const pair = new ToneWatchdog();
+  assert.deepEqual(run(pair, SLOW, 0, 4500, ["touchUp", "glam"]), []);
+  assert.equal(pair.sample(...SLOW, 5000, ["touchUp", "glam"]), "glam");
+  assert.deepEqual([...pair.shed], ["glam"]);
+  assert.equal(pair.sample(...SLOW, 10_000, ["touchUp", "glam"]), "touchUp");
+
+  // Glam is a candidate only while it is active.
+  const without = new ToneWatchdog();
+  assert.deepEqual(run(without, SLOW, 0, 5000), [[5000, "touchUp"]]);
+  assert.equal(without.shed.has("glam"), false);
+});
+
+test("ToneWatchdog: shedNow is true the first time and false after", () => {
+  const dog = new ToneWatchdog();
+  const shed = dog.shed;
+  assert.equal(dog.shedNow("glam"), true);
+  // Visible through the very set a caller already holds.
+  assert.equal(shed.has("glam"), true);
+  assert.deepEqual([...dog.shed], ["glam"]);
+  assert.equal(dog.shedNow("glam"), false);
+  assert.equal(dog.shedNow("glam"), false);
+  assert.deepEqual([...dog.shed], ["glam"]);
+
+  // Any stage can be recorded, each newly shed once.
+  for (const stage of ALL_STAGES) {
+    assert.equal(dog.shedNow(stage), true, stage);
+    assert.equal(dog.shedNow(stage), false, stage);
+  }
+  assert.deepEqual([...dog.shed].sort(), [...GLAM_STAGES].sort());
+
+  // A stage the frame rate already cost is not newly shed either.
+  const slow = new ToneWatchdog();
+  assert.deepEqual(run(slow, SLOW, 0, 5000, GLAM_STAGES), [[5000, "glam"]]);
+  assert.equal(slow.shedNow("glam"), false);
+  assert.deepEqual([...slow.shed], ["glam"]);
+});
+
+test("ToneWatchdog: a shedNow stage is never re-armed; reset clears it", () => {
+  const dog = new ToneWatchdog();
+  assert.equal(dog.shedNow("glam"), true);
+
+  // Slow for a minute with glam still reported active: the others go in
+  // cost order and glam is never picked.
+  assert.deepEqual(run(dog, SLOW, 0, 60_000, GLAM_STAGES), [
+    [5000, "touchUp"],
+    [10_000, "lowLight"],
+    [15_000, "brightness"],
+  ]);
+  // Healthy, idle, nothing active, a long gap: it stays shed through all.
+  run(dog, HEALTHY, 60_500, 70_000, GLAM_STAGES);
+  run(dog, [0, 0], 70_500, 80_000, GLAM_STAGES);
+  run(dog, SLOW, 80_500, 90_000, []);
+  assert.equal(dog.sample(...SLOW, 600_000, GLAM_STAGES), undefined);
+  assert.equal(dog.shed.has("glam"), true);
+  assert.equal(dog.shed.size, 4);
+
+  // Glam alone, slow for a minute: nothing to shed.
+  const only = new ToneWatchdog();
+  assert.equal(only.shedNow("glam"), true);
+  assert.deepEqual(run(only, SLOW, 0, 60_000, ["glam"]), []);
+  assert.deepEqual([...only.shed], ["glam"]);
+
+  // A new call: nothing is shed, and glam is a candidate again both ways.
+  only.reset();
+  assert.equal(only.shed.size, 0);
+  assert.deepEqual(run(only, SLOW, 60_500, 70_000, ["glam"]), [
+    [65_500, "glam"],
+  ]);
+  only.reset();
+  assert.equal(only.shed.has("glam"), false);
+  assert.equal(only.shedNow("glam"), true);
+});
+
+test("ToneWatchdog: a new shedNow closes the open window, so it costs one stage", () => {
+  // Without it, the sample that completes the window sheds glam.
+  const twin = new ToneWatchdog();
+  assert.deepEqual(run(twin, SLOW, 0, 4500, GLAM_STAGES), []);
+  assert.equal(twin.sample(...SLOW, 5000, GLAM_STAGES), "glam");
+
+  // Glam given up at 4.9 s into the window that opened at 0: the sample
+  // that would have completed that window sheds nothing more.
+  const dog = new ToneWatchdog();
+  assert.deepEqual(run(dog, SLOW, 0, 4500, GLAM_STAGES), []);
+  assert.equal(dog.sample(...SLOW, 4900, GLAM_STAGES), undefined);
+  assert.equal(dog.shedNow("glam"), true);
+  assert.equal(dog.sample(...SLOW, 5000, GLAM_STAGES), undefined);
+  assert.deepEqual([...dog.shed], ["glam"]);
+  // The next stage needs a full window of its own, counted from the first
+  // slow sample after the shed, and the ones after it go one window each.
+  assert.deepEqual(run(dog, SLOW, 5500, 9500, GLAM_STAGES), []);
+  assert.equal(dog.sample(...SLOW, 9900, GLAM_STAGES), undefined);
+  assert.equal(dog.sample(...SLOW, 10_000, GLAM_STAGES), "touchUp");
+  assert.deepEqual(run(dog, SLOW, 10_500, 20_000, GLAM_STAGES), [
+    [15_000, "lowLight"],
+    [20_000, "brightness"],
+  ]);
+
+  // The same when the stage recorded is not the one next in line.
+  const other = new ToneWatchdog();
+  assert.deepEqual(run(other, SLOW, 0, 4500, GLAM_STAGES), []);
+  assert.equal(other.shedNow("lowLight"), true);
+  assert.deepEqual(run(other, SLOW, 5000, 20_000, GLAM_STAGES), [
+    [10_000, "glam"],
+    [15_000, "touchUp"],
+    [20_000, "brightness"],
+  ]);
+
+  // It does not open a window either: a full one is still needed, and a
+  // healthy spell around it sheds nothing.
+  const fresh = new ToneWatchdog();
+  assert.equal(fresh.shedNow("glam"), true);
+  assert.deepEqual(run(fresh, HEALTHY, 0, 30_000, GLAM_STAGES), []);
+  assert.deepEqual(run(fresh, SLOW, 30_500, 35_000, GLAM_STAGES), []);
+  assert.equal(fresh.sample(...SLOW, 35_500, GLAM_STAGES), "touchUp");
+});
+
+test("ToneWatchdog: a shedNow for a stage already shed keeps the open window", () => {
+  // Shed by shedNow before the window opened, then asked for again 4.5 s
+  // into it: nothing is newly shed, so the window completes on time.
+  const dog = new ToneWatchdog();
+  assert.equal(dog.shedNow("glam"), true);
+  assert.deepEqual(run(dog, SLOW, 0, 4500, GLAM_STAGES), []);
+  assert.equal(dog.shedNow("glam"), false);
+  assert.equal(dog.sample(...SLOW, 5000, GLAM_STAGES), "touchUp");
+
+  // Shed by the frame rate at 5000, which starts the next window there. A
+  // repeat part of the way into that one does not push it back.
+  const slow = new ToneWatchdog();
+  assert.deepEqual(run(slow, SLOW, 0, 9500, GLAM_STAGES), [[5000, "glam"]]);
+  assert.equal(slow.shedNow("glam"), false);
+  assert.equal(slow.sample(...SLOW, 10_000, GLAM_STAGES), "touchUp");
+  assert.deepEqual([...slow.shed].sort(), ["glam", "touchUp"]);
+});
+
 // ---- tonePageMode ----------------------------------------------------------
 
 test("tonePageMode: the whole table", () => {
@@ -1155,4 +1317,52 @@ test("toneTurnedOn: the whole table", () => {
       `${JSON.stringify(was)} -> ${JSON.stringify(now)}`,
     );
   }
+});
+
+test("toneTurnedOn: glam coming on counts, like the others", () => {
+  const OFF: ToneWants = { lowLight: false, touchUp: false };
+  const glam = (value: boolean | undefined): ToneWants =>
+    value === undefined ? { ...OFF } : { ...OFF, glam: value };
+
+  const table: Array<
+    [was: boolean | undefined, now: boolean | undefined, expected: boolean]
+  > = [
+    [undefined, true, true],
+    [false, true, true],
+    [true, true, false],
+    [true, false, false],
+    // Left out is off, on either side.
+    [true, undefined, false],
+    [undefined, undefined, false],
+    [undefined, false, false],
+    [false, undefined, false],
+    [false, false, false],
+  ];
+  assert.equal(table.length, 9);
+  for (const [was, now, expected] of table) {
+    assert.equal(
+      toneTurnedOn(glam(was), glam(now)),
+      expected,
+      `${String(was)} -> ${String(now)}`,
+    );
+  }
+
+  // Glam staying on does not hide another setting coming on, and another
+  // setting staying on does not hide glam coming on.
+  const on = (wants: Partial<ToneWants>): ToneWants => ({ ...OFF, ...wants });
+  assert.equal(
+    toneTurnedOn(on({ glam: true }), on({ glam: true, lowLight: true })),
+    true,
+  );
+  assert.equal(
+    toneTurnedOn(on({ touchUp: true }), on({ touchUp: true, glam: true })),
+    true,
+  );
+  // Glam going off while nothing comes on is not a turn-on.
+  assert.equal(
+    toneTurnedOn(on({ glam: true, lowLight: true }), on({ lowLight: true })),
+    false,
+  );
+  // A swap is: glam off, touch up on.
+  assert.equal(toneTurnedOn(on({ glam: true }), on({ touchUp: true })), true);
 });

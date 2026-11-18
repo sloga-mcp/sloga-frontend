@@ -52,6 +52,7 @@ const CAPS_ALL: SlotCaps = {
   faceFiltersSupported: true,
   hwBrightness: false,
   toneSupported: true,
+  glamSupported: true,
 };
 
 const S = (over: Partial<SlotSettings> = {}): SlotSettings => ({
@@ -61,6 +62,7 @@ const S = (over: Partial<SlotSettings> = {}): SlotSettings => ({
   colorLookId: undefined,
   brightness: 100,
   lowLight: false,
+  glam: false,
   ...over,
 });
 
@@ -180,35 +182,41 @@ test("faceSettingsActive reflects any of the three filter settings", () => {
 
 const BOOLS = [false, true] as const;
 
-/** Every capability combination: 2^4 = 16. */
+/** Every capability combination: 2^5 = 32. */
 const ALL_CAPS: SlotCaps[] = BOOLS.flatMap((backgroundSupported) =>
   BOOLS.flatMap((faceFiltersSupported) =>
     BOOLS.flatMap((hwBrightness) =>
-      BOOLS.map((toneSupported) => ({
-        backgroundSupported,
-        faceFiltersSupported,
-        hwBrightness,
-        toneSupported,
-      })),
+      BOOLS.flatMap((toneSupported) =>
+        BOOLS.map((glamSupported) => ({
+          backgroundSupported,
+          faceFiltersSupported,
+          hwBrightness,
+          toneSupported,
+          glamSupported,
+        })),
+      ),
     ),
   ),
 );
 
-/** Every off/on combination of the six settings: 2^6 = 64. */
+/** Every off/on combination of the seven settings: 2^7 = 128. */
 const ALL_SETTINGS: SlotSettings[] = BOOLS.flatMap((background) =>
   BOOLS.flatMap((filter) =>
     BOOLS.flatMap((touchUp) =>
       BOOLS.flatMap((look) =>
         BOOLS.flatMap((bright) =>
-          BOOLS.map((lowLight) =>
-            S({
-              backgroundMode: background ? "blur" : "none",
-              faceFilterId: filter ? "dog" : undefined,
-              beautify: touchUp ? 40 : 0,
-              colorLookId: look ? "warm" : undefined,
-              brightness: bright ? 150 : 100,
-              lowLight,
-            }),
+          BOOLS.flatMap((lowLight) =>
+            BOOLS.map((glam) =>
+              S({
+                backgroundMode: background ? "blur" : "none",
+                faceFilterId: filter ? "dog" : undefined,
+                beautify: touchUp ? 40 : 0,
+                colorLookId: look ? "warm" : undefined,
+                brightness: bright ? 150 : 100,
+                lowLight,
+                glam,
+              }),
+            ),
           ),
         ),
       ),
@@ -216,12 +224,16 @@ const ALL_SETTINGS: SlotSettings[] = BOOLS.flatMap((background) =>
   ),
 );
 
-/** A phone: no segmentation, no MediaPipe face filters, tone stage only. */
+/**
+ * A phone: no segmentation, no MediaPipe face filters, tone stage only, and
+ * the face-tracked look cannot run.
+ */
 const CAPS_PHONE: SlotCaps = {
   backgroundSupported: false,
   faceFiltersSupported: false,
   hwBrightness: false,
   toneSupported: true,
+  glamSupported: false,
 };
 
 const describeCase = (s: SlotSettings, caps: SlotCaps) =>
@@ -230,12 +242,30 @@ const describeCase = (s: SlotSettings, caps: SlotCaps) =>
 test("the capability and settings enumerations are complete", () => {
   // A new SlotCaps or SlotSettings field must be enumerated here too, or the
   // "every combination" tests below silently stop being exhaustive.
-  assert.equal(Object.keys(CAPS_ALL).length, 4);
-  assert.equal(ALL_CAPS.length, 16);
-  assert.equal(new Set(ALL_CAPS.map((c) => JSON.stringify(c))).size, 16);
-  assert.equal(Object.keys(S()).length, 6);
-  assert.equal(ALL_SETTINGS.length, 64);
-  assert.equal(new Set(ALL_SETTINGS.map((s) => JSON.stringify(s))).size, 64);
+  assert.equal(Object.keys(CAPS_ALL).length, 5);
+  assert.equal(ALL_CAPS.length, 32);
+  assert.equal(new Set(ALL_CAPS.map((c) => JSON.stringify(c))).size, 32);
+  assert.equal(Object.keys(S()).length, 7);
+  assert.equal(ALL_SETTINGS.length, 128);
+  assert.equal(new Set(ALL_SETTINGS.map((s) => JSON.stringify(s))).size, 128);
+  // Every enumerated key really takes both values, and each enumerated case
+  // names every key (a key left out would hide behind its default).
+  for (const c of ALL_CAPS) {
+    assert.deepEqual(Object.keys(c).sort(), Object.keys(CAPS_ALL).sort());
+  }
+  for (const s of ALL_SETTINGS) {
+    assert.deepEqual(Object.keys(s).sort(), Object.keys(S()).sort());
+  }
+  assert.equal(ALL_CAPS.filter((c) => c.glamSupported === true).length, 16);
+  assert.equal(ALL_CAPS.filter((c) => c.glamSupported === false).length, 16);
+  assert.equal(ALL_SETTINGS.filter((s) => s.glam === true).length, 64);
+  assert.equal(ALL_SETTINGS.filter((s) => s.glam === false).length, 64);
+  // The phone caps name every key too, with the look unsupported.
+  assert.deepEqual(
+    Object.keys(CAPS_PHONE).sort(),
+    Object.keys(CAPS_ALL).sort(),
+  );
+  assert.equal(CAPS_PHONE.glamSupported, false);
 });
 
 test("all defaults leave the slot empty for every capability combination", () => {
@@ -321,6 +351,7 @@ test("slot table: every settings x capability combination follows the order", ()
     if (caps.backgroundSupported && s.backgroundMode !== "none") {
       claims.push("background");
     }
+    if (caps.glamSupported === true && s.glam === true) claims.push("face");
     const filterWork =
       caps.faceFiltersSupported &&
       (s.faceFilterId !== undefined ||
@@ -347,13 +378,16 @@ test("slot table: every settings x capability combination follows the order", ()
       counts[got]++;
     }
   }
-  // Hand-counted over the 16 x 64 grid, so the oracle above cannot drift
-  // along with the implementation unnoticed.
+  // Hand-counted over the 32 x 128 grid, so the oracle above cannot drift
+  // along with the implementation unnoticed. The grid is four copies of the
+  // 16 x 64 one (256 / 492 / 69 / 207), one per pairing of the look's switch
+  // and its support. Three copies are unchanged; in the fourth (on and
+  // supported) background keeps its 256 and the other 768 all become face.
   assert.deepEqual(counts, {
-    background: 256,
-    face: 492,
-    "brightness-fallback": 69,
-    none: 207,
+    background: 1024,
+    face: 2244,
+    "brightness-fallback": 207,
+    none: 621,
   });
 });
 
@@ -386,8 +420,10 @@ test("phone-like caps: low light or touch up takes the face slot without landmar
 });
 
 test("no tone stage and no face filters: the face pipeline never holds the slot", () => {
+  // The face-tracked look is a third way to hold the slot, so "neither" here
+  // also means it cannot run; the test after this one covers where it can.
   const neither = ALL_CAPS.filter(
-    (c) => !c.toneSupported && !c.faceFiltersSupported,
+    (c) => !c.toneSupported && !c.faceFiltersSupported && !c.glamSupported,
   );
   assert.equal(neither.length, 4);
   for (const caps of neither) {
@@ -399,9 +435,34 @@ test("no tone stage and no face filters: the face pipeline never holds the slot"
   }
 });
 
+test("no tone stage and no face filters, but the face-tracked look can run: only it holds the slot", () => {
+  const glamOnly = ALL_CAPS.filter(
+    (c) => !c.toneSupported && !c.faceFiltersSupported && c.glamSupported,
+  );
+  assert.equal(glamOnly.length, 4);
+  let faces = 0;
+  for (const caps of glamOnly) {
+    for (const s of ALL_SETTINGS) {
+      const msg = describeCase(s, caps);
+      const background = caps.backgroundSupported && s.backgroundMode !== "none";
+      assert.equal(
+        pickSlotOccupant(s, caps) === "face",
+        s.glam === true && !background,
+        msg,
+      );
+      if (pickSlotOccupant(s, caps) === "face") faces++;
+      assert.equal(toneSettingsActive(s, caps), false, msg);
+      assert.equal(needsLandmarks(s, caps), s.glam === true, msg);
+    }
+  }
+  // 4 caps x 64 settings with the look on, less the 2 x 32 a running
+  // background takes.
+  assert.equal(faces, 192);
+});
+
 test("background still wins over low light and touch up wherever it is supported", () => {
   const withBackground = ALL_CAPS.filter((c) => c.backgroundSupported);
-  assert.equal(withBackground.length, 8);
+  assert.equal(withBackground.length, 16);
   for (const caps of withBackground) {
     for (const s of ALL_SETTINGS) {
       if (s.backgroundMode === "none") {
@@ -479,13 +540,20 @@ test("brightness fallback only when nothing else holds the slot", () => {
         ),
         msg,
       );
+      assert.ok(!(caps.glamSupported === true && s.glam === true), msg);
     }
   }
-  assert.equal(seen, 69);
+  // 69 in each of the three pairings where the look is off or cannot run,
+  // none where it is on and supported.
+  assert.equal(seen, 207);
 });
 
 test("a face filter id without face-filter support holds nothing and never needs landmarks", () => {
-  const unsupported = ALL_CAPS.filter((c) => !c.faceFiltersSupported);
+  // Where the face-tracked look can run it asks for landmarks on its own
+  // account; that half is covered by its own tests further down.
+  const unsupported = ALL_CAPS.filter(
+    (c) => !c.faceFiltersSupported && !c.glamSupported,
+  );
   assert.equal(unsupported.length, 8);
   for (const caps of unsupported) {
     assert.equal(
@@ -517,13 +585,196 @@ test("needsLandmarks: only a sticker or touch up, and only with face-filter supp
     assert.equal(needsLandmarks(S({ brightness: 150 }), caps), false);
     assert.equal(needsLandmarks(S({ backgroundMode: "blur" }), caps), false);
     for (const s of ALL_SETTINGS) {
+      // The face-tracked look is the one other reason, on its own support.
       assert.equal(
         needsLandmarks(s, caps),
-        s.faceFilterId !== undefined || s.beautify > 0,
+        s.faceFilterId !== undefined ||
+          s.beautify > 0 ||
+          (caps.glamSupported === true && s.glam === true),
         describeCase(s, caps),
       );
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// The face-tracked look: holds the face slot and needs landmarks, but only
+// where it is both switched on and able to run
+// ---------------------------------------------------------------------------
+
+test("slot table: literal rows for the face-tracked look", () => {
+  const phoneGlam: SlotCaps = { ...CAPS_PHONE, glamSupported: true };
+  const phoneNoGlam: SlotCaps = { ...CAPS_PHONE, glamSupported: false };
+  // The types make both keys required. A caller that gets past them and
+  // still leaves one out must read as "off", so these three are built
+  // without the key (or with it undefined) and cast.
+  const phoneBare: Partial<SlotCaps> = { ...CAPS_PHONE };
+  delete phoneBare.glamSupported;
+  const phoneUnsaid = phoneBare as SlotCaps;
+  assert.equal("glamSupported" in phoneUnsaid, false);
+  const desktopUnsaid = {
+    ...CAPS_ALL,
+    glamSupported: undefined,
+  } as unknown as SlotCaps;
+  // Settings that never mention the look at all.
+  const unsaid = {
+    backgroundMode: "none",
+    beautify: 0,
+    brightness: 100,
+    lowLight: false,
+  } as SlotSettings;
+  assert.equal("glam" in unsaid, false);
+
+  const rows: [SlotSettings, SlotCaps, SlotOccupant, boolean][] = [
+    // On and supported: the face pipeline holds the slot and tracks the face.
+    [S({ glam: true }), phoneGlam, "face", true],
+    [S({ glam: true }), CAPS_ALL, "face", true],
+    [S({ glam: true }), { ...phoneGlam, hwBrightness: true }, "face", true],
+    [S({ glam: true, brightness: 150 }), phoneGlam, "face", true],
+    // A background the phone cannot run does not block it.
+    [S({ glam: true, backgroundMode: "blur" }), phoneGlam, "face", true],
+    // A running background outranks it.
+    [S({ glam: true, backgroundMode: "blur" }), CAPS_ALL, "background", true],
+    [
+      S({ glam: true, backgroundMode: "blur", lowLight: true, beautify: 40 }),
+      CAPS_ALL,
+      "background",
+      true,
+    ],
+    // On but not supported: exactly what the other settings give.
+    [S({ glam: true }), phoneNoGlam, "none", false],
+    [S({ glam: true, lowLight: true }), phoneNoGlam, "face", false],
+    [S({ glam: true, brightness: 150 }), phoneNoGlam, "brightness-fallback", false],
+    [S({ glam: true }), { ...CAPS_ALL, glamSupported: false }, "none", false],
+    // Support never stated reads as unsupported.
+    [S({ glam: true }), phoneUnsaid, "none", false],
+    [S({ glam: true, lowLight: true }), phoneUnsaid, "face", false],
+    [S({ glam: true }), desktopUnsaid, "none", false],
+    [S({ glam: true, faceFilterId: "dog" }), desktopUnsaid, "face", true],
+    [S({ glam: true, colorLookId: "warm" }), desktopUnsaid, "face", false],
+    [S({ glam: true, brightness: 150 }), desktopUnsaid, "brightness-fallback", false],
+    // Off, or never mentioned: nothing, whatever the device can do.
+    [S(), CAPS_ALL, "none", false],
+    [S({ glam: false }), CAPS_ALL, "none", false],
+    [S({ glam: false }), phoneGlam, "none", false],
+    [unsaid, CAPS_ALL, "none", false],
+    [unsaid, phoneGlam, "none", false],
+    [S({ glam: false, lowLight: true }), phoneGlam, "face", false],
+    [S({ glam: false, brightness: 150 }), phoneGlam, "brightness-fallback", false],
+  ];
+  for (const [s, c, occupant, landmarks] of rows) {
+    assert.equal(pickSlotOccupant(s, c), occupant, describeCase(s, c));
+    assert.equal(needsLandmarks(s, c), landmarks, describeCase(s, c));
+  }
+});
+
+test("phone-like caps that can run the face-tracked look need landmarks exactly while it is on", () => {
+  for (const hwBrightness of BOOLS) {
+    const caps: SlotCaps = { ...CAPS_PHONE, hwBrightness, glamSupported: true };
+    assert.equal(needsLandmarks(S({ glam: true }), caps), true);
+    assert.equal(needsLandmarks(S({ glam: false }), caps), false);
+    assert.equal(needsLandmarks(S(), caps), false);
+    // A stored sticker or touch up still asks for none on a phone.
+    assert.equal(
+      needsLandmarks(S({ faceFilterId: "dog", beautify: 40 }), caps),
+      false,
+    );
+    for (const s of ALL_SETTINGS) {
+      const msg = describeCase(s, caps);
+      assert.equal(needsLandmarks(s, caps), s.glam === true, msg);
+      assert.equal(
+        pickSlotOccupant(s, caps) === "face",
+        s.lowLight || s.beautify > 0 || s.glam === true,
+        msg,
+      );
+      assert.equal(
+        toneSettingsActive(s, caps),
+        s.lowLight || s.beautify > 0,
+        msg,
+      );
+    }
+    // Saying outright that it cannot run is the same as never saying.
+    const off: SlotCaps = { ...caps, glamSupported: false };
+    for (const s of ALL_SETTINGS) {
+      const msg = describeCase(s, off);
+      assert.equal(needsLandmarks(s, off), false, msg);
+      assert.equal(
+        pickSlotOccupant(s, off) === "face",
+        s.lowLight || s.beautify > 0,
+        msg,
+      );
+    }
+  }
+});
+
+test("the face-tracked look changes nothing unless it is both on and supported", () => {
+  // The same case with every mention of the look removed.
+  const strip = (s: SlotSettings, caps: SlotCaps): [SlotSettings, SlotCaps] => {
+    // Both keys are required by the types, so leaving one out takes a cast.
+    const bareSettings: Partial<SlotSettings> = { ...s };
+    delete bareSettings.glam;
+    const bareCaps: Partial<SlotCaps> = { ...caps };
+    delete bareCaps.glamSupported;
+    return [bareSettings as SlotSettings, bareCaps as SlotCaps];
+  };
+  let unchanged = 0;
+  let active = 0;
+  for (const caps of ALL_CAPS) {
+    for (const s of ALL_SETTINGS) {
+      const msg = describeCase(s, caps);
+      const [bareSettings, bareCaps] = strip(s, caps);
+      assert.equal("glam" in bareSettings, false);
+      assert.equal("glamSupported" in bareCaps, false);
+      // Support, the switch, or both left unsaid: as if neither existed.
+      for (const [s2, c2] of [
+        [bareSettings, caps],
+        [s, bareCaps],
+        [bareSettings, bareCaps],
+      ] as const) {
+        assert.equal(
+          pickSlotOccupant(s2, c2),
+          pickSlotOccupant(bareSettings, bareCaps),
+          msg,
+        );
+        assert.equal(
+          needsLandmarks(s2, c2),
+          needsLandmarks(bareSettings, bareCaps),
+          msg,
+        );
+      }
+      // Tone work never depends on the look.
+      assert.equal(
+        toneSettingsActive(s, caps),
+        toneSettingsActive(bareSettings, bareCaps),
+        msg,
+      );
+      if (caps.glamSupported === true && s.glam === true) {
+        active++;
+        assert.equal(
+          pickSlotOccupant(s, caps),
+          caps.backgroundSupported && s.backgroundMode !== "none"
+            ? "background"
+            : "face",
+          msg,
+        );
+        assert.equal(needsLandmarks(s, caps), true, msg);
+      } else {
+        unchanged++;
+        assert.equal(
+          pickSlotOccupant(s, caps),
+          pickSlotOccupant(bareSettings, bareCaps),
+          msg,
+        );
+        assert.equal(
+          needsLandmarks(s, caps),
+          needsLandmarks(bareSettings, bareCaps),
+          msg,
+        );
+      }
+    }
+  }
+  assert.equal(active, 1024);
+  assert.equal(unchanged, 3072);
 });
 
 test("toneSettingsActive: low light or touch up, and only with tone support", () => {

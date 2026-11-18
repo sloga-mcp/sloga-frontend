@@ -24,7 +24,7 @@
 // Removing logs and editing comments never breaks a pin; adding a statement
 // inside a pinned span does.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
 
@@ -4597,6 +4597,7 @@ test("source pin (camera fx): the attach driver gets the muted-or-gated block, t
         gateHeld: () => this.#cameraSenderOpsBlocked(),
         track: () => (current() ? this.#publishedCameraTrack() : undefined),
         plan: async (track) => {
+          await probeCameraGlam();
           const snapshot = this.#cameraEffectSettings();
           const plan = await this.#cameraEffects.plan(track, snapshot);
           if (!cameraNeedsHold(plan) && this.#cameraEarlyHold.delete(track))
@@ -4618,6 +4619,19 @@ test("source pin (camera fx): the attach driver gets the muted-or-gated block, t
       return driver`),
     "#newCameraAttach",
   );
+  // The plan waits for the tracker-file check and only then reads the
+  // settings, so the snapshot and the plan are of the moment after the wait.
+  // Said on its own as well as in the body above: awaited (a `void` would
+  // plan a phone's first camera-on without the look), first in the plan, and
+  // called from nowhere else in this file (the import has no parenthesis).
+  assertWired(
+    "the probe, then the snapshot",
+    `plan: async (track) => {
+      await probeCameraGlam();
+      const snapshot = this.#cameraEffectSettings();`,
+  );
+  assert.equal(countWired(STATE_CODE, `await probeCameraGlam();`), 1);
+  assert.equal(countWired(STATE_CODE, `probeCameraGlam(`), 1);
   assert.equal(
     bodyOf(`#cameraSenderOpsBlocked(): boolean {`),
     codeOf(
@@ -4841,6 +4855,7 @@ test("source pin (camera fx): low light is read from the store into both setting
         faceFilterId: this.#settings.cameraFaceFilterId,
         beautify: this.#settings.cameraBeautify ?? 0,
         colorLookId: this.#settings.cameraColorLookId,
+        glam: this.#settings.cameraGlam ?? 0,
         lowLight: this.#settings.cameraLowLight ?? false,
       }`),
     "#cameraEffectSettings",
@@ -4853,6 +4868,7 @@ test("source pin (camera fx): low light is read from the store into both setting
         beautify: this.#settings.cameraBeautify ?? 0,
         colorLookId: this.#settings.cameraColorLookId,
         brightness: this.#settings.cameraBrightness ?? 100,
+        glam: (this.#settings.cameraGlam ?? 0) > 0,
         lowLight: this.#settings.cameraLowLight ?? false,
       })`),
     "#faceSettings",
@@ -4883,17 +4899,24 @@ test("source pin (camera fx): a shed tone stage raises effect-slow once per call
   // Wired once each, where the controller's other callbacks are set.
   assertWired(
     "the tone callbacks",
-    `this.#cameraEffects.onToneShed = () => this.#noteCameraToneShed();
-      this.#cameraEffects.onToneFailed = () => this.#noteCameraToneFailed();`,
+    `this.#cameraEffects.onToneShed = (stage) => this.#noteCameraToneShed(stage);
+      this.#cameraEffects.onToneFailed = () => this.#noteCameraToneFailed();
+      this.#cameraEffects.onGlamFailed = () => this.#noteCameraGlamFailed();`,
   );
   assert.equal(countWired(STATE_CODE, `#cameraEffects.onToneShed =`), 1);
   assert.equal(countWired(STATE_CODE, `#cameraEffects.onToneFailed =`), 1);
-  assert.equal(countWired(STATE_CODE, `this.#noteCameraToneShed()`), 1);
+  // The handler is told which stage was shed, and is never called without it.
+  assert.equal(countWired(STATE_CODE, `this.#noteCameraToneShed()`), 0);
+  assert.equal(countWired(STATE_CODE, `this.#noteCameraToneShed(stage)`), 1);
   assert.equal(countWired(STATE_CODE, `this.#noteCameraToneFailed()`), 1);
 
   assert.equal(
-    bodyOf(`#noteCameraToneShed(): void {`),
-    codeOf(`if (this.#cameraEffectSlowNoted) return;
+    bodyOf(`#noteCameraToneShed(stage: ToneStageName): void {`),
+    codeOf(`if (stage === "glam") {
+        this.#noteCameraGlamShed();
+        return;
+      }
+      if (this.#cameraEffectSlowNoted) return;
       const track = this.#publishedCameraTrack();
       if (!track || track.isMuted) return;
       this.#cameraEffectSlowNoted = true;
@@ -4953,8 +4976,8 @@ test("source pin (camera fx): a shed tone stage raises effect-slow once per call
   );
   assert.equal(
     countWired(STATE_CODE, `this.#cameraToneNotice =`),
-    3,
-    "the setter and the two tone handlers",
+    5,
+    "the setter and the four processor handlers",
   );
   // A sync that succeeded clears what a sync raised, never what the
   // processor reported; the user's own dismiss clears either.
@@ -4995,6 +5018,205 @@ test("source pin (camera fx): a shed tone stage raises effect-slow once per call
   // The watchdog is re-armed there and nowhere else: a camera unpublished or
   // republished mid-call must not bring back a stage shed for being slow.
   assert.equal(countWired(STATE_CODE, `resetToneWatchdog(`), 1);
+});
+
+test("source pin (camera fx): the Glam strength is read from the store into both settings literals, and its setter writes the store and fires the one sync, nothing else", () => {
+  const setter = bodyOf(`setCameraGlam(value: number): void {`);
+  assert.equal(
+    setter,
+    codeOf(`this.#settings.cameraGlam = value;
+      void this.#applyCameraEffects()`),
+    "setCameraGlam",
+  );
+  // The same rule as low light's setter: neither the controller nor the
+  // track. A change of strength on a live camera is a tune the driver issues.
+  assert.ok(!setter.includes("#cameraEffects"), "no controller call");
+  assert.ok(!setter.includes("#cameraAttach"), "no driver call of its own");
+  assert.ok(!/track|setProcessor|stopProcessor/i.test(setter), "no track");
+  // The one write of the setting in the file.
+  assert.equal(countWired(STATE_CODE, `this.#settings.cameraGlam =`), 1);
+
+  // One read each in the two literals (their whole bodies are pinned beside
+  // low light's above): the strength for the controller, on or off for the
+  // "any face setting" rule. With the setter that is every use of it.
+  assert.equal(
+    countWired(STATE_CODE, `glam: this.#settings.cameraGlam ?? 0,`),
+    1,
+  );
+  assert.equal(
+    countWired(STATE_CODE, `glam: (this.#settings.cameraGlam ?? 0) > 0,`),
+    1,
+  );
+  assert.equal(countWired(STATE_CODE, `#settings.cameraGlam`), 3);
+  assert.ok(
+    bodyOf(`#cameraEffectSettings(): CameraEffectSettings {`).includes(
+      codeOf(`glam: this.#settings.cameraGlam ?? 0,`),
+    ),
+    "#cameraEffectSettings carries the strength",
+  );
+  assert.ok(
+    bodyOf(`#faceSettings(): boolean {`).includes(
+      codeOf(`glam: (this.#settings.cameraGlam ?? 0) > 0,`),
+    ),
+    "#faceSettings carries on or off",
+  );
+
+  // The diagnostic line's read: forwarded, nothing more.
+  assert.equal(
+    bodyOf(
+      `cameraGlamInfo(): { state: GlamState; stats: GlamStats } | undefined {`,
+    ),
+    codeOf(`return this.#cameraEffects.glamInfo`),
+    "cameraGlamInfo",
+  );
+});
+
+/**
+ * What a report from the camera's processor may never do, found in `code`
+ * (already put through `codeOf`): write a setting, start a sync, call the
+ * controller's apply, or touch the processor slot.
+ */
+function reportOverreach(code: string): string[] {
+  return [
+    /this\.#settings\.[\w$]+=(?!=)/,
+    /#applyCameraEffects/,
+    /#syncCameraEffects/,
+    /\.apply\(/,
+    /setProcessor/,
+    /stopProcessor/,
+  ]
+    .filter((forbidden) => forbidden.test(code))
+    .map(String);
+}
+
+test("source pin (camera fx): a Glam shed or failure writes no setting and syncs nothing", () => {
+  // The check itself first: it must find each thing it is there to refuse.
+  for (const overreach of [
+    `this.#settings.cameraGlam = 0;`,
+    `void this.#applyCameraEffects();`,
+    `this.#syncCameraEffectsOverEmptyGate(room);`,
+    `void this.#cameraEffects.apply(track, settings);`,
+    `await track.setProcessor(proc);`,
+    `await track.stopProcessor();`,
+  ]) {
+    assert.equal(reportOverreach(codeOf(overreach)).length, 1, overreach);
+  }
+  assert.deepEqual(
+    reportOverreach(codeOf(`if (this.#settings.cameraGlam === 0) return;`)),
+    [],
+    "a read is not a write",
+  );
+
+  // Shed for being slow: `glam-slow`, once per call, for a live camera of the
+  // current room. The switch stays as the user left it.
+  const shed = bodyOf(`#noteCameraGlamShed(): void {`);
+  assert.equal(
+    shed,
+    codeOf(`if (this.#cameraGlamSlowNoted) return;
+      const track = this.#publishedCameraTrack();
+      if (!track || track.isMuted) return;
+      this.#cameraGlamSlowNoted = true;
+      this.#setCameraEffectNotice("glam-slow");
+      this.#cameraToneNotice = "glam-slow"`),
+    "#noteCameraGlamShed",
+  );
+  assert.deepEqual(reportOverreach(shed), [], "#noteCameraGlamShed");
+  // The one place the notice is raised, the one place its latch is set, and
+  // the one caller: the shed handler's "glam" arm (pinned above).
+  assert.equal(
+    countWired(STATE_CODE, `this.#setCameraEffectNotice("glam-slow")`),
+    1,
+  );
+  assert.equal(
+    countWired(STATE_CODE, `this.#cameraToneNotice = "glam-slow"`),
+    1,
+  );
+  assert.equal(countWired(STATE_CODE, `this.#cameraGlamSlowNoted = true;`), 1);
+  assert.equal(countWired(STATE_CODE, `this.#noteCameraGlamShed()`), 1);
+
+  // Failed for good: `effect-failed`, once per call, for a camera that is
+  // on. The controller reports a failure once, and the tracker can fail
+  // while the camera is off: that one is kept as "unsaid" and not dropped.
+  // Only a notice that was SHOWN ("failed") stops a later one; "unsaid" must
+  // not, or the kept failure would block its own notice at the unmute.
+  const failed = bodyOf(`#noteCameraGlamFailed(): void {`);
+  assert.equal(
+    failed,
+    codeOf(`const track = this.#publishedCameraTrack();
+      if (!track) return;
+      if (this.#cameraEffectFailedWith.get("glam") === "failed") return;
+      if (track.isMuted) {
+        this.#cameraEffectFailedWith.set("glam", "unsaid");
+        return;
+      }
+      this.#setCameraEffectNotice("effect-failed");
+      this.#cameraEffectFailedWith.set("glam", "failed");
+      this.#cameraToneNotice = "effect-failed"`),
+    "#noteCameraGlamFailed",
+  );
+  assert.deepEqual(reportOverreach(failed), [], "#noteCameraGlamFailed");
+  // Wired once, where the tone callbacks are (the three lines are pinned
+  // together above). One more caller and no third: the sync's outcome, which
+  // raises a kept failure once the camera is on.
+  assertWired(
+    "the Glam failure callback",
+    `this.#cameraEffects.onGlamFailed = () => this.#noteCameraGlamFailed();`,
+  );
+  assert.equal(countWired(STATE_CODE, `#cameraEffects.onGlamFailed =`), 1);
+  assert.equal(countWired(STATE_CODE, `this.#noteCameraGlamFailed()`), 2);
+  // That second call is the LAST thing the outcome does, after the arm that
+  // clears a notice on a sync that succeeded, and only for a camera that is
+  // on. "unsaid" is written in one place and read in one.
+  const outcome = bodyOf(
+    `#noteCameraEffectsOutcome(
+      outcome: CameraAttachOutcome,
+      cameraWasOn: boolean,
+    ): void {`,
+  );
+  const outcomeTail = codeOf(`
+        if (!this.#cameraToneNotice) this.#setCameraEffectNotice(undefined);
+      }
+      if (live && this.#cameraEffectFailedWith.get("glam") === "unsaid")
+        this.#noteCameraGlamFailed()`);
+  assert.equal(
+    outcome.slice(-outcomeTail.length),
+    outcomeTail,
+    "#noteCameraEffectsOutcome's last statement",
+  );
+  assertWired(
+    "the kept Glam failure, raised",
+    `if (live && this.#cameraEffectFailedWith.get("glam") === "unsaid")
+      this.#noteCameraGlamFailed();`,
+  );
+  assert.equal(countWired(STATE_CODE, `"unsaid"`), 2);
+  assert.equal(
+    countWired(
+      STATE_CODE,
+      `this.#cameraEffectFailedWith.set("glam", "unsaid");`,
+    ),
+    1,
+  );
+
+  // The shed handler that forwards to the first of them is held to the same.
+  assert.deepEqual(
+    reportOverreach(
+      bodyOf(`#noteCameraToneShed(stage: ToneStageName): void {`),
+    ),
+    [],
+    "#noteCameraToneShed",
+  );
+
+  // The leave re-arms the Glam latch where it re-arms the tone ones, and
+  // nothing else does: the field's initializer and this line are the only
+  // two places it is false.
+  assertWired(
+    "the leave's Glam latch",
+    `this.#cameraEffectSlowNoted = false;
+      this.#cameraEffects.resetToneWatchdog();
+      this.#cameraGlamSlowNoted = false;`,
+  );
+  assert.equal(countWired(STATE_CODE, `this.#cameraGlamSlowNoted = false;`), 1);
+  assert.equal(countWired(STATE_CODE, `#cameraGlamSlowNoted = false;`), 2);
 });
 
 // --- The camera effects controller's sender operations ----------------------
@@ -5217,38 +5439,70 @@ test("source pin (camera ctl): a background and a face filter are attached only 
   );
   // The face filter: asked before the processor is built or referenced, so a
   // refusal leaves nothing behind; a live filter is only re-configured.
-  assert.equal(
-    countWired(
-      ctlBodyIn(
-        CTL_CODE,
-        `async #ensureFace(
-          track: LocalVideoTrack,
-          myGen: number,
-          settings: CameraEffectSettings,
-          hw: boolean,
-          opGuard?: CameraOpGuard,
-        ) {`,
-      ),
-      `if (this.#face) {
-        this.#face.setConfig(cfg);
-        return;
-      }
+  //
+  // And the guard the processor's gate reading goes through (`#faceGuard`)
+  // is stored by the pass that ATTACHES, inside `if (!this.#face)`, and by
+  // no other: a later tune's guard refuses whatever the gate does, so stored
+  // on every tune it would read as a gate held for good. Nothing sits
+  // between that block and the config, and the tune branch returns before
+  // the guard is asked. The body must START with all of it.
+  const ensureFace = ctlBodyIn(
+    CTL_CODE,
+    `async #ensureFace(
+      track: LocalVideoTrack,
+      myGen: number,
+      settings: CameraEffectSettings,
+      hw: boolean,
+      opGuard?: CameraOpGuard,
+    ) {`,
+  );
+  const ensureFaceStart = `if (!this.#face) {
+      this.#faceGuard = opGuard;
+      this.#toneFailed = false;
+    }
+    this.#faceInputs = { settings, hw };
+    const cfg = this.#faceConfig(settings, hw);
 
-      this.#assertMayOp(opGuard);
-      const proc = new FaceFilterProcessor(cfg);
-      this.#facePending = proc;
-      proc.onStatus = (s) => {
-        if (this.#face === proc || this.#facePending === proc) {
-          this.onFaceFilterStatus?.(s);
-        }
-      };
-      try {
-        await track.setProcessor(proc);
-      } catch (e) {`,
-    ),
+    if (this.#face) {
+      this.#face.setConfig(cfg);
+      const look = this.#face.glamState;
+      if (this.#toneFailed && (look === "on" || look === "waiting")) {
+        this.#toneFailed = false;
+        this.#face.setConfig(this.#faceConfig(settings, hw));
+      }
+      return;
+    }
+
+    this.#assertMayOp(opGuard);
+    const proc = new FaceFilterProcessor(cfg);
+    this.#facePending = proc;
+    proc.onStatus = (s) => {
+      if (this.#face === proc || this.#facePending === proc) {
+        this.onFaceFilterStatus?.(s);
+      }
+    };
+    try {
+      await track.setProcessor(proc);
+    } catch (e) {`;
+  assert.equal(
+    ensureFace.slice(0, codeOf(ensureFaceStart).length),
+    codeOf(ensureFaceStart),
+    "#ensureFace's guard block, config, tune branch and attach",
+  );
+  assert.equal(
+    countWired(ensureFace, ensureFaceStart),
     1,
     "#ensureFace's attach",
   );
+  // The one write of the stored guard in the file, and its one reader (the
+  // gate reading, pinned by body further down).
+  assert.equal(countWired(CTL_CODE, `this.#faceGuard = `), 1);
+  assert.equal(countWired(CTL_CODE, `this.#faceGuard = opGuard;`), 1);
+  assert.equal(countWired(CTL_CODE, `#faceGuard`), 3);
+  // The tone latch: set by the failure report, cleared by an attaching pass
+  // and by a tune that finds the look running again. Nowhere else.
+  assert.equal(countWired(CTL_CODE, `this.#toneFailed = false;`), 2);
+  assert.equal(countWired(CTL_CODE, `this.#toneFailed = true;`), 1);
 });
 
 test("source pin (camera ctl): a background and a face filter are removed only after the guard is asked", () => {
@@ -5582,14 +5836,761 @@ test("source pin (camera ctl): the tone watchdog lives for the call: reset() lea
   assert.ok(!reset.includes("#watchdog"), "reset() does not touch it");
   assert.equal(
     ctlBodyIn(CTL_CODE, `resetToneWatchdog(): void {`),
-    codeOf(`this.#watchdog?.reset()`),
+    codeOf(`this.#watchdog?.reset();
+      this.#glamFailed = false`),
     "resetToneWatchdog",
   );
   // The field, its lazy creation for a face config, and the one re-arm.
   assert.equal(countWired(CTL_CODE, `#watchdog`), 3);
   assert.equal(
-    countWired(CTL_CODE, `watchdog: (this.#watchdog ??= new ToneWatchdog()),`),
+    countWired(
+      CTL_CODE,
+      `const watchdog = (this.#watchdog ??= new ToneWatchdog());`,
+    ),
     1,
   );
   assert.equal(countWired(CTL_CODE, `new ToneWatchdog(`), 1);
+});
+
+// --- The controller's part in the Glam look ---------------------------------
+//
+// What the wiring above leans on: the stored switch alone asks for the
+// processor slot (a look that was shed or failed still holds it, so "the look
+// stopped" never becomes a sender operation), the face config is built in one
+// place, and a report from the processor ends in a tune. The slot rules these
+// feed are spec'd in faceFilterPolicy.test.ts.
+
+const CATALOG_SOURCE = readFileSync(
+  new URL("./faceFilterCatalog.ts", import.meta.url),
+  "utf8",
+);
+const CATALOG_CODE = codeOf(CATALOG_SOURCE);
+
+/** `components/`, the tree the landmark rule's callers are counted in. */
+const COMPONENTS_DIR = new URL("../", import.meta.url);
+
+test("source pin (camera ctl): the Glam switch alone asks for the slot, the face config is built in one place with the gate and the failure latch in it, and a shed ends in a tune", () => {
+  // The one reading the wanted occupant and the face config share.
+  assert.equal(
+    ctlBodyIn(
+      CTL_CODE,
+      `#slotInputs(
+        settings: CameraEffectSettings,
+        hw: boolean,
+      ): { slot: SlotSettings; caps: SlotCaps } {`,
+    ),
+    codeOf(`return {
+        slot: {
+          backgroundMode: this.wantsBackground(settings)
+            ? settings.backgroundMode
+            : "none",
+          faceFilterId: settings.faceFilterId,
+          beautify: settings.beautify,
+          colorLookId: settings.colorLookId,
+          brightness: settings.brightness,
+          glam: settings.glam > 0,
+          lowLight: settings.lowLight,
+        },
+        caps: {
+          backgroundSupported: cameraBackgroundSupported(),
+          faceFiltersSupported: faceFiltersSupported(),
+          hwBrightness: hw,
+          toneSupported: cameraToneSupported(),
+          glamSupported: cameraGlamSupported(),
+        },
+      }`),
+    "#slotInputs",
+  );
+  assert.equal(countWired(CTL_CODE, `this.#slotInputs(`), 2);
+
+  // The config: the strength only where the look can run and has not failed
+  // in this call, landmarks asked WITHOUT the look, the gate reading and the
+  // failure report handed over, and touch up dropped while the look is drawn.
+  // Once the look is over for the call (failed, or shed by the watchdog)
+  // landmarks are asked without touch up as well, so the touch up that comes
+  // back does not load the tracker again; the touch up itself stays in the
+  // config (`settings.beautify`, not the slot's).
+  assert.equal(
+    ctlBodyIn(
+      CTL_CODE,
+      `#faceConfig(settings: CameraEffectSettings, hw: boolean): FaceFilterConfig {`,
+    ),
+    codeOf(`const { slot: stored, caps } = this.#slotInputs(settings, hw);
+      const watchdog = (this.#watchdog ??= new ToneWatchdog());
+      const glamOver = this.#glamFailed || watchdog.shed.has("glam");
+      const slot = glamOver ? { ...stored, beautify: 0 } : stored;
+      const cfg: FaceFilterConfig = {
+        filterId: caps.faceFiltersSupported ? settings.faceFilterId : undefined,
+        beautify: settings.beautify,
+        lookId: caps.faceFiltersSupported ? settings.colorLookId : undefined,
+        brightness: hw ? 100 : settings.brightness,
+        glam: caps.glamSupported && !this.#glamFailed ? settings.glam : 0,
+        lowLight: settings.lowLight,
+        landmarks: needsLandmarks({ ...slot, glam: false }, caps),
+        tone: caps.toneSupported,
+        watchdog,
+        onToneShed: this.#forwardToneShed,
+        onToneFailed: this.#forwardToneFailed,
+        gateHeld: this.#faceGateHeld,
+        onGlamFailed: this.#forwardGlamFailed,
+      };
+      if (this.#glamDrawn(cfg)) cfg.beautify = 0;
+      return cfg`),
+    "#faceConfig",
+  );
+
+  // The landmark rule has that one caller. Anywhere else under components/
+  // it would be a second answer to "does this config use the face tracker".
+  assert.equal(countWired(CTL_CODE, `needsLandmarks(`), 1);
+  const callers: string[] = [];
+  let scanned = 0;
+  for (const file of readdirSync(COMPONENTS_DIR, {
+    recursive: true,
+    encoding: "utf8",
+  })) {
+    const path = file.replaceAll("\\", "/");
+    if (!/\.tsx?$/.test(path) || /\.test\.tsx?$/.test(path)) continue;
+    if (path.split("/").includes("node_modules")) continue;
+    scanned++;
+    const source = readFileSync(new URL(path, COMPONENTS_DIR), "utf8");
+    if (!source.includes("needsLandmarks(")) continue;
+    const found = countWired(codeOf(source), `needsLandmarks(`);
+    for (let i = 0; i < found; i++) callers.push(path);
+  }
+  assert.ok(scanned >= 2, "the scan read the two files it must find");
+  assert.deepEqual(
+    callers.sort(),
+    ["rtc/cameraEffects.ts", "rtc/faceFilterCatalog.ts"],
+    "the call above and the rule's own definition",
+  );
+  assert.equal(
+    countWired(CATALOG_CODE, `export function needsLandmarks(`),
+    1,
+    "faceFilterCatalog.ts's one is the definition",
+  );
+
+  // A shed look sends the config again (touch up is back in it) before the
+  // report goes on, and sending it again is a tune: `setConfig` on the
+  // attached processor, skipped while the gate is held.
+  assert.equal(
+    ctlBodyIn(
+      CTL_CODE,
+      `readonly #forwardToneShed = (stage: ToneStageName) => {`,
+    ),
+    codeOf(`if (stage === "glam") this.#retuneFaceSoon();
+      this.onToneShed?.(stage)`),
+    "#forwardToneShed",
+  );
+  const retune = ctlBodyIn(CTL_CODE, `#retuneFaceSoon() {`);
+  assert.equal(
+    retune,
+    codeOf(`queueMicrotask(() => {
+        const face = this.#face;
+        const last = this.#faceInputs;
+        if (!face || !last || this.#faceGateHeld()) return;
+        face.setConfig(this.#faceConfig(last.settings, last.hw));
+      })`),
+    "#retuneFaceSoon",
+  );
+  assert.deepEqual(senderOpsIn(retune), [], "a tune issues no sender op");
+  assert.ok(!/await|#assertMayOp|track/.test(retune), "and reaches no track");
+  // The three reports and the late one after an attach.
+  assert.equal(countWired(CTL_CODE, `this.#retuneFaceSoon();`), 4);
+
+  // The gate reading: held exactly while the attaching pass's guard refuses.
+  // No guard (the settings preview) is never held.
+  assert.equal(
+    ctlBodyIn(CTL_CODE, `readonly #faceGateHeld = (): boolean => {`),
+    codeOf(`const guard = this.#faceGuard;
+      return !!guard && !guard.maySenderOp()`),
+    "#faceGateHeld",
+  );
+  assert.equal(
+    countWired(CTL_CODE, `return !!guard && !guard.maySenderOp();`),
+    1,
+  );
+
+  // None of this added a sender operation: still the eight pinned above.
+  assert.equal(senderOpsIn(CTL_CODE).length, 8);
+});
+
+test("source pin (camera slot): the Glam arm sits directly under the background arm, behind its own capability, and landmarks follow the same two conditions", () => {
+  assertLexesInSync("faceFilterCatalog.ts", CATALOG_SOURCE, CATALOG_CODE, 30);
+
+  const pick = bodiesAfter(
+    CATALOG_CODE,
+    `export function pickSlotOccupant(s: SlotSettings, caps: SlotCaps): SlotOccupant {`,
+  );
+  assert.equal(pick.length, 1, "one pickSlotOccupant");
+  // A running background still outranks the look; nothing else does.
+  assert.ok(
+    pick[0].startsWith(
+      codeOf(`if (s.backgroundMode !== "none" && caps.backgroundSupported) {
+          return "background";
+        }
+        if (caps.glamSupported && s.glam) return "face";
+        if (`),
+    ),
+    "the background arm, then the Glam arm",
+  );
+  assert.equal(
+    countWired(
+      CATALOG_CODE,
+      `if (caps.glamSupported && s.glam) return "face";`,
+    ),
+    1,
+  );
+
+  const landmarks = bodiesAfter(
+    CATALOG_CODE,
+    `export function needsLandmarks(s: SlotSettings, caps: SlotCaps): boolean {`,
+  );
+  assert.equal(landmarks.length, 1, "one needsLandmarks");
+  assert.equal(
+    landmarks[0],
+    codeOf(`return (
+        (caps.faceFiltersSupported && (!!s.faceFilterId || s.beautify > 0)) ||
+        (!!caps.glamSupported && !!s.glam)
+      )`),
+    "needsLandmarks",
+  );
+  assert.equal(
+    countWired(CATALOG_CODE, `(!!caps.glamSupported && !!s.glam)`),
+    1,
+  );
+});
+
+// --- The tracker-file check behind `glamSupported` --------------------------
+//
+// On the phone apps the look is offered only once the face tracker's two
+// files have been found. The answer the slot rules read is synchronous and
+// must stay a pure read (planning sends no request); the check itself is
+// started when a controller is created and awaited by the attach driver's
+// plan (pinned in the camera fx tests above). It is bounded in time, shared
+// while in flight, kept once it has an answer and throttled after one that
+// got none. No spec can load cameraEffects.ts, so every line of that is held
+// here as text, with the limits stated at the top of this file.
+
+test("source pin (camera ctl): the tracker-file check starts with the controller, is bounded and kept, and the synchronous answer only reads it", () => {
+  // Started once per controller, long before a camera is on. `constructor()
+  // {` is the controller's: the other class in the file takes an argument.
+  assert.equal(
+    ctlBodyIn(CTL_CODE, `constructor() {`),
+    codeOf(`void probeCameraGlam()`),
+    "the controller's constructor",
+  );
+  assert.equal(
+    countWired(CTL_CODE, `probeCameraGlam(`),
+    2,
+    "the definition and the constructor's call",
+  );
+
+  // The synchronous answer: a read of what the check found, and nothing that
+  // could start one or send a request.
+  const supported = ctlBodyIn(
+    CTL_CODE,
+    `export function cameraGlamSupported(): boolean {`,
+  );
+  assert.equal(
+    supported,
+    codeOf(`if (!cameraToneSupported()) return false;
+      if (!glamFilesNeedProbe()) return true;
+      return _glamFilesReachable`),
+    "cameraGlamSupported",
+  );
+  assert.ok(
+    !/probeCameraGlam|glamFilesPresent|glamFileReachable|fetch|_glamProbe/.test(
+      supported,
+    ),
+    "cameraGlamSupported starts no check",
+  );
+
+  // The check as callers see it: at once where none is needed or one has
+  // answered (either way), the one in flight shared, none sent inside the
+  // retry window, a found answer and a missing one both kept, and a check
+  // that got no answer throttled instead of kept.
+  assert.equal(
+    ctlBodyIn(
+      CTL_CODE,
+      `export function probeCameraGlam(): Promise<boolean> {`,
+    ),
+    codeOf(`if (!cameraToneSupported()) return Promise.resolve(false);
+      if (!glamFilesNeedProbe() || _glamFilesReachable) {
+        return Promise.resolve(true);
+      }
+      if (_glamFilesMissing) return Promise.resolve(false);
+      if (_glamProbe) return _glamProbe;
+      if (Date.now() < _glamRetryAt) return Promise.resolve(false);
+      const probe = glamFilesPresent().then(
+        (present) => {
+          _glamProbe = undefined;
+          if (present) _glamFilesReachable = true;
+          else _glamFilesMissing = true;
+          return present;
+        },
+        () => {
+          _glamProbe = undefined;
+          _glamRetryAt = Date.now() + GLAM_PROBE_RETRY_MS;
+          return false;
+        },
+      );
+      _glamProbe = probe;
+      return probe`),
+    "probeCameraGlam",
+  );
+  assert.equal(countWired(CTL_CODE, `_glamFilesReachable = true`), 1);
+  assert.equal(countWired(CTL_CODE, `_glamFilesMissing = true`), 1);
+
+  // One check: both files, raced against a timer that also stops the
+  // requests, and the timer cleared whichever way it ends. What the files
+  // answered is put together by the policy (`glamProbeCapability`, spec'd in
+  // glamPolicy.test.ts), and "could not be told" leaves as a rejection, which
+  // is what keeps it out of the two kept answers above.
+  assert.equal(
+    ctlBodyIn(
+      CTL_CODE,
+      `async function glamFilesPresent(): Promise<boolean> {`,
+    ),
+    codeOf(`const abort = new AbortController();
+      const verdicts = GLAM_FILE_URLS.map((): GlamProbeVerdict => "unknown");
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          abort.abort();
+          resolve();
+        }, GLAM_PROBE_TIMEOUT_MS);
+      });
+      const all = Promise.all(
+        GLAM_FILE_URLS.map(async (url, at) => {
+          verdicts[at] = await glamFileReachable(url, abort.signal);
+        }),
+      );
+      try {
+        await Promise.race([all, timedOut]);
+      } finally {
+        clearTimeout(timer);
+      }
+      const verdict = glamProbeCapability([...verdicts]);
+      if (verdict === "unknown") throw new Error("tracker file check: no answer");
+      return verdict === "present"`),
+    "glamFilesPresent",
+  );
+  assert.equal(
+    countWired(CTL_CODE, `glamFilesPresent()`),
+    2,
+    "its definition and the one caller",
+  );
+  assert.equal(countWired(CTL_CODE, `const GLAM_PROBE_TIMEOUT_MS = 3000;`), 1);
+  assert.equal(countWired(CTL_CODE, `const GLAM_PROBE_RETRY_MS = 30_000;`), 1);
+  assert.equal(
+    countWired(
+      CTL_CODE,
+      `const GLAM_FILE_URLS = [
+        \`\${SEGMENTATION_BASE}/models/face_landmarker.task\`,
+        \`\${SEGMENTATION_BASE}/wasm/vision_wasm_internal.wasm\`,
+      ];`,
+    ),
+    1,
+    "the two files",
+  );
+
+  // One file: the requests are sent here and nothing is decided here. The
+  // verdict is the policy's (`glamProbeVerdict`), which also says whether
+  // the second request is sent at all (`glamProbeNeedsRange`). A status
+  // compared in this body would be a second rule nobody specs.
+  const reachable = ctlBodyIn(
+    CTL_CODE,
+    `async function glamFileReachable(
+      url: string,
+      signal: AbortSignal,
+    ): Promise<GlamProbeVerdict> {`,
+  );
+  assert.equal(
+    reachable,
+    codeOf(`let head = GLAM_PROBE_NO_ANSWER;
+      try {
+        head = glamProbeAnswer(await fetch(url, { method: "HEAD", signal }), 0);
+      } catch {
+      }
+      if (!glamProbeNeedsRange(head)) return glamProbeVerdict(head, undefined);
+      let range = GLAM_PROBE_NO_ANSWER;
+      try {
+        const res = await fetch(url, { headers: { Range: "bytes=0-0" }, signal });
+        range = glamProbeAnswer(res, await glamFirstBodyBytes(res));
+      } catch {
+      }
+      return glamProbeVerdict(head, range)`),
+    "glamFileReachable",
+  );
+  // Stopping the requests reaches them: both carry the signal.
+  assert.equal(reachable.split("fetch(").length - 1, 2, "two requests");
+  assert.equal(countWired(reachable, `signal }`), 2, "both with the signal");
+  assert.equal(countWired(CTL_CODE, `signal }`), 2);
+
+  // What a response is reported as: its own status and headers, and the body
+  // bytes it was given. Nothing is made up for the policy to read.
+  assert.equal(
+    ctlBodyIn(
+      CTL_CODE,
+      `function glamProbeAnswer(res: Response, bodyBytes: number): GlamProbeAnswer {`,
+    ),
+    codeOf(`return {
+        threw: false,
+        status: res.status,
+        contentType: res.headers.get("content-type"),
+        contentLength: res.headers.get("content-length"),
+        contentRange: res.headers.get("content-range"),
+        bodyBytes,
+      }`),
+    "glamProbeAnswer",
+  );
+  // The body bytes are ones that were received: the first piece that holds
+  // any, 0 when the body ends without one, and the rest stopped.
+  assert.equal(
+    ctlBodyIn(
+      CTL_CODE,
+      `async function glamFirstBodyBytes(res: Response): Promise<number> {`,
+    ),
+    codeOf(`const reader = res.body?.getReader();
+      if (!reader) return 0;
+      try {
+        for (;;) {
+          const piece = await reader.read();
+          if (piece.done) return 0;
+          if (piece.value.byteLength > 0) return piece.value.byteLength;
+        }
+      } finally {
+        void reader.cancel().catch(() => {});
+      }`),
+    "glamFirstBodyBytes",
+  );
+});
+
+// --- The face processor's part in the Glam look -----------------------------
+//
+// `faceFilterProcessor.ts` runs the face tracker, and `node --test` cannot
+// load it (the DOM, WebGL, the tracker library). Every yes/no about the
+// tracker is decided in `glamPolicy.ts` and spec'd there by behaviour: one
+// detect per frame task (`GlamDetectLatch`), whether the look may detect,
+// whether a tracker may be created for it, whether a load has to wait. What
+// is left in the processor is the lines that hand the facts over: the gate,
+// the page, the budget. A line that hands over `false` instead compiles,
+// passes every policy spec and runs the tracker under a held publish gate, so
+// those lines are held here as text. `rtc-mutations.py`'s `face-glam-*`
+// entries put each one wrong. Same limits as every pin in this file: present
+// and in its place, never what it does at runtime.
+
+const FACE_SOURCE = readFileSync(
+  new URL("./faceFilterProcessor.ts", import.meta.url),
+  "utf8",
+);
+const FACE_CODE = codeOf(FACE_SOURCE);
+
+/** `snippet` must appear exactly once in faceFilterProcessor.ts's code. */
+const assertFaceWired = wiredAsserter("faceFilterProcessor.ts", FACE_CODE);
+
+/** The ONE body `head` opens in faceFilterProcessor.ts. */
+function faceBodyOf(head: string): string {
+  const bodies = bodiesAfter(FACE_CODE, head);
+  assert.equal(
+    bodies.length,
+    1,
+    `faceFilterProcessor.ts must contain this exactly once, ` +
+      `found ${bodies.length}:\n${codeOf(head)}`,
+  );
+  return bodies[0];
+}
+
+test("source pin (face glam): faceFilterProcessor.ts lexes in sync, a frame opens the detect latch once and first, and the one detect sits behind its claim", () => {
+  assertLexesInSync("faceFilterProcessor.ts", FACE_SOURCE, FACE_CODE, 30);
+
+  // The latch is the policy's; the processor keeps no flag of its own and
+  // does not ask the detect rule directly.
+  assert.equal(
+    countWired(FACE_CODE, `#detectLatch = new GlamDetectLatch();`),
+    1,
+  );
+  assert.equal(
+    countWired(FACE_CODE, `#detectLatch`),
+    5,
+    "the field, and one each of beginTask, ran, mayDetect and claim",
+  );
+  assert.equal(countWired(FACE_CODE, `#frameDetected`), 0);
+  assert.equal(countWired(FACE_CODE, `glamShouldDetect`), 0);
+
+  // Opened again once per frame callback, before anything in the frame can
+  // detect, and by nothing else.
+  assert.equal(countWired(FACE_CODE, `this.#detectLatch.beginTask();`), 1);
+  assert.equal(countWired(FACE_CODE, `beginTask(`), 1);
+  const frame = faceBodyOf(`#drawFrame() {`);
+  const beginAt = firstAt("the latch", frame, `this.#detectLatch.beginTask();`);
+  for (const later of [
+    `this.#glamBeforeDraw(`,
+    `this.#runDetect(`,
+    `this.#detectLatch.ran()`,
+  ]) {
+    assert.equal(countWired(frame, later), 1, later);
+    assert.ok(beginAt < firstAt(later, frame, later), `before ${later}`);
+  }
+  assert.equal(braceDepthAt(frame, beginAt), 0, "on every frame that draws");
+
+  // The one detect in the file, and the claim in front of it.
+  const detect = faceBodyOf(
+    `#runDetect(video: HTMLVideoElement, now: number): boolean {`,
+  );
+  const detectStart = codeOf(`const tracker = this.#landmarker;
+    if (!tracker || !this.#detectLatch.claim()) return true;`);
+  assert.equal(
+    detect.slice(0, detectStart.length),
+    detectStart,
+    "#runDetect's first two statements",
+  );
+  assert.equal(countWired(FACE_CODE, `this.#detectLatch.claim()`), 1);
+  assert.equal(countWired(FACE_CODE, `detectForVideo(`), 1);
+  assert.equal(
+    countWired(detect, `const result = tracker.detectForVideo(video, ts);`),
+    1,
+    "the detect is #runDetect's",
+  );
+});
+
+test("source pin (face glam): the look's detect is asked through the latch with the gate, the page and the budget as they are now", () => {
+  // The gate reading: the config's, and held when it cannot be read.
+  assert.equal(
+    faceBodyOf(`#gateHeld(): boolean {`),
+    codeOf(`const held = this.#cfg.gateHeld;
+      if (!held) return false;
+      try {
+        return !!held();
+      } catch (e) {
+        console.error("face-filter: gateHeld threw", e);
+        return true;
+      }`),
+    "#gateHeld",
+  );
+  assert.equal(
+    countWired(FACE_CODE, `this.#gateHeld()`),
+    2,
+    "read for the detect and for the tracker rules",
+  );
+
+  // Every fact filled in right before the ask, none of them a constant, and
+  // the ask itself the latch's `mayDetect` (stickers keep their own cadence).
+  const step = faceBodyOf(
+    `#glamStep(
+      video: HTMLVideoElement,
+      now: number,
+      hidden: boolean,
+      step: number,
+      recover: boolean,
+    ): boolean {`,
+  );
+  assert.equal(
+    countWired(
+      step,
+      `const args = this.#glamDetectArgs;
+      args.frame = this.#frameCounter;
+      args.every = this.#glamBudget.every();
+      args.hidden = hidden;
+      args.shed = this.#glamBudget.shed();
+      args.gateHeld = this.#gateHeld();
+      args.msSinceDetect = now - this.#glamDetectAt;
+      const forStickers =
+        stickers && !(step >= 1 && this.#frameCounter % 2 === 1);
+      if (this.#detectLatch.mayDetect(args) || forStickers) {
+        const detectStart = performance.now();
+        const ok = this.#runDetect(video, now);`,
+    ),
+    1,
+    "the look's detect",
+  );
+  assert.equal(countWired(FACE_CODE, `this.#detectLatch.mayDetect(`), 1);
+  assert.equal(countWired(FACE_CODE, `args.gateHeld = this.#gateHeld();`), 1);
+  assert.equal(countWired(FACE_CODE, `args.hidden = hidden;`), 1);
+  assert.equal(
+    countWired(FACE_CODE, `args.shed = this.#glamBudget.shed();`),
+    1,
+  );
+  // The bag is that one's alone: declared, and read there.
+  assert.equal(countWired(FACE_CODE, `#glamDetectArgs`), 2);
+});
+
+test("source pin (face glam): a tracker is loaded for the look only when the policy allows it, and the policy is asked again in front of each create", () => {
+  // What both rules are asked with: read now, every time.
+  assert.equal(
+    faceBodyOf(`#trackerAsk(forGlam: boolean) {`),
+    codeOf(`const ask = this.#trackerArgs;
+      ask.stickers = this.#stickersLive();
+      ask.forGlam = forGlam;
+      ask.wanted = this.#wantsGlam();
+      ask.gateHeld = this.#gateHeld();
+      ask.hidden = document.visibilityState === "hidden";
+      ask.shed = this.#glamShed();
+      ask.failed = this.#glamFailed;
+      return ask`),
+    "#trackerAsk",
+  );
+  assert.equal(countWired(FACE_CODE, `#trackerArgs`), 2);
+  assert.equal(
+    countWired(FACE_CODE, `this.#trackerAsk(`),
+    3,
+    "the frame's kickoff and the two checks before a create",
+  );
+
+  // The frame starts a load for the look only on the policy's yes. It is the
+  // one place a load is started FOR the look.
+  assertFaceWired(
+    "the look's tracker kickoff",
+    `if (!this.#landmarker) {
+      if (glamMayCreateTracker(this.#trackerAsk(true))) {
+        this.#ensureLandmarker(true);
+      }
+    } else {`,
+  );
+  assert.equal(countWired(FACE_CODE, `glamMayCreateTracker(`), 1);
+  assert.equal(countWired(FACE_CODE, `this.#ensureLandmarker(true)`), 1);
+
+  // The load: the library and file set are kept on the processor, and from
+  // the first create on the body is exactly this.
+  const create = faceBodyOf(
+    `async #createLandmarker(forGlam: boolean): Promise<CreatedTracker | "wait"> {`,
+  );
+  const createStart = codeOf(`let kit = this.#trackerKit;
+    if (!kit) {`);
+  assert.equal(create.slice(0, createStart.length), createStart);
+  assert.equal(
+    countWired(
+      create,
+      `kit = this.#trackerKit = { FL, fileset, gpuFailed: false };`,
+    ),
+    1,
+    "the files are kept for the load after a wait",
+  );
+  const createEnd = codeOf(`const began = performance.now();
+    if (!kit.gpuFailed) {
+      if (glamTrackerLoadMustWait(this.#trackerAsk(forGlam))) return "wait";
+      try {
+        const tracker = await kit.FL.createFromOptions(
+          kit.fileset,
+          options("GPU"),
+        );
+        return { tracker, delegate: "GPU", ms: performance.now() - began };
+      } catch (e) {
+        console.warn("face-filter: GPU delegate failed, retrying CPU", e);
+      }
+    }
+    if (glamTrackerLoadMustWait(this.#trackerAsk(forGlam))) {
+      kit.gpuFailed = true;
+      return "wait";
+    }
+    const tracker = await kit.FL.createFromOptions(kit.fileset, options("CPU"));
+    if (wantsLandmarks(this.#cfg) || !this.#wantsGlam()) {
+      this.#ladder.reset(Math.max(1, this.#ladder.step));
+    }
+    return { tracker, delegate: "CPU", ms: performance.now() - began }`);
+  assert.equal(
+    create.slice(-createEnd.length),
+    createEnd,
+    "#createLandmarker from the first create on",
+  );
+
+  // Said on its own as well, the way the sender operations are: every create
+  // in the file has its OWN check in front of it, and nothing is awaited
+  // between the check and the create (the gate can fill during any await).
+  const mustWait = codeOf(`glamTrackerLoadMustWait(this.#trackerAsk(forGlam))`);
+  const creates = wiredAt(FACE_CODE, `await kit.FL.createFromOptions(`);
+  assert.equal(creates.length, 2, "the GPU try and the CPU retry");
+  assert.equal(countWired(FACE_CODE, `createFromOptions(`), 2, "no other");
+  const checks = new Set<number>();
+  for (const at of creates) {
+    const checkAt = FACE_CODE.lastIndexOf(mustWait, at);
+    assert.ok(checkAt !== -1, "no check before this create");
+    const between = FACE_CODE.slice(checkAt + mustWait.length, at);
+    assert.ok(
+      !/await|async/.test(between),
+      `between the check and this create: ${between}`,
+    );
+    checks.add(checkAt);
+  }
+  assert.equal(checks.size, 2, "one check per create");
+  assert.equal(countWired(FACE_CODE, `glamTrackerLoadMustWait(`), 2);
+
+  // A load that had to wait: nothing created, nothing failed, and a second
+  // load (the one re-create) that waited is still owed.
+  assert.equal(
+    countWired(
+      faceBodyOf(`#ensureLandmarker(forGlam = false) {`),
+      `const recreate = this.#glamRecreateInFlight;
+      this.#glamRecreateInFlight = false;
+      if (made === "wait") {
+        if (recreate) this.#glamRecreateDue = true;
+        return;
+      }
+      if (recreate) this.#glamRecovery.noteRecreated(!!made);`,
+    ),
+    1,
+    "a load that had to wait",
+  );
+});
+
+test("source pin (face glam): one guarded place closes a tracker, the look winds down without throwing, and destroy drops the stage input", () => {
+  // The one close, and a throw from it stays inside.
+  assert.equal(
+    faceBodyOf(`#closeTracker(tracker: FaceLandmarker | undefined) {`),
+    codeOf(`if (!tracker) return;
+      try {
+        tracker.close();
+      } catch (e) {
+        console.error("face-filter: closing the face tracker threw", e);
+      }`),
+    "#closeTracker",
+  );
+  assert.equal(
+    faceBodyOf(`#releaseLandmarker() {`),
+    codeOf(`const tracker = this.#landmarker;
+      this.#landmarker = undefined;
+      this.#closeTracker(tracker)`),
+    "#releaseLandmarker",
+  );
+  // Everything in the file that is closed, in file order: the sticker
+  // bitmaps, and a tracker in that one place.
+  assert.deepEqual(
+    [...FACE_CODE.matchAll(/([\w$#.?]+)\.close\(/g)].map((m) => m[1]),
+    ["bmp", "tracker", "bmp", "bmp"],
+    "the close() calls",
+  );
+  assert.equal(countWired(FACE_CODE, `tracker.close();`), 1);
+  assert.equal(countWired(FACE_CODE, `#landmarker.close(`), 0);
+  assert.equal(countWired(FACE_CODE, `#landmarker?.close(`), 0);
+  assert.equal(countWired(FACE_CODE, `.tracker.close(`), 0);
+
+  // Winding the look down never throws: frames call it outside any guard of
+  // their own, and the shed and failed reports come after it.
+  assert.equal(
+    faceBodyOf(`#endGlam() {`),
+    codeOf(`this.#glamLive = false;
+      try {
+        if (!this.#stickersLive()) this.#releaseLandmarker();
+        this.#clearGlamLook();
+        this.#cancelGlamRecovery();
+        this.#syncStage();
+      } catch (e) {
+        console.error("face-filter: winding the face-tracked look down threw", e);
+      }`),
+    "#endGlam",
+  );
+
+  // destroy lets go of the stage input with the painter whose canvas it
+  // holds.
+  assert.equal(
+    countWired(
+      faceBodyOf(`async destroy() {`),
+      `this.#glamPainter?.dispose();
+      this.#glamPainter = undefined;
+      this.#glamInput = undefined;`,
+    ),
+    1,
+    "destroy",
+  );
+  assert.equal(countWired(FACE_CODE, `this.#glamInput = undefined;`), 1);
 });

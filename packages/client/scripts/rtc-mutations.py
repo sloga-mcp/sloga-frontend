@@ -16340,7 +16340,7 @@ MUTATIONS += [
         id='state-camfx-tone-shed-not-wired',
         what='a shed tone stage is reported to nobody: the effect goes off without a word',
         file=STATE,
-        search="""    this.#cameraEffects.onToneShed = () => this.#noteCameraToneShed();
+        search="""    this.#cameraEffects.onToneShed = (stage) => this.#noteCameraToneShed(stage);
 """,
         replace="""""",
         specs=[STATE_WIRING_SPEC],
@@ -16471,6 +16471,143 @@ MUTATIONS += [
         file=STATE,
         search="""    return this.#cameraEffects.toneStats();""",
         replace="""    return undefined;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- Glam: the setter, the settings literals, the processor's reports -----
+    Mutation(
+        id='state-camfx-glam-setter-skips-sync',
+        what='the Glam setter writes the store and never fires the sync, so the slider does nothing until some other sync runs',
+        file=STATE,
+        search="""    this.#settings.cameraGlam = value;
+    void this.#applyCameraEffects();
+""",
+        replace="""    this.#settings.cameraGlam = value;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-glam-setter-calls-controller',
+        what='the Glam setter applies through the controller itself, past the attach driver and its gate check',
+        file=STATE,
+        search="""    this.#settings.cameraGlam = value;
+    void this.#applyCameraEffects();
+""",
+        replace="""    this.#settings.cameraGlam = value;
+    const track = this.#publishedCameraTrack();
+    if (track) void this.#cameraEffects.apply(track, this.#cameraEffectSettings());
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-glam-not-in-settings',
+        what="Glam is left out of the settings the driver's plan and apply read, so the slider never reaches the processor",
+        file=STATE,
+        search="""      glam: this.#settings.cameraGlam ?? 0,
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-glam-not-in-face-settings',
+        what='Glam is left out of the "any face setting active" literal',
+        file=STATE,
+        search="""      glam: (this.#settings.cameraGlam ?? 0) > 0,
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-glam-shed-writes-setting',
+        what="a shed Glam zeroes the stored setting, so a slow stretch in one call turns the look off in every later one",
+        file=STATE,
+        search="""    this.#cameraGlamSlowNoted = true;
+""",
+        replace="""    this.#cameraGlamSlowNoted = true;
+    this.#settings.cameraGlam = 0;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-glam-failed-not-wired',
+        what='a Glam that failed for good is reported to nobody: the look goes off without a word',
+        file=STATE,
+        search="""    this.#cameraEffects.onGlamFailed = () => this.#noteCameraGlamFailed();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- Glam: the tracker-file check before the plan, a failure while muted --
+    Mutation(
+        id='state-camfx-glam-probe-not-awaited',
+        what="the plan no longer waits for the tracker-file check, so a phone's first camera-on is planned without the stored look",
+        file=STATE,
+        search="""        await probeCameraGlam();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-glam-snapshot-before-probe',
+        what='the settings are read before the wait for the tracker-file check, so the plan is made from a snapshot older than the answer it waited for',
+        file=STATE,
+        search="""        await probeCameraGlam();
+        const snapshot = this.#cameraEffectSettings();
+""",
+        replace="""        const snapshot = this.#cameraEffectSettings();
+        await probeCameraGlam();
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-glam-probe-not-waited-for',
+        what='the tracker-file check is started by the plan but not waited for, so the plan reads an answer that is not in yet',
+        file=STATE,
+        search="""        await probeCameraGlam();
+""",
+        replace="""        void probeCameraGlam();
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-glam-failed-while-muted-forgotten',
+        what='a Glam failure reported while the camera is off is dropped, and the controller never reports it again: the look is off for the call and nobody is told',
+        file=STATE,
+        search="""    if (track.isMuted) {
+      this.#cameraEffectFailedWith.set("glam", "unsaid");
+      return;
+    }
+""",
+        replace="""    if (track.isMuted) return;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-glam-failed-unsaid-never-raised',
+        what='a Glam failure kept while the camera was off is never raised once it is on',
+        file=STATE,
+        search="""    if (live && this.#cameraEffectFailedWith.get("glam") === "unsaid")
+      this.#noteCameraGlamFailed();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-glam-failed-not-latched',
+        what='the Glam failure notice has no once-per-call latch, so a notice the user dismissed can come back',
+        file=STATE,
+        search="""    if (this.#cameraEffectFailedWith.get("glam") === "failed") return;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-camfx-glam-failed-latched-while-unsaid',
+        what='a kept ("unsaid") Glam failure counts as already shown, so it blocks its own notice at the unmute and the failure is never said',
+        file=STATE,
+        search="""    if (this.#cameraEffectFailedWith.get("glam") === "failed") return;
+""",
+        replace="""    if (this.#cameraEffectFailedWith.has("glam")) return;
+""",
         specs=[STATE_WIRING_SPEC],
     ),
 ]
@@ -16862,6 +16999,933 @@ MUTATIONS += [
   }
 """,
         specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- Glam: the slot reading, the face config, the gate, the failed latch --
+    Mutation(
+        id='camera-ctl-glam-not-in-slot',
+        what='the slot reading never carries Glam, so a camera with only Glam on plans no face processor',
+        file=CAMERA_CTL,
+        search="""        glam: settings.glam > 0,""",
+        replace="""        glam: false,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-supported-dropped',
+        what='the slot caps say Glam is never supported, so the look is never planned anywhere',
+        file=CAMERA_CTL,
+        search="""        glamSupported: cameraGlamSupported(),""",
+        replace="""        glamSupported: false,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-supported-hardcoded',
+        what='the slot caps say Glam is supported without asking, so it is planned where its files cannot be reached',
+        file=CAMERA_CTL,
+        search="""        glamSupported: cameraGlamSupported(),""",
+        replace="""        glamSupported: true,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-slot-masked-by-shed',
+        what='a shed Glam drops out of the slot reading, so the shed changes the planned occupant and costs a sender operation',
+        file=CAMERA_CTL,
+        search="""        glam: settings.glam > 0,""",
+        replace="""        glam: settings.glam > 0 && !this.#watchdog?.shed.has("glam"),""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-beautify-not-zeroed',
+        what='touch up is still drawn under a drawn Glam, so the skin is smoothed twice',
+        file=CAMERA_CTL,
+        search="""    if (this.#glamDrawn(cfg)) cfg.beautify = 0;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-landmarks-include-glam',
+        what="the face filter's own landmark need is read with Glam counted in, so Glam alone turns the filter's tracking on",
+        file=CAMERA_CTL,
+        search="""      landmarks: needsLandmarks({ ...slot, glam: false }, caps),""",
+        replace="""      landmarks: needsLandmarks(slot, caps),""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-shed-no-retune',
+        what='a shed Glam does not retune the face processor, so the touch up it had replaced stays off',
+        file=CAMERA_CTL,
+        search="""    if (stage === "glam") this.#retuneFaceSoon();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-gate-not-passed',
+        what='the face processor is not handed the gate read, so the tracker keeps detecting while the publish gate is held',
+        file=CAMERA_CTL,
+        search="""      gateHeld: this.#faceGateHeld,
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-gate-always-open',
+        what='the gate read handed to the face processor never says held',
+        file=CAMERA_CTL,
+        search="""    return !!guard && !guard.maySenderOp();""",
+        replace="""    return false;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-failed-latch-not-cleared',
+        what='a new call keeps the failed latch, so a Glam that failed once is off in every later call and that call never says why',
+        file=CAMERA_CTL,
+        search="""    this.#watchdog?.reset();
+    this.#glamFailed = false;
+""",
+        replace="""    this.#watchdog?.reset();
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-after-failure',
+        what='a Glam that failed is still handed to the face processor at full strength',
+        file=CAMERA_CTL,
+        search="""      glam: caps.glamSupported && !this.#glamFailed ? settings.glam : 0,""",
+        replace="""      glam: caps.glamSupported ? settings.glam : 0,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- Glam: touch up once the look is over for the call ---------------------
+    Mutation(
+        id='camera-ctl-glam-shed-touchup-keeps-landmarks',
+        what='after the look is shed for being slow, the touch up that comes back still asks for the face tracker, which is the work the look was stopped for',
+        file=CAMERA_CTL,
+        search="""    const glamOver = this.#glamFailed || watchdog.shed.has("glam");""",
+        replace="""    const glamOver = this.#glamFailed;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-failed-touchup-keeps-landmarks',
+        what='after the look has failed, the touch up that comes back still asks for the face tracker',
+        file=CAMERA_CTL,
+        search="""    const glamOver = this.#glamFailed || watchdog.shed.has("glam");""",
+        replace="""    const glamOver = watchdog.shed.has("glam");""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-over-touchup-keeps-landmarks',
+        what='the landmark need is read from the stored slot whether or not the look is over, so touch up reloads the tracker after a shed or a failure',
+        file=CAMERA_CTL,
+        search="""    const slot = glamOver ? { ...stored, beautify: 0 } : stored;""",
+        replace="""    const slot = stored;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-over-drops-touchup',
+        what='the config takes touch up from the reading that has it zeroed once the look is over, so touch up never comes back after a shed or a failure',
+        file=CAMERA_CTL,
+        # Two lines: the first alone also sits inside `#slotInputs`.
+        search="""      beautify: settings.beautify,
+      lookId:""",
+        replace="""      beautify: slot.beautify,
+      lookId:""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- Glam: the guard the gate reading goes through, and the tone latch ----
+    Mutation(
+        id='camera-ctl-face-guard-not-stored',
+        what='the attaching pass never stores its op guard, so the gate reading handed to the face processor never says held and the tracker runs under a held publish gate',
+        file=CAMERA_CTL,
+        search="""      this.#faceGuard = opGuard;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-face-guard-stored-on-every-tune',
+        what="a tune overwrites the stored guard with its own, which refuses whatever the gate does, so the gate reads as held for good and the look's tracker never runs again",
+        file=CAMERA_CTL,
+        search="""      this.#faceGuard = opGuard;
+      this.#toneFailed = false;
+    }
+""",
+        replace="""      this.#toneFailed = false;
+    }
+    this.#faceGuard = opGuard;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-tone-latch-never-cleared-on-tune',
+        what='a tone failure noted once is never forgotten on a tune, so touch up stays doubled under a look the processor is drawing again',
+        file=CAMERA_CTL,
+        # Eight spaces: the tune branch's line. The attaching pass's own
+        # (six) is a different line and does not match at a line start.
+        search="""        this.#toneFailed = false;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-tone-latch-cleared-while-look-down',
+        what='a tune forgets the tone failure even while the look is not running, so the touch up that stood in for it is taken out again',
+        file=CAMERA_CTL,
+        search="""      if (this.#toneFailed && (look === "on" || look === "waiting")) {""",
+        replace="""      if (this.#toneFailed) {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- Glam: the tracker-file check ------------------------------------------
+    #
+    # 🔴 From here to the end of this list the mutants change what only a
+    # network does (a request sent, stopped, repeated), and no loadable spec
+    # reaches cameraEffects.ts. In this suite a text pin is ALL that kills
+    # them. Their behaviour was measured once, outside the repo, by the fix
+    # lane; nothing here re-measures it.
+    Mutation(
+        id='camera-ctl-glam-probe-not-eager',
+        what='a new controller does not start the tracker-file check, so on a phone the look is unsupported until something else asks',
+        file=CAMERA_CTL,
+        search="""    void probeCameraGlam();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-slot-inputs-start-probe',
+        what='the slot reading starts the tracker-file check, so planning sends requests',
+        file=CAMERA_CTL,
+        search="""        glamSupported: cameraGlamSupported(),""",
+        replace="""        glamSupported: (void probeCameraGlam(), cameraGlamSupported()),""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-supported-read-starts-probe',
+        what='the synchronous "is the look supported" read starts the tracker-file check, so every caller that only asks sends requests',
+        file=CAMERA_CTL,
+        search="""  return _glamFilesReachable;
+""",
+        replace="""  void probeCameraGlam();
+  return _glamFilesReachable;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-probe-timeout-removed',
+        what='the tracker-file check has no time limit, so a request that never answers holds every camera sync behind it',
+        file=CAMERA_CTL,
+        search="""    await Promise.race([all, timedOut]);""",
+        replace="""    await all;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-probe-requests-not-stopped',
+        what='a tracker-file check that timed out leaves its requests running',
+        file=CAMERA_CTL,
+        search="""      abort.abort();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-probe-negative-not-kept',
+        what='"the files are not in this build" is not kept, so every camera sync sends the two requests again',
+        file=CAMERA_CTL,
+        search="""      else _glamFilesMissing = true;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-probe-negative-not-read',
+        what='the kept "files missing" answer is not read, so every camera sync sends the two requests again',
+        file=CAMERA_CTL,
+        search="""  if (_glamFilesMissing) return Promise.resolve(false);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-probe-retry-not-throttled',
+        what='a tracker-file check that got no answer sets no retry time, so every camera sync on a bad network waits out a new check',
+        file=CAMERA_CTL,
+        search="""      _glamRetryAt = Date.now() + GLAM_PROBE_RETRY_MS;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-probe-throttle-not-read',
+        what='the retry time is set and never read, so every camera sync on a bad network waits out a new check',
+        file=CAMERA_CTL,
+        search="""  if (Date.now() < _glamRetryAt) return Promise.resolve(false);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- Glam: the tracker-file check hands the answers to the policy -----------
+    #
+    # What the answers MEAN is `glamPolicy.ts`'s and is measured by behaviour
+    # (`camera-glam-probe-*` below). These four are the lines that hand the
+    # answers over; like the rest of this block only a text pin kills them.
+    Mutation(
+        id='camera-ctl-glam-probe-unknown-kept',
+        what='a tracker-file check that could not be told leaves as "not there", which is kept: one bad moment on the network hides the look until the app is restarted',
+        file=CAMERA_CTL,
+        search="""  if (verdict === "unknown") throw new Error("tracker file check: no answer");
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-probe-verdict-by-status',
+        what="the ranged read is judged in the controller by its status, so the phone app's 206 for a missing file reads as the file",
+        file=CAMERA_CTL,
+        search="""  return glamProbeVerdict(head, range);""",
+        replace="""  return range.status === 206 ? "present" : "missing";""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-probe-head-answer-not-final',
+        what='the ranged read is sent even after the HEAD settled it',
+        file=CAMERA_CTL,
+        search="""  if (!glamProbeNeedsRange(head)) return glamProbeVerdict(head, undefined);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-glam-probe-body-bytes-made-up',
+        what='the policy is told a body byte arrived without the body being read, so an empty 206 reads as the file',
+        file=CAMERA_CTL,
+        search="""    range = glamProbeAnswer(res, await glamFirstBodyBytes(res));""",
+        replace="""    range = glamProbeAnswer(res, 1);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+]
+
+# --- Camera effects: the face processor's side of Glam (`face-glam-*`) -------
+#
+# `faceFilterProcessor.ts` runs the face tracker and no spec can load it (the
+# DOM, WebGL, the tracker library). The yes/no of every tracker rule lives in
+# `glamPolicy.ts` and is measured by behaviour below (`camera-glam-*`). What
+# is left in the processor is the lines that hand the facts to those rules,
+# and each entry here hands one over wrong: it still compiles, every policy
+# spec still passes, and the tracker runs under a held publish gate, on a
+# hidden page or twice in one frame. `stateWiring.test.ts` pins those lines
+# as TEXT (its "face glam" tests), which is all that kills these. Same limits
+# as every `state-*` and `camera-ctl-*` entry: a pin proves a statement is
+# PRESENT and in its place, never what it does at runtime.
+FACE_PROCESSOR = "faceFilterProcessor.ts"
+
+MUTATIONS += [
+    # ---- one detect per frame task ---------------------------------------------
+    Mutation(
+        id='face-glam-detect-not-claimed',
+        what='a second detect may run in a frame task that already ran one (stickers after the look, or the look after stickers)',
+        file=FACE_PROCESSOR,
+        search="""    if (!tracker || !this.#detectLatch.claim()) return true;""",
+        replace="""    if (!tracker) return true;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-detect-task-never-begins',
+        what='the latch is never opened again, so the tracker runs one detect and then none for the rest of the call',
+        file=FACE_PROCESSOR,
+        search="""    this.#detectLatch.beginTask();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- what the look's detect is asked with -----------------------------------
+    Mutation(
+        id='face-glam-detect-gate-forced-open',
+        what="the look's detect is asked with the gate reported empty, so it runs while the publish gate is held",
+        file=FACE_PROCESSOR,
+        search="""      args.gateHeld = this.#gateHeld();""",
+        replace="""      args.gateHeld = false;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-detect-hidden-forced-visible',
+        what="the look's detect is asked with the page reported visible, so it runs on a hidden page",
+        file=FACE_PROCESSOR,
+        search="""      args.hidden = hidden;""",
+        replace="""      args.hidden = false;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-detect-shed-forced-off',
+        what="the look's detect is asked with the budget reported not shed",
+        file=FACE_PROCESSOR,
+        search="""      args.shed = this.#glamBudget.shed();""",
+        replace="""      args.shed = false;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-detect-skips-policy',
+        what="the look's detect is decided in the processor, past the policy and the latch",
+        file=FACE_PROCESSOR,
+        search="""      if (this.#detectLatch.mayDetect(args) || forStickers) {""",
+        replace="""      if (!hidden || forStickers) {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- when a tracker may be created for the look -----------------------------
+    Mutation(
+        id='face-glam-tracker-kickoff-skips-policy',
+        what='the tracker load for the look starts on any visible frame, held gate or not',
+        file=FACE_PROCESSOR,
+        search="""      if (glamMayCreateTracker(this.#trackerAsk(true))) {""",
+        replace="""      if (!hidden) {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-tracker-ask-gate-forced-open',
+        what='both tracker-creation rules are asked with the gate reported empty, so the tracker is loaded and created while the publish gate is held',
+        file=FACE_PROCESSOR,
+        search="""    ask.gateHeld = this.#gateHeld();""",
+        replace="""    ask.gateHeld = false;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-tracker-ask-hidden-forced-visible',
+        what='both tracker-creation rules are asked with the page reported visible, so the tracker is created on a hidden page',
+        file=FACE_PROCESSOR,
+        search="""    ask.hidden = document.visibilityState === "hidden";""",
+        replace="""    ask.hidden = false;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-tracker-ask-stickers-forced-on',
+        what='every load is reported as wanted by stickers, so the check before the create never holds one back',
+        file=FACE_PROCESSOR,
+        search="""    ask.stickers = this.#stickersLive();""",
+        replace="""    ask.stickers = true;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-tracker-ask-wanted-forced-on',
+        what='the look is reported as wanted when it is not, so a tracker is created for a look that was switched off, shed or failed while its files loaded',
+        file=FACE_PROCESSOR,
+        search="""    ask.wanted = this.#wantsGlam();""",
+        replace="""    ask.wanted = true;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-tracker-ask-forglam-dropped',
+        what='a load the look started is reported as one stickers started, so a tracker is created for a look nobody wants any more',
+        file=FACE_PROCESSOR,
+        search="""    ask.forGlam = forGlam;""",
+        replace="""    ask.forGlam = false;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-tracker-no-recheck-before-gpu-create',
+        what='the gate and the page are not asked again when the files are in, so the first create can land inside a negotiation that began while they loaded',
+        file=FACE_PROCESSOR,
+        search="""      if (glamTrackerLoadMustWait(this.#trackerAsk(forGlam))) return "wait";
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-tracker-no-recheck-before-cpu-create',
+        what='the gate and the page are not asked again before the CPU retry',
+        file=FACE_PROCESSOR,
+        search="""    if (glamTrackerLoadMustWait(this.#trackerAsk(forGlam))) {""",
+        replace="""    if (!kit) {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-tracker-wait-loses-second-load',
+        what='a second load that had to wait is forgotten, so the one re-create is neither made nor reported',
+        file=FACE_PROCESSOR,
+        search="""        if (recreate) this.#glamRecreateDue = true;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-tracker-files-not-kept',
+        what='the library and file set are thrown away after every load, so each retry after a wait loads them again',
+        file=FACE_PROCESSOR,
+        search="""      kit = this.#trackerKit = { FL, fileset, gpuFailed: false };""",
+        replace="""      kit = { FL, fileset, gpuFailed: false };""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- nothing here may throw out of a frame ----------------------------------
+    Mutation(
+        id='face-glam-tracker-close-throws',
+        what='a tracker close that throws escapes the frame callback, the tick never re-registers and the published picture freezes',
+        file=FACE_PROCESSOR,
+        search="""      console.error("face-filter: closing the face tracker threw", e);""",
+        replace="""      throw e;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-end-throws',
+        what='a throw while the look winds down escapes the frame callback, and the shed or failed report after it is lost',
+        file=FACE_PROCESSOR,
+        search="""      console.error("face-filter: winding the face-tracked look down threw", e);""",
+        replace="""      throw e;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-destroy-keeps-input',
+        what='destroy keeps the stage input, and with it the disposed painter canvas',
+        file=FACE_PROCESSOR,
+        search="""    this.#glamInput = undefined;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+]
+
+# --- Camera effects: Glam in the slot rules (`camera-slot-glam-*`) -----------
+#
+# `faceFilterCatalog.ts` is pure and a spec loads it, so these are measured by
+# behaviour: `faceFilterPolicy.test.ts` calls `pickSlotOccupant` and
+# `needsLandmarks` with and without Glam and with and without its support.
+FACE_CATALOG = "faceFilterCatalog.ts"
+FACE_POLICY_SPEC = "components/rtc/faceFilterPolicy.test.ts"
+
+_GLAM_ARM = """  if (caps.glamSupported && s.glam) return "face";
+"""
+_BACKGROUND_ARM = """  if (s.backgroundMode !== "none" && caps.backgroundSupported) {
+    return "background";
+  }
+"""
+
+MUTATIONS += [
+    Mutation(
+        id='camera-slot-glam-ungated',
+        what='Glam claims the slot where it is not supported, so a face processor is planned for a look that cannot run',
+        file=FACE_CATALOG,
+        search="""  if (caps.glamSupported && s.glam) return "face";""",
+        replace="""  if (s.glam) return "face";""",
+        specs=[FACE_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-slot-glam-above-background',
+        what='Glam is asked before the background, so turning the look on takes the slot from a background (a privacy control)',
+        file=FACE_CATALOG,
+        search=_BACKGROUND_ARM + _GLAM_ARM,
+        replace=_GLAM_ARM + _BACKGROUND_ARM,
+        specs=[FACE_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-slot-glam-ignores-setting',
+        what='the slot goes to the face processor wherever Glam is supported, whether or not it is on',
+        file=FACE_CATALOG,
+        search="""  if (caps.glamSupported && s.glam) return "face";""",
+        replace="""  if (caps.glamSupported) return "face";""",
+        specs=[FACE_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-slot-glam-landmarks-dropped',
+        what='Glam no longer counts as needing landmarks, so the tracker is never started for it',
+        file=FACE_CATALOG,
+        search="""    (!!caps.glamSupported && !!s.glam)""",
+        replace="""    false""",
+        specs=[FACE_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-slot-glam-landmarks-ungated',
+        what='Glam counts as needing landmarks where it is not supported, so the tracker is loaded for a look that cannot run',
+        file=FACE_CATALOG,
+        search="""    (!!caps.glamSupported && !!s.glam)""",
+        replace="""    !!s.glam""",
+        specs=[FACE_POLICY_SPEC],
+    ),
+]
+
+# --- Camera effects: Glam's pure decisions (`camera-glam-*`, `camera-tone-*`) -
+#
+# `glamPolicy.ts` and `cameraTonePolicy.ts` are dependency-free and their specs
+# load them, so these too are measured by behaviour, not by a text pin.
+GLAM_POLICY = "glamPolicy.ts"
+TONE_POLICY = "cameraTonePolicy.ts"
+GLAM_POLICY_SPEC = "components/rtc/glamPolicy.test.ts"
+TONE_POLICY_SPEC = "components/rtc/cameraTonePolicy.test.ts"
+
+_GLAM_DETECT_REFUSALS = """  if (a.hidden || a.shed || a.gateHeld || a.detectedThisTask) return false;"""
+_GLAM_CREATE_RULE = """  return a.wanted && !a.gateHeld && !a.hidden && !a.shed && !a.failed;"""
+
+MUTATIONS += [
+    # ---- glamPolicy.ts: when a detect may run --------------------------------
+    Mutation(
+        id='camera-glam-detect-ignores-gate',
+        what='a detect runs while the publish gate is held',
+        file=GLAM_POLICY,
+        search=_GLAM_DETECT_REFUSALS,
+        replace="""  if (a.hidden || a.shed || a.detectedThisTask) return false;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-detect-ignores-hidden',
+        what='a detect runs on a hidden page',
+        file=GLAM_POLICY,
+        search=_GLAM_DETECT_REFUSALS,
+        replace="""  if (a.shed || a.gateHeld || a.detectedThisTask) return false;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-detect-ignores-shed',
+        what='a detect still runs after the look was shed for being slow',
+        file=GLAM_POLICY,
+        search=_GLAM_DETECT_REFUSALS,
+        replace="""  if (a.hidden || a.gateHeld || a.detectedThisTask) return false;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-detect-twice-per-task',
+        what='a second detect may run in a task that already ran one',
+        file=GLAM_POLICY,
+        search=_GLAM_DETECT_REFUSALS,
+        replace="""  if (a.hidden || a.shed || a.gateHeld) return false;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-detect-no-time-bound',
+        what='the cadence is counted in frames only, so at a low frame rate the hold runs out between two detects',
+        file=GLAM_POLICY,
+        search="""  if (sinceDetect >= GLAM_FORCE_DETECT_MS) return true;
+""",
+        replace="""""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    # ---- glamPolicy.ts: the detect-time budget -------------------------------
+    Mutation(
+        id='camera-glam-budget-warmup-counted',
+        what="a new tracker's first detects are counted, so the compile and upload of its first inference sheds the look on a fast device",
+        file=GLAM_POLICY,
+        search="""    this.#warmup = GLAM_WARMUP_DETECTS;""",
+        replace="""    this.#warmup = 0;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-budget-dwell-counts-unwatched-time',
+        what='time with no detect (page hidden, gate held) counts toward the slow-mean wait, so one detect after a minute in the background sheds the look',
+        file=GLAM_POLICY,
+        search="""      sinceLast > DWELL_GAP_MS
+""",
+        replace="""      false
+""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    # ---- glamPolicy.ts: face lost, and the one re-create ----------------------
+    Mutation(
+        id='camera-glam-presence-no-hold',
+        what='the look starts to fade the moment a detect misses, with no hold, so it flickers between two detects',
+        file=GLAM_POLICY,
+        search="""  if (msSinceSeen <= GLAM_HOLD_MS) return 1;""",
+        replace="""  if (msSinceSeen <= 0) return 1;""",
+        # The hold line alone is an equivalent mutant: the clamp under it
+        # already answers 1 up to GLAM_HOLD_MS.
+        also=[
+            (
+                """  return clamp(1 - (msSinceSeen - GLAM_HOLD_MS) / GLAM_FADE_MS, 0, 1);""",
+                """  return clamp(1 - msSinceSeen / GLAM_FADE_MS, 0, 1);""",
+            ),
+        ],
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-presence-no-fade',
+        what='the look drops out at once when the hold ends, with no fade',
+        file=GLAM_POLICY,
+        search="""  return clamp(1 - (msSinceSeen - GLAM_HOLD_MS) / GLAM_FADE_MS, 0, 1);""",
+        replace="""  return 0;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-recovery-grace-unbounded',
+        what='a tracker failure any time after the page came back earns the re-create, so an ordinary failure on a visible page is retried instead of reported',
+        file=GLAM_POLICY,
+        search="""    if (!(sinceVisible >= 0 && sinceVisible <= GLAM_RECOVERY_GRACE_MS)) {
+      return "none";
+    }
+""",
+        replace="""""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-recovery-grace-without-hidden',
+        what='a grace opens on every visible report, a trip to the background or not',
+        file=GLAM_POLICY,
+        search="""    if (wasHidden) this.#visibleAt = nowMs;""",
+        replace="""    this.#visibleAt = nowMs;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    # ---- glamPolicy.ts: the ceiling on a warm-up detect ------------------------
+    Mutation(
+        id='camera-glam-budget-warmup-no-ceiling',
+        what='a warm-up detect has no ceiling at all, so a tracker that holds the thread for seconds on every create and every return to the page is never shed',
+        file=GLAM_POLICY,
+        search="""      if (ms > GLAM_WARMUP_CEILING_MS) this.#shed = true;
+""",
+        replace="""""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-budget-warmup-ceiling-is-single',
+        what='a warm-up detect is held to the ordinary single ceiling, so the compile of a first inference sheds the look on a fast device',
+        file=GLAM_POLICY,
+        search="""      if (ms > GLAM_WARMUP_CEILING_MS) this.#shed = true;
+""",
+        replace="""      if (ms > GLAM_SHED_SINGLE_MS) this.#shed = true;
+""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    # ---- glamPolicy.ts: the one-detect-per-task latch --------------------------
+    Mutation(
+        id='camera-glam-latch-claim-never-latches',
+        what='a claim does not record itself, so every claim in a task wins',
+        file=GLAM_POLICY,
+        search="""    this.#ran = true;
+    return true;
+""",
+        replace="""    return true;
+""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-latch-claim-always-yes',
+        what='a claim is granted to a task that already ran its detect',
+        file=GLAM_POLICY,
+        search="""    if (this.#ran) return false;
+    this.#ran = true;
+""",
+        replace="""    this.#ran = true;
+""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-latch-maydetect-ignores-ran',
+        what='the look is told it may detect in a task whose detect is already claimed',
+        file=GLAM_POLICY,
+        search="""    question.detectedThisTask = this.#ran;
+""",
+        replace="""    question.detectedThisTask = false;
+""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-latch-maydetect-ignores-gate',
+        what='the latch drops the held gate on the way to the detect rule',
+        file=GLAM_POLICY,
+        search="""    question.gateHeld = a.gateHeld;
+""",
+        replace="""    question.gateHeld = false;
+""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-latch-maydetect-ignores-hidden',
+        what='the latch drops the hidden page on the way to the detect rule',
+        file=GLAM_POLICY,
+        search="""    question.hidden = a.hidden;
+""",
+        replace="""    question.hidden = false;
+""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-latch-maydetect-ignores-shed',
+        what='the latch drops the shed on the way to the detect rule',
+        file=GLAM_POLICY,
+        search="""    question.shed = a.shed;
+""",
+        replace="""    question.shed = false;
+""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    # ---- glamPolicy.ts: when a tracker may be created for the look -------------
+    Mutation(
+        id='camera-glam-create-ignores-gate',
+        what='the tracker may be created for the look while the publish gate is held',
+        file=GLAM_POLICY,
+        search=_GLAM_CREATE_RULE,
+        replace="""  return a.wanted && !a.hidden && !a.shed && !a.failed;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-create-ignores-hidden',
+        what='the tracker may be created for the look on a hidden page',
+        file=GLAM_POLICY,
+        search=_GLAM_CREATE_RULE,
+        replace="""  return a.wanted && !a.gateHeld && !a.shed && !a.failed;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-create-ignores-shed',
+        what='the tracker may be created for a look that was shed',
+        file=GLAM_POLICY,
+        search=_GLAM_CREATE_RULE,
+        replace="""  return a.wanted && !a.gateHeld && !a.hidden && !a.failed;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-create-ignores-failed',
+        what='the tracker may be created for a look that has failed',
+        file=GLAM_POLICY,
+        search=_GLAM_CREATE_RULE,
+        replace="""  return a.wanted && !a.gateHeld && !a.hidden && !a.shed;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    # ---- glamPolicy.ts: whether a load has to wait before its create -----------
+    Mutation(
+        id='camera-glam-load-never-waits',
+        what='a load for the look creates the tracker whatever the gate and the page say by the time its files are in',
+        file=GLAM_POLICY,
+        search="""  return !glamMayCreateTracker(a);
+""",
+        replace="""  return false;
+""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-load-stickers-wait',
+        what="a load stickers want is held to the look's rules, so stickers lose their tracker under a held gate",
+        file=GLAM_POLICY,
+        search="""  if (a.stickers) return false;
+""",
+        replace="""""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-load-unwanted-look-load-creates',
+        what='a load the look started still creates the tracker after the look was switched off, shed or failed',
+        file=GLAM_POLICY,
+        search="""  if (!a.wanted) return a.forGlam;
+""",
+        replace="""  if (!a.wanted) return false;
+""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    # ---- glamPolicy.ts: what the tracker-file check's answers mean --------------
+    Mutation(
+        id='camera-glam-probe-head-404-not-final',
+        what="a HEAD 404 hands the question to the ranged read, which the phone app's file server answers 206 for a missing file",
+        file=GLAM_POLICY,
+        search="""  return !head || head.threw || head.status === 405 || head.status === 501;""",
+        replace="""  return !head || head.threw || head.status === 404 || head.status === 405 || head.status === 501;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-probe-get-overrules-head',
+        what='a ranged answer, when there is one, is read even though the HEAD settled it',
+        file=GLAM_POLICY,
+        search="""  if (head && !glamProbeNeedsRange(head)) return glamHeadVerdict(head);""",
+        replace="""  if (head && !glamProbeNeedsRange(head) && !range) return glamHeadVerdict(head);""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-probe-range-status-trusted',
+        what='a 206 or 200 to the ranged read is "present" on its status alone, so a missing file on the phone app (206, nothing in it) offers the look',
+        file=GLAM_POLICY,
+        search="""  if (total > 0 || range.bodyBytes > 0) return "present";
+  return "missing";
+""",
+        replace="""  return "present";
+""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-probe-html-is-present',
+        what="an app shell's start page, served for a path it does not have, passes for the file",
+        file=GLAM_POLICY,
+        search="""  return (a.contentType ?? "").toLowerCase().includes("text/html");""",
+        replace="""  return false;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-probe-head-5xx-is-missing',
+        what='a server error on the HEAD is "missing", which is kept for as long as the app runs',
+        file=GLAM_POLICY,
+        search="""  if (head.status >= 500) return "unknown";
+""",
+        replace="""""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-probe-range-5xx-is-missing',
+        what='a server error on the ranged read is "missing", which is kept for as long as the app runs',
+        file=GLAM_POLICY,
+        search="""  if (range.status >= 500) return "unknown";
+""",
+        replace="""""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-probe-range-throw-is-missing',
+        what='a ranged read that failed or timed out is "missing", which is kept for as long as the app runs',
+        file=GLAM_POLICY,
+        search="""  if (range.threw) return "unknown";""",
+        replace="""  if (range.threw) return "missing";""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-probe-head-empty-length-is-present',
+        what='a HEAD that states a length of zero passes for the file',
+        file=GLAM_POLICY,
+        search="""  if (head.contentLength !== null && /^\\s*0+\\s*$/.test(head.contentLength)) {
+    return "missing";
+  }
+""",
+        replace="""""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-probe-one-file-enough',
+        what='one of the two tracker files being there is enough for the look to be offered',
+        file=GLAM_POLICY,
+        search="""  if (files.length > 0 && files.every((file) => file === "present")) {""",
+        replace="""  if (files.length > 0 && files.some((file) => file === "present")) {""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-probe-missing-file-not-final',
+        what='a file that is not there does not settle the check, so it is repeated every 30 seconds for as long as the app runs',
+        file=GLAM_POLICY,
+        search="""  if (files.includes("missing")) return "missing";
+""",
+        replace="""""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    # ---- cameraTonePolicy.ts: Glam in the shed order, and a shed from outside -
+    Mutation(
+        id='camera-tone-glam-not-first-shed',
+        what='touch up is shed before Glam, so a slow frame rate costs a cheap stage while the face tracker keeps running',
+        file=TONE_POLICY,
+        search="""  "glam",
+  "touchUp",
+""",
+        replace="""  "touchUp",
+  "glam",
+""",
+        specs=[TONE_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-tone-shed-now-keeps-window',
+        what='a shed recorded from outside leaves the slow window open, so the time the face tracker made slow sheds a second stage at once',
+        file=TONE_POLICY,
+        search="""    this.#shed.add(stage);
+    this.#windowStart = undefined;
+    return true;
+""",
+        replace="""    this.#shed.add(stage);
+    return true;
+""",
+        specs=[TONE_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-tone-shed-now-reports-repeat',
+        what='recording a stage that was shed already answers true and closes the window again, so every repeat report reads as a new shed',
+        file=TONE_POLICY,
+        search="""    if (this.#shed.has(stage)) return false;
+""",
+        replace="""""",
+        specs=[TONE_POLICY_SPEC],
     ),
 ]
 

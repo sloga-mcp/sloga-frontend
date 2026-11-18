@@ -6013,6 +6013,34 @@ msgid "Gently smooths your picture."
 msgstr "Gently smooths your picture."
 
 #: components/modal/modals/CameraEffectsSheet.tsx
+msgid "Glam"
+msgstr "Glam"
+
+#: components/modal/modals/CameraEffectsSheet.tsx
+msgid "Follows your face: smooth skin, soft makeup."
+msgstr "Follows your face: smooth skin, soft makeup."
+
+#: components/modal/modals/CameraEffectsSheet.tsx
+msgid "Strength"
+msgstr "Strength"
+
+#: components/modal/modals/CameraEffectsSheet.tsx
+msgid "Touch up is part of Glam."
+msgstr "Touch up is part of Glam."
+
+#: components/modal/modals/CameraEffectsSheet.tsx
+msgid "Glam was turned off to keep the video smooth."
+msgstr "Glam was turned off to keep the video smooth."
+
+#: components/modal/modals/CameraEffectsSheet.tsx
+msgid "Glam could not start on this device."
+msgstr "Glam could not start on this device."
+
+#: components/modal/modals/CameraEffectsSheet.tsx
+msgid "Low light, touch up and Glam pause while a background is on."
+msgstr "Low light, touch up and Glam pause while a background is on."
+
+#: components/modal/modals/CameraEffectsSheet.tsx
 msgid "Brightness"
 msgstr "Brightness"
 
