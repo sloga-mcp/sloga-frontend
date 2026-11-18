@@ -7,6 +7,7 @@ import { ProtocolV1 } from "stoat.js/lib/events/v1";
 
 import { CONFIGURATION } from "@revolt/common";
 import { ModalControllerExtended } from "@revolt/modal";
+import { loadServerCallRingSecs } from "@revolt/rtc/serverRingLength";
 import type { State as ApplicationState } from "@revolt/state";
 import type { Session } from "@revolt/state/stores/Auth";
 import { killServiceWorkerSubscription } from "./NotificationsController";
@@ -298,6 +299,12 @@ class Lifecycle {
         this.client.connect();
         break;
       case State.Connected:
+        // The ring length the server applies. `dispose()` assigns a local
+        // stub configuration, so that never carries it. Not awaited and never
+        // rejects: a failure keeps the last answer (45 s before any). Every
+        // connect asks again, so a server restart with a new length is picked
+        // up.
+        void loadServerCallRingSecs(this.client.api);
         this.#controller.state.auth.markValid();
         this.#setLoadedOnce(true);
         this.#connectionFailures = 0;

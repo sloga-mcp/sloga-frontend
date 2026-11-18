@@ -9,6 +9,39 @@ import type { ChangelogResponse } from "./Changelog";
  */
 export const CHANGELOGS: ChangelogResponse[] = [
   // ==========================================================================
+  // v0.72.0 (written 2026-11-16 by the merge steward from the v0.72 inbox,
+  // ~/.claude/plans/v072-release-inbox.md "DRAFT v0.72.0", every bullet
+  // checked against the landed code and the new en msgids). User go 2026-11-16
+  // (full sweep as recommended). Same copy constraints as below: no Cipher,
+  // purchase or pricing lines; no "Steam"; encryption bullets describe only
+  // what users see; protected channels are not announced (dark). No iPhone
+  // lines (iOS is not built in this sweep); Slim view is described as a beta.
+  {
+    id: "sloga-2026-11-16",
+    title: "Patch Notes",
+    published_at: "2026-11-16T12:00:00.000Z",
+    web_version: "0.72.0",
+    markdown_content: `## v0.72.0: Calls That Ring, Slim View, and Instant Account Deletion
+
+### 📞 Calls
+- **Decline a call:** incoming calls now have a Decline button (also a keybind in Settings → Keybinds). In a one-to-one call, the caller sees that you declined.
+- **Know what happened:** when you call someone and nobody picks up, you see **No answer**. If they decline, you see **Declined**.
+- **Answered somewhere else?** When you pick up on one device, your other devices stop ringing.
+- **Android:** incoming calls ring full screen with Accept and Decline. Answering on a locked phone asks you to unlock first. A call you miss leaves a **Missed call** notification with **Call back**.
+- **Ring for calls on this device:** a new switch in Settings → Notifications lets one device stay quiet while your other devices still ring.
+
+### 📱 Slim view (beta, Android app)
+- Settings → Appearance → **Slim view** shows only your chats and calls. Servers are hidden, not left: turn Slim view off to see them again.
+- Calls in Slim view get their own call screen with speaker, flip camera and minimize. In a one-to-one video call the video fills the screen with the controls on top, and your own small picture can be moved, hidden, or tapped to swap with theirs.
+
+### 👤 Account
+- **Delete your account right away:** Settings → Account Info → Delete Account emails you a link. Press **Delete permanently** on that page and your account and data are deleted immediately, instead of after 7 days. Changed your mind? Sign in again before you use the link and the request is cancelled. If you own servers, transfer or delete them first.
+
+### 🛠️ Fixes
+- **Game activity (desktop apps):** a game you closed no longer stays on your profile when clearing it fails once; the app keeps retrying.
+`,
+  },
+  // ==========================================================================
   // v0.71.0 (written 2026-11-08 by the merge steward from the v0.71 inbox,
   // ~/.claude/plans/v071-release-inbox.md "DRAFT v0.71.0", every bullet
   // checked against the landed code and the new en msgids). User go 2026-11-08

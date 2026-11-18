@@ -202,7 +202,7 @@ EXPECTED=(
   # Where the call card docks (the Android stuck-card fix and its follow-ups):
   # usable rects, the memo comparators, the docking decision, and the source
   # pins over VoiceCallCard.tsx. First measured at 24.
-  "components/ui/components/features/voice/callCard/callCardDock.test.ts 24 0"
+  "components/ui/components/features/voice/callCard/callCardDock.test.ts 25 0"
   # Source pins over the state.tsx wiring of member moves and the chip's
   # publication read (wave 7): no spec can load state.tsx itself. Re-measured
   # (44 -> 48) by slice 4 wave 3a: the leg connect tail now carries `audio`,
@@ -215,14 +215,44 @@ EXPECTED=(
   # the zeroing and the no-session press; 73 after the re-review's NEW-1 (a
   # wrapped publish in flight stops the overdue clock). 74 with Stage 6
   # MINOR 1 (one enable ledger per worker); 75 with MINOR 2 (a call attempt
-  # releases any worker a failed teardown left bound).
-  "components/rtc/stateWiring.test.ts 75 0"
+  # releases any worker a failed teardown left bound). 82 with the ringing
+  # pins: the key-status wait, where `answer` is worked out and who sets it,
+  # `CallEnded`, the lock check on "Stay unencrypted", the hang-up timers and
+  # the decline. 85 with the ringing fix round: our own Decline cancels our
+  # own pending Answer, the camera flip through the store under the publish
+  # gate, the hang-up timers' re-ask while the Room reconnects and the
+  # server's ring length. 90 with the locked cold start (M2 final audit): the
+  # wait's one unawaited startup retry, the e2ee.ts run record and its catch,
+  # and three behaviour tests running the retry's own members.
+  "components/rtc/stateWiring.test.ts 90 0"
   # The AFK channel and its merge with member moves (FE-2). Before it this
   # gate ran NO AFK spec, and none of the ladder that decides whether a
   # client follows a move. memberGate's opt-in skip is not in its row: see
   # OPT_IN_SKIPS.
   "components/rtc/movePolicy.test.ts 108 0"
   "components/rtc/voiceRejoinPolicy.test.ts 32 0"
+  # Ringing: what Answer may do, when the caller's side rings or hangs up,
+  # that an ended ring never latches a channel, the ring length, the Slim
+  # call screen's visibility, the per-device push preferences and the
+  # contact list the phone keeps for the ring. None ran in any gate before.
+  "components/rtc/answerPolicy.test.ts 26 0"
+  "components/rtc/outgoingRingPolicy.test.ts 37 0"
+  "components/rtc/joinRefusalPolicy.test.ts 18 0"
+  "components/rtc/ringDuration.test.ts 11 0"
+  # The Slim call screen's camera flip (the choice of the next camera) and
+  # the phone's lock-screen reads the Answer path asks.
+  "components/rtc/cameraFlip.test.ts 24 0"
+  "components/rtc/deviceLock.test.ts 27 0"
+  # The server's ring length, read from the root fetch.
+  "components/rtc/serverRingLength.test.ts 17 0"
+  "components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts 27 0"
+  "components/client/pushPolicy.test.ts 29 0"
+  # Every push subscribe goes through one site and carries the preferences.
+  "components/client/pushSubscribeSites.scan.test.ts 7 0"
+  # The Slim view's gates and the call screen's security components. 24 with
+  # the M2 final-audit fix (G23: the cover over a ring the phone opened).
+  "src/interface/slimGates.scan.test.ts 24 0"
+  "components/client/callContacts.test.ts 33 0"
   "components/rtc/moveSurfacePins.test.ts 10 0"
   "components/rtc/idlePolicy.test.ts 54 0"
   "components/rtc/afkPolicy.test.ts 20 0"
@@ -486,6 +516,18 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   # the member surfaces a move starts from; the idle beacon and AFK policies.
   components/rtc/movePolicy.test.ts
   components/rtc/voiceRejoinPolicy.test.ts
+  components/rtc/answerPolicy.test.ts
+  components/rtc/outgoingRingPolicy.test.ts
+  components/rtc/joinRefusalPolicy.test.ts
+  components/rtc/ringDuration.test.ts
+  components/rtc/cameraFlip.test.ts
+  components/rtc/deviceLock.test.ts
+  components/rtc/serverRingLength.test.ts
+  components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts
+  components/client/pushPolicy.test.ts
+  components/client/pushSubscribeSites.scan.test.ts
+  src/interface/slimGates.scan.test.ts
+  components/client/callContacts.test.ts
   components/rtc/moveSurfacePins.test.ts
   components/rtc/idlePolicy.test.ts
   components/rtc/afkPolicy.test.ts
@@ -671,6 +713,24 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   # file at a time (measured in FE-2 wave C).
   components/rtc/movePolicy.ts components/rtc/movePolicy.test.ts
   components/rtc/voiceRejoinPolicy.test.ts
+  components/rtc/answerPolicy.ts components/rtc/answerPolicy.test.ts
+  components/rtc/outgoingRingPolicy.ts
+  components/rtc/outgoingRingPolicy.test.ts
+  components/rtc/joinRefusalPolicy.ts
+  components/rtc/joinRefusalPolicy.test.ts
+  components/rtc/incomingCall.ts components/rtc/ringDuration.test.ts
+  # The Slim call screen and the modules it and the Answer path added (FW2).
+  components/rtc/callAudioRoute.ts components/rtc/serverRingLength.ts
+  components/rtc/serverRingLength.test.ts
+  components/rtc/cameraFlip.ts components/rtc/cameraFlip.test.ts
+  components/rtc/deviceLock.ts components/rtc/deviceLock.test.ts
+  components/ui/components/features/voice/slimCall/SlimCallScreen.tsx
+  components/ui/components/features/voice/slimCall/slimCallPolicy.ts
+  components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts
+  components/ui/components/features/voice/slimCall/slimCallView.ts
+  components/client/pushPolicy.ts components/client/pushPolicy.test.ts
+  components/client/pushSubscribeSites.scan.test.ts
+  components/client/callContacts.ts components/client/callContacts.test.ts
   components/rtc/idlePolicy.ts components/rtc/idlePolicy.test.ts
   components/rtc/moveSurfacePins.test.ts
   src/interface/channels/memberGate.ts

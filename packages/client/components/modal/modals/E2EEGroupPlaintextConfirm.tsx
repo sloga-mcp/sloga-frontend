@@ -98,6 +98,11 @@ export function E2EEGroupPlaintextConfirmModal(
     try {
       await e2ee.acknowledgeGroupPlaintext(props.channelId, expected);
     } catch (refusal) {
+      // A `declined` refusal (the system confirm was cancelled, or the
+      // phone is locked) is the user's answer, not an error: nothing was
+      // recorded, and the prompt stays up with no error under it.
+      if ((refusal as { type?: string })?.type === "declined") throw refusal;
+
       if (!isStateChanged(refusal)) {
         setError({ value: refusal });
         throw refusal;

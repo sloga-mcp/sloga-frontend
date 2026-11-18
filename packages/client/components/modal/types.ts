@@ -249,6 +249,18 @@ export type Modals =
       client: Client;
     }
   | {
+      /**
+       * Ask before requesting account deletion. `onConfirm` sends the request
+       * and shows its own outcome; the modal closes once it settles.
+       */
+      type: "delete_account_confirm";
+      onConfirm: () => Promise<void>;
+    }
+  | {
+      /** Account deletion was requested; the user must confirm from email */
+      type: "delete_account_requested";
+    }
+  | {
       type: "delete_bot";
       bot: Bot;
     }

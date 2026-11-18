@@ -30,6 +30,8 @@ import { CreateSoftResModal } from "./modals/CreateSoftRes";
 import { CreateThreadModal } from "./modals/CreateThread";
 import { CreateWebhookModal } from "./modals/CreateWebhook";
 import { CustomStatusModal } from "./modals/CustomStatus";
+import { DeleteAccountConfirmModal } from "./modals/DeleteAccountConfirm";
+import { DeleteAccountRequestedModal } from "./modals/DeleteAccountRequested";
 import { DeleteBotModal } from "./modals/DeleteBot";
 import { DeleteCategoryModal } from "./modals/DeleteCategory";
 import { DeleteChannelModal } from "./modals/DeleteChannel";
@@ -204,6 +206,10 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <CreateWebhookModal {...modalProps} />;
     case "custom_status":
       return <CustomStatusModal {...modalProps} />;
+    case "delete_account_confirm":
+      return <DeleteAccountConfirmModal {...modalProps} />;
+    case "delete_account_requested":
+      return <DeleteAccountRequestedModal {...modalProps} />;
     case "delete_bot":
       return <DeleteBotModal {...modalProps} />;
     case "delete_channel":

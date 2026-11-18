@@ -1,5 +1,5 @@
 // Unit spec for the join-refusal policy — run with Node's built-in runner:
-//   node --test components/rtc/joinRefusalPolicy.test.ts   (Node >=23.6 strips types)
+//   node --test --conditions=browser components/rtc/joinRefusalPolicy.test.ts   (Node >=23.6 strips types)
 // Focus: exactly the server answers a retry cannot change are terminal, a
 // terminal answer keeps THAT channel inert until the channel changes or the
 // hold runs out, and an attempt already in flight for a channel is not
@@ -7,8 +7,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { apiErrorType } from "../client/apiErrorType.ts";
 import {
   type JoinRefusalLatch,
+  type JoinRefusalReason,
   classifyJoinRefusal,
   JOIN_REFUSAL_HOLD_MS,
   joinBlockedReason,
@@ -307,4 +309,91 @@ test("🔴 supersession covers the latch the verdict PRECEDED, and no other", ()
     refusalSuperseded({ ...at(100), reason: "CannotJoinCall" }, 200),
     false,
   );
+});
+
+// The response text of a refused join, which is what `Channel.joinCall`
+// rejects with: stoat-api throws the body of a failed request as a string.
+const asText = (body: object): string => JSON.stringify(body);
+
+// Every reason the module can name, with a body that earns it. The type
+// makes a reason added to the union need a row here.
+const REFUSAL_BODIES: Record<
+  JoinRefusalReason,
+  { type: string; feature?: string; error?: string }
+> = {
+  NotAVoiceChannel: { type: "NotAVoiceChannel" },
+  MissingPermission: { type: "MissingPermission" },
+  CannotJoinCall: { type: "CannotJoinCall" },
+  IsBot: { type: "IsBot" },
+  FailedValidation: { type: "FailedValidation" },
+  UnknownNode: { type: "UnknownNode" },
+  MediaE2EEDisabled: { type: "FeatureDisabled", feature: "media_e2ee" },
+  DeviceNotRegistered: {
+    type: "FailedValidation",
+    error: "joining device is not registered",
+  },
+};
+
+test("response text is not read: only an object body classifies", () => {
+  // This pins what the classifier does today. Reading the text would turn on
+  // the refusal dialog and the hold for every refused join the server really
+  // sends, so it has to arrive as a deliberate change to this test and never
+  // as a side effect of another edit.
+  let checked = 0;
+  for (const [reason, body] of Object.entries(REFUSAL_BODIES)) {
+    for (const full of [body, { ...body, location: "voice_join.rs:82" }]) {
+      const text = asText(full);
+      // The text is a body `apiErrorType` reads, so the undefined below is
+      // this function not reading text and not a malformed sample.
+      assert.equal(apiErrorType(text), body.type, text);
+      assert.equal(classifyJoinRefusal(text), undefined, text);
+      // The same body as an object is classified.
+      assert.equal(classifyJoinRefusal(full), reason, text);
+      assert.equal(classifyJoinRefusal(JSON.parse(text)), reason, text);
+      checked++;
+    }
+  }
+  // Eight reasons, each with and without a location.
+  assert.equal(checked, 16);
+});
+
+test("an Answer that finds the ring over is not a terminal refusal", () => {
+  // The server gives `CallEnded` to a join sent as an Answer that found
+  // nobody else in the call. The next press is "Call back", which must not
+  // find the channel held.
+  assert.equal(classifyJoinRefusal({ type: "CallEnded" }), undefined);
+  assert.equal(
+    classifyJoinRefusal({ type: "CallEnded", location: "voice_join.rs:82" }),
+    undefined,
+  );
+  // The fields the two named refusals are read from do not turn it into one.
+  assert.equal(
+    classifyJoinRefusal({ type: "CallEnded", feature: "media_e2ee" }),
+    undefined,
+  );
+  assert.equal(
+    classifyJoinRefusal({
+      type: "CallEnded",
+      error: "joining device is not registered",
+    }),
+    undefined,
+  );
+  // The reason a latch carries is typed, and the type has no member for this
+  // answer. The type checker reads the directive below: if "CallEnded" were
+  // added to the union the line would compile, and an unused directive is an
+  // error. Node does not check it when it runs this file.
+  // @ts-expect-error -- "CallEnded" is not a JoinRefusalReason
+  const reason: JoinRefusalReason = "CallEnded";
+  void reason;
+});
+
+test("the ring being over is not a terminal refusal as response text either", () => {
+  for (const text of [
+    '{"type":"CallEnded"}',
+    asText({ type: "CallEnded", location: "voice_join.rs:82" }),
+  ]) {
+    // The text is a body `apiErrorType` reads as the ring being over.
+    assert.equal(apiErrorType(text), "CallEnded", text);
+    assert.equal(classifyJoinRefusal(text), undefined, text);
+  }
 });

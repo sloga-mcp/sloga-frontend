@@ -245,8 +245,19 @@ import {
   nativeScreenShareAudioOffered,
   nativeScreenShareAvailable,
 } from "./androidScreenShare";
+import {
+  type AnswerResult,
+  answerDecision,
+  driveAnswer,
+  isCallEnded,
+} from "./answerPolicy";
 import { Attenuation } from "./attenuation";
+import {
+  type CameraFlipResult,
+  flipCamera as flipRoomCamera,
+} from "./cameraFlip";
 import { CaptureClaim } from "./captureClaim";
+import { deviceLocked, ensureDeviceUnlocked } from "./deviceLock";
 import { entranceSoundFor } from "./entranceSound";
 import {
   type IdleWorld,
@@ -256,7 +267,11 @@ import {
   idleForSeconds,
   idleStep,
 } from "./idlePolicy";
-import { dismissIncomingCall, incomingCall } from "./incomingCall";
+import {
+  dismissIncomingCall,
+  incomingCall,
+  ringDurationMs,
+} from "./incomingCall";
 import {
   type JoinBlockedReason,
   type JoinRefusalLatch,
@@ -276,6 +291,12 @@ import {
   MOVE_PRECONNECT_BUDGET_MS,
   moveDecision,
 } from "./movePolicy";
+import {
+  ANSWER_ALONE_GRACE_MS,
+  answererAloneOutcome,
+  CALLER_HANGUP_GRACE_MS,
+  callerRingOutcome,
+} from "./outgoingRingPolicy";
 import { RemoteControl } from "./remoteControl";
 import {
   type RemoteControlQueue,
@@ -299,6 +320,7 @@ import {
   watchedAfterStop,
   watchedAfterWatch,
 } from "./screenShareWatchPolicy";
+import { serverCallRingSecs } from "./serverRingLength";
 import { CallTranscriber } from "./transcription/callTranscriber";
 import {
   type TranscriptFormat,
@@ -360,6 +382,11 @@ import {
   RATELIMIT_MAX_RETRIES,
   requestDeadlineSignal,
 } from "../client/e2eeRatelimitPolicy";
+import {
+  resolveSlim,
+  SLIM_DEV_STORAGE_KEY,
+  slimDevOverrideFrom,
+} from "../client/slimMode";
 import { LiveAnnotations } from "./annotations/liveAnnotations";
 import {
   type RecordingTarget,
@@ -705,6 +732,99 @@ const NO_LEG_NOTICE = Symbol("no-leg-notice");
  */
 const VOICE_MOVE_REQUESTED = "voiceMoveRequested" satisfies keyof Events;
 
+/**
+ * The longest a join waits for the device's key status when it has not
+ * loaded yet (`#waitForKeyStatus`). The status loads once, shortly after the
+ * app starts, so only a join made in the first moments of a cold start (an
+ * Answer from a notification is the usual one) ever waits. Long enough for a
+ * phone that has just been unlocked to open its key store, short enough that
+ * a device whose status never loads still reaches its call.
+ */
+const KEY_STATUS_WAIT_MS = 5_000;
+
+/** How often that wait looks at the status again. */
+const KEY_STATUS_POLL_MS = 50;
+
+/**
+ * Whether the development stand-in for the Android and iOS apps is on, read
+ * with the same pure rule `useSlimMode` uses and from the same two places
+ * (the URL and the latch that hook keeps in `sessionStorage`). Nothing is
+ * written here. Always false outside a development build.
+ */
+function slimDevOverride(): boolean {
+  if (!import.meta.env.DEV) return false;
+  let stored: string | null = null;
+  try {
+    stored = sessionStorage.getItem(SLIM_DEV_STORAGE_KEY);
+  } catch {
+    // Storage is blocked: the URL still decides.
+  }
+  return slimDevOverrideFrom(true, location.search, stored);
+}
+
+/**
+ * What one call knows about its own ring, for the two timers that can hang
+ * it up: the caller's (nobody answered a direct-message call, or the other
+ * person declined it) and the answerer's (the caller had already left). Made
+ * new for every join and dropped by `disconnect()`, so nothing in it is ever
+ * carried from one call into the next.
+ */
+type CallRingWatch = {
+  /** The connect generation of the join this belongs to. */
+  gen: number;
+  channel: Channel;
+  /** The call's Room, from the moment it connects. */
+  room: Room | undefined;
+  /**
+   * Whether this join could be the start of a call that rings somebody: the
+   * user started it in a direct message, and it is not an Answer, an
+   * automatic rejoin, a server-ordered move or a join on a ready-made token.
+   */
+  startedByUser: boolean;
+  /**
+   * Whether this device opened the call: `startedByUser`, and nobody else
+   * was in the call when it connected. Decided once, at connect.
+   */
+  openedCall: boolean;
+  /**
+   * Whether any other user has been in this call at any point. Only ever set,
+   * never cleared: a reconnect that empties the participant list does not
+   * make the call unanswered again. Our own other devices do not count.
+   */
+  remoteEverJoined: boolean;
+  /** Whether the other person declined this call. */
+  declined: boolean;
+  /** `performance.now()` when the call connected. */
+  connectedAt: number | undefined;
+  /** How long the caller waits for an answer, grace included. */
+  ringMs: number;
+  /** The one pending timer, the caller's or the answerer's. */
+  timer: ReturnType<typeof setTimeout> | undefined;
+};
+
+/**
+ * How soon a hang-up timer asks again when it fires while the call's Room is
+ * reconnecting. Who is in the call cannot be read then, so nothing is
+ * decided; the question is put off rather than dropped.
+ */
+const CALL_RING_RETRY_MS = 2_000;
+
+/**
+ * One `answerCall` on this device, from the press until it settles. There is
+ * at most one per channel: a second Answer of a ring already being answered
+ * (the popup's Accept and the notification's Answer) is the same Answer. A
+ * Decline of that channel pressed meanwhile is recorded here, so the Answer
+ * sends no join after it, or, when its join has already been sent, our own
+ * leg is hung up.
+ */
+type AnswerAttempt = {
+  channelId: string;
+  /** The user declined this channel's ring while this Answer was running. */
+  declined: boolean;
+  /** The connect generation whose join this Answer sent, once sent. */
+  joinGen: number | undefined;
+};
+
 type State =
   | "READY"
   | "DISCONNECTED"
@@ -870,6 +990,72 @@ class Voice {
   joinPending: Accessor<string | undefined>;
   #setJoinPending: Setter<string | undefined>;
   #joinPendingSeq = 0;
+
+  /**
+   * Whether the call we are in (or joining) was joined by `answerCall`. False
+   * when not in a call. Read by the outgoing-ring decision, which must never
+   * ring out for someone who answered, and by the two hang-up timers.
+   *
+   * Held as the connect generation of that join, so it can only ever speak
+   * for the join that set it: `#connectAttempt` writes it in the same turn
+   * that takes the generation, before anything is sent (our own join can be
+   * echoed back over the websocket before `connect()` returns), and
+   * `disconnect()` clears it.
+   */
+  joinedAsAnswer: Accessor<boolean>;
+  #answerGen: Accessor<number | undefined>;
+  #setAnswerGen: Setter<number | undefined>;
+
+  /**
+   * Set when an Answer found the ring already over, or when the caller had
+   * left by the time our Answer connected. The ring popup shows "Call ended"
+   * with "Call back" for it. It holds the channel so that "Call back" can
+   * start an ordinary call there. Cleared by `dismissCallEndedNotice` and by
+   * the next join.
+   */
+  callEndedNotice: Accessor<{ channel: Channel } | undefined>;
+  #setCallEndedNotice: Setter<{ channel: Channel } | undefined>;
+
+  /**
+   * Set when our own direct-message call was hung up for us, because nobody
+   * answered or because the other person declined. Shown once. Cleared by
+   * `dismissCallerRingNotice` and by the next join.
+   */
+  callerRingNotice: Accessor<
+    { channelId: string; outcome: "no_answer" | "declined" } | undefined
+  >;
+  #setCallerRingNotice: Setter<
+    { channelId: string; outcome: "no_answer" | "declined" } | undefined
+  >;
+
+  /** The ring facts of the current join (see `CallRingWatch`). */
+  #callRing: CallRingWatch | undefined;
+
+  /**
+   * The channel an `answerCall` is running for: set in the same turn as the
+   * press, cleared when that Answer settles, whatever its result (to the
+   * channel of an Answer still running, if any). The ring popup reads it to
+   * hold its timer and its Accept button while a keybind or a notification
+   * Answer is in flight.
+   */
+  answeringChannelId: Accessor<string | undefined>;
+  #setAnsweringChannelId: Setter<string | undefined>;
+  /**
+   * The Answers in flight, by channel (see `AnswerAttempt`), each with the
+   * promise of its result. One per channel, so a Decline of one chat always
+   * finds that chat's Answer, whatever else is being answered.
+   */
+  #answerAttempts = new Map<
+    string,
+    { attempt: AnswerAttempt; result: Promise<AnswerResult> }
+  >();
+
+  /**
+   * The stored Slim view setting. Handed in through `setSlimSetting` by
+   * `VoiceContext`, because the settings store is app state this class
+   * cannot reach. Reads off until then.
+   */
+  #slimSetting: () => boolean = () => false;
 
   /**
    * Terminal `join_call` refusals by channel id (joinRefusalPolicy).
@@ -2417,6 +2603,33 @@ class Voice {
     this.joinPending = joinPending;
     this.#setJoinPending = setJoinPending;
 
+    const [answerGen, setAnswerGen] = createSignal<number>();
+    this.#answerGen = answerGen;
+    this.#setAnswerGen = setAnswerGen;
+    // The generation itself is not a signal. Every change to it (a join or a
+    // `disconnect()`) also writes `answerGen`, so readers still re-run.
+    this.joinedAsAnswer = () => {
+      const gen = this.#answerGen();
+      return gen !== undefined && gen === this.#connectGen;
+    };
+
+    const [answeringChannelId, setAnsweringChannelId] = createSignal<string>();
+    this.answeringChannelId = answeringChannelId;
+    this.#setAnsweringChannelId = setAnsweringChannelId;
+
+    const [callEndedNotice, setCallEndedNotice] = createSignal<{
+      channel: Channel;
+    }>();
+    this.callEndedNotice = callEndedNotice;
+    this.#setCallEndedNotice = setCallEndedNotice;
+
+    const [callerRingNotice, setCallerRingNotice] = createSignal<{
+      channelId: string;
+      outcome: "no_answer" | "declined";
+    }>();
+    this.callerRingNotice = callerRingNotice;
+    this.#setCallerRingNotice = setCallerRingNotice;
+
     const [joinRefusals, setJoinRefusals] = createSignal<
       ReadonlyMap<string, JoinRefusalLatch>
     >(new Map());
@@ -3348,6 +3561,16 @@ class Voice {
    * `channel`, only for the reasons `moveBypassesRefusalLatch` allows
    * (a moderator may move someone where they could not join themselves);
    * the latch itself stays.
+   *
+   * `opts.answer` says this join answers a ringing call, so the server
+   * refuses it with `CallEnded` when the ring is already over instead of
+   * starting a new call. Only `answerCall` sets it. It is sent only on a
+   * join the user made that mints its own token: never on an automatic
+   * rejoin and never on an attempt that was handed a token.
+   *
+   * `opts.video` says the caller pressed the video button, so the ring on
+   * the other side can say so. It changes nothing on this side: it never
+   * turns a camera on.
    */
   async connect(
     channel: Channel,
@@ -3356,6 +3579,8 @@ class Voice {
       movePreConnectBudgetMs?: number;
       rejoinAttempt?: boolean;
       moveLatchBypass?: boolean;
+      answer?: boolean;
+      video?: boolean;
     },
   ): Promise<boolean> {
     // A terminal refusal the server already gave for this channel and that
@@ -3434,6 +3659,11 @@ class Voice {
     // re-records it in its own `connected` listener if it reconnects.
     this.#replacedConnNonce = undefined;
     this.#replacedLeftAt = undefined;
+    // A notice about the last call is stale once a new join starts. Below the
+    // refusal latch for the same reason as the nonce clear above: that early
+    // return starts nothing.
+    this.#setCallEndedNotice(undefined);
+    this.#setCallerRingNotice(undefined);
     this.disconnect();
     const pendingToken = ++this.#joinPendingSeq;
     this.#setJoinPending(channel.id);
@@ -3461,6 +3691,8 @@ class Voice {
       movePreConnectBudgetMs?: number;
       rejoinAttempt?: boolean;
       moveLatchBypass?: boolean;
+      answer?: boolean;
+      video?: boolean;
     },
     bypassedRefusal?: JoinRefusalReason,
   ): Promise<boolean> {
@@ -3468,6 +3700,19 @@ class Voice {
     // this, so a stale invocation resuming after an await can detect it lost
     // and bail (gate HIGH — async-registration race).
     const gen = ++this.#connectGen;
+    // Whether this attempt was handed a ready-made token. Taken here, before
+    // the token check further down can drop it: an attempt that started with
+    // one is a server-ordered move even when it ends up minting its own.
+    const hadAuth = auth !== undefined;
+    // Remember, for this generation only, whether this join is an Answer. In
+    // the same turn as the generation above and before anything is awaited or
+    // sent, because our own join can be echoed back over the websocket before
+    // `connect()` returns and the outgoing-ring decision reads this then.
+    this.#setAnswerGen(
+      opts?.answer === true && !opts?.rejoinAttempt && !hadAuth
+        ? gen
+        : undefined,
+    );
 
     // 🔴 A server-ordered move is handed a token that is ALREADY TICKING: the
     // backend mints it with a ten-second TTL and the user is out of the old
@@ -3506,6 +3751,34 @@ class Voice {
      * dropped is still a move, and still enters without the chime.
      */
     const isMove = preConnectDeadlineAt !== undefined;
+
+    // This join's ring facts, for the two hang-up timers (`CallRingWatch`).
+    // New for every attempt, so a decline or an answer seen by an earlier
+    // call can never count for this one. The ring length is read once here
+    // (untracked: a `connect()` started inside an effect must not re-run
+    // when it changes): the server's value when it gave one, plus the grace
+    // an Answer pressed in the ring's last second needs to unlock the phone
+    // and join.
+    const ring: CallRingWatch = {
+      gen,
+      channel,
+      room: undefined,
+      startedByUser:
+        channel.type === "DirectMessage" &&
+        !hadAuth &&
+        !isMove &&
+        opts?.answer !== true &&
+        !opts?.rejoinAttempt,
+      openedCall: false,
+      remoteEverJoined: false,
+      declined: false,
+      connectedAt: undefined,
+      ringMs:
+        untrack(() => ringDurationMs(serverCallRingSecs())) +
+        CALLER_HANGUP_GRACE_MS,
+      timer: undefined,
+    };
+    this.#callRing = ring;
 
     // Pin the saved microphone with an EXACT constraint when it is currently
     // present. `audioCaptureDefaults` hands getUserMedia a bare string, which
@@ -3667,6 +3940,25 @@ class Voice {
       // (media E2EE is mandatory); whoever makes that toggle real must give it
       // its own readiness reason first.
       this.#settings.e2eeCallsEnabled;
+    // The device's key status loads a moment after the app starts. A join
+    // made before that (an Answer from a notification on a phone that was
+    // just unlocked) used to read no status at all, which the readiness
+    // below takes for a device that may be enrolled: the join went out
+    // without this device's identity and the call sat behind the Leave /
+    // Stay banner although the keys were about to load. So wait for the
+    // status first, for a bounded time, asking the bridge once to retry its
+    // startup (a phone answered from its lock screen could not load it while
+    // locked). The wait writes nothing: a status that is still missing
+    // afterwards is read as missing, exactly as before, and the call is held.
+    // It is never taken to mean that encryption is off, which would let the
+    // call go out unencrypted with nothing held. Only
+    // where the status can decide anything: a shell that cannot encrypt
+    // reads `unsupported` whatever the status says.
+    if (shellSupported && bridge && bridge.status.get("state") === undefined) {
+      await this.#waitForKeyStatus(bridge, gen, preConnectBudgetLeft());
+      // Superseded while it waited: nothing constructed yet, just yield.
+      if (gen !== this.#connectGen) return false;
+    }
     // The DEVICE terms. E2EE proven OFF here is the same class as the
     // toggle: no identity, no session, not an E2EE call — a plain voice call
     // the peers attribute to us. Only a PROVEN off counts (`e2eeProvenOff`:
@@ -4232,6 +4524,17 @@ class Voice {
         const want = this.#micPipelineWants();
         untrack(() => this.#syncMicPipeline(room, want));
       });
+      // The websocket's view of who joins this call, for the hang-up timers:
+      // once the call has connected, anyone but us in the channel's
+      // participant list means the call was answered. The Room's own
+      // participant events feed the same latch (`#noteCallRingUser`, which
+      // also says why nothing counts before the call has connected).
+      createEffect(() => {
+        const present = [...channel.voiceParticipants.keys()];
+        untrack(() => {
+          for (const userId of present) this.#noteCallRingUser(ring, userId);
+        });
+      });
       return dispose;
     });
 
@@ -4443,6 +4746,10 @@ class Voice {
       // end chime but no start chime.
       this.#seedLiveRemoteShares(room);
       this.sound.playSound("userJoinVoice");
+      // The call is up: decide whether this device opened it, and start the
+      // timer that hangs up a call nobody answered or one the caller had
+      // already left. Only while this Room's generation owns the call.
+      if (gen === this.#connectGen) this.#startCallRing(ring, room);
     });
 
     room.addListener("disconnected", (reason) => {
@@ -4543,6 +4850,9 @@ class Voice {
       // The chip's participant/track domain changed (R2-3/FE-8): bump the
       // version so the derived chip re-runs (remoteParticipants is not reactive).
       this.#setCallParticipantsVersion((v) => v + 1);
+      // Somebody else is in the call now, so it was answered (our own other
+      // devices and their screen legs are not somebody else).
+      this.#noteCallRingUser(ring, participantUserId(participant.identity));
     });
 
     room.addListener("participantDisconnected", (participant) => {
@@ -5243,6 +5553,19 @@ class Voice {
         // decisive for the room's first joiner — the server pins a channel
         // to the node that opened it.
         const node = await voiceNodeForChannel(this.getClient(), channel);
+        // The user pressed Decline for this ring while this Answer was on
+        // its way here: no join is sent, and the half-built call goes, as
+        // after any other failed attempt. Otherwise the Answer notes that its
+        // join is out, so a Decline from now on hangs up our own leg instead.
+        // Nothing is awaited between this and the join.
+        const ownAnswer = this.#answerAttempts.get(channel.id)?.attempt;
+        if (opts?.answer === true && ownAnswer !== undefined) {
+          if (ownAnswer.declined) {
+            if (gen === this.#connectGen) this.disconnect();
+            return false;
+          }
+          ownAnswer.joinGen = gen;
+        }
         try {
           auth = await channel.joinCall(
             node,
@@ -5257,6 +5580,17 @@ class Voice {
             // move carried there while this session was deaf to the event.
             // `#autoRejoin` ends quietly on that answer.
             opts?.rejoinAttempt,
+            // The ring options. `answer` is worked out here, from this
+            // attempt's own options and nothing remembered: it is sent only
+            // on a join the user made by pressing Answer, never on an
+            // automatic rejoin and never on an attempt that started with a
+            // ready-made token (a move whose token was dropped above lands
+            // here too). `video` only tells the ring on the other side which
+            // button the caller pressed.
+            {
+              answer: opts?.answer === true && !opts?.rejoinAttempt && !hadAuth,
+              video: opts?.video === true,
+            },
           );
         } catch (error) {
           // 🔴 Deliberately NOT recovered here. delta refuses a device-qualified
@@ -5618,6 +5952,13 @@ class Voice {
         // resources (session, native listener, worker — gate MEDIUM), which
         // an inline cleanup here used to do by hand.
         this.disconnect();
+        // The ring this join answered was already over. That is the ring
+        // ending, not a refused call: nothing is latched and nothing is
+        // shown from here, so the same channel can be called back at once.
+        // The teardown above has already run, and the error goes back to
+        // `answerCall`, which shows "Call ended". Only `join_call`'s own
+        // answer is read, as below.
+        if (error === joinCallError && isCallEnded(error)) throw error;
         // The server refused THIS join with an answer a retry cannot change
         // (joinRefusalPolicy): no voice on the channel (a group whose owner
         // has not turned calling on — owner opt-in server-side), no Connect
@@ -5701,6 +6042,11 @@ class Voice {
       // Whatever attempt was pending is over (doomed by the bump above): the
       // join affordances must come back, even after an attempt that hung.
       this.#setJoinPending();
+      // The call's ring facts end with it: its hang-up timer, whether it
+      // was declined, and whether it was joined as an Answer.
+      clearTimeout(this.#callRing?.timer);
+      this.#callRing = undefined;
+      this.#setAnswerGen(undefined);
       // The caller hanging up before anyone answered must silence the
       // outgoing ring NOW — the VoiceChannelLeave echo also stops it, but
       // that round-trips the websocket (and never arrives if the socket is
@@ -6011,6 +6357,375 @@ class Voice {
       // means the Room was never reached; a promise that never settles makes
       // the release wait out the bound rather than run while it may capture.
       this.#callAudioEnded(roomGone ?? new Promise<never>(() => undefined));
+    }
+  }
+
+  /**
+   * Wait, for a bounded time, until the bridge has loaded the device's key
+   * status. Resolves when the status is there, when the bound runs out, or
+   * when a newer join or a hang-up has superseded generation `gen`. The
+   * bound is `KEY_STATUS_WAIT_MS`, or what is left of a move's budget when
+   * that is less. It first asks the bridge, once and without awaiting it, to
+   * retry its startup work if the status is still unset
+   * (`retryStartupIfUnset`), then polls within that same bound.
+   *
+   * It returns nothing on purpose. The caller reads the status again itself,
+   * so a wait that timed out or threw leaves the status exactly as it was,
+   * not loaded, and the readiness check holds the call. Nothing here may
+   * stand in a value for a status that did not load.
+   */
+  async #waitForKeyStatus(
+    bridge: E2EEBridge,
+    gen: number,
+    budgetLeftMs: number | undefined,
+  ): Promise<void> {
+    const boundMs =
+      budgetLeftMs === undefined
+        ? KEY_STATUS_WAIT_MS
+        : Math.min(KEY_STATUS_WAIT_MS, budgetLeftMs);
+    const deadline = performance.now() + boundMs;
+    try {
+      // A phone that rang on its lock screen started this page while locked,
+      // when the key store cannot open, and nothing loads the status again
+      // while the socket stays up. Ask the bridge to run its startup once
+      // more (on an Answer this is after the unlock); the loop below watches
+      // for it within the same bound. Not awaited: only the loop decides how
+      // long this is.
+      void bridge.retryStartupIfUnset();
+      while (
+        gen === this.#connectGen &&
+        bridge.status.get("state") === undefined &&
+        performance.now() < deadline
+      ) {
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+    } catch {
+      // The status could not be read. It stays not loaded.
+    }
+  }
+
+  /**
+   * The one Answer path: the in-app popup, the keybind and the Android
+   * notification all end up here. `driveAnswer` owns the order (ask the lock,
+   * decide, unlock, ask and decide again, join, then take the ring down);
+   * this only supplies its six effects.
+   *
+   * This is the only caller that passes `answer: true` to `connect()`. The
+   * ring is taken down only once the join has connected, or once the server
+   * has said the ring was already over.
+   *
+   * While it runs, `answeringChannelId` names the channel, and a Decline of
+   * that channel on this device cancels it (`AnswerAttempt`): pressed before
+   * the join is sent, nothing joins and the result is "failed". A second
+   * Answer of a channel already being answered starts nothing: it gets the
+   * running Answer's result.
+   */
+  answerCall(channel: Channel): Promise<AnswerResult> {
+    const running = this.#answerAttempts.get(channel.id);
+    if (running) return running.result;
+    const attempt: AnswerAttempt = {
+      channelId: channel.id,
+      declined: false,
+      joinGen: undefined,
+    };
+    const result = driveAnswer({
+      isLocked: () => deviceLocked(),
+      decide: (locked) =>
+        answerDecision({
+          channelType: channel.type,
+          serverId: channel.serverId,
+          slim: this.#slimActive(),
+          locked,
+        }),
+      ensureUnlocked: () => ensureDeviceUnlocked(),
+      connect: async () => {
+        // Declined while the phone was being unlocked: `connect()` is not
+        // even started, so the call the user is in now stays up.
+        if (attempt.declined) return false;
+        try {
+          return await this.connect(channel, undefined, { answer: true });
+        } catch (error) {
+          // `driveAnswer` reports every other failure as "failed" and keeps
+          // nothing of it, so it is logged here. A ring that was already
+          // over is not a failure.
+          if (!isCallEnded(error))
+            console.error("[rtc] answering the call failed", error);
+          throw error;
+        }
+      },
+      onEnded: () => this.#setCallEndedNotice({ channel }),
+      dismiss: (reason) => dismissIncomingCall(channel.id, reason),
+    }).finally(() => {
+      if (this.#answerAttempts.get(channel.id)?.attempt !== attempt) return;
+      this.#answerAttempts.delete(channel.id);
+      // Another chat's Answer may still be running: it is named instead.
+      let still: string | undefined;
+      for (const channelId of this.#answerAttempts.keys()) still = channelId;
+      this.#setAnsweringChannelId(still);
+    });
+    this.#answerAttempts.set(channel.id, { attempt, result });
+    this.#setAnsweringChannelId(channel.id);
+    return result;
+  }
+
+  /**
+   * Decline the call ringing in `channel`: take the ring down on this device
+   * and tell the server, which stops our other devices ringing and, in a
+   * direct message, tells the caller. Never throws: the server answers
+   * `NoEffect` when there was nothing left to decline, and that or any other
+   * failure leaves nothing to do here, because the ring is already down.
+   *
+   * An Answer of the same channel still running on this device is the user's
+   * own earlier press, and this press overrides it: it is marked declined, so
+   * it sends no join, and when its join has already gone out our own leg is
+   * hung up with the Hang up button's `this.disconnect()`. Only this method
+   * does that. A decline made by somebody else, or by another of our devices,
+   * reaches `noteCallDeclined` and never cancels an Answer.
+   */
+  async declineCall(channel: Channel): Promise<void> {
+    try {
+      const ownAnswer = this.#answerAttempts.get(channel.id)?.attempt;
+      if (ownAnswer !== undefined) {
+        ownAnswer.declined = true;
+        if (
+          ownAnswer.joinGen !== undefined &&
+          ownAnswer.joinGen === this.#connectGen
+        )
+          this.disconnect();
+      }
+    } catch {
+      /* the ring still comes down and the decline still goes out */
+    }
+    try {
+      // The ringtone belongs to whichever call the popup shows, so it is
+      // stopped only when that is this call, and only while what plays is
+      // that incoming ring (never our own outgoing ring for another chat).
+      if (
+        untrack(incomingCall)?.channel.id === channel.id &&
+        this.sound.ringtoneKind() === "incoming"
+      )
+        this.sound.stopRingtone();
+      dismissIncomingCall(channel.id, "declined");
+    } catch {
+      /* the decline below still goes out */
+    }
+    try {
+      await channel.declineCall();
+    } catch {
+      /* the ring is over, or the request failed: nothing more to do */
+    }
+  }
+
+  /** Take down the "Call ended" notice. */
+  dismissCallEndedNotice(): void {
+    this.#setCallEndedNotice(undefined);
+  }
+
+  /** Take down the "No answer" / "Declined" notice. */
+  dismissCallerRingNotice(): void {
+    this.#setCallerRingNotice(undefined);
+  }
+
+  /**
+   * The other person in a direct message declined the call in `channelId`.
+   * The caller passes only declines made by somebody else, never our own.
+   *
+   * Counted only for the call this device is connected to right now, in that
+   * channel, while its own ring timer is still running: a decline for a call
+   * that somebody has answered, for another channel, or for an earlier call
+   * is dropped. The flag lives on this call's ring facts and goes with them.
+   */
+  noteCallDeclined(channelId: string): void {
+    const ring = this.#callRing;
+    if (!ring || !ring.openedCall || ring.timer === undefined) return;
+    if (ring.channel.id !== channelId) return;
+    if (this.state() !== "CONNECTED" || this.channel()?.id !== channelId)
+      return;
+    ring.declined = true;
+    this.#askCallRing(ring);
+  }
+
+  /**
+   * Give this instance the stored Slim view setting (see `#slimSetting`). A
+   * setter and not a hook for the same reason as `setMemberGate`.
+   */
+  setSlimSetting(setting: () => boolean): void {
+    this.#slimSetting = setting;
+  }
+
+  /**
+   * Whether Slim view is active, for the Answer decision. The same pure rule
+   * and the same facts as `useSlimMode`, read at the moment of the press:
+   * the stored setting, whether this is the Android or iOS app, and whether
+   * the signed-in account is staff (`user.privileged`).
+   */
+  #slimActive(): boolean {
+    return resolveSlim({
+      setting: this.#slimSetting(),
+      nativeShell: Capacitor.isNativePlatform(),
+      // No build ships with Slim view locked on yet, as in `useSlimMode`.
+      locked: false,
+      staff: !!this.getClient()?.user?.privileged,
+      devOverride: slimDevOverride(),
+    });
+  }
+
+  /**
+   * Record that `userId` is or was in the call `ring` belongs to. Anyone but
+   * us answers the call for good: the latch is set and the pending hang-up
+   * timer is cancelled, never to be armed again for this call.
+   *
+   * Nothing counts before the call has connected. While we are still joining
+   * the participant list shows who was there before us, and someone who left
+   * before we arrived has not answered anything: for an Answer that is the
+   * caller who gave up, and counting them would leave us alone in a dead
+   * call. Who is there at connect is read then, by `#startCallRing`.
+   */
+  #noteCallRingUser(ring: CallRingWatch, userId: string): void {
+    if (ring.connectedAt === undefined) return;
+    if (userId === this.getClient()?.user?.id) return;
+    ring.remoteEverJoined = true;
+    clearTimeout(ring.timer);
+    ring.timer = undefined;
+  }
+
+  /**
+   * Read who is in the call right now, from the Room and from the channel's
+   * own participant list, into the latch. The events can miss someone (the
+   * Room reports nobody who was already there when we joined), so this runs
+   * when the call connects and again before every decision.
+   */
+  #sweepCallRing(ring: CallRingWatch, room: Room): void {
+    for (const participant of room.remoteParticipants.values())
+      this.#noteCallRingUser(ring, participantUserId(participant.identity));
+    for (const userId of ring.channel.voiceParticipants.keys())
+      this.#noteCallRingUser(ring, userId);
+  }
+
+  /**
+   * The call connected. Decide, once, whether this device opened it, and
+   * start the timer that fits: the caller's for a direct-message call we
+   * opened, the answerer's for a call we joined by pressing Answer. A call
+   * somebody else is already in gets neither.
+   */
+  #startCallRing(ring: CallRingWatch, room: Room): void {
+    ring.room = room;
+    ring.connectedAt = performance.now();
+    this.#sweepCallRing(ring, room);
+    ring.openedCall = ring.startedByUser && !ring.remoteEverJoined;
+    if (ring.remoteEverJoined) return;
+    if (ring.openedCall) this.#armCallRing(ring, ring.ringMs);
+    else if (this.joinedAsAnswer())
+      this.#armCallRing(ring, ANSWER_ALONE_GRACE_MS);
+  }
+
+  /** (Re)start `ring`'s one timer, to ask again in `delayMs`. */
+  #armCallRing(ring: CallRingWatch, delayMs: number): void {
+    clearTimeout(ring.timer);
+    ring.timer = setTimeout(() => {
+      ring.timer = undefined;
+      this.#askCallRing(ring);
+    }, delayMs);
+  }
+
+  /**
+   * Ask whether the call `ring` belongs to should be hung up, and do it. Run
+   * by the ring timer and by a decline. Everything from the first check to
+   * the hang-up happens in one synchronous turn, so nothing it read can
+   * change before it acts.
+   *
+   * It acts only for the call that is current and connected: the ring facts
+   * must still be this call's, the generation and the Room must match, and
+   * both the state and the Room's own connection must be CONNECTED.
+   * Otherwise it does nothing, with one exception: while that same call's
+   * Room is reconnecting it cannot see who is in the call, so it asks again
+   * in `CALL_RING_RETRY_MS` instead of dropping the question.
+   *
+   * Hanging up is `this.disconnect()` and nothing else, the same call the
+   * Hang up button makes. Then the notice that says why.
+   */
+  #askCallRing(ring: CallRingWatch): void {
+    const room = ring.room;
+    if (
+      this.#callRing === ring &&
+      ring.gen === this.#connectGen &&
+      room !== undefined &&
+      this.room() === room &&
+      (this.state() === "RECONNECTING" ||
+        room.state === ConnectionState.Reconnecting ||
+        room.state === ConnectionState.SignalReconnecting)
+    ) {
+      this.#armCallRing(ring, CALL_RING_RETRY_MS);
+      return;
+    }
+    if (
+      this.#callRing !== ring ||
+      ring.gen !== this.#connectGen ||
+      room === undefined ||
+      room.state !== ConnectionState.Connected ||
+      this.room() !== room ||
+      this.state() !== "CONNECTED"
+    )
+      return;
+    this.#sweepCallRing(ring, room);
+    const elapsedMs =
+      ring.connectedAt === undefined
+        ? 0
+        : Math.max(0, performance.now() - ring.connectedAt);
+
+    if (ring.openedCall) {
+      const outcome = callerRingOutcome({
+        channelType: ring.channel.type,
+        openedCall: ring.openedCall,
+        joinedAsAnswer: this.joinedAsAnswer(),
+        remoteEverJoined: ring.remoteEverJoined,
+        rejoining: this.#rejoinConnectInFlight,
+        elapsedMs,
+        ringMs: ring.ringMs,
+        declined: ring.declined,
+      });
+      switch (outcome) {
+        case "none":
+          return;
+        case "wait":
+          this.#armCallRing(ring, Math.max(0, ring.ringMs - elapsedMs));
+          return;
+        case "hangup_no_answer":
+        case "hangup_declined":
+          this.disconnect();
+          this.#setCallerRingNotice({
+            channelId: ring.channel.id,
+            outcome: outcome === "hangup_declined" ? "declined" : "no_answer",
+          });
+          return;
+        default: {
+          const exhaustive: never = outcome;
+          return exhaustive;
+        }
+      }
+    }
+
+    const outcome = answererAloneOutcome({
+      joinedAsAnswer: this.joinedAsAnswer(),
+      remoteEverJoined: ring.remoteEverJoined,
+      elapsedMs,
+    });
+    switch (outcome) {
+      case "none":
+        return;
+      case "wait":
+        this.#armCallRing(ring, Math.max(0, ANSWER_ALONE_GRACE_MS - elapsedMs));
+        return;
+      case "hangup_ended":
+        this.disconnect();
+        this.#setCallEndedNotice({ channel: ring.channel });
+        return;
+      default: {
+        const exhaustive: never = outcome;
+        return exhaustive;
+      }
     }
   }
 
@@ -9087,6 +9802,47 @@ class Voice {
       // preview re-reads mediaStreamTrack — covers brightness-only changes too.
       this.#setCameraEffectsApplied((n) => n + 1);
     }
+  }
+
+  /**
+   * Flip the local camera to the other side of the phone (`cameraFlip.ts`).
+   * Resolves true only when the camera actually switched.
+   *
+   * Refused while the publish gate holds any reason: the switch restarts the
+   * camera track, and livekit resumes the sender of a restarted track
+   * whatever paused it. The gate is read again at the moment the switch is
+   * made (`stillCurrent`, asked with nothing awaited before the switch), and
+   * if it filled while the switch ran it is put back over the new track once
+   * the switch has settled.
+   *
+   * A failure is shown through the store's own error path. When the camera
+   * that was on before came back, its effects are put back too, since nothing
+   * announces a restart onto the same device.
+   */
+  async flipCamera(): Promise<boolean> {
+    const room = this.room();
+    if (!room || this.state() !== "CONNECTED" || this.#gateHeld()) return false;
+    let result: CameraFlipResult;
+    try {
+      result = await flipRoomCamera(
+        room,
+        () =>
+          this.room() === room &&
+          this.state() === "CONNECTED" &&
+          !this.#gateHeld(),
+      );
+    } finally {
+      if (this.#gateHeld() && this.room() === room)
+        void this.#applyPublishGate(room);
+    }
+    if (result.outcome === "failed") {
+      if (result.restored)
+        void this.reapplyCameraEffects().catch((error) =>
+          console.warn("[rtc] camera effects not restored", error),
+        );
+      this.onErr(result.error);
+    }
+    return result.outcome === "flipped";
   }
 
   /** Live-update camera brightness. Persists to the store and reapplies. */
@@ -12812,8 +13568,22 @@ class Voice {
    * group / a non-declined dialog failure, the in-app `confirmLocalPlaintext()`
    * — then transitions to a confirmed interlude. `displayNames` labels the
    * natively-selected ids only.
+   *
+   * Refused while the phone's lock screen is up. The lock is asked first, at
+   * the moment of the press, and above the split below, so the press is
+   * refused the same way whether or not the call has a session. A lock state
+   * that cannot be read counts as locked. A refused press changes nothing:
+   * no mode, no resume. The session is read only after the lock has
+   * answered, so it is the session of the call as it is then.
    */
   async confirmCallPlaintext(): Promise<void> {
+    let locked = true;
+    try {
+      locked = (await deviceLocked()) !== false;
+    } catch {
+      /* a lock state that cannot be read counts as locked */
+    }
+    if (locked) return;
     const session = this.#mlsSession;
     if (!session) {
       await this.#confirmNoSessionPlaintext();
@@ -13596,42 +14366,40 @@ class Voice {
   }
 
   /**
-   * The `accept-call` keybind's target: exactly the `IncomingCallOverlay`
-   * Accept body (stop the ringtone, dismiss the popup, navigate to the
-   * conversation, join), reachable from here because `incomingCall` is a
-   * module-level signal singleton rather than component state.
+   * The `accept-call` keybind's target: the same `answerCall` the
+   * `IncomingCallOverlay` Accept button runs, reachable from here because
+   * `incomingCall` is a module-level signal singleton rather than component
+   * state. The conversation is opened only once the join has connected, so a
+   * press on a locked phone or on a ring that is already over shows nothing
+   * of the chat.
    */
   async #acceptRingingCall(): Promise<void> {
     const call = untrack(incomingCall);
     // Re-read after the guard: `dispatchKeybind` checked a ring existed, and
     // nothing has awaited since, but the ring is the one piece of state a
-    // timeout can clear on its own (`INCOMING_CALL_TIMEOUT_MS`).
+    // timeout can clear on its own (the ring timer).
     if (!call) return;
-    this.sound.stopRingtone();
-    dismissIncomingCall();
+    if ((await this.answerCall(call.channel)) !== "joined") return;
     try {
       this.#navigate?.(call.channel.path);
     } catch {
-      /* no router — join anyway rather than losing the call to a nav error */
+      /* no router: the call is joined either way */
     }
-    await this.connect(call.channel);
   }
 
   /**
-   * The `dismiss-call` keybind's target: silence the ring and take the popup
-   * down.
+   * The `dismiss-call` keybind's target: decline the ringing call, exactly
+   * as the overlay's Decline button does (`declineCall`).
    *
-   * 🔴 This signals NOTHING to the caller. `dismissIncomingCall` is local
-   * only — it clears a module signal, cancels the taskbar attention flash
-   * and cancels the Android notification. There is no REST call and no
-   * websocket event, so the caller keeps ringing until they give up or the
-   * server times the call out. The overlay button labelled "Decline" does
-   * exactly this and no more. 🔴 Any UI for this keybind must therefore call
-   * it "Dismiss"/"Ignore" and never "Decline" or "Reject".
+   * A decline is sent to the server. It stops the ring on this account's
+   * other devices, and in a direct message the caller is told and their call
+   * ends while it is still ringing. In a group nobody else is told: the call
+   * goes on for the others.
    */
   #dismissRingingCall(): void {
-    this.sound.stopRingtone();
-    dismissIncomingCall();
+    const call = untrack(incomingCall);
+    if (!call) return;
+    void this.declineCall(call.channel);
   }
 
   /**
@@ -13985,6 +14753,11 @@ export function VoiceContext(props: {
       (key) => state.layout.getSectionState(key, false),
       LAYOUT_SECTIONS.MATURE,
     ),
+  );
+  // The stored Slim view setting, read inside the closure at the moment an
+  // Answer is pressed, so a change made mid-session counts.
+  voice.setSlimSetting(
+    () => state.settings.getValue("appearance:slim_view") === true,
   );
   // A render effect runs synchronously, here, before any child mounts, so the
   // controller is in place before anything can raise a notice, and it still

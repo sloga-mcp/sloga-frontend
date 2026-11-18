@@ -44,7 +44,10 @@ export function E2EEPeerDowngradeModal(
     try {
       await e2ee.confirmPeerDowngrade(target, accept);
     } catch (error) {
-      showError(error);
+      // A `declined` refusal (the system confirm was cancelled, or the
+      // phone is locked) is the user's answer, not an error: nothing was
+      // recorded, and the prompt stays up without an error dialog.
+      if ((error as { type?: string })?.type !== "declined") showError(error);
       throw error;
     } finally {
       setBusy(false);

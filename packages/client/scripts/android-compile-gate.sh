@@ -39,8 +39,10 @@
 #      The same invocation runs test{Sideload,Play,Foss}DebugUnitTest, each
 #      filtered to the GATE_TESTS classes in com.acutest.app.screenshare
 #      (ScreenVideoGateTest, ScreenAudioSenderGateTest,
-#      ScreenUnpublishGuardTest) and the GATE_E2EE_TESTS classes in
-#      com.acutest.app.e2ee (E2eeGenericCallTest).
+#      ScreenUnpublishGuardTest), the GATE_E2EE_TESTS classes in
+#      com.acutest.app.e2ee (E2eeGenericCallTest) and the GATE_APP_TESTS
+#      classes in com.acutest.app (CallRingPolicyTest, CallDeclinePosterTest,
+#      PushTokenPluginParkedActionTest).
 #   5. Anti-vacuity: compiled Kotlin classes (ScreenSharePlugin.class,
 #      E2eePlugin.class) and a compiled Java class (MainActivity.class) must
 #      exist for every flavor.
@@ -105,7 +107,16 @@ GATE_TESTS=(
 # treat them exactly like the screen-share rows.
 GATE_E2EE_TEST_PKG=com.acutest.app.e2ee
 GATE_E2EE_TESTS=(
-  E2eeGenericCallTest:9
+  E2eeGenericCallTest:15
+)
+# The JVM unit tests in the app's own package, same row format:
+# android/app/src/test/java/com/acutest/app/<class>.java. Steps 4 and 6
+# treat them exactly like the screen-share rows.
+GATE_APP_TEST_PKG=com.acutest.app
+GATE_APP_TESTS=(
+  CallRingPolicyTest:59
+  CallDeclinePosterTest:29
+  PushTokenPluginParkedActionTest:9
 )
 TEST_RESULTS="$ANDROID/app/build/test-results"
 
@@ -113,17 +124,23 @@ TEST_RESULTS="$ANDROID/app/build/test-results"
   fail 2 "GATE_TESTS has no rows (expected at least one <class>:<min> row)"
 [ "${#GATE_E2EE_TESTS[@]}" -ge 1 ] ||
   fail 2 "GATE_E2EE_TESTS has no rows (expected at least one <class>:<min> row)"
-for row in "${GATE_TESTS[@]}" "${GATE_E2EE_TESTS[@]}"; do
+[ "${#GATE_APP_TESTS[@]}" -ge 1 ] ||
+  fail 2 "GATE_APP_TESTS has no rows (expected at least one <class>:<min> row)"
+for row in "${GATE_TESTS[@]}" "${GATE_E2EE_TESTS[@]}" \
+  "${GATE_APP_TESTS[@]}"; do
   [[ "$row" =~ ^[A-Za-z][A-Za-z0-9_]*:[1-9][0-9]*$ ]] ||
     fail 2 "malformed GATE_TESTS row '$row' (expected <class>:<min>, min >= 1)"
 done
-# Both tables as <package>.<class>:<min>, the form steps 4 and 6 read.
+# All three tables as <package>.<class>:<min>, the form steps 4 and 6 read.
 GATE_CLASSES=()
 for row in "${GATE_TESTS[@]}"; do
   GATE_CLASSES+=("$GATE_TEST_PKG.$row")
 done
 for row in "${GATE_E2EE_TESTS[@]}"; do
   GATE_CLASSES+=("$GATE_E2EE_TEST_PKG.$row")
+done
+for row in "${GATE_APP_TESTS[@]}"; do
+  GATE_CLASSES+=("$GATE_APP_TEST_PKG.$row")
 done
 
 # --- toolchain -----------------------------------------------------------------
@@ -382,9 +399,9 @@ done
 # --- 6. anti-vacuity for the unit tests ------------------------------------------------
 #
 # gradle already fails the run on a failing test and on a filter that matches
-# nothing. This step proves every GATE_TESTS and GATE_E2EE_TESTS class RAN,
-# for every flavor, in this invocation: each flavor's JUnit XML report for
-# each class (the AGP 8.13
+# nothing. This step proves every GATE_TESTS, GATE_E2EE_TESTS and
+# GATE_APP_TESTS class RAN, for every flavor, in this invocation: each
+# flavor's JUnit XML report for each class (the AGP 8.13
 # location; after a toolchain bump, find it with
 #   find packages/client/android/app/build -name 'TEST-*Screen*Test.xml'
 # and update TEST_RESULTS) must name the suite, count at least that class's
