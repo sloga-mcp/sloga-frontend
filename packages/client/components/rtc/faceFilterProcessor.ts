@@ -74,6 +74,12 @@
  * `onGlamFailed`. Stickers, tone and the published picture carry on. A
  * tracker that died while the page was hidden is loaded again once, under
  * the same rules, before the look is given up.
+ *
+ * Why the look or tone stopped is kept as a short text (`glamStats.reason`,
+ * `toneStats().reason`) and handed to `onGlamFailed` / `onToneFailed`, and
+ * `toneStats().frame` says how the frame loop is doing. That is for the
+ * hidden readout in the effects panel, the only output there is on a phone:
+ * recorded, never read back to decide anything.
  */
 import type { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 
@@ -116,15 +122,19 @@ import {
 } from "./faceFilterCatalog";
 import { GlamMaskPainter } from "./glamMaskPainter";
 import {
+  type FrameHealth,
   type GlamGeometry,
   type GlamLevels,
   GlamBudget,
   GlamDetectLatch,
+  glamFailureText,
   glamGeometry,
   glamLevels,
+  glamLoadFailedAt,
   glamMayCreateTracker,
   glamPresence,
   GlamRecovery,
+  glamTrackerFailure,
   glamTrackerLoadMustWait,
   LandmarkSmoother,
 } from "./glamPolicy";
@@ -202,8 +212,11 @@ export interface FaceFilterConfig {
    */
   watchdog?: ToneWatchdog;
   onToneShed?: (stage: ToneStageName) => void;
-  /** Tone failed open for this processor; the raw 2D path continues. */
-  onToneFailed?: () => void;
+  /**
+   * Tone failed open for this processor; the raw 2D path continues.
+   * `reason` is a short text for the diagnostic readout.
+   */
+  onToneFailed?: (reason: string) => void;
   /**
    * True while the call is in the middle of work the face tracker must not
    * hold up. While it answers true the tracker is not loaded for the look
@@ -214,9 +227,10 @@ export interface FaceFilterConfig {
   /**
    * The look cannot run on this processor. Called at most once per
    * processor; from then on it behaves as if `glam` were 0. Stickers, tone
-   * and the published picture are not affected.
+   * and the published picture are not affected. `reason` is a short text
+   * for the diagnostic readout.
    */
-  onGlamFailed?: () => void;
+  onGlamFailed?: (reason: string) => void;
 }
 
 /**
@@ -238,6 +252,16 @@ export interface GlamStats {
   delegate: "GPU" | "CPU" | "none";
   /** How long the last tracker took to create, in ms; 0 before the first. */
   initMs: number;
+  /**
+   * Why the look failed, as text for the diagnostic readout: which step it
+   * was and what it said. "" while it has not failed.
+   */
+  reason: string;
+  /**
+   * What the GPU try of a tracker load failed with, kept also when the CPU
+   * try then worked. "" when it did not fail or was not made.
+   */
+  gpuError: string;
 }
 
 export interface CameraToneStats {
@@ -250,6 +274,10 @@ export interface CameraToneStats {
   processedFps: number;
   pageMode: TonePageMode;
   lowLightGain: number;
+  /** Why tone failed open, as text for the diagnostic readout; "" if not. */
+  reason: string;
+  /** How the frame loop is doing, for the same readout. */
+  frame: FrameHealth;
 }
 
 export interface FaceFilterStatusReport {
@@ -272,7 +300,12 @@ interface TrackerKit {
   fileset: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>;
   /** A load stopped between a failed GPU try and the CPU one: skip the GPU. */
   gpuFailed: boolean;
+  /** What the GPU try failed with, for the diagnostic readout. */
+  gpuError?: string;
 }
+
+/** Face pipelines built since the app was loaded (`FrameHealth.processor`). */
+let processorsBuilt = 0;
 
 /**
  * A diagnostic switch with no UI: `sloga:glam-delegate` set to `cpu` in
@@ -472,6 +505,20 @@ export class FaceFilterProcessor {
   /** The library and its file set, once a load has fetched them. */
   #trackerKit: TrackerKit | undefined;
 
+  // --- For the diagnostic readout only (never read to decide anything) ---
+  /** Why the look failed (`#failGlam`); "" while it has not. */
+  #glamReason = "";
+  /** Why tone failed open (`#failTone`); cleared with `#toneFailed`. */
+  #toneReason = "";
+  /** What the tracker's last detect threw. */
+  #detectError = "";
+  /** This pipeline's number, and when it was built. */
+  #serial = 0;
+  #builtAt = 0;
+  /** Frames drawn to the end, and when the last one was. */
+  #framesDone = 0;
+  #lastFrameAt = -1;
+
   // --- This frame callback only (reset at the top of every frame) ---
   /** Owns "the one detect a frame callback may run has run". */
   #detectLatch = new GlamDetectLatch();
@@ -522,7 +569,49 @@ export class FaceFilterProcessor {
       pageMode: this.#pageMode,
       lowLightGain:
         this.#stage && !this.#stageLost ? this.#tone.lowLightGain : 1,
+      reason: this.#toneReason,
+      frame: this.#frameHealth(),
     };
+  }
+
+  /** How the frame loop is doing right now; see `FrameHealth`. */
+  #frameHealth(): FrameHealth {
+    const now = performance.now();
+    return {
+      processor: this.#serial,
+      upMs: now - this.#builtAt,
+      driver:
+        this.#vfcId !== undefined
+          ? "rvfc"
+          : this.#rafId !== undefined
+            ? "raf"
+            : this.#timerId !== undefined
+              ? "timer"
+              : "none",
+      frames: this.#framesDone,
+      // A frame that began and did not reach its end threw on the way.
+      unfinished: Math.max(0, this.#frameCounter - this.#framesDone),
+      frameAgeMs: this.#lastFrameAt < 0 ? -1 : now - this.#lastFrameAt,
+      idle: this.#frameIdleReason(),
+    };
+  }
+
+  /**
+   * Why `#drawFrame` would return without drawing if it were called now:
+   * the same tests it makes, in its order, with a name on each. A paused
+   * video is added because nothing calls the frames then. "" when a frame
+   * would be drawn.
+   */
+  #frameIdleReason(): string {
+    const video = this.#video;
+    if (!video || !this.#canvas || !this.#ctx) return "not built";
+    if (video.videoWidth === 0) return "video has no size";
+    const source = this.source;
+    if (!source) return "no source";
+    if (source.readyState !== "live") return `source ${source.readyState}`;
+    if (source.muted) return "source muted";
+    if (video.paused) return "video paused";
+    return "";
   }
 
   /** Where the face-tracked look stands; see `GlamState`. */
@@ -546,6 +635,9 @@ export class FaceFilterProcessor {
       every: stats.every,
       delegate: this.#landmarker ? this.#trackerDelegate : "none",
       initMs: this.#trackerInitMs,
+      // Tone failing open ends the look too, with no reason of the look's.
+      reason: this.#glamReason || (this.#toneFailed ? "tone failed" : ""),
+      gpuError: this.#trackerKit?.gpuError ?? "",
     };
   }
 
@@ -579,6 +671,7 @@ export class FaceFilterProcessor {
       toneTurnedOn(wantsWas, toneWants(this.#cfg, this.#glamRequested()))
     ) {
       this.#toneFailed = false;
+      this.#toneReason = "";
       this.#lossLadder.reset();
       this.#stuckLadder.reset();
     }
@@ -619,8 +712,13 @@ export class FaceFilterProcessor {
     // stuck rebuild, and `onToneFailed` may fire once more.
     this.#dropStage();
     this.#toneFailed = false;
+    this.#toneReason = "";
     this.#stuckLadder.reset();
     this.#lossLadder.reset();
+    this.#serial = ++processorsBuilt;
+    this.#builtAt = performance.now();
+    this.#framesDone = 0;
+    this.#lastFrameAt = -1;
     this.#bypass = false;
     this.#pageMode = "frame";
     this.#drawnMediaTime = -1;
@@ -925,7 +1023,7 @@ export class FaceFilterProcessor {
       !hidden &&
       start - this.#lostAt >= TONE_RESTORE_DEADLINE_MS
     ) {
-      this.#failTone();
+      this.#failTone("tone: lost (not restored in time)");
     }
 
     const look =
@@ -1055,7 +1153,7 @@ export class FaceFilterProcessor {
     // or the stage gave up on it during the draw (that frame was drawn
     // again without it) or a rebuild. Only the look is dropped.
     if (glamOn && (glamBlind || this.#stage?.glamAvailable === false)) {
-      this.#failGlam();
+      this.#failGlam(glamBlind ? "blind" : this.#stageGlamFailure());
     }
 
     // 2. Landmarks (only when needed; cadence-halved at ladder step ≥ 1).
@@ -1216,7 +1314,7 @@ export class FaceFilterProcessor {
     } catch (e) {
       // A throw here would end the frame loop and freeze the picture.
       console.error("face-filter: the face-tracked look threw", e);
-      this.#failGlam();
+      this.#failGlam(`step threw "${glamFailureText(e)}"`);
     }
     // `+=`: the step has already taken out a detect that stickers share.
     this.#frameGlamMs += performance.now() - began;
@@ -1234,7 +1332,7 @@ export class FaceFilterProcessor {
     // shed list): the stage it draws on may not be built.
     if (!this.#stage) this.#syncStage();
     if (this.#stage?.glamAvailable === false) {
-      this.#failGlam();
+      this.#failGlam(this.#stageGlamFailure());
       return false;
     }
     // A budget that is shed while the watchdog does not say so: record it.
@@ -1277,7 +1375,7 @@ export class FaceFilterProcessor {
           if (action === "recreate") {
             this.#recreateTracker();
           } else if (!hidden) {
-            this.#failGlam();
+            this.#failGlam(`detect threw "${this.#detectError}"`);
             return false;
           }
           // A throw on a hidden page waits for the page to come back.
@@ -1319,10 +1417,15 @@ export class FaceFilterProcessor {
     // and the answer can have changed since.
     const stage = this.#stage;
     if (stage && !stage.glamAvailable) {
-      this.#failGlam();
+      this.#failGlam(this.#stageGlamFailure());
       return false;
     }
     return true;
+  }
+
+  /** Why the stage cannot draw the look, in the stage's words. */
+  #stageGlamFailure(): string {
+    return this.#stage?.glamFailure || "the stage cannot draw the look";
   }
 
   /**
@@ -1420,14 +1523,18 @@ export class FaceFilterProcessor {
     }
   }
 
-  /** The look cannot run on this processor; everything else carries on. */
-  #failGlam() {
+  /**
+   * The look cannot run on this processor; everything else carries on.
+   * `why` is kept for the diagnostic readout and handed on with the report.
+   */
+  #failGlam(why: string) {
     if (this.#glamFailed) return;
     this.#glamFailed = true;
+    this.#glamReason = why;
     this.#endGlam();
     if (this.#disposed) return;
     try {
-      this.#cfg.onGlamFailed?.();
+      this.#cfg.onGlamFailed?.(why);
     } catch (e) {
       console.error("face-filter: onGlamFailed threw", e);
     }
@@ -1481,6 +1588,7 @@ export class FaceFilterProcessor {
         face && face.length ? (face as NormalizedLandmark[]) : null;
       return true;
     } catch (e) {
+      this.#detectError = glamFailureText(e);
       // Stickers put up with a few throws in a row; the look's own rule is
       // the caller's.
       if (this.#stickersLive() && ++this.#detectFails >= DETECT_FAIL_LIMIT) {
@@ -1517,7 +1625,7 @@ export class FaceFilterProcessor {
       this.#glamBlindCheckDue = true;
     } catch (e) {
       console.error("face-filter: tone stage unavailable", e);
-      this.#failTone();
+      this.#failTone(`tone: build "${glamFailureText(e)}"`);
     }
   }
 
@@ -1531,7 +1639,7 @@ export class FaceFilterProcessor {
     // contexts) is not counted against the stage.
     const hidden = document.visibilityState === "hidden";
     if (this.#lossLadder.onLost(hidden) === "fail-open") {
-      this.#failTone();
+      this.#failTone("tone: lost (again, after a rebuild)");
       return;
     }
     this.#stageLost = true;
@@ -1550,7 +1658,7 @@ export class FaceFilterProcessor {
     // deadline, which runs on visible time only, ends the wait.
     if (document.visibilityState === "hidden") return;
     this.#lossLadder.onRebuildFailed();
-    this.#failTone();
+    this.#failTone(`tone: lost (${stage.lastError || "the rebuild failed"})`);
   };
 
   /** A `rebuild()` succeeded: the stage draws again, and is checked again. */
@@ -1621,10 +1729,20 @@ export class FaceFilterProcessor {
     if (now - this.#missSince < TONE_STUCK_MS) return;
     this.#missSince = -1;
     if (this.#stuckLadder.onLost() === "fail-open" || !this.#stage?.rebuild()) {
-      this.#failTone();
+      this.#failTone(this.#stuckReason());
       return;
     }
     this.#noteStageRebuilt();
+  }
+
+  /**
+   * Why draws were refused for too long, for the diagnostic readout: the
+   * stage drew black, or what the stage last stopped on, when it said.
+   */
+  #stuckReason(): string {
+    const stageSaid = this.#stage?.lastError;
+    const blind = this.#stageBlind ? ", drew black" : "";
+    return `tone: stuck (${stageSaid || "draws refused"}${blind})`;
   }
 
   /** Release the stage (no longer needed, failed, or teardown). */
@@ -1649,14 +1767,18 @@ export class FaceFilterProcessor {
     this.#tone.lowLightGain = 1;
   }
 
-  /** Tone is off for this processor; the raw 2D path carries on. */
-  #failTone() {
+  /**
+   * Tone is off for this processor; the raw 2D path carries on. `why` is
+   * kept for the diagnostic readout and handed on with the report.
+   */
+  #failTone(why: string) {
     if (this.#toneFailed) return;
     this.#toneFailed = true;
+    this.#toneReason = why;
     this.#dropStage();
     if (this.#disposed) return;
     try {
-      this.#cfg.onToneFailed?.();
+      this.#cfg.onToneFailed?.(why);
     } catch (e) {
       console.error("face-filter: onToneFailed threw", e);
     }
@@ -1682,6 +1804,11 @@ export class FaceFilterProcessor {
    * others here ("glam"), and the first to be shed.
    */
   #measureFrameRate(now: number, hidden: boolean) {
+    // The last thing a frame does, so this is where a frame is counted as
+    // drawn to the end (the diagnostic readout compares it with the frames
+    // that began).
+    this.#framesDone++;
+    this.#lastFrameAt = now;
     if (this.#fpsWindowStart < 0) {
       // This frame is the origin of the window, not a frame inside it.
       this.#fpsWindowStart = now;
@@ -1832,10 +1959,13 @@ export class FaceFilterProcessor {
     this.#glamRecreateDue = false;
     void (async () => {
       let made: CreatedTracker | "wait" | undefined;
+      // For the diagnostic readout: the step that failed and what it said.
+      let why = "";
       try {
         made = await this.#createLandmarker(forGlam);
       } catch (e) {
         console.error("face-filter: landmarker init failed", e);
+        why = glamTrackerFailure(e, this.#trackerKit?.gpuError ?? "");
       }
       // Abandoned while it loaded: close it and say nothing to anyone.
       if (gen !== this.#trackerGen) {
@@ -1856,7 +1986,14 @@ export class FaceFilterProcessor {
       if (!made) {
         // Each user of the tracker fails on its own account.
         if (!forGlam || wantsLandmarks(this.#cfg)) this.#failLandmarker();
-        if (!this.#disposed && this.#glamRequested()) this.#failGlam();
+        if (!this.#disposed && this.#glamRequested()) {
+          // A second load is made after a detect threw: say that too.
+          this.#failGlam(
+            recreate && this.#detectError
+              ? `${why} (loaded again after detect threw "${this.#detectError}")`
+              : why,
+          );
+        }
         return;
       }
       // Post-destroy resolve: free immediately — this is the leak class the
@@ -1898,8 +2035,12 @@ export class FaceFilterProcessor {
     let kit = this.#trackerKit;
     if (!kit) {
       const { FaceLandmarker: FL, FilesetResolver: resolver } =
-        await import("@mediapipe/tasks-vision");
-      const fileset = await resolver.forVisionTasks(`${MEDIAPIPE_BASE}/wasm`);
+        await import("@mediapipe/tasks-vision").catch(
+          glamLoadFailedAt("import"),
+        );
+      const fileset = await resolver
+        .forVisionTasks(`${MEDIAPIPE_BASE}/wasm`)
+        .catch(glamLoadFailedAt("fileset"));
       kit = this.#trackerKit = { FL, fileset, gpuFailed: false };
     }
     const options = (delegate: "GPU" | "CPU") => ({
@@ -1926,6 +2067,7 @@ export class FaceFilterProcessor {
         return { tracker, delegate: "GPU", ms: performance.now() - began };
       } catch (e) {
         console.warn("face-filter: GPU delegate failed, retrying CPU", e);
+        kit.gpuError = glamFailureText(e);
       }
     }
     // The GPU try can have taken a while too: ask again before the CPU one.
@@ -1934,7 +2076,10 @@ export class FaceFilterProcessor {
       kit.gpuFailed = true;
       return "wait";
     }
-    const tracker = await kit.FL.createFromOptions(kit.fileset, options("CPU"));
+    const tracker = await kit.FL.createFromOptions(
+      kit.fileset,
+      options("CPU"),
+    ).catch(glamLoadFailedAt("cpu"));
     // CPU sessions start pre-degraded (landmark cadence halved, plan §8).
     // Not when only the face-tracked look uses the tracker: its cadence
     // has one owner, its own time budget. Stickers that join such a

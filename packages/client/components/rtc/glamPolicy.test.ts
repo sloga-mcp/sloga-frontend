@@ -15,7 +15,10 @@
 // a tracker that died in the background is re-created at most once per
 // trip, also when its death is only seen just after the page is back;
 // a tracker file is called present only on an answer that proves it, missing
-// on one that settles it, and unknown otherwise.
+// on one that settles it, and unknown otherwise; whatever is thrown becomes
+// one short line that keeps its start and its end, a failed tracker load
+// names the step that failed, and the readout's other parts say what they
+// were given.
 // These rules live in a dependency-free module precisely so they are
 // reachable by `node --test`; the WebGL stage, the mask painter and the
 // tracker wiring are live-only.
@@ -25,6 +28,7 @@ import { test } from "node:test";
 
 import { FACE_OVAL, LANDMARK, MASK_CUTOUTS } from "./faceFilterCatalog.ts";
 import {
+  type FrameHealth,
   type GlamGeometry,
   type GlamLevels,
   type GlamPoint,
@@ -32,6 +36,7 @@ import {
   GLAM_DETECT_EVERY,
   GLAM_DETECT_EVERY_SLOW,
   GLAM_FADE_MS,
+  GLAM_FAILURE_TEXT_MAX,
   GLAM_FORCE_DETECT_MS,
   GLAM_HOLD_MS,
   GLAM_LANDMARK_COUNT,
@@ -52,17 +57,25 @@ import {
   GLAM_WARMUP_DETECTS,
   GlamBudget,
   GlamDetectLatch,
+  GlamLoadError,
   GlamRecovery,
   LandmarkSmoother,
+  frameHealthText,
+  glamBrowserToken,
   glamContentRangeTotal,
+  glamDelegateText,
+  glamFailureText,
   glamGeometry,
   glamLevels,
+  glamLoadFailedAt,
   glamMayCreateTracker,
   glamPresence,
   glamProbeCapability,
   glamProbeNeedsRange,
+  glamProbeText,
   glamProbeVerdict,
   glamShouldDetect,
+  glamTrackerFailure,
   glamTrackerLoadMustWait,
 } from "./glamPolicy.ts";
 
@@ -2520,5 +2533,269 @@ test("GLAM_PROBE_NO_ANSWER: a request with no response, and it cannot be written
   assert.equal(
     glamProbeVerdict(GLAM_PROBE_NO_ANSWER, GLAM_PROBE_NO_ANSWER),
     "unknown",
+  );
+});
+
+// ---- Failure text ----------------------------------------------------------
+
+/** What the tracker library rejects with when it cannot get a GL context. */
+const TRACKER_GPU_ERROR =
+  'INTERNAL: Service "kGpuService", required by node ' +
+  "mediapipe_tasks_vision_face_landmarker_facelandmarkergraph__mediapipe_tasks_vision_face_detector_facedetectorgraph__mediapipe_tasks_core_inferencesubgraph__inferencecalculator__mediapipe_tasks_vision_face_landmarker_facelandmarkergraph__mediapipe_tasks_vision_face_detector_facedetectorgraph__mediapipe_tasks_core_inferencesubgraph__InferenceCalculator" +
+  ", was not provided and cannot be created: emscripten_webgl_create_context() returned error 0; StartRun failed; StartGraph failed\n" +
+  "=== Source Location Trace: ===\nthird_party/mediapipe/framework/calculator_graph.cc:123\n";
+
+test("glamFailureText: the message on one line, with the error's own name, never empty and never thrown", () => {
+  assert.equal(glamFailureText(new Error("boom")), "boom");
+  assert.equal(glamFailureText(new TypeError("no")), "TypeError: no");
+  assert.equal(
+    glamFailureText({ name: "NotSupportedError", message: "nope" }),
+    "NotSupportedError: nope",
+  );
+  assert.equal(glamFailureText("  two\n  lines\t here "), "two lines here");
+  // The readout wraps the text in double quotes.
+  assert.equal(glamFailureText('say "hi"'), "say 'hi'");
+  // Compiled C++ throws bare numbers.
+  assert.equal(glamFailureText(5246872), "number 5246872");
+  assert.equal(glamFailureText(undefined), "undefined");
+  assert.equal(glamFailureText(null), "null");
+  assert.equal(glamFailureText(""), "no message");
+  assert.equal(glamFailureText(new Error("")), "Error");
+  assert.equal(glamFailureText({}), "[object Object]");
+  // A value that throws when it is read still gives a line.
+  const hostile = {
+    get message(): string {
+      throw new Error("no reading");
+    },
+  };
+  assert.equal(glamFailureText(hostile), "an error that could not be read");
+});
+
+test("glamFailureText: a script that failed to load rejects with an event, and the line says which script", () => {
+  const event = {
+    type: "error",
+    target: {
+      tagName: "SCRIPT",
+      src: "https://localhost/mediapipe/wasm/vision_wasm_internal.js",
+    },
+  };
+  assert.equal(
+    glamFailureText(event),
+    "script error event https://localhost/mediapipe/wasm/vision_wasm_internal.js",
+  );
+  assert.equal(glamFailureText({ type: "error" }), "error event");
+  assert.equal(
+    glamFailureText({ type: "abort", target: { href: "https://x/y" } }),
+    "abort event https://x/y",
+  );
+  // A message wins over the event shape (an ErrorEvent has both).
+  assert.equal(glamFailureText({ type: "error", message: "bad" }), "bad");
+});
+
+test("glamFailureText: a long text keeps its start and its end and is never over the limit", () => {
+  const text = glamFailureText(new Error(TRACKER_GPU_ERROR));
+  assert.equal(text.length, GLAM_FAILURE_TEXT_MAX);
+  assert.ok(
+    text.startsWith("INTERNAL: Service 'kGpuService', required by node"),
+  );
+  // What happened is said last, and the source trace after it is dropped.
+  assert.ok(
+    text.endsWith("returned error 0; StartRun failed; StartGraph failed"),
+  );
+  assert.ok(!text.includes("Source Location Trace"));
+  assert.equal(text.split("…").length, 2, "one cut");
+
+  for (const max of [8, 9, 20, 139, 140, 141, 500]) {
+    for (const length of [0, 1, 7, 8, 9, 139, 140, 141, 1000]) {
+      const out = glamFailureText("x".repeat(length), max);
+      assert.ok(out.length <= max, `${length} at ${max}: ${out.length}`);
+      assert.ok(out.length > 0);
+      if (length > 0 && length <= max) assert.equal(out, "x".repeat(length));
+    }
+  }
+  // A limit that is no limit falls back to the smallest one.
+  for (const max of [0, -5, 3, NaN, Infinity]) {
+    assert.ok(glamFailureText("x".repeat(50), max).length <= 8, `${max}`);
+  }
+  // Exactly at the limit nothing is cut.
+  assert.equal(glamFailureText("abcdefgh", 8), "abcdefgh");
+  assert.equal(glamFailureText("abcdefghi", 8), "ab…efghi");
+});
+
+test("glamLoadFailedAt: rethrows what the step rejected with, with the step's name on it", async () => {
+  const cause = new Error("chunk gone");
+  await assert.rejects(
+    Promise.reject(cause).catch(glamLoadFailedAt("import")),
+    (error: unknown) => {
+      assert.ok(error instanceof GlamLoadError);
+      assert.ok(error instanceof Error);
+      assert.equal(error.site, "import");
+      assert.equal(error.reason, cause, "the rejection as it came");
+      assert.equal(error.name, "GlamLoadError");
+      assert.equal(error.message, "face tracker import: chunk gone");
+      return true;
+    },
+  );
+  // A step that worked is not touched.
+  assert.equal(await Promise.resolve(7).catch(glamLoadFailedAt("fileset")), 7);
+  assert.throws(() => glamLoadFailedAt("cpu")("x"), GlamLoadError);
+});
+
+test("glamTrackerFailure: names the step that failed, and keeps the GPU try's error beside the CPU one", () => {
+  const at = (site: "import" | "fileset" | "cpu", reason: unknown) =>
+    new GlamLoadError(site, reason);
+  assert.equal(
+    glamTrackerFailure(at("import", new TypeError("Failed to fetch")), ""),
+    'tracker: import "TypeError: Failed to fetch"',
+  );
+  assert.equal(
+    glamTrackerFailure(at("fileset", "no simd"), ""),
+    'tracker: fileset "no simd"',
+  );
+  // A GPU error from an earlier load says nothing about these two steps.
+  assert.equal(
+    glamTrackerFailure(at("import", "x"), "gpu said no"),
+    'tracker: import "x"',
+  );
+  assert.equal(
+    glamTrackerFailure(at("cpu", new Error("cpu said no")), "gpu said no"),
+    'tracker: gpu "gpu said no" | cpu "cpu said no"',
+  );
+  assert.equal(
+    glamTrackerFailure(at("cpu", new Error("cpu said no")), ""),
+    'tracker: gpu not tried | cpu "cpu said no"',
+  );
+  // A failure nobody put a step on.
+  assert.equal(
+    glamTrackerFailure(new Error("sync throw"), ""),
+    'tracker: load "sync throw"',
+  );
+  assert.equal(
+    glamTrackerFailure(undefined, "gpu said no"),
+    'tracker: gpu "gpu said no" | load "undefined"',
+  );
+  // The step's text is shortened like any other.
+  const long = glamTrackerFailure(at("cpu", TRACKER_GPU_ERROR), "");
+  assert.ok(long.length <= GLAM_FAILURE_TEXT_MAX + 40, `${long.length}`);
+  assert.ok(long.endsWith('StartGraph failed"'));
+});
+
+test("glamDelegateText: a failed GPU try is said even when the CPU one worked", () => {
+  assert.equal(glamDelegateText("GPU", ""), "GPU");
+  assert.equal(glamDelegateText("CPU", ""), "CPU");
+  assert.equal(glamDelegateText("none", ""), "none");
+  assert.equal(
+    glamDelegateText("CPU", "no context"),
+    'CPU (gpu: "no context")',
+  );
+  assert.equal(
+    glamDelegateText("none", "no context"),
+    'none (gpu: "no context")',
+  );
+});
+
+test("glamBrowserToken: the engine and its version, with the Android WebView mark", () => {
+  assert.equal(
+    glamBrowserToken(
+      "Mozilla/5.0 (Linux; Android 15; SM-S938B Build/AP3A.240905.015; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/142.0.7444.102 Mobile Safari/537.36",
+    ),
+    "Chrome/142.0.7444.102 wv",
+  );
+  assert.equal(
+    glamBrowserToken(
+      "Mozilla/5.0 (Linux; Android 15; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
+    ),
+    "Chrome/142.0.0.0",
+  );
+  assert.equal(
+    glamBrowserToken(
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.7922.34 Safari/537.36",
+    ),
+    "Chrome/151.0.7922.34",
+  );
+  assert.equal(
+    glamBrowserToken(
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1",
+    ),
+    "Version/18.1",
+  );
+  assert.equal(
+    glamBrowserToken(
+      "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    ),
+    "Firefox/133.0",
+  );
+  for (const none of ["", "curl/8.5.0", undefined, null, 7, {}]) {
+    assert.equal(glamBrowserToken(none), "browser unknown");
+  }
+});
+
+test("glamProbeText: where the tracker-file check stands, a found answer first", () => {
+  const facts = {
+    needed: true,
+    reachable: false,
+    missing: false,
+    checking: false,
+    noAnswer: false,
+  };
+  assert.equal(glamProbeText(facts), "not asked");
+  assert.equal(glamProbeText({ ...facts, noAnswer: true }), "no answer");
+  assert.equal(
+    glamProbeText({ ...facts, checking: true, noAnswer: true }),
+    "checking",
+  );
+  assert.equal(
+    glamProbeText({ ...facts, missing: true, checking: true }),
+    "missing",
+  );
+  assert.equal(
+    glamProbeText({ ...facts, reachable: true, missing: true }),
+    "present",
+  );
+  // Where no check is needed nothing else is looked at.
+  assert.equal(
+    glamProbeText({ ...facts, needed: false, missing: true }),
+    "not needed",
+  );
+});
+
+test("frameHealthText: says which pipeline, what calls its frames, and names a loop that drew nothing or threw", () => {
+  const health: FrameHealth = {
+    processor: 2,
+    upMs: 12340,
+    driver: "rvfc",
+    frames: 240,
+    unfinished: 0,
+    frameAgeMs: 41,
+    idle: "",
+  };
+  assert.equal(
+    frameHealthText(health),
+    "proc #2 up 12.3s · driver rvfc · frames 240 (last 0.0s ago)",
+  );
+  // No frame yet: the age has nothing to count from.
+  assert.equal(
+    frameHealthText({ ...health, frames: 0, frameAgeMs: -1 }),
+    "proc #2 up 12.3s · driver rvfc · frames 0 (none yet)",
+  );
+  // A frame that began and never ended is said loudly.
+  assert.equal(
+    frameHealthText({ ...health, unfinished: 1, frameAgeMs: 8000 }),
+    "proc #2 up 12.3s · driver rvfc · frames 240 (last 8.0s ago) · 1 FRAME(S) THREW",
+  );
+  assert.equal(
+    frameHealthText({
+      ...health,
+      driver: "none",
+      frames: 0,
+      frameAgeMs: -1,
+      idle: "source muted",
+    }),
+    "proc #2 up 12.3s · driver none · frames 0 (none yet) · idle: source muted",
+  );
+  // Times that are no times read as zero instead of NaN.
+  assert.equal(
+    frameHealthText({ ...health, upMs: NaN, frameAgeMs: Infinity }),
+    "proc #2 up 0.0s · driver rvfc · frames 240 (last 0.0s ago)",
   );
 });

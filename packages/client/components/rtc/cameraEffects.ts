@@ -100,6 +100,7 @@ import {
   GLAM_PROBE_NO_ANSWER,
   glamProbeCapability,
   glamProbeNeedsRange,
+  glamProbeText,
   glamProbeVerdict,
 } from "./glamPolicy";
 
@@ -463,6 +464,21 @@ export function cameraGlamSupported(): boolean {
   return _glamFilesReachable;
 }
 
+/**
+ * Where the tracker-file check stands, in a word or two, for the diagnostic
+ * readout in the effects panel. It only reads what the check has left
+ * behind: no check is started and no request is sent.
+ */
+export function cameraGlamProbeState(): string {
+  return glamProbeText({
+    needed: glamFilesNeedProbe(),
+    reachable: _glamFilesReachable,
+    missing: _glamFilesMissing,
+    checking: _glamProbe !== undefined,
+    noAnswer: _glamRetryAt > 0,
+  });
+}
+
 export type { CameraBackgroundMode };
 
 export type CameraBackgroundStatus =
@@ -693,6 +709,19 @@ export class CameraEffectsController {
    */
   #glamFailed = false;
   /**
+   * Why it could not, in the words of the processor that first said so, for
+   * the diagnostic readout. Kept and cleared with `#glamFailed`: a
+   * processor built after the failure is no longer asked for the look and
+   * has nothing to say about it.
+   */
+  #glamReason = "";
+  /**
+   * The same for tone: why it last failed open in this call. Unlike
+   * `#toneFailed` below it is not forgotten when a new processor takes the
+   * slot, so the readout can still say what happened to the one before.
+   */
+  #toneReason = "";
+  /**
    * Tone failed open on the face pipeline that holds the slot now. The
    * processor can try tone again by itself, so each tune checks this against
    * what the processor says (`#ensureFace`).
@@ -747,14 +776,16 @@ export class CameraEffectsController {
     if (stage === "glam") this.#retuneFaceSoon();
     this.onToneShed?.(stage);
   };
-  readonly #forwardToneFailed = () => {
+  readonly #forwardToneFailed = (reason: string) => {
     this.#toneFailed = true;
+    this.#toneReason = reason;
     this.#retuneFaceSoon();
     this.onToneFailed?.();
   };
-  readonly #forwardGlamFailed = () => {
+  readonly #forwardGlamFailed = (reason: string) => {
     const first = !this.#glamFailed;
     this.#glamFailed = true;
+    if (first) this.#glamReason = reason;
     this.#retuneFaceSoon();
     if (first) this.onGlamFailed?.();
   };
@@ -1310,10 +1341,12 @@ export class CameraEffectsController {
     const face = this.#face;
     if (!face) return undefined;
     // After a failure the pipeline is no longer asked for the look, so it
-    // would answer "off"; the failure is remembered here for the call
+    // would answer "off"; the failure is remembered here for the call, and
+    // so is the reason it gave
+    const stats = face.glamStats;
     return {
       state: this.#glamFailed ? "failed" : face.glamState,
-      stats: face.glamStats,
+      stats: this.#glamReason ? { ...stats, reason: this.#glamReason } : stats,
     };
   }
 
@@ -1337,7 +1370,11 @@ export class CameraEffectsController {
    * a background, or the brightness fallback holds the slot).
    */
   toneStats(): CameraToneStats | undefined {
-    return this.#face?.toneStats();
+    const stats = this.#face?.toneStats();
+    // A pipeline built after tone failed has no failure of its own to
+    // report; the readout still says what happened earlier in the call.
+    if (!stats || stats.reason || !this.#toneReason) return stats;
+    return { ...stats, reason: `earlier in this call: ${this.#toneReason}` };
   }
 
   /** Stop cycling animated-background frames (if running). */
@@ -1878,5 +1915,7 @@ export class CameraEffectsController {
   resetToneWatchdog(): void {
     this.#watchdog?.reset();
     this.#glamFailed = false;
+    this.#glamReason = "";
+    this.#toneReason = "";
   }
 }

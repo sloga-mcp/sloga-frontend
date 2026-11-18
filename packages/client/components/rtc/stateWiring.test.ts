@@ -5836,8 +5836,12 @@ test("source pin (camera ctl): the tone watchdog lives for the call: reset() lea
   assert.ok(!reset.includes("#watchdog"), "reset() does not touch it");
   assert.equal(
     ctlBodyIn(CTL_CODE, `resetToneWatchdog(): void {`),
+    // The two reasons are text for the diagnostic readout; they go with
+    // the failures they explain.
     codeOf(`this.#watchdog?.reset();
-      this.#glamFailed = false`),
+      this.#glamFailed = false;
+      this.#glamReason = "";
+      this.#toneReason = ""`),
     "resetToneWatchdog",
   );
   // The field, its lazy creation for a face config, and the one re-arm.
@@ -6477,13 +6481,17 @@ test("source pin (face glam): a tracker is loaded for the look only when the pol
         return { tracker, delegate: "GPU", ms: performance.now() - began };
       } catch (e) {
         console.warn("face-filter: GPU delegate failed, retrying CPU", e);
+        kit.gpuError = glamFailureText(e);
       }
     }
     if (glamTrackerLoadMustWait(this.#trackerAsk(forGlam))) {
       kit.gpuFailed = true;
       return "wait";
     }
-    const tracker = await kit.FL.createFromOptions(kit.fileset, options("CPU"));
+    const tracker = await kit.FL.createFromOptions(
+      kit.fileset,
+      options("CPU"),
+    ).catch(glamLoadFailedAt("cpu"));
     if (wantsLandmarks(this.#cfg) || !this.#wantsGlam()) {
       this.#ladder.reset(Math.max(1, this.#ladder.step));
     }
@@ -6493,6 +6501,20 @@ test("source pin (face glam): a tracker is loaded for the look only when the pol
     createEnd,
     "#createLandmarker from the first create on",
   );
+  // The two additions to that body since it was first pinned only record
+  // text for the diagnostic readout: what the GPU try failed with, and the
+  // step's name on a CPU try that fails (`glamLoadFailedAt` throws what it
+  // is given again, spec'd in glamPolicy.test.ts). Each step of a load has
+  // its name put on it exactly once.
+  assert.equal(countWired(FACE_CODE, `kit.gpuError = glamFailureText(e);`), 1);
+  for (const site of ["import", "fileset", "cpu"]) {
+    assert.equal(
+      countWired(FACE_CODE, `.catch(glamLoadFailedAt("${site}"))`),
+      1,
+      site,
+    );
+  }
+  assert.equal(countWired(FACE_CODE, `glamLoadFailedAt(`), 3);
 
   // Said on its own as well, the way the sender operations are: every create
   // in the file has its OWN check in front of it, and nothing is awaited

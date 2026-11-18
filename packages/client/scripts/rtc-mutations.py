@@ -17927,6 +17927,103 @@ MUTATIONS += [
         replace="""""",
         specs=[TONE_POLICY_SPEC],
     ),
+    # ---- glamPolicy.ts: the failure text of the diagnostic readout ----------
+    # The readout is the only output there is on a phone. A text that loses
+    # what happened, or a load that stops failing because its failure was
+    # being named, would each pass every other spec.
+    Mutation(
+        id='camera-glam-failure-text-not-cut',
+        what='a failure text of any length is kept whole, so one tracker error fills the readout',
+        file=GLAM_POLICY,
+        search="""  if (text.length <= limit) return text;""",
+        replace="""  if (text.length >= 0) return text;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-failure-text-drops-its-end',
+        what="a long failure text keeps only its start, which for the tracker's errors is a node name and not what happened",
+        file=GLAM_POLICY,
+        search="""  return `${text.slice(0, head)}…${text.slice(text.length - tail)}`;""",
+        replace="""  return text.slice(0, limit);""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-failure-text-keeps-source-trace',
+        what="the tracker library's source trace stays in the text, so the kept end is a file name and not what happened",
+        file=GLAM_POLICY,
+        search="""  if (trace !== -1) text = text.slice(0, trace);
+""",
+        replace="""""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-load-failure-not-rethrown',
+        what='naming the step of a tracker load that failed swallows the failure, so the load goes on with nothing in hand',
+        file=GLAM_POLICY,
+        search="""    throw new GlamLoadError(site, reason);""",
+        replace="""    return new GlamLoadError(site, reason) as never;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-tracker-failure-step-lost',
+        what='a failed import and a failed file-set step are both reported as "load", so the readout cannot tell them apart',
+        file=GLAM_POLICY,
+        search="""    if (error.site !== "cpu") return `tracker: ${error.site} "${text}"`;""",
+        replace="""    if (error.site !== "cpu") return `tracker: load "${text}"`;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-tracker-failure-gpu-error-dropped',
+        what="a load that failed on the GPU and then on the CPU reports only the CPU try's error",
+        file=GLAM_POLICY,
+        search="""    return `tracker: ${gpu || "gpu not tried"} | cpu "${text}"`;""",
+        replace="""    return `tracker: cpu "${text}"`;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-delegate-text-hides-gpu-error',
+        what='a tracker that fell back to the CPU reads as plain "CPU", so a GPU delegate that fails on a device is never seen',
+        file=GLAM_POLICY,
+        search="""  return gpuError ? `${delegate} (gpu: "${gpuError}")` : delegate;""",
+        replace="""  return delegate;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-frame-health-hides-thrown-frame',
+        what='a frame loop that ended in a throw reads like one that is waiting for frames',
+        file=GLAM_POLICY,
+        search="""  if (health.unfinished > 0) parts.push(`${health.unfinished} FRAME(S) THREW`);
+""",
+        replace="""""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    # ---- the lines that record that text, held by the source pins ------------
+    Mutation(
+        id='face-glam-gpu-error-not-kept',
+        what='what the GPU try of a tracker load failed with is logged and forgotten, so the readout of a tracker on the CPU cannot say the GPU delegate failed',
+        file=FACE_PROCESSOR,
+        search="""        kit.gpuError = glamFailureText(e);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-cpu-failure-named-fileset',
+        what="a CPU create that fails is reported under the file-set step's name",
+        file=FACE_PROCESSOR,
+        search="""    ).catch(glamLoadFailedAt("cpu"));""",
+        replace="""    ).catch(glamLoadFailedAt("fileset"));""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-leave-keeps-glam-reason',
+        what="the end of a call forgets that the look failed but keeps why, so the next call's readout shows a reason for a look that is running",
+        file=CAMERA_CTL,
+        search="""    this.#glamReason = "";
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
 ]
 
 

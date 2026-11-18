@@ -22,6 +22,7 @@ import {
   FACE_FILTERS,
   addUpload,
   cameraBackgroundSupported,
+  cameraGlamProbeState,
   cameraGlamSupported,
   cameraToneSupported,
   faceFiltersSupported,
@@ -32,7 +33,12 @@ import {
 } from "@revolt/rtc";
 import { TOUCH_UP_SWITCH_STRENGTH } from "@revolt/rtc/cameraTonePolicy";
 import type { GlamState, GlamStats } from "@revolt/rtc/faceFilterProcessor";
-import { GLAM_SWITCH_STRENGTH } from "@revolt/rtc/glamPolicy";
+import {
+  GLAM_SWITCH_STRENGTH,
+  frameHealthText,
+  glamBrowserToken,
+  glamDelegateText,
+} from "@revolt/rtc/glamPolicy";
 import { useState } from "@revolt/state";
 import {
   CameraColorLookIds,
@@ -144,6 +150,35 @@ function describeTone(stats: CameraToneStats | undefined): string {
   ].join(" · ");
 }
 
+/**
+ * Under the tone line: how the frame loop is doing (the frame rates above
+ * only say "0" when nothing is drawn, this says why), and why tone failed
+ * when it did.
+ */
+function describeFrames(stats: CameraToneStats | undefined): string {
+  if (!stats) return "";
+
+  const frames = frameHealthText(stats.frame);
+  return stats.reason ? `${frames} · ${stats.reason}` : frames;
+}
+
+/**
+ * What the readout cannot be read without: which browser engine this is,
+ * and whether the phone app's check found the face tracker's files.
+ */
+function describeEnvironment(): string {
+  let browser = "browser unknown";
+  let files = "unknown";
+  try {
+    browser = glamBrowserToken(navigator.userAgent);
+    files = cameraGlamProbeState();
+  } catch {
+    // Said as unknown
+  }
+
+  return `${browser} · tracker files ${files}`;
+}
+
 /** Where the face-tracked look stands in the call, and its tracking numbers. */
 type GlamInfo = { state: GlamState; stats: GlamStats } | undefined;
 
@@ -156,9 +191,14 @@ function describeGlam(info: GlamInfo): string {
     `glam ${state}`,
     `detect ${stats.detectMeanMs.toFixed(1)} / ${stats.detectMaxMs.toFixed(1)} ms`,
     `every ${stats.every}`,
-    `delegate ${stats.delegate}`,
+    `delegate ${glamDelegateText(stats.delegate, stats.gpuError)}`,
     `init ${Math.round(stats.initMs)} ms`,
   ].join(" · ");
+}
+
+/** Why the look failed, in the words of the step that failed. */
+function describeGlamReason(info: GlamInfo): string {
+  return info?.stats.reason ? `glam reason: ${info.stats.reason}` : "";
 }
 
 /** Presses on the panel's title, and the time they must fall within. */
@@ -278,23 +318,31 @@ function Sheet(props: { onClose: () => void }) {
   };
 
   // Read on a timer: the stats are a plain read, nothing announces a change
-  const readTone = () => {
+  const readTone = (): CameraToneStats | undefined => {
     try {
-      return describeTone(untrack(() => voiceContext.cameraToneStats()));
+      return untrack(() => voiceContext.cameraToneStats());
     } catch {
-      return describeTone(undefined);
+      return undefined;
     }
   };
   const [toneLine, setToneLine] = createSignal("");
+  const [framesLine, setFramesLine] = createSignal("");
   const [glamLine, setGlamLine] = createSignal("");
+  const [glamReasonLine, setGlamReasonLine] = createSignal("");
+  const [environmentLine, setEnvironmentLine] = createSignal("");
 
   // The timer runs only while the lines are shown
   createEffect(() => {
     if (!diagnosticShown()) return;
 
     const read = () => {
-      setToneLine(readTone());
-      setGlamLine(describeGlam(readGlam()));
+      const tone = readTone();
+      const look = readGlam();
+      setToneLine(describeTone(tone));
+      setFramesLine(describeFrames(tone));
+      setGlamLine(describeGlam(look));
+      setGlamReasonLine(describeGlamReason(look));
+      setEnvironmentLine(describeEnvironment());
     };
     read();
     const timer = setInterval(read, 1000);
@@ -554,9 +602,18 @@ function Sheet(props: { onClose: () => void }) {
 
         <Show when={diagnosticShown()}>
           <Diagnostic aria-hidden="true">{toneLine()}</Diagnostic>
+          <Show when={framesLine()}>
+            <Diagnostic aria-hidden="true">{framesLine()}</Diagnostic>
+          </Show>
           <Show when={glam()}>
             <Diagnostic aria-hidden="true">{glamLine()}</Diagnostic>
           </Show>
+          {/* Not behind `glam()`: a look that is not offered is the case
+              these two lines are most needed for. */}
+          <Show when={glamReasonLine()}>
+            <Diagnostic aria-hidden="true">{glamReasonLine()}</Diagnostic>
+          </Show>
+          <Diagnostic aria-hidden="true">{environmentLine()}</Diagnostic>
         </Show>
       </Body>
     </Panel>

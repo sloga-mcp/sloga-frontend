@@ -52,6 +52,13 @@
  *    there, is not there, or cannot be told; `glamProbeCapability` puts the
  *    files together. The caller only sends the requests.
  *
+ * 7. Failure text. The look is tested on phones with no log to read, so
+ *    why it failed is said on screen, in a readout that is hidden until it
+ *    is asked for. `glamFailureText` turns anything that was thrown into
+ *    one short line, `glamTrackerFailure` names the step of a tracker load
+ *    that failed, and the rest of that section words the readout's other
+ *    parts. Text only: nothing here decides anything.
+ *
  * The look is cosmetic, so every failure here is fail open to plain video.
  */
 
@@ -1129,4 +1136,224 @@ export function glamProbeCapability(
     return "present";
   }
   return "unknown";
+}
+
+// ---- Failure text: what the hidden readout says went wrong -----------------
+
+/** The longest failure text kept, in characters. */
+export const GLAM_FAILURE_TEXT_MAX = 140;
+
+/** The tracker library ends its errors with where in its source they arose. */
+const TRACKER_SOURCE_TRACE = "=== Source Location Trace";
+
+/** What a thrown value says, before it is shortened. */
+function glamRawFailureText(error: unknown): string {
+  if (typeof error === "string") return error;
+  // Compiled C++ throws bare numbers.
+  if (typeof error === "number") return `number ${error}`;
+  if (typeof error !== "object" || error === null) return String(error);
+  const said = error as {
+    name?: unknown;
+    message?: unknown;
+    type?: unknown;
+    target?: unknown;
+  };
+  if (typeof said.message === "string" && said.message) {
+    return typeof said.name === "string" && said.name && said.name !== "Error"
+      ? `${said.name}: ${said.message}`
+      : said.message;
+  }
+  // A script or an image that could not be loaded rejects with the DOM
+  // event, which has no message: say what kind it was and what it was for.
+  if (typeof said.type === "string" && said.type) {
+    const target = (said.target ?? {}) as {
+      tagName?: unknown;
+      src?: unknown;
+      href?: unknown;
+    };
+    const tag =
+      typeof target.tagName === "string" && target.tagName
+        ? `${target.tagName.toLowerCase()} `
+        : "";
+    const from =
+      typeof target.src === "string" && target.src
+        ? target.src
+        : typeof target.href === "string" && target.href
+          ? target.href
+          : "";
+    return `${tag}${said.type} event${from ? ` ${from}` : ""}`;
+  }
+  if (typeof said.name === "string" && said.name) return said.name;
+  return String(error);
+}
+
+/**
+ * Anything that was thrown, as one short line for the readout: the message
+ * (with the error's name when it has one of its own), on one line, without
+ * the tracker library's source trace, and without double quotes, since the
+ * readout puts the text in a pair of them. Never longer than `max`: a longer
+ * text keeps its start and its end, because the tracker's errors open with
+ * a long node name and say what happened last. Never throws and never
+ * returns an empty text.
+ */
+export function glamFailureText(
+  error: unknown,
+  max = GLAM_FAILURE_TEXT_MAX,
+): string {
+  let text: string;
+  try {
+    text = glamRawFailureText(error);
+  } catch {
+    text = "an error that could not be read";
+  }
+  const trace = text.indexOf(TRACKER_SOURCE_TRACE);
+  if (trace !== -1) text = text.slice(0, trace);
+  text = text.replace(/\s+/g, " ").replaceAll('"', "'").trim();
+  if (!text) text = "no message";
+  const limit = Number.isFinite(max) && max >= 8 ? Math.floor(max) : 8;
+  if (text.length <= limit) return text;
+  const head = Math.floor((limit - 1) * 0.4);
+  const tail = limit - 1 - head;
+  return `${text.slice(0, head)}…${text.slice(text.length - tail)}`;
+}
+
+/**
+ * The steps of a tracker load that are told apart when one fails: fetching
+ * the library, working out which of its files to use, and creating the
+ * tracker on the CPU. (A GPU try that fails is not an error of the load: the
+ * CPU try follows it.)
+ */
+export type GlamLoadSite = "import" | "fileset" | "cpu";
+
+/** What a step of a tracker load failed with, and which step it was. */
+export class GlamLoadError extends Error {
+  site: GlamLoadSite;
+  /** What the step threw or rejected with, as it came. */
+  reason: unknown;
+
+  constructor(site: GlamLoadSite, reason: unknown) {
+    super(`face tracker ${site}: ${glamFailureText(reason)}`);
+    this.name = "GlamLoadError";
+    this.site = site;
+    this.reason = reason;
+  }
+}
+
+/**
+ * For the `.catch()` of one step of a tracker load: throws what the step
+ * rejected with again, with the step's name on it. The load fails exactly
+ * as it would without this.
+ */
+export function glamLoadFailedAt(
+  site: GlamLoadSite,
+): (reason: unknown) => never {
+  return (reason) => {
+    throw new GlamLoadError(site, reason);
+  };
+}
+
+/**
+ * Why a tracker load ended with no tracker, for the readout. `gpuError` is
+ * what the GPU try failed with ("" when it did not fail or was not made):
+ *
+ *   tracker: import "<text>"
+ *   tracker: fileset "<text>"
+ *   tracker: gpu "<text>" | cpu "<text>"
+ *   tracker: gpu not tried | cpu "<text>"
+ *   tracker: load "<text>"          (a failure with no step named on it)
+ */
+export function glamTrackerFailure(error: unknown, gpuError: string): string {
+  const gpu = gpuError ? `gpu "${gpuError}"` : "";
+  if (error instanceof GlamLoadError) {
+    const text = glamFailureText(error.reason);
+    if (error.site !== "cpu") return `tracker: ${error.site} "${text}"`;
+    return `tracker: ${gpu || "gpu not tried"} | cpu "${text}"`;
+  }
+  return `tracker: ${gpu ? `${gpu} | ` : ""}load "${glamFailureText(error)}"`;
+}
+
+/**
+ * What the tracker runs on, for the readout. A GPU try that failed is said
+ * even when the CPU one then worked: `CPU (gpu: "<text>")`.
+ */
+export function glamDelegateText(
+  delegate: "GPU" | "CPU" | "none",
+  gpuError: string,
+): string {
+  return gpuError ? `${delegate} (gpu: "${gpuError}")` : delegate;
+}
+
+/**
+ * The browser engine and its version out of a user agent, for the readout:
+ * `Chrome/142.0.7444.102`, with ` wv` after it for an Android System
+ * WebView (which marks itself `; wv)`). Safari only states `Version/`.
+ */
+export function glamBrowserToken(userAgent: unknown): string {
+  const ua = typeof userAgent === "string" ? userAgent : "";
+  const engine =
+    /(?:Chrome|CriOS|Firefox|FxiOS)\/[\d.]+/.exec(ua) ??
+    /Version\/[\d.]+/.exec(ua);
+  if (!engine) return "browser unknown";
+  return /;\s*wv\)/.test(ua) ? `${engine[0]} wv` : engine[0];
+}
+
+/** Where the tracker-file check stands, as the controller holds it. */
+export interface GlamProbeFacts {
+  /** This kind of app has to look for the files at all. */
+  needed: boolean;
+  reachable: boolean;
+  missing: boolean;
+  /** A check is in flight. */
+  checking: boolean;
+  /** A check got no answer and the next one has to wait. */
+  noAnswer: boolean;
+}
+
+/** The tracker-file check in one or two words, for the readout. */
+export function glamProbeText(facts: GlamProbeFacts): string {
+  if (!facts.needed) return "not needed";
+  if (facts.reachable) return "present";
+  if (facts.missing) return "missing";
+  if (facts.checking) return "checking";
+  return facts.noAnswer ? "no answer" : "not asked";
+}
+
+/**
+ * How the frame loop of one face pipeline is doing, for the readout. The
+ * frame rates beside it only say "0" when no frame is drawn; this says
+ * which of the reasons for that it is.
+ */
+export interface FrameHealth {
+  /** Counts the pipelines built since the app was loaded; this one's number. */
+  processor: number;
+  /** How long ago this pipeline was built, in ms. */
+  upMs: number;
+  /** What calls the frames: none means nothing is scheduled. */
+  driver: "rvfc" | "raf" | "timer" | "none";
+  /** Frames drawn to the end since the build. */
+  frames: number;
+  /** Frames that began and never reached their end: each one threw. */
+  unfinished: number;
+  /** How long ago the last frame was drawn, in ms; -1 before the first. */
+  frameAgeMs: number;
+  /** Why a frame asked for now would draw nothing; "" when it would draw. */
+  idle: string;
+}
+
+function seconds(ms: number): string {
+  return `${(Math.max(0, Number.isFinite(ms) ? ms : 0) / 1000).toFixed(1)}s`;
+}
+
+/** `FrameHealth` as one part of the readout. */
+export function frameHealthText(health: FrameHealth): string {
+  const parts = [
+    `proc #${health.processor} up ${seconds(health.upMs)}`,
+    `driver ${health.driver}`,
+    health.frameAgeMs < 0
+      ? `frames ${health.frames} (none yet)`
+      : `frames ${health.frames} (last ${seconds(health.frameAgeMs)} ago)`,
+  ];
+  if (health.unfinished > 0) parts.push(`${health.unfinished} FRAME(S) THREW`);
+  if (health.idle) parts.push(`idle: ${health.idle}`);
+  return parts.join(" · ");
 }

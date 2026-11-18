@@ -271,12 +271,14 @@ EXPECTED=(
   # (geometry, smoothing, the detect budget, presence and recovery) is new,
   # first measured at 88, 101 with the tracker-load and detect-latch rules,
   # 116 with what the tracker-file check's answers mean (stateWiring stays at
-  # 121: its tracker-file pins changed inside the one test they were in);
-  # the tone stage's source pins (the shaders that
+  # 121: its tracker-file pins changed inside the one test they were in),
+  # 125 with the failure text of the diagnostic readout (stateWiring stays at
+  # 121 again: the lines that record that text are pinned inside two tests
+  # that were there); the tone stage's source pins (the shaders that
   # must not change when Glam is off) at 6.
   "components/rtc/faceFilterPolicy.test.ts 32 0"
   "components/rtc/cameraTonePolicy.test.ts 55 0"
-  "components/rtc/glamPolicy.test.ts 116 0"
+  "components/rtc/glamPolicy.test.ts 125 0"
   "components/rtc/cameraToneStageSource.test.ts 6 0"
   # The server's ring length, read from the root fetch.
   "components/rtc/serverRingLength.test.ts 17 0"

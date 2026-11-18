@@ -37,7 +37,12 @@
  * a lost context here can fail open without touching the published track.
  */
 import { type ToneConfig, meanLuma } from "./cameraTonePolicy";
-import type { GlamBox, GlamLevels, GlamWarp } from "./glamPolicy";
+import {
+  type GlamBox,
+  type GlamLevels,
+  type GlamWarp,
+  glamFailureText,
+} from "./glamPolicy";
 
 /** What the face-tracked look needs for the next draws. */
 export interface GlamStageInput {
@@ -516,6 +521,10 @@ export class CameraToneStage {
   /** A draw with the look left a GL error. Kept across rebuilds. */
   #glamDrawFailed = false;
   #glamLogged = false;
+  /** Why the look cannot be drawn, for the diagnostic readout; "" if it can. */
+  #glamFailure = "";
+  /** What last stopped the plain draws, for the same readout; "" if nothing. */
+  #lastError = "";
   /** True from a build until a coverage map is uploaded. */
   #needsGlamMap = true;
   /**
@@ -597,6 +606,7 @@ export class CameraToneStage {
     ) {
       this.#needsRebuild = true;
       this.#hasFrame = false;
+      this.#lastError = "a blur target is incomplete after a resize";
     }
     // New targets, new upload size: the next draws are checked again. The
     // look's own count is left alone; only a build starts it over.
@@ -653,6 +663,25 @@ export class CameraToneStage {
    */
   get glamAvailable(): boolean {
     return !this.#glamBuildFailed && !this.#glamDrawFailed;
+  }
+
+  /**
+   * Why `glamAvailable` is false, as text for the diagnostic readout:
+   * `shader "<what the compiler or the linker said>"` or
+   * `draw error 0x<the GL error code>`. "" while the look is available.
+   */
+  get glamFailure(): string {
+    return this.#glamFailure;
+  }
+
+  /**
+   * What last made the plain draws stop until a rebuild (a GL error in a
+   * checked draw, a blur target that could not be resized, a rebuild that
+   * threw), as text for the same readout. "" when nothing has. Cleared by a
+   * rebuild that succeeds.
+   */
+  get lastError(): string {
+    return this.#lastError;
   }
 
   /**
@@ -765,18 +794,21 @@ export class CameraToneStage {
       this.#drawsToCheck--;
       // Anything in the error queue counts, a leftover from the build
       // included: a stage that cannot be trusted draws nothing.
-      if (gl.getError() !== gl.NO_ERROR) {
+      const code = gl.getError();
+      if (code !== gl.NO_ERROR) {
         this.#needsRebuild = true;
         this.#hasFrame = false;
+        this.#lastError = `draw error 0x${code.toString(16)}`;
         return false;
       }
     } else if (useGlam && this.#glamDrawsToCheck > 0) {
       this.#glamDrawsToCheck--;
-      if (gl.getError() !== gl.NO_ERROR) {
+      const code = gl.getError();
+      if (code !== gl.NO_ERROR) {
         // The plain path was clean before the look joined in, so the look
         // takes the blame and this frame is drawn again without it. A lost
         // context is nobody's fault and is handled like any other loss.
-        if (gl.isContextLost() || !this.#redrawWithoutGlam(smooth)) {
+        if (gl.isContextLost() || !this.#redrawWithoutGlam(smooth, code)) {
           this.#needsRebuild = true;
           this.#hasFrame = false;
           return false;
@@ -831,6 +863,7 @@ export class CameraToneStage {
       gl.uniform1i(at("uMap"), 2);
       gl.useProgram(null);
       this.#glamBuildFailed = false;
+      if (!this.#glamDrawFailed) this.#glamFailure = "";
     } catch (error) {
       gl.deleteProgram(this.#glamProgram);
       this.#glamProgram = null;
@@ -841,6 +874,12 @@ export class CameraToneStage {
         this.#glamCompileTried = false;
       } else {
         this.#glamBuildFailed = true;
+        // The compiler's own words, without this file's prefix in front.
+        this.#glamFailure = `shader "${glamFailureText(
+          error instanceof Error
+            ? error.message.replace("Camera tone stage: ", "")
+            : error,
+        )}"`;
         this.#logGlam("the face-tracked look is unavailable", error);
       }
     } finally {
@@ -882,11 +921,12 @@ export class CameraToneStage {
    * After a draw with the look left a GL error: gives up on the look, clears
    * the error queue and draws the final pass again with the plain program
    * (the source and the blur targets of this frame are still in place).
-   * False when that draw fails too.
+   * False when that draw fails too. `code` is the GL error the draw left.
    */
-  #redrawWithoutGlam(smooth: number): boolean {
+  #redrawWithoutGlam(smooth: number, code: number): boolean {
     const gl = this.#gl;
     this.#glamDrawFailed = true;
+    this.#glamFailure = `draw error 0x${code.toString(16)}`;
     this.#logGlam("a draw with the face-tracked look left a GL error");
     for (let i = 0; i < MAX_ERRORS_DRAINED; i++) {
       if (gl.getError() === gl.NO_ERROR) break;
@@ -1035,13 +1075,15 @@ export class CameraToneStage {
     this.#hasFrame = false;
     try {
       this.#build();
-    } catch {
+    } catch (error) {
       this.#release();
       this.#lost = true;
+      this.#lastError = `rebuild "${glamFailureText(error)}"`;
       return false;
     }
     this.#lost = false;
     this.#needsRebuild = false;
+    this.#lastError = "";
     return true;
   }
 

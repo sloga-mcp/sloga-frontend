@@ -87,6 +87,7 @@ export {
   CameraEffectsController,
   SEGMENTATION_ASSET_PATHS,
   cameraBackgroundSupported,
+  cameraGlamProbeState,
   cameraGlamSupported,
   cameraToneSupported,
   faceFiltersSupported,
