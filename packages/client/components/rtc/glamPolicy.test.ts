@@ -46,6 +46,7 @@ import {
   GLAM_PROBE_NO_ANSWER,
   GLAM_RECOVERY_GRACE_MS,
   GLAM_RINGS,
+  GLAM_SHADER_TEXT_MAX,
   GLAM_SHED_DWELL_MS,
   GLAM_SHED_MEAN_MS,
   GLAM_SHED_RUN,
@@ -62,19 +63,24 @@ import {
   LandmarkSmoother,
   frameHealthText,
   glamBrowserToken,
+  glamCapabilityText,
   glamContentRangeTotal,
   glamDelegateText,
   glamFailureText,
   glamGeometry,
   glamLevels,
   glamLoadFailedAt,
+  glamLoadHeldPhase,
+  glamLoadText,
   glamMayCreateTracker,
   glamPresence,
   glamProbeCapability,
   glamProbeNeedsRange,
   glamProbeText,
   glamProbeVerdict,
+  glamShaderFailureText,
   glamShouldDetect,
+  glamToneStuckText,
   glamTrackerFailure,
   glamTrackerLoadMustWait,
 } from "./glamPolicy.ts";
@@ -2622,6 +2628,66 @@ test("glamFailureText: a long text keeps its start and its end and is never over
   assert.equal(glamFailureText("abcdefghi", 8), "ab…efghi");
 });
 
+test("glamFailureText: control characters never reach the readout, wherever they sit", () => {
+  const nul = String.fromCharCode(0);
+  const bell = String.fromCharCode(7);
+  const del = String.fromCharCode(127);
+  const c1 = String.fromCharCode(0x85);
+  // A GL info log as a WebView hands it over: a NUL after the last line.
+  assert.equal(
+    glamFailureText(`ERROR: 0:7: 'x' : undeclared identifier\n${nul}`),
+    "ERROR: 0:7: 'x' : undeclared identifier",
+  );
+  // Inside a text each run of them is one space, like any white space.
+  assert.equal(glamFailureText(`a${nul}${bell}b${del}c${c1}d`), "a b c d");
+  assert.equal(glamFailureText(`a ${nul} b`), "a b");
+  // A text of nothing else is no message.
+  assert.equal(glamFailureText(`${nul}${nul}`), "no message");
+  for (const code of [0, 1, 8, 9, 10, 13, 27, 31, 127, 128, 159]) {
+    const out = glamFailureText(`x${String.fromCharCode(code)}y`);
+    assert.equal(out, "x y", `code ${code}`);
+  }
+});
+
+test("glamFailureText: asked to keep the start, a long text keeps its start alone", () => {
+  assert.equal(glamFailureText("abcdefghi", 8, "start"), "abcdefg…");
+  assert.equal(glamFailureText("abcdefgh", 8, "start"), "abcdefgh");
+  // The default is still both ends.
+  assert.equal(glamFailureText("abcdefghi", 8, "ends"), "ab…efghi");
+  for (const max of [8, 20, 300]) {
+    for (const length of [0, 1, 8, 9, 299, 300, 301, 2000]) {
+      const out = glamFailureText("x".repeat(length), max, "start");
+      assert.ok(out.length <= max, `${length} at ${max}: ${out.length}`);
+      assert.ok(out.length > 0);
+    }
+  }
+});
+
+test("glamShaderFailureText: the first error of an info log survives, and a trailing NUL does not", () => {
+  // Three errors, far more than the general limit holds; the first one says
+  // what is wrong and the last one only that compiling stopped.
+  const first =
+    "ERROR: 0:212: 'texture' : no matching overloaded function found";
+  const log =
+    `glam shader failed to compile: ${first}\n` +
+    "ERROR: 0:212: '=' : dimension mismatch\n".repeat(12) +
+    "ERROR: 0:230: compilation terminated" +
+    String.fromCharCode(0);
+  const text = glamShaderFailureText(new Error(log));
+  assert.ok(text.startsWith(`glam shader failed to compile: ${first}`), text);
+  assert.equal(text.length, GLAM_SHADER_TEXT_MAX);
+  assert.ok(text.endsWith("…"));
+  assert.ok(!text.includes(String.fromCharCode(0)));
+  // The general text of the same error loses that first line's end.
+  assert.ok(!glamFailureText(new Error(log)).includes(first));
+  // A short log is kept whole, without the NUL.
+  assert.equal(
+    glamShaderFailureText(`${first}\n${String.fromCharCode(0)}`),
+    first,
+  );
+  assert.ok(GLAM_SHADER_TEXT_MAX > GLAM_FAILURE_TEXT_MAX);
+});
+
 test("glamLoadFailedAt: rethrows what the step rejected with, with the step's name on it", async () => {
   const cause = new Error("chunk gone");
   await assert.rejects(
@@ -2633,6 +2699,7 @@ test("glamLoadFailedAt: rethrows what the step rejected with, with the step's na
       assert.equal(error.reason, cause, "the rejection as it came");
       assert.equal(error.name, "GlamLoadError");
       assert.equal(error.message, "face tracker import: chunk gone");
+      assert.equal(error.cause, cause, "and as the error's cause");
       return true;
     },
   );
@@ -2759,13 +2826,94 @@ test("glamProbeText: where the tracker-file check stands, a found answer first",
   );
 });
 
+test("glamLoadHeldPhase + glamLoadText: a load that may not start says what holds it, and every phase says for how long", () => {
+  assert.equal(
+    glamLoadHeldPhase({ gateHeld: true, hidden: false }),
+    "held: gate",
+  );
+  assert.equal(
+    glamLoadHeldPhase({ gateHeld: false, hidden: true }),
+    "held: hidden",
+  );
+  // Both: the gate is the one named.
+  assert.equal(
+    glamLoadHeldPhase({ gateHeld: true, hidden: true }),
+    "held: gate",
+  );
+  // Neither: the rules said no for another reason.
+  assert.equal(glamLoadHeldPhase({ gateHeld: false, hidden: false }), "wait");
+
+  assert.equal(glamLoadText("gpu create", 23_400), "load: gpu create 23 s");
+  assert.equal(glamLoadText("gpu create", 23_999), "load: gpu create 23 s");
+  assert.equal(glamLoadText("import", 0), "load: import 0 s");
+  assert.equal(glamLoadText("fileset", 999), "load: fileset 0 s");
+  assert.equal(glamLoadText("cpu create", 61_000), "load: cpu create 61 s");
+  assert.equal(glamLoadText("not started", 5000), "load: not started 5 s");
+  assert.equal(glamLoadText("held: gate", 2000), "load: held: gate 2 s");
+  assert.equal(glamLoadText("held: hidden", 2000), "load: held: hidden 2 s");
+  assert.equal(glamLoadText("wait", 1000), "load: wait 1 s");
+  assert.equal(glamLoadText("failed", 9000), "load: failed 9 s");
+  // A loaded tracker has no time worth reading.
+  assert.equal(glamLoadText("loaded", 9000), "load: loaded");
+  // Times that are no times read as zero.
+  for (const ms of [NaN, -5, -Infinity]) {
+    assert.equal(glamLoadText("import", ms), "load: import 0 s", `${ms}`);
+  }
+});
+
+test("glamToneStuckText: each cause of a stuck run has its own words, and they are all said", () => {
+  const nothing = { stageSaid: "", threw: "", blind: false };
+  assert.equal(glamToneStuckText(nothing), "tone: stuck (draws refused)");
+  assert.equal(
+    glamToneStuckText({ ...nothing, blind: true }),
+    "tone: stuck (draws refused, drew black)",
+  );
+  assert.equal(
+    glamToneStuckText({ ...nothing, stageSaid: "source has no pixels" }),
+    "tone: stuck (source has no pixels)",
+  );
+  assert.equal(
+    glamToneStuckText({ ...nothing, threw: "InvalidStateError: detached" }),
+    'tone: stuck (threw "InvalidStateError: detached")',
+  );
+  assert.equal(
+    glamToneStuckText({
+      stageSaid: "draw error 0x502",
+      threw: "boom",
+      blind: true,
+    }),
+    'tone: stuck (draw error 0x502, threw "boom", drew black)',
+  );
+});
+
+test("glamCapabilityText: each capability check's answer, and one that could not be asked", () => {
+  assert.equal(
+    glamCapabilityText({ tone: true, glam: true, webgl2: true }),
+    "tone yes · glam yes · webgl2 yes",
+  );
+  assert.equal(
+    glamCapabilityText({ tone: true, glam: false, webgl2: true }),
+    "tone yes · glam no · webgl2 yes",
+  );
+  assert.equal(
+    glamCapabilityText({ tone: false, glam: false, webgl2: false }),
+    "tone no · glam no · webgl2 no",
+  );
+  assert.equal(
+    glamCapabilityText({ tone: undefined, glam: true, webgl2: undefined }),
+    "tone unknown · glam yes · webgl2 unknown",
+  );
+});
+
 test("frameHealthText: says which pipeline, what calls its frames, and names a loop that drew nothing or threw", () => {
   const health: FrameHealth = {
     processor: 2,
     upMs: 12340,
     driver: "rvfc",
+    scheduled: true,
     frames: 240,
-    unfinished: 0,
+    threw: 0,
+    threwText: "",
     frameAgeMs: 41,
     idle: "",
   };
@@ -2778,21 +2926,50 @@ test("frameHealthText: says which pipeline, what calls its frames, and names a l
     frameHealthText({ ...health, frames: 0, frameAgeMs: -1 }),
     "proc #2 up 12.3s · driver rvfc · frames 0 (none yet)",
   );
-  // A frame that began and never ended is said loudly.
-  assert.equal(
-    frameHealthText({ ...health, unfinished: 1, frameAgeMs: 8000 }),
-    "proc #2 up 12.3s · driver rvfc · frames 240 (last 8.0s ago) · 1 FRAME(S) THREW",
-  );
+  // A frame that threw is said loudly, with what the last one threw.
   assert.equal(
     frameHealthText({
       ...health,
-      driver: "none",
-      frames: 0,
-      frameAgeMs: -1,
-      idle: "source muted",
+      threw: 1,
+      threwText: "InvalidStateError: the image is broken",
+      frameAgeMs: 8000,
     }),
-    "proc #2 up 12.3s · driver none · frames 0 (none yet) · idle: source muted",
+    'proc #2 up 12.3s · driver rvfc · frames 240 (last 8.0s ago) · 1 FRAME(S) THREW, last "InvalidStateError: the image is broken"',
   );
+  assert.equal(
+    frameHealthText({ ...health, threw: 37, threwText: "" }),
+    "proc #2 up 12.3s · driver rvfc · frames 240 (last 0.0s ago) · 37 FRAME(S) THREW",
+  );
+  // A text with no count behind it is not printed.
+  assert.equal(
+    frameHealthText({ ...health, threw: 0, threwText: "stale" }),
+    "proc #2 up 12.3s · driver rvfc · frames 240 (last 0.0s ago)",
+  );
+  // A driver that was set up and has no callback pending: the loop ended.
+  for (const driver of ["rvfc", "raf", "timer"] as const) {
+    assert.equal(
+      frameHealthText({ ...health, driver, scheduled: false }),
+      `proc #2 up 12.3s · driver ${driver} NOT SCHEDULED · frames 240 (last 0.0s ago)`,
+    );
+    assert.equal(
+      frameHealthText({ ...health, driver, scheduled: true }),
+      `proc #2 up 12.3s · driver ${driver} · frames 240 (last 0.0s ago)`,
+    );
+  }
+  // No driver at all is its own word, whatever `scheduled` says.
+  for (const scheduled of [false, true]) {
+    assert.equal(
+      frameHealthText({
+        ...health,
+        driver: "none",
+        scheduled,
+        frames: 0,
+        frameAgeMs: -1,
+        idle: "source muted",
+      }),
+      "proc #2 up 12.3s · driver none · frames 0 (none yet) · idle: source muted",
+    );
+  }
   // Times that are no times read as zero instead of NaN.
   assert.equal(
     frameHealthText({ ...health, upMs: NaN, frameAgeMs: Infinity }),

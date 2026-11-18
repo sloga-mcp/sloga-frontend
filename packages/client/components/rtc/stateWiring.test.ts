@@ -5836,11 +5836,12 @@ test("source pin (camera ctl): the tone watchdog lives for the call: reset() lea
   assert.ok(!reset.includes("#watchdog"), "reset() does not touch it");
   assert.equal(
     ctlBodyIn(CTL_CODE, `resetToneWatchdog(): void {`),
-    // The two reasons are text for the diagnostic readout; they go with
-    // the failures they explain.
+    // The two reasons and the GPU error kept with the look's are text for
+    // the diagnostic readout; they go with the failures they explain.
     codeOf(`this.#watchdog?.reset();
       this.#glamFailed = false;
       this.#glamReason = "";
+      this.#glamGpuError = "";
       this.#toneReason = ""`),
     "resetToneWatchdog",
   );
@@ -6434,7 +6435,9 @@ test("source pin (face glam): a tracker is loaded for the look only when the pol
       return ask`),
     "#trackerAsk",
   );
-  assert.equal(countWired(FACE_CODE, `#trackerArgs`), 2);
+  // Declared, filled by `#trackerAsk`, and read once more by the frame for
+  // the readout's "why no load starts" (below).
+  assert.equal(countWired(FACE_CODE, `#trackerArgs`), 3);
   assert.equal(
     countWired(FACE_CODE, `this.#trackerAsk(`),
     3,
@@ -6442,12 +6445,16 @@ test("source pin (face glam): a tracker is loaded for the look only when the pol
   );
 
   // The frame starts a load for the look only on the policy's yes. It is the
-  // one place a load is started FOR the look.
+  // one place a load is started FOR the look. The policy's no starts nothing:
+  // its branch records, for the diagnostic readout, what held the load back,
+  // and that is all it does.
   assertFaceWired(
     "the look's tracker kickoff",
     `if (!this.#landmarker) {
       if (glamMayCreateTracker(this.#trackerAsk(true))) {
         this.#ensureLandmarker(true);
+      } else if (!this.#landmarkerInitInFlight) {
+        this.#noteLoad(glamLoadHeldPhase(this.#trackerArgs));
       }
     } else {`,
   );
@@ -6459,7 +6466,9 @@ test("source pin (face glam): a tracker is loaded for the look only when the pol
   const create = faceBodyOf(
     `async #createLandmarker(forGlam: boolean): Promise<CreatedTracker | "wait"> {`,
   );
-  const createStart = codeOf(`let kit = this.#trackerKit;
+  // `gen` names the load for `#noteLoad` alone (the readout's load phase).
+  const createStart = codeOf(`const gen = this.#trackerGen;
+    let kit = this.#trackerKit;
     if (!kit) {`);
   assert.equal(create.slice(0, createStart.length), createStart);
   assert.equal(
@@ -6472,18 +6481,21 @@ test("source pin (face glam): a tracker is loaded for the look only when the pol
   );
   const createEnd = codeOf(`const began = performance.now();
     if (!kit.gpuFailed) {
+      this.#noteLoad("gpu create", gen);
       if (glamTrackerLoadMustWait(this.#trackerAsk(forGlam))) return "wait";
       try {
         const tracker = await kit.FL.createFromOptions(
           kit.fileset,
           options("GPU"),
         );
+        kit.gpuError = undefined;
         return { tracker, delegate: "GPU", ms: performance.now() - began };
       } catch (e) {
         console.warn("face-filter: GPU delegate failed, retrying CPU", e);
         kit.gpuError = glamFailureText(e);
       }
     }
+    this.#noteLoad("cpu create", gen);
     if (glamTrackerLoadMustWait(this.#trackerAsk(forGlam))) {
       kit.gpuFailed = true;
       return "wait";
@@ -6501,12 +6513,47 @@ test("source pin (face glam): a tracker is loaded for the look only when the pol
     createEnd,
     "#createLandmarker from the first create on",
   );
-  // The two additions to that body since it was first pinned only record
-  // text for the diagnostic readout: what the GPU try failed with, and the
-  // step's name on a CPU try that fails (`glamLoadFailedAt` throws what it
-  // is given again, spec'd in glamPolicy.test.ts). Each step of a load has
-  // its name put on it exactly once.
+  // The additions to that body since it was first pinned only record text
+  // for the diagnostic readout: what the GPU try failed with (forgotten when
+  // a later GPU try works), the step's name on a CPU try that fails
+  // (`glamLoadFailedAt` throws what it is given again, spec'd in
+  // glamPolicy.test.ts), and the step the load is in (`#noteLoad`, which
+  // writes two fields nothing reads to decide anything; pinned below). Each
+  // step of a load has its name put on it exactly once.
   assert.equal(countWired(FACE_CODE, `kit.gpuError = glamFailureText(e);`), 1);
+  assert.equal(countWired(FACE_CODE, `kit.gpuError = undefined;`), 1);
+  assert.equal(
+    faceBodyOf(`#noteLoad(phase: GlamLoadPhase, gen = this.#trackerGen) {`),
+    codeOf(`if (gen !== this.#trackerGen || phase === this.#loadPhase) return;
+      this.#loadPhase = phase;
+      this.#loadPhaseAt = performance.now()`),
+    "#noteLoad",
+  );
+  // The two fields it writes are read in one place, the stats getter (and
+  // the phase once more where a new pipeline restarts its clock).
+  assert.equal(countWired(FACE_CODE, `#loadPhaseAt`), 4);
+  assert.equal(countWired(FACE_CODE, `#loadPhase`), 9);
+  assert.equal(
+    countWired(
+      FACE_CODE,
+      `loadPhase: this.#loadPhase,
+      loadPhaseMs: performance.now() - this.#loadPhaseAt,`,
+    ),
+    1,
+    "the stats getter",
+  );
+  for (const [phase, times] of [
+    ["import", 1],
+    ["fileset", 1],
+    ["gpu create", 1],
+    ["cpu create", 1],
+  ] as const) {
+    assert.equal(
+      countWired(FACE_CODE, `this.#noteLoad("${phase}", gen);`),
+      times,
+      phase,
+    );
+  }
   for (const site of ["import", "fileset", "cpu"]) {
     assert.equal(
       countWired(FACE_CODE, `.catch(glamLoadFailedAt("${site}"))`),
@@ -6532,6 +6579,9 @@ test("source pin (face glam): a tracker is loaded for the look only when the pol
       !/await|async/.test(between),
       `between the check and this create: ${between}`,
     );
+    // The load phase is recorded in front of the check, never between it
+    // and the create.
+    assert.ok(!between.includes("#noteLoad"), between);
     checks.add(checkAt);
   }
   assert.equal(checks.size, 2, "one check per create");
@@ -6545,6 +6595,7 @@ test("source pin (face glam): a tracker is loaded for the look only when the pol
       `const recreate = this.#glamRecreateInFlight;
       this.#glamRecreateInFlight = false;
       if (made === "wait") {
+        this.#noteLoad("wait");
         if (recreate) this.#glamRecreateDue = true;
         return;
       }
@@ -6569,8 +6620,10 @@ test("source pin (face glam): one guarded place closes a tracker, the look winds
   );
   assert.equal(
     faceBodyOf(`#releaseLandmarker() {`),
+    // The middle line is the diagnostic readout's (`#noteLoad`).
     codeOf(`const tracker = this.#landmarker;
       this.#landmarker = undefined;
+      if (tracker) this.#noteLoad("not started");
       this.#closeTracker(tracker)`),
     "#releaseLandmarker",
   );
@@ -6615,4 +6668,203 @@ test("source pin (face glam): one guarded place closes a tracker, the look winds
     "destroy",
   );
   assert.equal(countWired(FACE_CODE, `this.#glamInput = undefined;`), 1);
+});
+
+test("source pin (face glam): a frame that throws is counted and the tick asks for the next frame all the same", () => {
+  // The whole of the driver setup. Each tick (rVFC, and rAF where that is
+  // missing) calls the frame inside a `try` and asks for the next frame in
+  // its `finally`: without that, one throw anywhere in a frame ends the loop
+  // and the published picture stays on its last frame for the rest of the
+  // call. The next frame is asked for exactly once per tick, so a frame
+  // that throws every time runs at the frame rate and no faster.
+  assert.equal(
+    faceBodyOf(`#scheduleFrame() {`),
+    codeOf(`this.#cancelFrame();
+      const video = this.#video;
+      if (!video || this.#stopped) return;
+      this.#lastTickAt = performance.now();
+      if (document.visibilityState === "hidden") {
+        this.#driver = "timer";
+        this.#timerId = setInterval(this.#onTimer, HIDDEN_FRAME_INTERVAL_MS);
+        return;
+      }
+      if ("requestVideoFrameCallback" in video) {
+        this.#vfcDriver = true;
+        this.#driver = "rvfc";
+        const tick = (_now: number, metadata: VideoFrameCallbackMetadata) => {
+          this.#vfcId = undefined;
+          if (this.#stopped) return;
+          this.#presentedFrames = metadata.presentedFrames;
+          try {
+            this.#drawFrame();
+          } catch (e) {
+            this.#noteFrameThrew(e);
+          } finally {
+            this.#vfcId = video.requestVideoFrameCallback(tick);
+          }
+        };
+        this.#vfcId = video.requestVideoFrameCallback(tick);
+      } else {
+        this.#driver = "raf";
+        const tick = () => {
+          this.#rafId = undefined;
+          if (this.#stopped) return;
+          try {
+            this.#drawFrame();
+          } catch (e) {
+            this.#noteFrameThrew(e);
+          } finally {
+            this.#rafId = requestAnimationFrame(tick);
+          }
+        };
+        this.#rafId = requestAnimationFrame(tick);
+      }`),
+    "#scheduleFrame",
+  );
+
+  // Said on its own as well: every call of the frame in the file sits in a
+  // `try` whose `catch` counts the throw, and each of the two ticks has its
+  // re-registration in the `finally` of that same `try`.
+  const guarded = codeOf(`try {
+      this.#drawFrame();
+    } catch (e) {
+      this.#noteFrameThrew(e);
+    }`);
+  assert.equal(
+    countWired(FACE_CODE, `this.#drawFrame()`),
+    3,
+    "two ticks, one timer",
+  );
+  assert.equal(countWired(FACE_CODE, guarded), 3, "each one guarded");
+  assert.equal(
+    countWired(
+      FACE_CODE,
+      `${guarded} finally {
+        this.#vfcId = video.requestVideoFrameCallback(tick);
+      }`,
+    ),
+    1,
+    "the rVFC tick asks for the next frame whatever the frame did",
+  );
+  assert.equal(
+    countWired(
+      FACE_CODE,
+      `${guarded} finally {
+        this.#rafId = requestAnimationFrame(tick);
+      }`,
+    ),
+    1,
+    "the rAF tick asks for the next frame whatever the frame did",
+  );
+  // Asked for in two places each and no more: the start, and the `finally`.
+  assert.equal(countWired(FACE_CODE, `requestVideoFrameCallback(tick)`), 2);
+  assert.equal(countWired(FACE_CODE, `requestAnimationFrame(tick)`), 2);
+  assert.equal(countWired(FACE_CODE, `setInterval(`), 1, "the hidden timer");
+
+  // The hidden-page timer: the interval fires again by itself, and the guard
+  // is what counts a throw there.
+  const timer = faceBodyOf(`#onTimer = () => {`);
+  assert.equal(timer.slice(-guarded.length), guarded, "#onTimer ends guarded");
+
+  // What a thrown frame leaves behind: a count, the text of the last one,
+  // and a 2D context back at its defaults (a frame can stop between setting
+  // a transform, an alpha or a filter and putting it back). It never throws
+  // itself, and it starts nothing: no frame is asked for from here.
+  const threw = faceBodyOf(`#noteFrameThrew(e: unknown) {`);
+  assert.equal(
+    threw,
+    codeOf(`this.#framesThrew++;
+      const text = glamFailureText(e);
+      if (text !== this.#frameError) {
+        console.error("face-filter: a frame threw", e);
+      }
+      this.#frameError = text;
+      try {
+        const ctx = this.#ctx;
+        if (ctx) {
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.globalAlpha = 1;
+          ctx.filter = "none";
+        }
+      } catch {
+      }`),
+    "#noteFrameThrew",
+  );
+  assert.equal(countWired(FACE_CODE, `this.#noteFrameThrew(e)`), 3);
+  assert.equal(countWired(FACE_CODE, `this.#framesThrew++`), 1);
+
+  // The readout is told the truth about it: the count and the text as they
+  // are, and "scheduled" from the ids, which a tick drops when it runs.
+  assert.equal(
+    countWired(
+      FACE_CODE,
+      `driver: this.#driver,
+      scheduled:
+        this.#vfcId !== undefined ||
+        this.#rafId !== undefined ||
+        this.#timerId !== undefined,
+      frames: this.#framesDone,
+      threw: this.#framesThrew,
+      threwText: this.#frameError,`,
+    ),
+    1,
+    "#frameHealth",
+  );
+  // A new pipeline starts its count over.
+  assert.equal(
+    countWired(
+      faceBodyOf(`async init(opts: { track: MediaStreamTrack }) {`),
+      `this.#framesThrew = 0;
+      this.#frameError = "";`,
+    ),
+    1,
+    "init",
+  );
+});
+
+test("source pin (face glam): a stuck tone stage says what it was stuck on", () => {
+  // What the stage draw block threw is kept, and the frame still fails open.
+  assert.equal(
+    countWired(
+      faceBodyOf(`#drawFrame() {`),
+      `} catch (e) {
+        drew = false;
+        this.#stageDrawError = glamFailureText(e);
+      }
+      ctx.filter = "none";
+      this.#noteStageDraw(drew, start, hidden);`,
+    ),
+    1,
+    "the stage draw block's catch",
+  );
+  // The reason is worded by the policy from the stage's word (read before
+  // and after the rebuild that was tried), the kept throw and the blind flag.
+  assert.equal(
+    faceBodyOf(`#stuckReason(before: string): string {`),
+    codeOf(`const after = this.#stage?.lastError ?? "";
+      return glamToneStuckText({
+        stageSaid:
+          before && after && before !== after
+            ? \`\${before}, then \${after}\`
+            : after || before,
+        threw: this.#stageDrawError,
+        blind: this.#stageBlind,
+      })`),
+    "#stuckReason",
+  );
+  assert.equal(
+    countWired(
+      faceBodyOf(
+        `#noteStageDraw(drew: boolean, now: number, hidden: boolean) {`,
+      ),
+      `const said = this.#stage?.lastError ?? "";
+      if (this.#stuckLadder.onLost() === "fail-open" || !this.#stage?.rebuild()) {
+        this.#failTone(this.#stuckReason(said));
+        return;
+      }
+      this.#noteStageRebuilt();`,
+    ),
+    1,
+    "the stuck run's end",
+  );
 });

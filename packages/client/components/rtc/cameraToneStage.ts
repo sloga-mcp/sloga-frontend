@@ -42,6 +42,7 @@ import {
   type GlamLevels,
   type GlamWarp,
   glamFailureText,
+  glamShaderFailureText,
 } from "./glamPolicy";
 
 /** What the face-tracked look needs for the next draws. */
@@ -675,10 +676,22 @@ export class CameraToneStage {
   }
 
   /**
-   * What last made the plain draws stop until a rebuild (a GL error in a
-   * checked draw, a blur target that could not be resized, a rebuild that
-   * threw), as text for the same readout. "" when nothing has. Cleared by a
-   * rebuild that succeeds.
+   * What `draw()` was last refused with, as text for the same readout. One
+   * word per cause, so a run of refused draws can be told apart:
+   *
+   * - `context lost with no event`: the context says it is lost and no
+   *   `webglcontextlost` has arrived;
+   * - `source has no pixels`;
+   * - `draw error 0x<code>`: a checked draw left a GL error;
+   * - `plain redraw failed after glam draw error 0x<code>`, or
+   *   `context lost in a draw with the look`: a checked draw with the look
+   *   left a GL error and the frame could not be drawn again without it;
+   * - `a blur target is incomplete after a resize`;
+   * - `rebuild "<what it threw>"`.
+   *
+   * The first two end by themselves and are cleared by the next draw that
+   * is not refused at the door; the others stop every draw until a rebuild
+   * and are cleared by one that succeeds. "" when nothing has refused.
    */
   get lastError(): string {
     return this.#lastError;
@@ -730,8 +743,16 @@ export class CameraToneStage {
     const gl = this.#gl;
     this.#lastDrawUsedGlam = false;
     if (this.#destroyed || this.#lost || this.#needsRebuild) return false;
-    if (gl.isContextLost()) return false;
-    if (!sourceHasPixels(source)) return false;
+    if (gl.isContextLost()) {
+      this.#lastError = "context lost with no event";
+      return false;
+    }
+    if (!sourceHasPixels(source)) {
+      this.#lastError = "source has no pixels";
+      return false;
+    }
+    // Not refused at the door: what an earlier draw was refused with is over.
+    this.#lastError = "";
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.#sourceTexture);
@@ -811,6 +832,9 @@ export class CameraToneStage {
         if (gl.isContextLost() || !this.#redrawWithoutGlam(smooth, code)) {
           this.#needsRebuild = true;
           this.#hasFrame = false;
+          this.#lastError = gl.isContextLost()
+            ? "context lost in a draw with the look"
+            : `plain redraw failed after glam draw error 0x${code.toString(16)}`;
           return false;
         }
         return true;
@@ -875,7 +899,7 @@ export class CameraToneStage {
       } else {
         this.#glamBuildFailed = true;
         // The compiler's own words, without this file's prefix in front.
-        this.#glamFailure = `shader "${glamFailureText(
+        this.#glamFailure = `shader "${glamShaderFailureText(
           error instanceof Error
             ? error.message.replace("Camera tone stage: ", "")
             : error,

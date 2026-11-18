@@ -17992,9 +17992,8 @@ MUTATIONS += [
         id='camera-glam-frame-health-hides-thrown-frame',
         what='a frame loop that ended in a throw reads like one that is waiting for frames',
         file=GLAM_POLICY,
-        search="""  if (health.unfinished > 0) parts.push(`${health.unfinished} FRAME(S) THREW`);
-""",
-        replace="""""",
+        search="""  if (health.threw > 0) {""",
+        replace="""  if (health.threw > 1e9) {""",
         specs=[GLAM_POLICY_SPEC],
     ),
     # ---- the lines that record that text, held by the source pins ------------
@@ -18023,6 +18022,332 @@ MUTATIONS += [
 """,
         replace="""""",
         specs=[STATE_WIRING_SPEC],
+    ),
+]
+
+# --- The frame loop's guard, and what the readout says about it ---------------
+#
+# One throw anywhere in a frame used to end the frame loop: the tick called
+# the frame and then asked for the next one, with nothing around the call, and
+# the published picture stayed on its last frame for the rest of the call.
+# Both ticks now call the frame in a `try` and ask for the next one in its
+# `finally`. No spec can load the processor, so `stateWiring.test.ts` holds
+# the driver setup as TEXT (its "a frame that throws" test), with the limits
+# of every pin there: present and in its place, never what it does at
+# runtime. What it does at runtime was measured once by hand, in headless
+# Chromium, with a frame made to throw (see the lane report); nothing in this
+# suite repeats that.
+MUTATIONS += [
+    Mutation(
+        id='face-frame-rvfc-guard-removed',
+        what='the rVFC tick calls the frame with nothing around it, so one throw in a frame ends the loop and the published picture freezes',
+        file=FACE_PROCESSOR,
+        search="""        try {
+          this.#drawFrame();
+        } catch (e) {
+          this.#noteFrameThrew(e);
+        } finally {
+          this.#vfcId = video.requestVideoFrameCallback(tick);
+        }
+""",
+        replace="""        this.#drawFrame();
+        this.#vfcId = video.requestVideoFrameCallback(tick);
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-frame-raf-guard-removed',
+        what='the rAF tick calls the frame with nothing around it, so one throw in a frame ends the loop and the published picture freezes',
+        file=FACE_PROCESSOR,
+        search="""        try {
+          this.#drawFrame();
+        } catch (e) {
+          this.#noteFrameThrew(e);
+        } finally {
+          this.#rafId = requestAnimationFrame(tick);
+        }
+""",
+        replace="""        this.#drawFrame();
+        this.#rafId = requestAnimationFrame(tick);
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-frame-rvfc-next-frame-not-in-finally',
+        what='the rVFC tick asks for the next frame inside the try, after the frame, so a frame that throws is counted and the loop still ends',
+        file=FACE_PROCESSOR,
+        search="""          this.#drawFrame();
+        } catch (e) {
+          this.#noteFrameThrew(e);
+        } finally {
+          this.#vfcId = video.requestVideoFrameCallback(tick);
+        }
+""",
+        replace="""          this.#drawFrame();
+          this.#vfcId = video.requestVideoFrameCallback(tick);
+        } catch (e) {
+          this.#noteFrameThrew(e);
+        }
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-frame-raf-next-frame-not-in-finally',
+        what='the rAF tick asks for the next frame inside the try, after the frame, so a frame that throws is counted and the loop still ends',
+        file=FACE_PROCESSOR,
+        search="""          this.#drawFrame();
+        } catch (e) {
+          this.#noteFrameThrew(e);
+        } finally {
+          this.#rafId = requestAnimationFrame(tick);
+        }
+""",
+        replace="""          this.#drawFrame();
+          this.#rafId = requestAnimationFrame(tick);
+        } catch (e) {
+          this.#noteFrameThrew(e);
+        }
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-frame-rvfc-next-frame-never-asked',
+        what='the rVFC tick never asks for the next frame, so the loop draws one frame and stops',
+        file=FACE_PROCESSOR,
+        search="""        } finally {
+          this.#vfcId = video.requestVideoFrameCallback(tick);
+        }
+""",
+        replace="""        }
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-frame-raf-next-frame-never-asked',
+        what='the rAF tick never asks for the next frame, so the loop draws one frame and stops',
+        file=FACE_PROCESSOR,
+        search="""        } finally {
+          this.#rafId = requestAnimationFrame(tick);
+        }
+""",
+        replace="""        }
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-frame-timer-guard-removed',
+        what='a frame that throws on a hidden page is not counted, so the readout shows a frame loop with nothing wrong',
+        file=FACE_PROCESSOR,
+        search="""    try {
+      this.#drawFrame();
+    } catch (e) {
+      this.#noteFrameThrew(e);
+    }
+  };
+""",
+        replace="""    this.#drawFrame();
+  };
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-frame-throw-not-counted',
+        what='a frame that throws is swallowed without a count, so the readout cannot tell a loop that throws from one that draws',
+        file=FACE_PROCESSOR,
+        search="""    this.#framesThrew++;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-frame-throw-text-not-kept',
+        what='what a frame threw is logged and forgotten, and on a phone there is no log',
+        file=FACE_PROCESSOR,
+        search="""    this.#frameError = text;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-frame-throw-leaves-transform',
+        what='a frame that threw between setting a sticker transform and putting it back leaves it set, and every later frame draws the camera through it',
+        file=FACE_PROCESSOR,
+        search="""        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = 1;
+        ctx.filter = "none";
+      }
+    } catch {
+""",
+        replace="""      }
+    } catch {
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-frame-health-scheduled-forced-true',
+        what='the readout says a frame callback is pending whatever the ids say, so a loop that ended reads as one that runs',
+        file=FACE_PROCESSOR,
+        search="""      scheduled:
+        this.#vfcId !== undefined ||
+""",
+        replace="""      scheduled:
+        true ||
+        this.#vfcId !== undefined ||
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-frame-rvfc-tick-keeps-spent-id',
+        what='the rVFC tick keeps the id of the callback that just ran, so a loop that ended still reads as scheduled',
+        file=FACE_PROCESSOR,
+        search="""        this.#vfcId = undefined;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- a stuck tone stage, and where a tracker load stands --------------------
+    Mutation(
+        id='face-tone-stuck-throw-not-kept',
+        what='what the stage draw block threw is dropped, so a stuck tone stage that threw reads as "draws refused"',
+        file=FACE_PROCESSOR,
+        search="""          this.#stageDrawError = glamFailureText(e);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-load-phase-not-recorded',
+        what='the step a tracker load is in is never recorded, so a load whose request never answers reads "not started"',
+        file=FACE_PROCESSOR,
+        search="""    this.#loadPhase = phase;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-load-phase-between-check-and-gpu-create',
+        what='the load phase is recorded between the check and the GPU create, where nothing may sit',
+        file=FACE_PROCESSOR,
+        search="""      this.#noteLoad("gpu create", gen);
+      if (glamTrackerLoadMustWait(this.#trackerAsk(forGlam))) return "wait";
+""",
+        replace="""      if (glamTrackerLoadMustWait(this.#trackerAsk(forGlam))) return "wait";
+      this.#noteLoad("gpu create", gen);
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-held-phase-overwrites-running-load',
+        what='a frame that may not start a load overwrites the phase of the load that is running, so a hung request reads as a held gate',
+        file=FACE_PROCESSOR,
+        search="""      } else if (!this.#landmarkerInitInFlight) {""",
+        replace="""      } else {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='face-glam-gpu-error-never-cleared',
+        what="a tracker created on the GPU still shows the GPU error of an earlier load beside it",
+        file=FACE_PROCESSOR,
+        search="""        kit.gpuError = undefined;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='camera-ctl-leave-keeps-glam-gpu-error',
+        what="the end of a call forgets that the look failed but keeps the GPU error that came with it",
+        file=CAMERA_CTL,
+        search="""    this.#glamGpuError = "";
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the words of the readout (behaviour, `glamPolicy.test.ts`) --------------
+    Mutation(
+        id='camera-glam-frame-health-drops-thrown-text',
+        what='the readout counts the frames that threw and never says what they threw',
+        file=GLAM_POLICY,
+        search="""      health.threwText
+        ? `${health.threw} FRAME(S) THREW, last "${health.threwText}"`
+""",
+        replace="""      false
+        ? `${health.threw} FRAME(S) THREW, last "${health.threwText}"`
+""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-frame-health-driver-always-scheduled',
+        what='a frame loop that ended reads like one whose next callback is pending',
+        file=GLAM_POLICY,
+        search="""    health.scheduled || health.driver === "none\"""",
+        replace="""    true || health.driver === "none\"""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-failure-text-keeps-control-chars',
+        what='a NUL at the end of a GL info log reaches the readout',
+        file=GLAM_POLICY,
+        search="""    .replace(/[\\s\\p{Cc}]+/gu, " ")""",
+        replace="""    .replace(/\\s+/g, " ")""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-shader-text-keeps-both-ends',
+        what="a shader error keeps its start and its end, and the first error line, the one that says what is wrong, is cut in the middle",
+        file=GLAM_POLICY,
+        search="""  return glamFailureText(error, GLAM_SHADER_TEXT_MAX, "start");""",
+        replace="""  return glamFailureText(error, GLAM_SHADER_TEXT_MAX, "ends");""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-shader-text-cut-at-general-limit',
+        what='a shader error is cut at the general 140 characters, which the first error line does not fit in',
+        file=GLAM_POLICY,
+        search="""  return glamFailureText(error, GLAM_SHADER_TEXT_MAX, "start");""",
+        replace="""  return glamFailureText(error, GLAM_FAILURE_TEXT_MAX, "start");""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-load-held-gate-reads-hidden',
+        what='a load the publish gate holds back reads as held by a hidden page',
+        file=GLAM_POLICY,
+        search="""  if (a.gateHeld) return "held: gate";""",
+        replace="""  if (a.gateHeld) return "held: hidden";""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-load-text-drops-time',
+        what='the load phase is printed without how long it has lasted, so a request that never answers reads like one that just began',
+        file=GLAM_POLICY,
+        search="""  return `load: ${phase} ${s} s`;""",
+        replace="""  return `load: ${phase}`;""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-stuck-text-drops-throw',
+        what='a stuck tone stage whose draws threw reads as "draws refused"',
+        file=GLAM_POLICY,
+        search="""  if (a.threw) parts.push(`threw "${a.threw}"`);
+""",
+        replace="""""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-capability-text-no-reads-yes',
+        what='a capability check that answers no is printed as yes, so a refused device reads like a switch that is off',
+        file=GLAM_POLICY,
+        search="""    answer === undefined ? "unknown" : answer ? "yes" : "no";""",
+        replace="""    answer === undefined ? "unknown" : answer ? "yes" : "yes";""",
+        specs=[GLAM_POLICY_SPEC],
+    ),
+    Mutation(
+        id='camera-glam-load-error-no-cause',
+        what="a tracker load's error does not carry what the step rejected with as its cause",
+        file=GLAM_POLICY,
+        search="""      cause: reason,
+""",
+        replace="""""",
+        specs=[GLAM_POLICY_SPEC],
     ),
 ]
 

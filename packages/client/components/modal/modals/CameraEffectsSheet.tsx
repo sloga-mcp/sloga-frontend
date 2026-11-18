@@ -32,12 +32,15 @@ import {
   useVoice,
 } from "@revolt/rtc";
 import { TOUCH_UP_SWITCH_STRENGTH } from "@revolt/rtc/cameraTonePolicy";
+import { toneStageSupported } from "@revolt/rtc/cameraToneStage";
 import type { GlamState, GlamStats } from "@revolt/rtc/faceFilterProcessor";
 import {
   GLAM_SWITCH_STRENGTH,
   frameHealthText,
   glamBrowserToken,
+  glamCapabilityText,
   glamDelegateText,
+  glamLoadText,
 } from "@revolt/rtc/glamPolicy";
 import { useState } from "@revolt/state";
 import {
@@ -162,9 +165,20 @@ function describeFrames(stats: CameraToneStats | undefined): string {
   return stats.reason ? `${frames} · ${stats.reason}` : frames;
 }
 
+/** One capability check's answer right now; undefined if it cannot be asked. */
+function capability(check: () => boolean): boolean | undefined {
+  try {
+    return check();
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * What the readout cannot be read without: which browser engine this is,
- * and whether the phone app's check found the face tracker's files.
+ * whether the phone app's check found the face tracker's files, and what
+ * the capability checks answer right now, so that a look that is switched
+ * off and a look this device is refused do not read the same.
  */
 function describeEnvironment(): string {
   let browser = "browser unknown";
@@ -176,7 +190,12 @@ function describeEnvironment(): string {
     // Said as unknown
   }
 
-  return `${browser} · tracker files ${files}`;
+  const capabilities = glamCapabilityText({
+    tone: capability(cameraToneSupported),
+    glam: capability(cameraGlamSupported),
+    webgl2: capability(toneStageSupported),
+  });
+  return `${browser} · tracker files ${files} · ${capabilities}`;
 }
 
 /** Where the face-tracked look stands in the call, and its tracking numbers. */
@@ -193,6 +212,7 @@ function describeGlam(info: GlamInfo): string {
     `every ${stats.every}`,
     `delegate ${glamDelegateText(stats.delegate, stats.gpuError)}`,
     `init ${Math.round(stats.initMs)} ms`,
+    glamLoadText(stats.loadPhase, stats.loadPhaseMs),
   ].join(" · ");
 }
 

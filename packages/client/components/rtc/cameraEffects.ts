@@ -716,6 +716,12 @@ export class CameraEffectsController {
    */
   #glamReason = "";
   /**
+   * What the GPU try of the tracker load had failed with when the look
+   * failed, for the same readout. Kept and cleared with the reason, for the
+   * same cause: the processor that knew it can have been replaced.
+   */
+  #glamGpuError = "";
+  /**
    * The same for tone: why it last failed open in this call. Unlike
    * `#toneFailed` below it is not forgotten when a new processor takes the
    * slot, so the readout can still say what happened to the one before.
@@ -782,10 +788,11 @@ export class CameraEffectsController {
     this.#retuneFaceSoon();
     this.onToneFailed?.();
   };
-  readonly #forwardGlamFailed = (reason: string) => {
+  readonly #forwardGlamFailed = (reason: string, gpuError = "") => {
     const first = !this.#glamFailed;
     this.#glamFailed = true;
     if (first) this.#glamReason = reason;
+    if (first) this.#glamGpuError = gpuError;
     this.#retuneFaceSoon();
     if (first) this.onGlamFailed?.();
   };
@@ -1342,11 +1349,18 @@ export class CameraEffectsController {
     if (!face) return undefined;
     // After a failure the pipeline is no longer asked for the look, so it
     // would answer "off"; the failure is remembered here for the call, and
-    // so is the reason it gave
+    // so are the reason it gave and the GPU error that came with it (the
+    // pipeline's own, when it has one, is the newer)
     const stats = face.glamStats;
     return {
       state: this.#glamFailed ? "failed" : face.glamState,
-      stats: this.#glamReason ? { ...stats, reason: this.#glamReason } : stats,
+      stats: this.#glamReason
+        ? {
+            ...stats,
+            reason: this.#glamReason,
+            gpuError: stats.gpuError || this.#glamGpuError,
+          }
+        : stats,
     };
   }
 
@@ -1916,6 +1930,7 @@ export class CameraEffectsController {
     this.#watchdog?.reset();
     this.#glamFailed = false;
     this.#glamReason = "";
+    this.#glamGpuError = "";
     this.#toneReason = "";
   }
 }

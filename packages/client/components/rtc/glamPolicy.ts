@@ -1143,6 +1143,9 @@ export function glamProbeCapability(
 /** The longest failure text kept, in characters. */
 export const GLAM_FAILURE_TEXT_MAX = 140;
 
+/** The same for what a shader compiler or linker said. */
+export const GLAM_SHADER_TEXT_MAX = 300;
+
 /** The tracker library ends its errors with where in its source they arose. */
 const TRACKER_SOURCE_TRACE = "=== Source Location Trace";
 
@@ -1190,15 +1193,18 @@ function glamRawFailureText(error: unknown): string {
 /**
  * Anything that was thrown, as one short line for the readout: the message
  * (with the error's name when it has one of its own), on one line, without
- * the tracker library's source trace, and without double quotes, since the
- * readout puts the text in a pair of them. Never longer than `max`: a longer
- * text keeps its start and its end, because the tracker's errors open with
- * a long node name and say what happened last. Never throws and never
+ * the tracker library's source trace, without control characters (a GL info
+ * log can end in a NUL), and without double quotes, since the readout puts
+ * the text in a pair of them. Never longer than `max`: a longer text keeps
+ * its start and its end, because the tracker's errors open with a long node
+ * name and say what happened last. With `keep` "start" it keeps its start
+ * only, for a text that says what happened first. Never throws and never
  * returns an empty text.
  */
 export function glamFailureText(
   error: unknown,
   max = GLAM_FAILURE_TEXT_MAX,
+  keep: "ends" | "start" = "ends",
 ): string {
   let text: string;
   try {
@@ -1208,13 +1214,26 @@ export function glamFailureText(
   }
   const trace = text.indexOf(TRACKER_SOURCE_TRACE);
   if (trace !== -1) text = text.slice(0, trace);
-  text = text.replace(/\s+/g, " ").replaceAll('"', "'").trim();
+  text = text
+    .replace(/[\s\p{Cc}]+/gu, " ")
+    .replaceAll('"', "'")
+    .trim();
   if (!text) text = "no message";
   const limit = Number.isFinite(max) && max >= 8 ? Math.floor(max) : 8;
   if (text.length <= limit) return text;
+  if (keep === "start") return `${text.slice(0, limit - 1)}…`;
   const head = Math.floor((limit - 1) * 0.4);
   const tail = limit - 1 - head;
   return `${text.slice(0, head)}…${text.slice(text.length - tail)}`;
+}
+
+/**
+ * What a shader compiler or linker said, for the readout. Its info log names
+ * the first error first and can run to many lines, so this keeps the start,
+ * and more of it than other failure texts get.
+ */
+export function glamShaderFailureText(error: unknown): string {
+  return glamFailureText(error, GLAM_SHADER_TEXT_MAX, "start");
 }
 
 /**
@@ -1232,7 +1251,9 @@ export class GlamLoadError extends Error {
   reason: unknown;
 
   constructor(site: GlamLoadSite, reason: unknown) {
-    super(`face tracker ${site}: ${glamFailureText(reason)}`);
+    super(`face tracker ${site}: ${glamFailureText(reason)}`, {
+      cause: reason,
+    });
     this.name = "GlamLoadError";
     this.site = site;
     this.reason = reason;
@@ -1284,6 +1305,96 @@ export function glamDelegateText(
 }
 
 /**
+ * Where a tracker load stands, for the readout. "waiting" alone reads the
+ * same for a load that is running, one whose request never answers, and one
+ * that may not start.
+ *
+ * - "not started": no load has been asked for since the pipeline was built
+ *   or since the last tracker was let go.
+ * - "import", "fileset", "gpu create", "cpu create": the step a load is in.
+ *   A step that never ends stays here with its time growing.
+ * - "held: gate", "held: hidden": a frame wanted to start a load and may
+ *   not: the publish gate is held, or the page is hidden.
+ * - "wait": a load may not start or go on for another reason (the look is
+ *   not wanted any more, was shed or has failed), or a load ended at one of
+ *   its checks without creating a tracker and the next has not begun.
+ * - "loaded", "failed": how the last load ended.
+ */
+export type GlamLoadPhase =
+  | "not started"
+  | "import"
+  | "fileset"
+  | "gpu create"
+  | "cpu create"
+  | "held: gate"
+  | "held: hidden"
+  | "wait"
+  | "loaded"
+  | "failed";
+
+/**
+ * The phase of a load that may not start, from the facts the tracker rules
+ * were asked with. The gate is named before the page: it is the one that
+ * can stay held on a page the user is looking at.
+ */
+export function glamLoadHeldPhase(a: {
+  gateHeld: boolean;
+  hidden: boolean;
+}): GlamLoadPhase {
+  if (a.gateHeld) return "held: gate";
+  if (a.hidden) return "held: hidden";
+  return "wait";
+}
+
+/**
+ * A load phase and how long it has lasted, as one part of the readout:
+ * `load: gpu create 23 s`. Whole seconds, counted down. A tracker that is
+ * loaded has no time worth reading.
+ */
+export function glamLoadText(phase: GlamLoadPhase, ms: number): string {
+  if (phase === "loaded") return "load: loaded";
+  const s = Math.floor(Math.max(0, Number.isFinite(ms) ? ms : 0) / 1000);
+  return `load: ${phase} ${s} s`;
+}
+
+/**
+ * Why the tone stage's draws were refused for too long, for the readout:
+ * what the stage last stopped on, what the frame's own draw block last
+ * threw, and whether the stage drew black. "draws refused" is all that is
+ * left to say when none of them said anything.
+ *
+ *   tone: stuck (source has no pixels)
+ *   tone: stuck (draw error 0x502, threw "<text>", drew black)
+ */
+export function glamToneStuckText(a: {
+  stageSaid: string;
+  threw: string;
+  blind: boolean;
+}): string {
+  const parts: string[] = [];
+  if (a.stageSaid) parts.push(a.stageSaid);
+  if (a.threw) parts.push(`threw "${a.threw}"`);
+  if (!parts.length) parts.push("draws refused");
+  if (a.blind) parts.push("drew black");
+  return `tone: stuck (${parts.join(", ")})`;
+}
+
+/**
+ * What the capability checks answer right now, as one part of the readout,
+ * so a look that is switched off and a look this device is refused read
+ * differently. `undefined` is a check that could not be asked.
+ */
+export function glamCapabilityText(a: {
+  tone: boolean | undefined;
+  glam: boolean | undefined;
+  webgl2: boolean | undefined;
+}): string {
+  const word = (answer: boolean | undefined): string =>
+    answer === undefined ? "unknown" : answer ? "yes" : "no";
+  return `tone ${word(a.tone)} · glam ${word(a.glam)} · webgl2 ${word(a.webgl2)}`;
+}
+
+/**
  * The browser engine and its version out of a user agent, for the readout:
  * `Chrome/142.0.7444.102`, with ` wv` after it for an Android System
  * WebView (which marks itself `; wv)`). Safari only states `Version/`.
@@ -1328,12 +1439,19 @@ export interface FrameHealth {
   processor: number;
   /** How long ago this pipeline was built, in ms. */
   upMs: number;
-  /** What calls the frames: none means nothing is scheduled. */
+  /** What the pipeline has set up to call its frames: none means nothing. */
   driver: "rvfc" | "raf" | "timer" | "none";
+  /**
+   * A call from that driver is pending right now. False with a driver named
+   * means the loop has ended: its last callback ran and asked for no next.
+   */
+  scheduled: boolean;
   /** Frames drawn to the end since the build. */
   frames: number;
-  /** Frames that began and never reached their end: each one threw. */
-  unfinished: number;
+  /** Frames that threw since the build, wherever in the frame it was. */
+  threw: number;
+  /** What the last of them threw; "" when none has. */
+  threwText: string;
   /** How long ago the last frame was drawn, in ms; -1 before the first. */
   frameAgeMs: number;
   /** Why a frame asked for now would draw nothing; "" when it would draw. */
@@ -1348,12 +1466,20 @@ function seconds(ms: number): string {
 export function frameHealthText(health: FrameHealth): string {
   const parts = [
     `proc #${health.processor} up ${seconds(health.upMs)}`,
-    `driver ${health.driver}`,
+    health.scheduled || health.driver === "none"
+      ? `driver ${health.driver}`
+      : `driver ${health.driver} NOT SCHEDULED`,
     health.frameAgeMs < 0
       ? `frames ${health.frames} (none yet)`
       : `frames ${health.frames} (last ${seconds(health.frameAgeMs)} ago)`,
   ];
-  if (health.unfinished > 0) parts.push(`${health.unfinished} FRAME(S) THREW`);
+  if (health.threw > 0) {
+    parts.push(
+      health.threwText
+        ? `${health.threw} FRAME(S) THREW, last "${health.threwText}"`
+        : `${health.threw} FRAME(S) THREW`,
+    );
+  }
   if (health.idle) parts.push(`idle: ${health.idle}`);
   return parts.join(" · ");
 }

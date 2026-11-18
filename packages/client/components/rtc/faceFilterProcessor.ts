@@ -79,7 +79,12 @@
  * `toneStats().reason`) and handed to `onGlamFailed` / `onToneFailed`, and
  * `toneStats().frame` says how the frame loop is doing. That is for the
  * hidden readout in the effects panel, the only output there is on a phone:
- * recorded, never read back to decide anything.
+ * recorded, never read back to decide anything. The same goes for where a
+ * tracker load stands (`glamStats.loadPhase`).
+ *
+ * A frame that throws does not end the frame loop: both ticks ask for the
+ * next frame whatever the frame did, and the throw is counted and kept for
+ * that readout (`#noteFrameThrew`).
  */
 import type { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 
@@ -125,15 +130,18 @@ import {
   type FrameHealth,
   type GlamGeometry,
   type GlamLevels,
+  type GlamLoadPhase,
   GlamBudget,
   GlamDetectLatch,
   glamFailureText,
   glamGeometry,
   glamLevels,
   glamLoadFailedAt,
+  glamLoadHeldPhase,
   glamMayCreateTracker,
   glamPresence,
   GlamRecovery,
+  glamToneStuckText,
   glamTrackerFailure,
   glamTrackerLoadMustWait,
   LandmarkSmoother,
@@ -228,9 +236,10 @@ export interface FaceFilterConfig {
    * The look cannot run on this processor. Called at most once per
    * processor; from then on it behaves as if `glam` were 0. Stickers, tone
    * and the published picture are not affected. `reason` is a short text
-   * for the diagnostic readout.
+   * for the diagnostic readout, and so is `gpuError`: what the GPU try of
+   * the tracker load failed with, "" when it did not.
    */
-  onGlamFailed?: (reason: string) => void;
+  onGlamFailed?: (reason: string, gpuError: string) => void;
 }
 
 /**
@@ -262,6 +271,9 @@ export interface GlamStats {
    * try then worked. "" when it did not fail or was not made.
    */
   gpuError: string;
+  /** Where the tracker load stands, and for how long it has, in ms. */
+  loadPhase: GlamLoadPhase;
+  loadPhaseMs: number;
 }
 
 export interface CameraToneStats {
@@ -518,6 +530,16 @@ export class FaceFilterProcessor {
   /** Frames drawn to the end, and when the last one was. */
   #framesDone = 0;
   #lastFrameAt = -1;
+  /** Frames that threw, and what the last of them threw. */
+  #framesThrew = 0;
+  #frameError = "";
+  /** What the stage draw block last threw, in the current run of refusals. */
+  #stageDrawError = "";
+  /** Where the tracker load stands, and when it got there (`#noteLoad`). */
+  #loadPhase: GlamLoadPhase = "not started";
+  #loadPhaseAt = 0;
+  /** What `#scheduleFrame` last set up to call the frames. */
+  #driver: FrameHealth["driver"] = "none";
 
   // --- This frame callback only (reset at the top of every frame) ---
   /** Owns "the one detect a frame callback may run has run". */
@@ -580,17 +602,16 @@ export class FaceFilterProcessor {
     return {
       processor: this.#serial,
       upMs: now - this.#builtAt,
-      driver:
-        this.#vfcId !== undefined
-          ? "rvfc"
-          : this.#rafId !== undefined
-            ? "raf"
-            : this.#timerId !== undefined
-              ? "timer"
-              : "none",
+      driver: this.#driver,
+      // A tick drops its id when it runs and stores the next one when it
+      // has asked for it, so an id in hand is a callback that is pending.
+      scheduled:
+        this.#vfcId !== undefined ||
+        this.#rafId !== undefined ||
+        this.#timerId !== undefined,
       frames: this.#framesDone,
-      // A frame that began and did not reach its end threw on the way.
-      unfinished: Math.max(0, this.#frameCounter - this.#framesDone),
+      threw: this.#framesThrew,
+      threwText: this.#frameError,
       frameAgeMs: this.#lastFrameAt < 0 ? -1 : now - this.#lastFrameAt,
       idle: this.#frameIdleReason(),
     };
@@ -638,6 +659,8 @@ export class FaceFilterProcessor {
       // Tone failing open ends the look too, with no reason of the look's.
       reason: this.#glamReason || (this.#toneFailed ? "tone failed" : ""),
       gpuError: this.#trackerKit?.gpuError ?? "",
+      loadPhase: this.#loadPhase,
+      loadPhaseMs: performance.now() - this.#loadPhaseAt,
     };
   }
 
@@ -719,6 +742,10 @@ export class FaceFilterProcessor {
     this.#builtAt = performance.now();
     this.#framesDone = 0;
     this.#lastFrameAt = -1;
+    this.#framesThrew = 0;
+    this.#frameError = "";
+    // A pipeline with no load behind it counts "not started" from here.
+    if (this.#loadPhase === "not started") this.#loadPhaseAt = this.#builtAt;
     this.#bypass = false;
     this.#pageMode = "frame";
     this.#drawnMediaTime = -1;
@@ -863,25 +890,76 @@ export class FaceFilterProcessor {
     // The stall clock of the hidden timer starts with the driver.
     this.#lastTickAt = performance.now();
     if (document.visibilityState === "hidden") {
+      this.#driver = "timer";
       this.#timerId = setInterval(this.#onTimer, HIDDEN_FRAME_INTERVAL_MS);
       return;
     }
+    // Both ticks ask for the next frame in a `finally`. A frame that throws
+    // is counted (`#noteFrameThrew`) and the loop goes on; without the guard
+    // one throw ends the loop and the published picture stays on its last
+    // frame for the rest of the call. The next frame is asked for once, as
+    // it is after a frame that drew, so a frame that throws every time runs
+    // at the frame rate and no faster. A tick drops its id when it runs: a
+    // loop that did end reads as not scheduled (`#frameHealth`).
     if ("requestVideoFrameCallback" in video) {
       this.#vfcDriver = true;
+      this.#driver = "rvfc";
       const tick = (_now: number, metadata: VideoFrameCallbackMetadata) => {
+        this.#vfcId = undefined;
         if (this.#stopped) return;
         this.#presentedFrames = metadata.presentedFrames;
-        this.#drawFrame();
-        this.#vfcId = video.requestVideoFrameCallback(tick);
+        try {
+          this.#drawFrame();
+        } catch (e) {
+          this.#noteFrameThrew(e);
+        } finally {
+          this.#vfcId = video.requestVideoFrameCallback(tick);
+        }
       };
       this.#vfcId = video.requestVideoFrameCallback(tick);
     } else {
+      this.#driver = "raf";
       const tick = () => {
+        this.#rafId = undefined;
         if (this.#stopped) return;
-        this.#drawFrame();
-        this.#rafId = requestAnimationFrame(tick);
+        try {
+          this.#drawFrame();
+        } catch (e) {
+          this.#noteFrameThrew(e);
+        } finally {
+          this.#rafId = requestAnimationFrame(tick);
+        }
       };
       this.#rafId = requestAnimationFrame(tick);
+    }
+  }
+
+  /**
+   * A frame threw. It is counted, and what it threw is kept for the
+   * diagnostic readout; asking for the next frame is the tick's job. The 2D
+   * context is put back to its defaults: the frame can have stopped between
+   * setting a transform, an alpha or a filter and putting it back, and the
+   * frames after it would draw the camera through what was left. Never
+   * throws.
+   */
+  #noteFrameThrew(e: unknown) {
+    this.#framesThrew++;
+    const text = glamFailureText(e);
+    // Logged when it is new: a frame that throws every time would fill the
+    // log at the frame rate.
+    if (text !== this.#frameError) {
+      console.error("face-filter: a frame threw", e);
+    }
+    this.#frameError = text;
+    try {
+      const ctx = this.#ctx;
+      if (ctx) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = 1;
+        ctx.filter = "none";
+      }
+    } catch {
+      // Nothing more can be done for this frame.
     }
   }
 
@@ -900,6 +978,7 @@ export class FaceFilterProcessor {
       this.#timerId = undefined;
     }
     this.#vfcDriver = false;
+    this.#driver = "none";
   }
 
   /**
@@ -932,7 +1011,13 @@ export class FaceFilterProcessor {
       this.#resetFpsWindow();
       return;
     }
-    this.#drawFrame();
+    // The interval fires again whatever this frame does; the guard is here
+    // so a throw is counted like one on a visible page.
+    try {
+      this.#drawFrame();
+    } catch (e) {
+      this.#noteFrameThrew(e);
+    }
   };
 
   /** Swap the frame driver when the page is hidden or shown. */
@@ -1116,9 +1201,11 @@ export class FaceFilterProcessor {
             const luma = stage.sampleLuma();
             if (luma !== undefined) this.#heldLuma = luma;
           }
-        } catch {
+        } catch (e) {
           // Fail open for this frame; a run of these ends in #noteStageDraw.
           drew = false;
+          // For the diagnostic readout: what a stuck run was stuck on.
+          this.#stageDrawError = glamFailureText(e);
         }
         ctx.filter = "none";
         this.#noteStageDraw(drew, start, hidden);
@@ -1349,6 +1436,10 @@ export class FaceFilterProcessor {
       // is queued: a frame that may not start it leaves it to a later one.
       if (glamMayCreateTracker(this.#trackerAsk(true))) {
         this.#ensureLandmarker(true);
+      } else if (!this.#landmarkerInitInFlight) {
+        // For the diagnostic readout: why no load starts. The facts are the
+        // ones the rule was just asked with.
+        this.#noteLoad(glamLoadHeldPhase(this.#trackerArgs));
       }
     } else {
       const args = this.#glamDetectArgs;
@@ -1534,7 +1625,7 @@ export class FaceFilterProcessor {
     this.#endGlam();
     if (this.#disposed) return;
     try {
-      this.#cfg.onGlamFailed?.(why);
+      this.#cfg.onGlamFailed?.(why, this.#trackerKit?.gpuError ?? "");
     } catch (e) {
       console.error("face-filter: onGlamFailed threw", e);
     }
@@ -1564,6 +1655,7 @@ export class FaceFilterProcessor {
       this.#glamRecreateInFlight = false;
       this.#trackerGen++;
       this.#landmarkerInitInFlight = false;
+      this.#noteLoad("not started");
     }
     // Stickers lost their tracker to that second load: give it back.
     if (pending) this.#ensureLandmarker();
@@ -1668,6 +1760,7 @@ export class FaceFilterProcessor {
     this.#blindCheckDue = true;
     this.#glamBlindCheckDue = true;
     this.#missSince = -1;
+    this.#stageDrawError = "";
   }
 
   /**
@@ -1720,6 +1813,8 @@ export class FaceFilterProcessor {
     this.#stuckLadder.onDraw(drew, now);
     if (drew || hidden) {
       this.#missSince = -1;
+      // A draw that worked ends the run the kept throw belongs to.
+      if (drew) this.#stageDrawError = "";
       return;
     }
     if (this.#missSince < 0) {
@@ -1728,21 +1823,32 @@ export class FaceFilterProcessor {
     }
     if (now - this.#missSince < TONE_STUCK_MS) return;
     this.#missSince = -1;
+    // Read before the rebuild: one that fails puts its own word in place of
+    // the one the draws were refused with.
+    const said = this.#stage?.lastError ?? "";
     if (this.#stuckLadder.onLost() === "fail-open" || !this.#stage?.rebuild()) {
-      this.#failTone(this.#stuckReason());
+      this.#failTone(this.#stuckReason(said));
       return;
     }
     this.#noteStageRebuilt();
   }
 
   /**
-   * Why draws were refused for too long, for the diagnostic readout: the
-   * stage drew black, or what the stage last stopped on, when it said.
+   * Why draws were refused for too long, for the diagnostic readout: what
+   * the stage last stopped on (`before` a rebuild that was tried, and after
+   * it when that changed it), what the draw block last threw, and whether
+   * the stage drew black. Worded by `glamToneStuckText`.
    */
-  #stuckReason(): string {
-    const stageSaid = this.#stage?.lastError;
-    const blind = this.#stageBlind ? ", drew black" : "";
-    return `tone: stuck (${stageSaid || "draws refused"}${blind})`;
+  #stuckReason(before: string): string {
+    const after = this.#stage?.lastError ?? "";
+    return glamToneStuckText({
+      stageSaid:
+        before && after && before !== after
+          ? `${before}, then ${after}`
+          : after || before,
+      threw: this.#stageDrawError,
+      blind: this.#stageBlind,
+    });
   }
 
   /** Release the stage (no longer needed, failed, or teardown). */
@@ -1756,6 +1862,7 @@ export class FaceFilterProcessor {
     // A stage built later starts without a look.
     this.#glamSet = false;
     this.#missSince = -1;
+    this.#stageDrawError = "";
     this.#activeStages.length = 0;
     this.#resetMeter();
   }
@@ -1979,11 +2086,13 @@ export class FaceFilterProcessor {
         // Not created and not failed. Nothing is queued and no timer runs:
         // the next frame that may start a load starts one. A second load
         // that had to wait is still owed, and its allowance is not spent.
+        this.#noteLoad("wait");
         if (recreate) this.#glamRecreateDue = true;
         return;
       }
       if (recreate) this.#glamRecovery.noteRecreated(!!made);
       if (!made) {
+        this.#noteLoad("failed");
         // Each user of the tracker fails on its own account.
         if (!forGlam || wantsLandmarks(this.#cfg)) this.#failLandmarker();
         if (!this.#disposed && this.#glamRequested()) {
@@ -2002,14 +2111,17 @@ export class FaceFilterProcessor {
       // during the ~1s init is NOT staleness — discarding on #cfgGen would
       // chain throwaway 3.7MB model re-inits on every slider tick.
       if (this.#disposed) {
+        this.#noteLoad("not started");
         this.#closeTracker(made.tracker);
         return;
       }
       if (!wantsLandmarks(this.#cfg) && !this.#wantsGlam()) {
         // Config dropped to look-only while we were initializing.
+        this.#noteLoad("not started");
         this.#closeTracker(made.tracker);
         return;
       }
+      this.#noteLoad("loaded");
       this.#landmarker = made.tracker;
       this.#trackerDelegate = made.delegate;
       this.#trackerInitMs = made.ms;
@@ -2032,12 +2144,18 @@ export class FaceFilterProcessor {
    * set are kept, so the load that follows asks again at once.
    */
   async #createLandmarker(forGlam: boolean): Promise<CreatedTracker | "wait"> {
+    // The load this call belongs to (`#ensureLandmarker` has just numbered
+    // it): the step it is in is recorded for the diagnostic readout, and a
+    // load that was abandoned records nothing.
+    const gen = this.#trackerGen;
     let kit = this.#trackerKit;
     if (!kit) {
+      this.#noteLoad("import", gen);
       const { FaceLandmarker: FL, FilesetResolver: resolver } =
         await import("@mediapipe/tasks-vision").catch(
           glamLoadFailedAt("import"),
         );
+      this.#noteLoad("fileset", gen);
       const fileset = await resolver
         .forVisionTasks(`${MEDIAPIPE_BASE}/wasm`)
         .catch(glamLoadFailedAt("fileset"));
@@ -2058,12 +2176,17 @@ export class FaceFilterProcessor {
     if (trackerCpuForced()) kit.gpuFailed = true;
     const began = performance.now();
     if (!kit.gpuFailed) {
+      // The step is recorded before the check, so that nothing at all sits
+      // between the check and the create.
+      this.#noteLoad("gpu create", gen);
       if (glamTrackerLoadMustWait(this.#trackerAsk(forGlam))) return "wait";
       try {
         const tracker = await kit.FL.createFromOptions(
           kit.fileset,
           options("GPU"),
         );
+        // What an earlier load's GPU try failed with is not this tracker's.
+        kit.gpuError = undefined;
         return { tracker, delegate: "GPU", ms: performance.now() - began };
       } catch (e) {
         console.warn("face-filter: GPU delegate failed, retrying CPU", e);
@@ -2071,6 +2194,7 @@ export class FaceFilterProcessor {
       }
     }
     // The GPU try can have taken a while too: ask again before the CPU one.
+    this.#noteLoad("cpu create", gen);
     if (glamTrackerLoadMustWait(this.#trackerAsk(forGlam))) {
       // The load that follows goes straight to the CPU.
       kit.gpuFailed = true;
@@ -2108,7 +2232,21 @@ export class FaceFilterProcessor {
   #releaseLandmarker() {
     const tracker = this.#landmarker;
     this.#landmarker = undefined;
+    // For the diagnostic readout: the next load has not started.
+    if (tracker) this.#noteLoad("not started");
     this.#closeTracker(tracker);
+  }
+
+  /**
+   * For the diagnostic readout: the tracker load entered `phase`. A load
+   * that was abandoned (`gen` is not the current load's) records nothing,
+   * and a phase that is entered again while it lasts keeps its first time.
+   * Recorded only: nothing reads it to decide anything.
+   */
+  #noteLoad(phase: GlamLoadPhase, gen = this.#trackerGen) {
+    if (gen !== this.#trackerGen || phase === this.#loadPhase) return;
+    this.#loadPhase = phase;
+    this.#loadPhaseAt = performance.now();
   }
 
   /**

@@ -234,8 +234,11 @@ EXPECTED=(
   # raises the slow notice once per call, a lost one the failed notice). 112
   # with two more pins over cameraEffects.ts: where tone work is offered (the
   # platform rule asked before the WebGL2 probe) and the tone watchdog's
-  # scope (a reset leaves it alone, only the leave re-arms it).
-  "components/rtc/stateWiring.test.ts 121 0"
+  # scope (a reset leaves it alone, only the leave re-arms it). 123 with two
+  # pins over faceFilterProcessor.ts: the frame loop's guard (a frame that
+  # throws is counted and the tick still asks for the next one) and what a
+  # stuck tone stage records.
+  "components/rtc/stateWiring.test.ts 123 0"
   # The AFK channel and its merge with member moves (FE-2). Before it this
   # gate ran NO AFK spec, and none of the ladder that decides whether a
   # client follows a move. memberGate's opt-in skip is not in its row: see
@@ -274,11 +277,14 @@ EXPECTED=(
   # 121: its tracker-file pins changed inside the one test they were in),
   # 125 with the failure text of the diagnostic readout (stateWiring stays at
   # 121 again: the lines that record that text are pinned inside two tests
-  # that were there); the tone stage's source pins (the shaders that
-  # must not change when Glam is off) at 6.
+  # that were there), 131 with the readout's second round (control
+  # characters, the shader text, the load phase, the stuck-stage words and
+  # the capability answers; stateWiring's own count moved for this one, see
+  # its row); the tone stage's source pins (the shaders that must not change
+  # when Glam is off) at 6.
   "components/rtc/faceFilterPolicy.test.ts 32 0"
   "components/rtc/cameraTonePolicy.test.ts 55 0"
-  "components/rtc/glamPolicy.test.ts 125 0"
+  "components/rtc/glamPolicy.test.ts 131 0"
   "components/rtc/cameraToneStageSource.test.ts 6 0"
   # The server's ring length, read from the root fetch.
   "components/rtc/serverRingLength.test.ts 17 0"
