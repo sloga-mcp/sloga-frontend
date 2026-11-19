@@ -271,6 +271,11 @@ export interface GlamStats {
    * try then worked. "" when it did not fail or was not made.
    */
   gpuError: string;
+  /**
+   * How long ago the tracker last found a face, in ms; `undefined` when it
+   * has found none since the look last came on.
+   */
+  faceAgoMs: number | undefined;
   /** Where the tracker load stands, and for how long it has, in ms. */
   loadPhase: GlamLoadPhase;
   loadPhaseMs: number;
@@ -468,8 +473,11 @@ export class FaceFilterProcessor {
   #glamGeometry: GlamGeometry | undefined;
   /** Width / height of the frame `#glamGeometry` was measured on. */
   #glamAspect = 0;
-  /** When the face behind `#glamGeometry` was seen. */
-  #glamSeenAt = 0;
+  /**
+   * When the face behind `#glamGeometry` was seen; -Infinity = not since
+   * the look last came on (only the diagnostic readout tells the two apart).
+   */
+  #glamSeenAt = -Infinity;
   /** When a detect last ran while the look was on; -Infinity = never. */
   #glamDetectAt = -Infinity;
   /** The stage holds a look: the last `setGlam` was not null. */
@@ -650,6 +658,8 @@ export class FaceFilterProcessor {
   /** Numbers for the diagnostic line. */
   get glamStats(): GlamStats {
     const stats = this.#glamBudget.stats();
+    // The frame clock: `#glamSeenAt` is a frame's `performance.now()`.
+    const seenAt = this.#glamSeenAt;
     return {
       detectMeanMs: stats.mean,
       detectMaxMs: stats.max,
@@ -659,6 +669,10 @@ export class FaceFilterProcessor {
       // Tone failing open ends the look too, with no reason of the look's.
       reason: this.#glamReason || (this.#toneFailed ? "tone failed" : ""),
       gpuError: this.#trackerKit?.gpuError ?? "",
+      faceAgoMs:
+        this.#glamLive && Number.isFinite(seenAt)
+          ? Math.max(0, performance.now() - seenAt)
+          : undefined,
       loadPhase: this.#loadPhase,
       loadPhaseMs: performance.now() - this.#loadPhaseAt,
     };
@@ -1427,6 +1441,10 @@ export class FaceFilterProcessor {
       this.#shedGlam();
       return false;
     }
+    // The look is coming on: for the readout, no face has been seen yet.
+    // Nothing is drawn from this time until a face sets it again (the look
+    // was cleared when it went off).
+    if (!this.#glamLive) this.#glamSeenAt = -Infinity;
     this.#glamLive = true;
     if (recover) this.#recreateTracker();
 

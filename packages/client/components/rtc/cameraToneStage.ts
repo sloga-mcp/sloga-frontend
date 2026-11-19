@@ -39,7 +39,9 @@
 import { type ToneConfig, meanLuma } from "./cameraTonePolicy";
 import {
   type GlamBox,
+  type GlamEye,
   type GlamLevels,
+  type GlamPush,
   type GlamWarp,
   glamFailureText,
   glamShaderFailureText,
@@ -78,11 +80,16 @@ const MAX_GAIN = 4;
 const MAX_BRIGHTNESS = 4;
 
 /**
- * Upper bounds applied in `setGlam`; the policy owns the real ranges. The
- * two warp bounds also keep the warp from folding the picture over itself.
+ * Upper bounds applied in `setGlam`; the policy owns the real ranges. Each
+ * warp bound keeps one magnify or one push from folding the picture over
+ * itself; keeping pushes that overlap from adding up to a fold is the
+ * policy's job (its levels and radii).
  */
-const MAX_GLAM_EYE = 0.2;
-const MAX_GLAM_SLIM = 0.12;
+const MAX_GLAM_EYE = 0.3;
+const MAX_GLAM_MOUTH = 0.3;
+const MAX_GLAM_SLIM = 0.3;
+const MAX_GLAM_CHIN = 0.3;
+const MAX_GLAM_NOSE = 0.3;
 const MAX_GLAM_WARM = 0.15;
 /** Limits for values the shader divides by. Radii are in frame heights. */
 const MIN_GLAM_RADIUS = 1e-4;
@@ -193,8 +200,8 @@ void main() {
  *
  * Warp. This shader picks, for each output pixel, where to read the source.
  * To make the picture content move along a direction, it reads from the
- * opposite side: `uv - move`. To make an eye look larger, it reads closer to
- * the eye's centre. All shifts are summed from the unwarped position, faded
+ * opposite side: `uv - move`. To make an eye or the mouth look larger, it
+ * reads closer to its centre. All shifts are summed from the unwarped position, faded
  * to nothing over the last 3% before a frame edge, and limited to half the
  * distance to the nearest edge on each axis, so a read never leaves 0..1 and
  * no clamped streak can appear.
@@ -228,12 +235,12 @@ uniform float uGlamSmooth;
 uniform float uLips;
 uniform float uBlush;
 uniform float uLid;
-uniform float uEye;
-uniform float uSlim;
 uniform float uWarm;
-uniform vec3 uEyes[2];
-uniform vec4 uJaw[4];
-uniform float uJawR[4];
+uniform vec3 uMag[3];
+uniform float uMagAmt[3];
+uniform vec4 uPush[8];
+uniform float uPushR[8];
+uniform float uPushAmt[8];
 in vec2 vUv;
 out vec4 outColor;
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
@@ -255,14 +262,14 @@ void main() {
   vec2 uv = vec2(vUv.x, 1.0 - vUv.y);
   vec2 scale = vec2(uAspect, 1.0);
   vec2 shift = vec2(0.0);
-  for (int i = 0; i < 2; i++) {
-    vec2 toCenter = uEyes[i].xy - uv;
-    shift += toCenter * (uEye * bump(toCenter * scale, uEyes[i].z));
+  for (int i = 0; i < 3; i++) {
+    vec2 toCenter = uMag[i].xy - uv;
+    shift += toCenter * (uMagAmt[i] * bump(toCenter * scale, uMag[i].z));
   }
-  for (int i = 0; i < 4; i++) {
-    float reach = bump((uv - uJaw[i].xy) * scale, uJawR[i]);
-    float amount = uSlim * uJawR[i] * reach;
-    shift -= vec2(uJaw[i].z / uAspect, uJaw[i].w) * amount;
+  for (int i = 0; i < 8; i++) {
+    float reach = bump((uv - uPush[i].xy) * scale, uPushR[i]);
+    float amount = uPushAmt[i] * uPushR[i] * reach;
+    shift -= vec2(uPush[i].z / uAspect, uPush[i].w) * amount;
   }
   vec2 room = min(uv, 1.0 - uv);
   shift *= uPresence * smoothstep(0.0, EDGE_FADE, min(room.x, room.y));
@@ -424,12 +431,12 @@ interface GlamUniforms {
   lips: WebGLUniformLocation | null;
   blush: WebGLUniformLocation | null;
   lid: WebGLUniformLocation | null;
-  eye: WebGLUniformLocation | null;
-  slim: WebGLUniformLocation | null;
   warm: WebGLUniformLocation | null;
-  eyes: WebGLUniformLocation | null;
-  jaw: WebGLUniformLocation | null;
-  jawRadius: WebGLUniformLocation | null;
+  mag: WebGLUniformLocation | null;
+  magAmount: WebGLUniformLocation | null;
+  push: WebGLUniformLocation | null;
+  pushRadius: WebGLUniformLocation | null;
+  pushAmount: WebGLUniformLocation | null;
 }
 
 /**
@@ -550,16 +557,18 @@ export class CameraToneStage {
   #glamLips = 0;
   #glamBlush = 0;
   #glamLid = 0;
-  #glamEye = 0;
-  #glamSlim = 0;
   #glamWarm = 0;
   /** x, y, w, h in video UV. */
   readonly #glamBox = new Float32Array(4);
-  /** Two eyes: x, y, r. */
-  readonly #glamEyes = new Float32Array(6);
-  /** Four pushes: x, y, dx, dy. */
-  readonly #glamJaw = new Float32Array(16);
-  readonly #glamJawRadius = new Float32Array(4);
+  /** Three magnifies (two eyes, then the mouth): x, y, r. */
+  readonly #glamMag = new Float32Array(9);
+  /** The level of each magnify. */
+  readonly #glamMagAmount = new Float32Array(3);
+  /** Eight pushes (four jaw, two chin, two nose): x, y, dx, dy. */
+  readonly #glamPush = new Float32Array(32);
+  readonly #glamPushRadius = new Float32Array(8);
+  /** The level of each push. */
+  readonly #glamPushAmount = new Float32Array(8);
 
   /** Throws if WebGL2 is unavailable. */
   constructor() {
@@ -873,12 +882,12 @@ export class CameraToneStage {
         lips: at("uLips"),
         blush: at("uBlush"),
         lid: at("uLid"),
-        eye: at("uEye"),
-        slim: at("uSlim"),
         warm: at("uWarm"),
-        eyes: at("uEyes"),
-        jaw: at("uJaw"),
-        jawRadius: at("uJawR"),
+        mag: at("uMag"),
+        magAmount: at("uMagAmt"),
+        push: at("uPush"),
+        pushRadius: at("uPushR"),
+        pushAmount: at("uPushAmt"),
       };
       // Same units as the plain final pass, plus the coverage map on unit 2.
       gl.useProgram(glam);
@@ -933,12 +942,12 @@ export class CameraToneStage {
     gl.uniform1f(uniforms.lips, this.#glamLips);
     gl.uniform1f(uniforms.blush, this.#glamBlush);
     gl.uniform1f(uniforms.lid, this.#glamLid);
-    gl.uniform1f(uniforms.eye, this.#glamEye);
-    gl.uniform1f(uniforms.slim, this.#glamSlim);
     gl.uniform1f(uniforms.warm, this.#glamWarm);
-    gl.uniform3fv(uniforms.eyes, this.#glamEyes);
-    gl.uniform4fv(uniforms.jaw, this.#glamJaw);
-    gl.uniform1fv(uniforms.jawRadius, this.#glamJawRadius);
+    gl.uniform3fv(uniforms.mag, this.#glamMag);
+    gl.uniform1fv(uniforms.magAmount, this.#glamMagAmount);
+    gl.uniform4fv(uniforms.push, this.#glamPush);
+    gl.uniform1fv(uniforms.pushRadius, this.#glamPushRadius);
+    gl.uniform1fv(uniforms.pushAmount, this.#glamPushAmount);
   }
 
   /**
@@ -1013,17 +1022,25 @@ export class CameraToneStage {
     this.#glamLips = levelOr0(levels.lips, 1);
     this.#glamBlush = levelOr0(levels.blush, 1);
     this.#glamLid = levelOr0(levels.lid, 1);
-    this.#glamEye = levelOr0(levels.eye, MAX_GLAM_EYE);
-    this.#glamSlim = levelOr0(levels.slim, MAX_GLAM_SLIM);
     this.#glamWarm = levelOr0(levels.warm, MAX_GLAM_WARM);
+    // A caller from before the mouth, chin and nose were added sends no
+    // level for them: `levelOr0` reads that as 0.
+    const eyeLevel = levelOr0(levels.eye, MAX_GLAM_EYE);
+    const mouthLevel = levelOr0(levels.mouth, MAX_GLAM_MOUTH);
+    const slimLevel = levelOr0(levels.slim, MAX_GLAM_SLIM);
+    const chinLevel = levelOr0(levels.chin, MAX_GLAM_CHIN);
+    const noseLevel = levelOr0(levels.nose, MAX_GLAM_NOSE);
     const anyLevel =
       this.#glamSmooth > 0 ||
       this.#glamLips > 0 ||
       this.#glamBlush > 0 ||
       this.#glamLid > 0 ||
-      this.#glamEye > 0 ||
-      this.#glamSlim > 0 ||
-      this.#glamWarm > 0;
+      this.#glamWarm > 0 ||
+      eyeLevel > 0 ||
+      mouthLevel > 0 ||
+      slimLevel > 0 ||
+      chinLevel > 0 ||
+      noseLevel > 0;
     if (!anyLevel) return false;
 
     const radius = (r: number): number =>
@@ -1033,29 +1050,48 @@ export class CameraToneStage {
     glamBox[1] = box.y;
     glamBox[2] = box.w;
     glamBox[3] = box.h;
-    const eyes = this.#glamEyes;
-    for (let i = 0; i < 2; i++) {
-      const eye = warp.eyes[i];
-      eyes[i * 3] = eye.x;
-      eyes[i * 3 + 1] = eye.y;
-      eyes[i * 3 + 2] = radius(eye.r);
-    }
-    const jaw = this.#glamJaw;
-    const jawRadius = this.#glamJawRadius;
-    for (let i = 0; i < 4; i++) {
-      const push = warp.jaw[i];
-      jaw[i * 4] = push.x;
-      jaw[i * 4 + 1] = push.y;
-      jaw[i * 4 + 2] = Math.min(1, Math.max(-1, push.dx));
-      jaw[i * 4 + 3] = Math.min(1, Math.max(-1, push.dy));
-      jawRadius[i] = radius(push.r);
-    }
+    // A part the caller did not send (an older caller has no mouth, chin or
+    // nose) is stored with amount 0 and a radius the shader can divide by,
+    // so it moves nothing and the draw goes on.
+    const mag = this.#glamMag;
+    const magAmount = this.#glamMagAmount;
+    const setMag = (i: number, at: GlamEye | undefined, level: number) => {
+      mag[i * 3] = at ? at.x : 0;
+      mag[i * 3 + 1] = at ? at.y : 0;
+      mag[i * 3 + 2] = radius(at ? at.r : MAX_GLAM_RADIUS);
+      magAmount[i] = at ? level : 0;
+    };
+    const push = this.#glamPush;
+    const pushRadius = this.#glamPushRadius;
+    const pushAmount = this.#glamPushAmount;
+    const setPush = (i: number, at: GlamPush | undefined, level: number) => {
+      push[i * 4] = at ? at.x : 0;
+      push[i * 4 + 1] = at ? at.y : 0;
+      push[i * 4 + 2] = at ? Math.min(1, Math.max(-1, at.dx)) : 0;
+      push[i * 4 + 3] = at ? Math.min(1, Math.max(-1, at.dy)) : 0;
+      pushRadius[i] = radius(at ? at.r : MAX_GLAM_RADIUS);
+      pushAmount[i] = at ? level : 0;
+    };
+    const {
+      mouth,
+      chin,
+      nose,
+    }: Partial<Pick<GlamWarp, "mouth" | "chin" | "nose">> = warp;
+    // Same order as the shader's arrays: eyes then mouth; jaw, chin, nose.
+    setMag(0, warp.eyes[0], eyeLevel);
+    setMag(1, warp.eyes[1], eyeLevel);
+    setMag(2, mouth, mouthLevel);
+    for (let i = 0; i < 4; i++) setPush(i, warp.jaw[i], slimLevel);
+    for (let i = 0; i < 2; i++) setPush(4 + i, chin?.[i], chinLevel);
+    for (let i = 0; i < 2; i++) setPush(6 + i, nose?.[i], noseLevel);
     // `Math.min` / `Math.max` pass NaN through, so one sweep catches it all.
     if (
       !allFinite(glamBox) ||
-      !allFinite(eyes) ||
-      !allFinite(jaw) ||
-      !allFinite(jawRadius)
+      !allFinite(mag) ||
+      !allFinite(magAmount) ||
+      !allFinite(push) ||
+      !allFinite(pushRadius) ||
+      !allFinite(pushAmount)
     ) {
       return false;
     }

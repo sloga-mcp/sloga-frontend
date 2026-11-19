@@ -66,7 +66,7 @@ test("the contract constants", () => {
   assert.equal(LOW_LIGHT_MAX_STEP_MS, 500);
   assert.equal(TONE_TIMER_STALL_MS, 1500);
   assert.equal(TOUCH_UP_SWITCH_STRENGTH, 40);
-  assert.equal(TOUCH_UP_PLAIN_MAX, 0.5);
+  assert.equal(TOUCH_UP_PLAIN_MAX, 0.9);
   // The hysteresis band exists, and the target sits above it: a gain that
   // only just reaches the target must not be what releases the meter (it
   // measures the source, but the ordering is what the stage relies on).
@@ -520,10 +520,13 @@ test("plainTouchUpStrength: 0 is off, and the strength is capped", () => {
   assert.equal(plainTouchUpStrength(Number.NaN), 0);
   assert.equal(plainTouchUpStrength(Number.POSITIVE_INFINITY), 0);
 
-  close(plainTouchUpStrength(10), 0.1, "10");
-  close(plainTouchUpStrength(40), 0.4, "40");
+  // Twice the stored fraction, up to the cap.
+  close(plainTouchUpStrength(10), 0.2, "10");
+  close(plainTouchUpStrength(40), 0.8, "40");
+  close(plainTouchUpStrength(44), 0.88, "44");
+  assert.equal(plainTouchUpStrength(45), TOUCH_UP_PLAIN_MAX);
+  assert.equal(plainTouchUpStrength(46), TOUCH_UP_PLAIN_MAX);
   assert.equal(plainTouchUpStrength(50), TOUCH_UP_PLAIN_MAX);
-  assert.equal(plainTouchUpStrength(51), TOUCH_UP_PLAIN_MAX);
   assert.equal(plainTouchUpStrength(100), TOUCH_UP_PLAIN_MAX);
   assert.equal(plainTouchUpStrength(1000), TOUCH_UP_PLAIN_MAX);
 
@@ -536,9 +539,10 @@ test("plainTouchUpStrength: 0 is off, and the strength is capped", () => {
     previous = strength;
   }
 
-  // What the in-call switch writes is on, and inside the cap.
+  // What the in-call switch writes is strong enough to be seen, and inside
+  // the cap.
   const switched = plainTouchUpStrength(TOUCH_UP_SWITCH_STRENGTH);
-  assert.ok(switched > 0);
+  close(switched, 0.8, "the switch value");
   assert.ok(switched <= TOUCH_UP_PLAIN_MAX);
 });
 

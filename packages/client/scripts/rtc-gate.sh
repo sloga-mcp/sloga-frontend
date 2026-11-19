@@ -284,8 +284,8 @@ EXPECTED=(
   # when Glam is off) at 6.
   "components/rtc/faceFilterPolicy.test.ts 32 0"
   "components/rtc/cameraTonePolicy.test.ts 55 0"
-  "components/rtc/glamPolicy.test.ts 131 0"
-  "components/rtc/cameraToneStageSource.test.ts 6 0"
+  "components/rtc/glamPolicy.test.ts 144 0"
+  "components/rtc/cameraToneStageSource.test.ts 8 0"
   # The server's ring length, read from the root fetch.
   "components/rtc/serverRingLength.test.ts 17 0"
   "components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts 27 0"

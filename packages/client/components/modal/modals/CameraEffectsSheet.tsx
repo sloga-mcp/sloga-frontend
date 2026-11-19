@@ -216,6 +216,9 @@ function describeGlam(info: GlamInfo): string {
     `delegate ${glamDelegateText(stats.delegate, stats.gpuError)}`,
     `init ${Math.round(stats.initMs)} ms`,
     glamLoadText(stats.loadPhase, stats.loadPhaseMs),
+    stats.faceAgoMs === undefined
+      ? "face none"
+      : `face ${Math.round(stats.faceAgoMs)} ms ago`,
   ].join(" · ");
 }
 

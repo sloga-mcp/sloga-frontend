@@ -16,8 +16,10 @@
  *    instead of snapping.
  *
  * 2. Touch up without landmarks. `plainTouchUpStrength` maps the stored
- *    `cameraBeautify` value to the whole-frame smoothing strength and caps
- *    it, because smoothing the whole frame hard blurs everything, not skin.
+ *    `cameraBeautify` value to the whole-frame smoothing strength, at twice
+ *    the stored fraction so that what the in-call switch writes can be seen,
+ *    and caps it short of 1, because smoothing the whole frame blurs
+ *    everything, not skin.
  *
  * 3. The watchdog. `ToneWatchdog` sheds the costliest active stage when the
  *    processed frame rate stays under a fraction of the source frame rate
@@ -54,7 +56,7 @@ export const LOW_LIGHT_MAX_STEP_MS = 500;
 /** The `cameraBeautify` value the in-call switch writes. */
 export const TOUCH_UP_SWITCH_STRENGTH = 40;
 /** Cap of the whole-frame smooth strength (no landmarks). */
-export const TOUCH_UP_PLAIN_MAX = 0.5;
+export const TOUCH_UP_PLAIN_MAX = 0.9;
 
 /** The most the low-light gain may move in one second, up or down. */
 const LOW_LIGHT_GAIN_RATE_PER_S = 0.5;
@@ -188,12 +190,15 @@ export function toneIsNeutral(c: ToneConfig): boolean {
 }
 
 /**
- * cameraBeautify (0..100) -> whole-frame smooth strength, capped at
- * TOUCH_UP_PLAIN_MAX. A non-finite or non-positive value is 0 (off).
+ * cameraBeautify (0..100) -> whole-frame smooth strength: twice the stored
+ * fraction, capped at TOUCH_UP_PLAIN_MAX (reached at 45). The doubling is
+ * what makes the switch value visible: 40 gives 0.8, where the plain
+ * fraction (0.4) could not be told from off on a phone. A non-finite or
+ * non-positive value is 0 (off).
  */
 export function plainTouchUpStrength(beautify: number): number {
   if (!Number.isFinite(beautify) || beautify <= 0) return 0;
-  return Math.min(beautify / 100, TOUCH_UP_PLAIN_MAX);
+  return Math.min((2 * beautify) / 100, TOUCH_UP_PLAIN_MAX);
 }
 
 /**

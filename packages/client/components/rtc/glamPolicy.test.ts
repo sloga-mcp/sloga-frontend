@@ -96,7 +96,7 @@ const close = (actual: number, expected: number, message?: string) =>
 // ---- Constants and index tables --------------------------------------------
 
 test("the contract constants", () => {
-  assert.equal(GLAM_SWITCH_STRENGTH, 60);
+  assert.equal(GLAM_SWITCH_STRENGTH, 80);
   assert.equal(GLAM_HOLD_MS, 250);
   assert.equal(GLAM_FADE_MS, 200);
   assert.equal(GLAM_DETECT_EVERY, 2);
@@ -196,6 +196,9 @@ const ALL_POINTS: readonly number[] = [
   ...GLAM_POINTS.eyeCorners.flat(),
   ...GLAM_POINTS.cheeks,
   ...GLAM_POINTS.jaw,
+  ...GLAM_POINTS.mouthCorners,
+  ...GLAM_POINTS.nose,
+  ...GLAM_POINTS.chinSides,
 ];
 
 test("tables: every ring is a real ring of valid, distinct indices", () => {
@@ -215,6 +218,15 @@ test("tables: every ring is a real ring of valid, distinct indices", () => {
     assert.ok(index >= 0 && index < GLAM_LANDMARK_COUNT, `${index} in range`);
   }
   assert.equal(new Set(GLAM_POINTS.jaw).size, 4, "four different jaw points");
+  assert.deepEqual(GLAM_POINTS.mouthCorners, [61, 291]);
+  assert.deepEqual(GLAM_POINTS.nose, [129, 358]);
+  assert.deepEqual(GLAM_POINTS.chinSides, [150, 379]);
+  // The chin-side points are not the jaw points over again.
+  assert.equal(
+    new Set([...GLAM_POINTS.jaw, ...GLAM_POINTS.chinSides]).size,
+    6,
+    "six different points on the lower face",
+  );
 });
 
 test("tables: the two sides of the face never share an index", () => {
@@ -236,6 +248,22 @@ test("tables: the two sides of the face never share an index", () => {
   }
   const inner = new Set(GLAM_RINGS.lipsInner);
   assert.ok(GLAM_RINGS.lipsOuter.every((index) => !inner.has(index)));
+  // The mouth's width is measured across the ring its centre is taken from,
+  // between two points half a ring apart.
+  const [cornerA, cornerB] = GLAM_POINTS.mouthCorners;
+  const lips = GLAM_RINGS.lipsOuter;
+  assert.ok(lips.includes(cornerA) && lips.includes(cornerB));
+  assert.equal(
+    Math.abs(lips.indexOf(cornerA) - lips.indexOf(cornerB)),
+    lips.length / 2,
+    "the corners are opposite each other on the ring",
+  );
+  // The nose sides are on no ring: nothing else is painted from them.
+  for (const index of GLAM_POINTS.nose) {
+    for (const [name, ring] of ALL_RINGS) {
+      assert.ok(!ring.includes(index), `nose ${index} is not on ${name}`);
+    }
+  }
 });
 
 test("tables: agree with the rings the sticker catalog already uses", () => {
@@ -248,7 +276,11 @@ test("tables: agree with the rings the sticker catalog already uses", () => {
   assert.ok(eyeB.every((index) => GLAM_RINGS.eyes[1].includes(index)));
   assert.ok(mouth.every((index) => GLAM_RINGS.lipsOuter.includes(index)));
   // Everything measured on the outline is a point of the outline.
-  for (const index of [...GLAM_POINTS.faceSides, ...GLAM_POINTS.jaw]) {
+  for (const index of [
+    ...GLAM_POINTS.faceSides,
+    ...GLAM_POINTS.jaw,
+    ...GLAM_POINTS.chinSides,
+  ]) {
     assert.ok(FACE_OVAL.includes(index), `${index} is on the face oval`);
   }
   // Two jaw points on each side of the chin, mirror images of each other.
@@ -261,18 +293,27 @@ test("tables: agree with the rings the sticker catalog already uses", () => {
   assert.equal(at(b) - chinAt, chinAt - at(d), "jaw points mirror");
   const [sideA, sideB] = GLAM_POINTS.faceSides;
   assert.equal(at(sideA) - chinAt, chinAt - at(sideB), "sides mirror");
+  // The chin-side points: same side order, mirror images, and between the
+  // jaw point and the chin on their side.
+  const [chinA, chinB] = GLAM_POINTS.chinSides;
+  assert.ok(at(chinA) > chinAt && at(chinB) < chinAt, "same side order");
+  assert.equal(at(chinA) - chinAt, chinAt - at(chinB), "chin sides mirror");
+  assert.ok(at(chinA) < at(b) && at(chinB) > at(d), "nearer the chin");
 });
 
 // ---- glamLevels ------------------------------------------------------------
 
 const LEVEL_CAPS: GlamLevels = {
-  smooth: 0.75,
-  lips: 0.45,
-  blush: 0.3,
-  lid: 0.35,
-  eye: 0.12,
-  slim: 0.06,
-  warm: 0.08,
+  smooth: 0.95,
+  lips: 0.5,
+  blush: 0.35,
+  lid: 0.45,
+  eye: 0.22,
+  slim: 0.18,
+  warm: 0.1,
+  mouth: 0.14,
+  nose: 0.2,
+  chin: 0.16,
 };
 const LEVEL_KEYS = Object.keys(LEVEL_CAPS) as Array<keyof GlamLevels>;
 
@@ -298,12 +339,25 @@ test("glamLevels: never falls as the setting rises", () => {
   }
 });
 
-test("glamLevels: the switch value gives about 60% of full", () => {
+test("glamLevels: the amounts at 100 are the agreed ones, and linear below", () => {
+  // The shader's caps and the look itself are tuned against these numbers.
+  const full = glamLevels(100);
+  const half = glamLevels(50);
+  for (const key of LEVEL_KEYS) {
+    close(full[key], LEVEL_CAPS[key], `${key} at 100`);
+    close(half[key], LEVEL_CAPS[key] / 2, `${key} at 50`);
+  }
+  // The reshape that has to be seen: each is well over what it was.
+  assert.ok(full.eye >= 0.2 && full.slim >= 0.15);
+  assert.ok(full.mouth > 0 && full.nose > 0 && full.chin > 0);
+});
+
+test("glamLevels: the switch value gives about 80% of full", () => {
   const full = glamLevels(100);
   const switched = glamLevels(GLAM_SWITCH_STRENGTH);
   for (const key of LEVEL_KEYS) {
     const share = switched[key] / full[key];
-    assert.ok(share > 0.5 && share < 0.7, `${key}: ${share}`);
+    assert.ok(share > 0.7 && share < 0.9, `${key}: ${share}`);
   }
 });
 
@@ -322,6 +376,14 @@ test("glamLevels: clamps out-of-range and treats non-finite as off", () => {
 const FACE_WIDTH_RATIO = 0.76;
 /** Eye ring half-width, in half face widths. */
 const EYE_HALF_WIDTH = 0.2;
+/** Outer lip ring: half-width and how far below the face centre, in face units. */
+const MOUTH_HALF_WIDTH = 0.3;
+const MOUTH_DOWN = 0.5;
+/** The nose sides: how far off the mid line and below the face centre, in face units. */
+const NOSE_OUT = 0.18;
+const NOSE_DOWN = 0.15;
+/** Where the chin-side points sit on the oval: degrees from the top, round by the high-x side. */
+const CHIN_SIDE_DEGREES = 140;
 
 interface FaceSpec {
   aspect: number;
@@ -394,9 +456,10 @@ function syntheticFace(spec: FaceSpec): GlamPoint[] {
       0.07,
     );
     place(GLAM_POINTS.cheeks[side], sign * 0.5, 0.2);
+    place(GLAM_POINTS.nose[side], sign * NOSE_OUT, NOSE_DOWN);
   }
-  ellipse(GLAM_RINGS.lipsOuter, -1, 0, 0.5, 0.3, 0.1);
-  ellipse(GLAM_RINGS.lipsInner, -1, 0, 0.5, 0.22, 0.03);
+  ellipse(GLAM_RINGS.lipsOuter, -1, 0, MOUTH_DOWN, MOUTH_HALF_WIDTH, 0.1);
+  ellipse(GLAM_RINGS.lipsInner, -1, 0, MOUTH_DOWN, 0.22, 0.03);
   return points;
 }
 
@@ -424,8 +487,23 @@ function assertBounded(geometry: GlamGeometry, label: string) {
   for (const eye of warp.eyes) {
     assert.ok(eye.r > 0 && eye.r <= 0.3, `${label}: eye radius ${eye.r}`);
   }
-  for (const push of warp.jaw) {
-    assert.ok(push.r > 0 && push.r <= 0.5, `${label}: jaw radius ${push.r}`);
+  assert.ok(
+    warp.mouth.r >= 0.004 && warp.mouth.r <= 0.3,
+    `${label}: mouth radius ${warp.mouth.r}`,
+  );
+  for (const push of [...warp.jaw, ...warp.chin]) {
+    assert.ok(
+      push.r >= 0.01 && push.r <= 0.5,
+      `${label}: jaw or chin radius ${push.r}`,
+    );
+  }
+  for (const push of warp.nose) {
+    assert.ok(
+      push.r >= 0.004 && push.r <= 0.3,
+      `${label}: nose radius ${push.r}`,
+    );
+  }
+  for (const push of [...warp.jaw, ...warp.chin, ...warp.nose]) {
     const length = Math.hypot(push.dx, push.dy);
     assert.ok(
       Math.abs(length - 1) <= 1e-6 || length === 0,
@@ -528,6 +606,131 @@ for (const [name, aspect] of ASPECTS) {
     close(b.y, d.y, "jaw points level");
   });
 
+  test(`glamGeometry ${name}: the mouth is magnified about the lip ring's centre`, () => {
+    const height = 0.4;
+    const { warp } = usable({ aspect, height });
+    const halfW = (height / 2) * FACE_WIDTH_RATIO;
+    // The mean of a ring spread evenly round an ellipse is its centre.
+    close(warp.mouth.x, 0.5, "mouth x");
+    close(warp.mouth.y, 0.5 + MOUTH_DOWN * (height / 2), "mouth y");
+    // The same mouth has the same radius on every frame shape.
+    close(warp.mouth.r, 0.75 * 2 * MOUTH_HALF_WIDTH * halfW, "mouth radius");
+    assert.deepEqual(Object.keys(warp.mouth).sort(), ["r", "x", "y"]);
+    // The centre is the ring's mean, not the middle of the two corners: pull
+    // one lower-lip point down and only the height of the centre moves.
+    const landmarks = syntheticFace({ aspect, height });
+    const lowerLip = GLAM_RINGS.lipsOuter[5];
+    landmarks[lowerLip] = {
+      x: landmarks[lowerLip].x,
+      y: landmarks[lowerLip].y + 0.02,
+    };
+    const pulled = glamGeometry(landmarks, aspect);
+    assert.ok(pulled);
+    close(pulled.warp.mouth.x, warp.mouth.x, "x unchanged");
+    close(
+      pulled.warp.mouth.y,
+      warp.mouth.y + 0.02 / GLAM_RINGS.lipsOuter.length,
+      "y follows the ring",
+    );
+    close(pulled.warp.mouth.r, warp.mouth.r, "the width did not change");
+    // The radius is the width between the two corners and nothing else.
+    const wide = syntheticFace({ aspect, height });
+    const [cornerA, cornerB] = GLAM_POINTS.mouthCorners;
+    const stretch = (0.1 * halfW) / aspect;
+    wide[cornerA] = { x: wide[cornerA].x - stretch, y: wide[cornerA].y };
+    wide[cornerB] = { x: wide[cornerB].x + stretch, y: wide[cornerB].y };
+    const widened = glamGeometry(wide, aspect);
+    assert.ok(widened);
+    close(
+      widened.warp.mouth.r,
+      0.75 * (2 * MOUTH_HALF_WIDTH + 0.2) * halfW,
+      "radius follows the corners",
+    );
+  });
+
+  test(`glamGeometry ${name}: the nose and the chin sides are pushed toward the mid line`, () => {
+    const height = 0.4;
+    const { warp } = usable({ aspect, height });
+    const halfH = height / 2;
+    const halfW = halfH * FACE_WIDTH_RATIO;
+    assert.deepEqual(Object.keys(warp).sort(), [
+      "chin",
+      "eyes",
+      "jaw",
+      "mouth",
+      "nose",
+    ]);
+    assert.equal(warp.nose.length, 2);
+    assert.equal(warp.chin.length, 2);
+    assert.equal(warp.jaw.length, 4);
+
+    // The widest oval points sit 10 degrees off the horizontal.
+    const faceWidth = 2 * halfW * Math.sin((80 * Math.PI) / 180);
+    const chinU = Math.sin((CHIN_SIDE_DEGREES * Math.PI) / 180);
+    const chinV = -Math.cos((CHIN_SIDE_DEGREES * Math.PI) / 180);
+    const sides = [
+      { sign: -1, toward: 1, word: "low-x side moves right" },
+      { sign: 1, toward: -1, word: "high-x side moves left" },
+    ];
+    sides.forEach(({ sign, toward, word }, side) => {
+      // An upright face: the mid line is vertical, so the push is level.
+      const nose = warp.nose[side];
+      close(nose.x, 0.5 + (sign * NOSE_OUT * halfW) / aspect, "nose x");
+      close(nose.y, 0.5 + NOSE_DOWN * halfH, "nose y");
+      close(nose.dx, toward, `nose: ${word}`);
+      close(nose.dy, 0, "nose: level");
+      close(nose.r, 0.13 * faceWidth, "nose radius");
+
+      const chin = warp.chin[side];
+      close(chin.x, 0.5 + (sign * chinU * halfW) / aspect, "chin side x");
+      close(chin.y, 0.5 + chinV * halfH, "chin side y");
+      close(chin.dx, toward, `chin: ${word}`);
+      close(chin.dy, 0, "chin: level");
+      close(chin.r, 0.28 * faceWidth, "chin radius");
+    });
+    // Each kind of push has its own reach: nose under chin under jaw.
+    assert.ok(warp.nose[0].r < warp.chin[0].r);
+    assert.ok(warp.chin[0].r < warp.jaw[0].r);
+    close(warp.jaw[0].r, 0.35 * faceWidth, "the jaw radius is what it was");
+    // The chin sides sit lower than the jaw points, and nearer the mid line.
+    assert.ok(warp.chin[0].y > warp.jaw[1].y);
+    assert.ok(warp.chin[0].x > warp.jaw[1].x && warp.chin[0].x < 0.5);
+  });
+
+  test(`glamGeometry ${name}: a tilted face keeps the nose and chin pushes square to the mid line`, () => {
+    const height = 0.4;
+    const upright = usable({ aspect, height }).warp;
+    for (const roll of [-1.2, -0.5, 0.4, 1.1, Math.PI / 2]) {
+      const { warp } = usable({ aspect, height, roll });
+      for (const push of [...warp.nose, ...warp.chin]) {
+        close(Math.hypot(push.dx, push.dy), 1, "unit direction");
+        // Toward the face centre, measured in frame heights.
+        const inward =
+          (0.5 - push.x) * aspect * push.dx + (0.5 - push.y) * push.dy;
+        assert.ok(inward > 0, `roll ${roll}: points inward`);
+        // Square to the mid line, which is the rolled vertical.
+        close(
+          push.dx * -Math.sin(roll) + push.dy * Math.cos(roll),
+          0,
+          "square to the mid line",
+        );
+      }
+      // The two sides push against each other.
+      close(warp.nose[0].dx, -warp.nose[1].dx, "nose sides oppose (x)");
+      close(warp.nose[0].dy, -warp.nose[1].dy, "nose sides oppose (y)");
+      close(warp.chin[0].dx, -warp.chin[1].dx, "chin sides oppose (x)");
+      close(warp.chin[0].dy, -warp.chin[1].dy, "chin sides oppose (y)");
+      // Rolling the head does not change the size of anything, and the
+      // mouth centre goes round with the face.
+      close(warp.nose[0].r, upright.nose[0].r, "nose radius");
+      close(warp.chin[0].r, upright.chin[0].r, "chin radius");
+      close(warp.mouth.r, upright.mouth.r, "mouth radius");
+      const down = MOUTH_DOWN * (height / 2);
+      close(warp.mouth.x, 0.5 - (down * Math.sin(roll)) / aspect, "mouth x");
+      close(warp.mouth.y, 0.5 + down * Math.cos(roll), "mouth y");
+    }
+  });
+
   test(`glamGeometry ${name}: a rolled head keeps unit pushes that point inward`, () => {
     for (const roll of [-1.2, -0.5, 0.4, 1.1, Math.PI / 2]) {
       const geometry = usable({ aspect, height: 0.4, roll });
@@ -614,7 +817,8 @@ test("glamGeometry: a rolled head on a very tall or very wide frame still pushes
     for (const roll of [-0.7, 0.7]) {
       const geometry = usable({ aspect, height: 0.4, roll });
       assertBounded(geometry, `aspect ${aspect} roll ${roll}`);
-      for (const push of geometry.warp.jaw) {
+      const { jaw, chin, nose } = geometry.warp;
+      for (const push of [...jaw, ...chin, ...nose]) {
         const inward =
           (0.5 - push.x) * aspect * push.dx + (0.5 - push.y) * push.dy;
         assert.ok(inward > 0, `aspect ${aspect} roll ${roll}: points inward`);
@@ -646,6 +850,109 @@ test("glamGeometry: a point on the mid line is not pushed anywhere", () => {
     assert.equal(push.dx, 0);
     assert.equal(push.dy, 0);
   }
+});
+
+test("glamGeometry: a nose or chin point on the mid line is not pushed anywhere", () => {
+  const aspect = 16 / 9;
+  // The mid line of the default face runs straight down x = 0.5.
+  for (const part of ["nose", "chin"] as const) {
+    const indices = part === "nose" ? GLAM_POINTS.nose : GLAM_POINTS.chinSides;
+    for (const side of [0, 1] as const) {
+      const landmarks = syntheticFace({ aspect });
+      landmarks[indices[side]] = { x: 0.5, y: 0.62 };
+      const geometry = glamGeometry(landmarks, aspect);
+      assert.ok(geometry, `${part} ${side}`);
+      assertBounded(geometry, `${part} ${side} on the mid line`);
+      const [onLine, other] =
+        side === 0
+          ? [geometry.warp[part][0], geometry.warp[part][1]]
+          : [geometry.warp[part][1], geometry.warp[part][0]];
+      assert.equal(onLine.dx, 0, `${part} ${side} dx`);
+      assert.equal(onLine.dy, 0, `${part} ${side} dy`);
+      assert.deepEqual({ x: onLine.x, y: onLine.y }, { x: 0.5, y: 0.62 });
+      assert.ok(onLine.r > 0, "the radius is still not zero");
+      // The other side of the same pair is pushed as before.
+      close(Math.hypot(other.dx, other.dy), 1, `${part}: the other side`);
+    }
+  }
+
+  // Forehead and chin on one spot: there is no mid line at all.
+  const noLine = syntheticFace({ aspect });
+  noLine[GLAM_POINTS.chin] = { ...noLine[GLAM_POINTS.forehead] };
+  const geometry = glamGeometry(noLine, aspect);
+  assert.ok(geometry);
+  for (const push of [...geometry.warp.nose, ...geometry.warp.chin]) {
+    assert.equal(push.dx, 0);
+    assert.equal(push.dy, 0);
+    assert.ok(push.r > 0);
+  }
+  // The mouth needs no mid line.
+  close(geometry.warp.mouth.x, 0.5, "mouth x");
+  assert.ok(geometry.warp.mouth.r > 0);
+});
+
+test("glamGeometry: the mouth, nose and chin radii stop at their limits", () => {
+  const aspect = 16 / 9;
+  // A head turned almost to a profile: every width is next to nothing.
+  const thin = usable({ aspect, widthScale: 0.02 }).warp;
+  assert.equal(thin.mouth.r, 0.004, "mouth floor");
+  assert.equal(thin.nose[0].r, 0.004, "nose floor");
+  assert.equal(thin.nose[1].r, 0.004, "nose floor");
+  assert.equal(thin.chin[0].r, 0.01, "chin floor");
+  assert.equal(thin.chin[1].r, 0.01, "chin floor");
+
+  // A face wider than the frame, as wide as the tracker may report one.
+  const landmarks = syntheticFace({ aspect, height: 1.9 });
+  const [sideA, sideB] = GLAM_POINTS.faceSides;
+  landmarks[sideA] = { x: -0.9, y: landmarks[sideA].y };
+  landmarks[sideB] = { x: 1.9, y: landmarks[sideB].y };
+  const huge = glamGeometry(landmarks, aspect);
+  assert.ok(huge);
+  assertBounded(huge, "huge face");
+  assert.equal(huge.warp.mouth.r, 0.3, "mouth ceiling");
+  assert.equal(huge.warp.nose[0].r, 0.3, "nose ceiling");
+  assert.equal(huge.warp.chin[0].r, 0.5, "chin ceiling");
+  assert.equal(huge.warp.jaw[0].r, 0.5, "jaw ceiling");
+});
+
+test("glamGeometry: a bad coordinate on a mouth, nose or chin point is a no", () => {
+  // Named one by one: the nose sides are on no ring, so only the list of
+  // points the geometry reads stands between a NaN there and a uniform.
+  const added = [
+    ...GLAM_POINTS.mouthCorners,
+    ...GLAM_POINTS.nose,
+    ...GLAM_POINTS.chinSides,
+  ];
+  assert.deepEqual(added, [61, 291, 129, 358, 150, 379]);
+  for (const index of added) {
+    for (const bad of [NaN, Infinity, -Infinity, 2.01, -1.01]) {
+      for (const axis of ["x", "y"] as const) {
+        const landmarks = syntheticFace({ aspect: 16 / 9 });
+        landmarks[index] = { ...landmarks[index], [axis]: bad };
+        assert.equal(
+          glamGeometry(landmarks, 16 / 9),
+          undefined,
+          `landmark ${index} ${axis} = ${bad}`,
+        );
+      }
+    }
+    // A missing point is a no as well.
+    const sparse: Array<GlamPoint | undefined> = syntheticFace({
+      aspect: 16 / 9,
+    });
+    sparse[index] = undefined;
+    assert.equal(
+      glamGeometry(sparse as GlamPoint[], 16 / 9),
+      undefined,
+      `no ${index}`,
+    );
+  }
+  // At the bound itself the point is still read.
+  const edge = syntheticFace({ aspect: 16 / 9 });
+  edge[GLAM_POINTS.nose[0]] = { x: -1, y: 2 };
+  const geometry = glamGeometry(edge, 16 / 9);
+  assert.ok(geometry);
+  assertBounded(geometry, "a nose point at the bound");
 });
 
 test("glamGeometry: too few points is a no", () => {

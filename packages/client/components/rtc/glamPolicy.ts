@@ -6,22 +6,24 @@
  * What lives here:
  *
  * 1. Levels. `glamLevels` maps the stored 0..100 setting to the amount of
- *    each part of the look. The caps are low on purpose: the reshape bends
- *    real pixels, and a strong one shows on glasses and on the background
- *    next to the chin.
+ *    each part of the look. The amounts at full are set so the look is seen
+ *    at a glance. The reshape bends real pixels, so near the top of the
+ *    slider it can show on glasses and on the background next to the chin.
  *
  * 2. Geometry. `glamGeometry` turns one set of face landmarks into what the
  *    mask painter and the shader need: the rings to fill, the two eye
- *    centres to magnify, the four lower-face pushes, and the padded box the
- *    coverage map covers. Every length is in units of the frame HEIGHT and
- *    is measured in a space where x is multiplied by the aspect ratio, so a
- *    circle stays a circle on a wide or a tall frame. Every output is finite,
- *    whatever the pose, so a NaN never reaches a uniform. The box is clamped
- *    to the frame and every radius is clamped to its limits. Ring points and
- *    centres are NOT clamped: they are passed through as the tracker gave
- *    them and are only bounded, at most one whole frame outside the picture
- *    on any side (-1..2). A face at the frame edge really has points outside
- *    it, and pulling them in would bend the shape.
+ *    centres and the mouth centre to magnify, the pushes toward the mid line
+ *    (four on the lower face, two beside the chin, two on the nose), and the
+ *    padded box the coverage map covers. Every length is in units of the
+ *    frame HEIGHT and is measured in a space where x is multiplied by the
+ *    aspect ratio, so a circle stays a circle on a wide or a tall frame.
+ *    Every output is finite, whatever the pose, so a NaN never reaches a
+ *    uniform. The box is clamped to the frame and every radius is clamped
+ *    to its limits. Ring points and centres are NOT clamped: they are passed
+ *    through as the tracker gave them and are only bounded, at most one
+ *    whole frame outside the picture on any side (-1..2). A face at the
+ *    frame edge really has points outside it, and pulling them in would bend
+ *    the shape.
  *
  * 3. Smoothing. `LandmarkSmoother` is a one-euro filter per coordinate: a
  *    still face is held still (no shimmer in the makeup), and a moving face
@@ -69,7 +71,7 @@ export interface GlamPoint {
 }
 
 /** What the switch stores when it is turned on. */
-export const GLAM_SWITCH_STRENGTH = 60;
+export const GLAM_SWITCH_STRENGTH = 80;
 /** Landmarks are reused this long after the last hit. */
 export const GLAM_HOLD_MS = 250;
 /** Then the look fades to nothing over this long. */
@@ -170,6 +172,9 @@ export const GLAM_POINTS: {
   ];
   readonly cheeks: readonly [number, number];
   readonly jaw: readonly [number, number, number, number];
+  readonly mouthCorners: readonly [number, number];
+  readonly nose: readonly [number, number];
+  readonly chinSides: readonly [number, number];
 } = {
   // The face mid line runs from the top of the forehead to the chin.
   forehead: 10,
@@ -183,6 +188,13 @@ export const GLAM_POINTS: {
   cheeks: [205, 425],
   // Two per side on the face oval between ear and chin: cheek line, then jaw.
   jaw: [132, 136, 361, 365],
+  // The two ends of the outer lip ring: the mouth's width.
+  mouthCorners: [61, 291],
+  // The two sides of the nose, where the nostrils meet the cheeks.
+  nose: [129, 358],
+  // On the face oval beside the chin, one step further down than the jaw
+  // points. Not `chin`: that name is the mid line's lower end.
+  chinSides: [150, 379],
 };
 
 const clamp = (value: number, min: number, max: number): number =>
@@ -199,17 +211,30 @@ export interface GlamLevels {
   eye: number;
   slim: number;
   warm: number;
+  /** Magnification of the mouth, same meaning as `eye`. */
+  mouth: number;
+  /** Push of the two nose sides toward the mid line, same meaning as `slim`. */
+  nose: number;
+  /** Push of the two chin-side points toward the mid line, same meaning as `slim`. */
+  chin: number;
 }
 
-/** The amount of each part at setting 100. `eye` 0.12 = 12% larger at the centre. */
+/**
+ * The amount of each part at setting 100. `eye` 0.22 = 22% larger at the
+ * centre. `slim` 0.18 = the jaw points move 0.18 of their push radius, which
+ * is about 6% of the face width on each side.
+ */
 const LEVELS_AT_FULL: GlamLevels = {
-  smooth: 0.75,
-  lips: 0.45,
-  blush: 0.3,
-  lid: 0.35,
-  eye: 0.12,
-  slim: 0.06,
-  warm: 0.08,
+  smooth: 0.95,
+  lips: 0.5,
+  blush: 0.35,
+  lid: 0.45,
+  eye: 0.22,
+  slim: 0.18,
+  warm: 0.1,
+  mouth: 0.14,
+  nose: 0.2,
+  chin: 0.16,
 };
 
 /**
@@ -226,13 +251,17 @@ export function glamLevels(setting: number): GlamLevels {
     eye: LEVELS_AT_FULL.eye * amount,
     slim: LEVELS_AT_FULL.slim * amount,
     warm: LEVELS_AT_FULL.warm * amount,
+    mouth: LEVELS_AT_FULL.mouth * amount,
+    nose: LEVELS_AT_FULL.nose * amount,
+    chin: LEVELS_AT_FULL.chin * amount,
   };
 }
 
 // ---- Geometry --------------------------------------------------------------
 
 /**
- * An eye to magnify: centre in video UV; `r` in units of frame HEIGHT.
+ * An eye to magnify: centre in video UV; `r` in units of frame HEIGHT. The
+ * mouth is magnified the same way and has the same shape.
  *
  * Magnify means the picture content moves AWAY from the centre. A shader
  * that reads a source texture therefore samples CLOSER to the eye centre
@@ -272,10 +301,26 @@ export interface GlamPush {
 /**
  * `eyes` are in the side order of `GLAM_RINGS.eyes`; `jaw` is in the order
  * of `GLAM_POINTS.jaw` (cheek line then jaw on one side, then the other).
+ * `nose` and `chin` are in the side order of the rings too.
  */
 export interface GlamWarp {
   eyes: [GlamEye, GlamEye];
   jaw: [GlamPush, GlamPush, GlamPush, GlamPush];
+  /**
+   * Centre of the outer lip ring; `r` = 0.75 x the mouth width (landmark 61
+   * to 291), clamped like an eye radius.
+   */
+  mouth: GlamEye;
+  /**
+   * Landmarks 129 then 358 (the nose sides); `r` = 0.13 x the face width,
+   * clamped to 0.004..0.3.
+   */
+  nose: [GlamPush, GlamPush];
+  /**
+   * Landmarks 150 then 379 (the face oval beside the chin); `r` = 0.28 x
+   * the face width, clamped like the jaw radius.
+   */
+  chin: [GlamPush, GlamPush];
 }
 
 /** The video UV rect the coverage map covers: the padded face box, clamped to 0..1. */
@@ -317,15 +362,23 @@ const COORD_MAX = 2;
 const LENGTH_EPSILON = 1e-6;
 
 const EYE_RADIUS_PER_EYE_WIDTH = 0.9;
+const MOUTH_RADIUS_PER_MOUTH_WIDTH = 0.75;
 const JAW_RADIUS_PER_FACE_WIDTH = 0.35;
+// Smaller than the jaw's: the chin points taper the lower face without
+// pulling the cheeks in again, and the nose push must not reach the eyes.
+const CHIN_RADIUS_PER_FACE_WIDTH = 0.28;
+const NOSE_RADIUS_PER_FACE_WIDTH = 0.13;
 const BLUSH_RADIUS_PER_FACE_WIDTH = 0.16;
 // Radius limits, in frame heights. The floors keep a collapsed ring (a
 // profile) from handing the shader a zero to divide by; the ceilings keep a
-// face that fills the frame from warping the whole picture.
+// face that fills the frame from warping the whole picture. The mouth uses
+// the eye limits and the chin points use the jaw limits.
 const EYE_RADIUS_MIN = 0.004;
 const EYE_RADIUS_MAX = 0.3;
 const JAW_RADIUS_MIN = 0.01;
 const JAW_RADIUS_MAX = 0.5;
+const NOSE_RADIUS_MIN = 0.004;
+const NOSE_RADIUS_MAX = 0.3;
 const BLUSH_RADIUS_MIN = 0.004;
 const BLUSH_RADIUS_MAX = 0.3;
 
@@ -344,6 +397,9 @@ const USED_INDICES: readonly number[] = [
     ...GLAM_POINTS.eyeCorners.flat(),
     ...GLAM_POINTS.cheeks,
     ...GLAM_POINTS.jaw,
+    ...GLAM_POINTS.mouthCorners,
+    ...GLAM_POINTS.nose,
+    ...GLAM_POINTS.chinSides,
   ]),
 ];
 
@@ -409,25 +465,38 @@ export function glamGeometry(
     GLAM_POINTS.faceSides[1],
   );
 
-  const eye = (side: 0 | 1): GlamEye => {
-    const points = ring(GLAM_RINGS.eyes[side]);
+  /**
+   * A spot to magnify: the mean of a ring's points, and a radius taken from
+   * the width between two landmarks. The eyes and the mouth share the limits.
+   */
+  const magnify = (
+    indices: readonly number[],
+    [from, to]: readonly [number, number],
+    radiusPerWidth: number,
+  ): GlamEye => {
+    const points = ring(indices);
     let x = 0;
     let y = 0;
     for (const point of points) {
       x += point.x;
       y += point.y;
     }
-    const [outer, inner] = GLAM_POINTS.eyeCorners[side];
     return {
       x: x / points.length,
       y: y / points.length,
       r: clamp(
-        EYE_RADIUS_PER_EYE_WIDTH * distance(outer, inner),
+        radiusPerWidth * distance(from, to),
         EYE_RADIUS_MIN,
         EYE_RADIUS_MAX,
       ),
     };
   };
+  const eye = (side: 0 | 1): GlamEye =>
+    magnify(
+      GLAM_RINGS.eyes[side],
+      GLAM_POINTS.eyeCorners[side],
+      EYE_RADIUS_PER_EYE_WIDTH,
+    );
 
   // The mid line in aspect-corrected space: a point on it and its direction.
   const top = landmarks[GLAM_POINTS.forehead];
@@ -440,8 +509,18 @@ export function glamGeometry(
     JAW_RADIUS_MIN,
     JAW_RADIUS_MAX,
   );
+  const chinRadius = clamp(
+    CHIN_RADIUS_PER_FACE_WIDTH * faceWidth,
+    JAW_RADIUS_MIN,
+    JAW_RADIUS_MAX,
+  );
+  const noseRadius = clamp(
+    NOSE_RADIUS_PER_FACE_WIDTH * faceWidth,
+    NOSE_RADIUS_MIN,
+    NOSE_RADIUS_MAX,
+  );
 
-  const push = (index: number): GlamPush => {
+  const push = (index: number, r: number): GlamPush => {
     const point = landmarks[index];
     let dx = 0;
     let dy = 0;
@@ -460,7 +539,7 @@ export function glamGeometry(
         dy = toLineY / length;
       }
     }
-    return { x: point.x, y: point.y, dx, dy, r: jawRadius };
+    return { x: point.x, y: point.y, dx, dy, r };
   };
 
   const blushRadius = clamp(
@@ -474,10 +553,23 @@ export function glamGeometry(
     warp: {
       eyes: [eye(0), eye(1)],
       jaw: [
-        push(GLAM_POINTS.jaw[0]),
-        push(GLAM_POINTS.jaw[1]),
-        push(GLAM_POINTS.jaw[2]),
-        push(GLAM_POINTS.jaw[3]),
+        push(GLAM_POINTS.jaw[0], jawRadius),
+        push(GLAM_POINTS.jaw[1], jawRadius),
+        push(GLAM_POINTS.jaw[2], jawRadius),
+        push(GLAM_POINTS.jaw[3], jawRadius),
+      ],
+      mouth: magnify(
+        GLAM_RINGS.lipsOuter,
+        GLAM_POINTS.mouthCorners,
+        MOUTH_RADIUS_PER_MOUTH_WIDTH,
+      ),
+      nose: [
+        push(GLAM_POINTS.nose[0], noseRadius),
+        push(GLAM_POINTS.nose[1], noseRadius),
+      ],
+      chin: [
+        push(GLAM_POINTS.chinSides[0], chinRadius),
+        push(GLAM_POINTS.chinSides[1], chinRadius),
       ],
     },
     skin,
