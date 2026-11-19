@@ -861,8 +861,15 @@ export default class ClientController {
   /**
    * Login given a set of credentials
    * @param credentials Credentials
+   * @param options `mfaPrompt: false` throws `{ type: "MfaRequired" }`
+   *   instead of opening the MFA dialog, for a sign-in the person did not
+   *   start by hand (the wait on a new account's email confirmation)
    */
-  async login(credentials: API.DataLogin, modals: ModalControllerExtended) {
+  async login(
+    credentials: API.DataLogin,
+    modals: ModalControllerExtended,
+    options?: { mfaPrompt?: boolean },
+  ) {
     const browser = detect();
 
     // Generate a friendly name for this browser
@@ -895,7 +902,12 @@ export default class ClientController {
       friendly_name,
     });
 
-    await this.completeLoginResponse(session, modals, friendly_name);
+    await this.completeLoginResponse(
+      session,
+      modals,
+      friendly_name,
+      options?.mfaPrompt ?? true,
+    );
   }
 
   /**
@@ -931,9 +943,14 @@ export default class ClientController {
     session: API.ResponseLogin,
     modals: ModalControllerExtended,
     friendly_name?: string,
+    mfaPrompt = true,
   ) {
     // Prompt for MFA verification if necessary
     if (session.result === "MFA") {
+      if (!mfaPrompt) {
+        throw { type: "MfaRequired" };
+      }
+
       const { allowed_methods } = session;
       // Every response sent counts against the ticket on the server, whatever
       // the outcome

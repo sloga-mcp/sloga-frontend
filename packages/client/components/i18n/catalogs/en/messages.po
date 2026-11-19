@@ -2008,6 +2008,10 @@ msgstr "Check your email"
 msgid "Check your mail!"
 msgstr "Check your mail!"
 
+#: components/auth/src/flows/FlowCheck.tsx
+msgid "Keep this app open. Once you open the link in the email, come back here and you'll be signed in."
+msgstr "Keep this app open. Once you open the link in the email, come back here and you'll be signed in."
+
 #: components/app/interface/settings/user/Keybinds.tsx
 msgid "Checking whether this device can register system-wide keys…"
 msgstr "Checking whether this device can register system-wide keys…"
@@ -2334,8 +2338,8 @@ msgid "Continue in your browser"
 msgstr "Continue in your browser"
 
 #: components/auth/src/flows/FlowVerify.tsx
-msgid "Continue to app"
-msgstr "Continue to app"
+msgid "Continue in this browser"
+msgstr "Continue in this browser"
 
 #: components/modal/modals/E2EEPeerDowngrade.tsx
 msgid "Continue unencrypted — new messages will be readable by the server — or keep the conversation encrypted on your side. Your encrypted history is unaffected either way."
@@ -12292,6 +12296,10 @@ msgstr "You've sent too many friend requests, the maximum is {0}"
 #: components/app/interface/settings/user/Account.tsx
 msgid "Your account and all of your data (including your messages and friends list) will be queued for deletion. A confirmation email will be sent - you can cancel this within 7 days by contacting support."
 msgstr "Your account and all of your data (including your messages and friends list) will be queued for deletion. A confirmation email will be sent - you can cancel this within 7 days by contacting support."
+
+#: components/auth/src/flows/FlowVerify.tsx
+msgid "Signed up in the Sloga app? Go back to it. If it hasn't signed you in, sign in there with your email and password."
+msgstr "Signed up in the Sloga app? Go back to it. If it hasn't signed you in, sign in there with your email and password."
 
 #: components/auth/src/flows/FlowVerify.tsx
 msgid "Your account has been verified!"

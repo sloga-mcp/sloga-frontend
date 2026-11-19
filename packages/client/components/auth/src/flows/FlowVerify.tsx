@@ -3,9 +3,10 @@ import { Match, Show, Switch, createSignal, onMount } from "solid-js";
 import { Trans } from "@lingui-solid/solid/macro";
 
 import { useApi, useClientLifecycle } from "@revolt/client";
+import { isNativeShell } from "@revolt/common";
 import { useModals } from "@revolt/modal";
 import { useNavigate, useParams } from "@revolt/routing";
-import { Button, CircularProgress } from "@revolt/ui";
+import { Button, CircularProgress, Text } from "@revolt/ui";
 
 import { FlowTitle } from "./Flow";
 
@@ -117,8 +118,20 @@ export default function FlowVerify() {
           <Trans>Your account has been verified!</Trans>
         </FlowTitle>
         <Show when={mfaTicket()}>
+          {/* The link from the email opens here, in the browser, also for
+              people who registered in a desktop or mobile app. That app is
+              waiting on its "Check your mail" step and signs in by itself
+              (FlowCheck), so send them back to it. */}
+          <Show when={!isNativeShell()}>
+            <Text class="body" size="medium">
+              <Trans>
+                Signed up in the Sloga app? Go back to it. If it hasn't signed
+                you in, sign in there with your email and password.
+              </Trans>
+            </Text>
+          </Show>
           <Button onPress={performLogin}>
-            <Trans>Continue to app</Trans>
+            <Trans>Continue in this browser</Trans>
           </Button>
         </Show>
         <a href="/login/auth">
