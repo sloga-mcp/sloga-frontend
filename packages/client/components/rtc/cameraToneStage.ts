@@ -1208,11 +1208,15 @@ export class CameraToneStage {
       null,
     );
 
+    // Storage first, attachment second. A texture attached before it has
+    // storage leaves the framebuffer incomplete for good on some phone
+    // drivers (seen on Adreno: "blur A framebuffer is incomplete"), even
+    // though the storage arrives before the status is asked for.
+    this.#allocateBlurTargets();
+
     this.#blurFramebufferA = this.#createFramebuffer(this.#blurTextureA);
     this.#blurFramebufferB = this.#createFramebuffer(this.#blurTextureB);
     this.#lumaFramebuffer = this.#createFramebuffer(this.#lumaTexture);
-
-    this.#allocateBlurTargets();
 
     this.#assertComplete(this.#blurFramebufferA, "blur A");
     this.#assertComplete(this.#blurFramebufferB, "blur B");
@@ -1262,7 +1266,16 @@ export class CameraToneStage {
 
   #assertComplete(framebuffer: WebGLFramebuffer, label: string): void {
     if (!this.#isComplete(framebuffer)) {
-      throw new Error(`Camera tone stage: ${label} framebuffer is incomplete`);
+      // The status and the size name the cause on a device nobody can debug.
+      const gl = this.#gl;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      throw new Error(
+        `Camera tone stage: ${label} framebuffer is incomplete` +
+          ` (0x${status.toString(16)}, ${this.#halfWidth}x${this.#halfHeight},` +
+          ` error 0x${gl.getError().toString(16)})`,
+      );
     }
   }
 
@@ -1303,6 +1316,28 @@ export class CameraToneStage {
       null,
     );
     gl.activeTexture(gl.TEXTURE0);
+    // A resize gives the textures new storage. The same drivers keep the
+    // old (now gone) storage in the framebuffer until it is attached again.
+    this.#attach(this.#blurFramebufferA, this.#blurTextureA);
+    this.#attach(this.#blurFramebufferB, this.#blurTextureB);
+  }
+
+  /** Attaches the texture as the framebuffer's colour target (again). */
+  #attach(
+    framebuffer: WebGLFramebuffer | null,
+    texture: WebGLTexture | null,
+  ): void {
+    if (!framebuffer || !texture) return;
+    const gl = this.#gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      texture,
+      0,
+    );
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
   /** New texture with the params video-sized (non-power-of-two) frames need. */
