@@ -363,6 +363,16 @@ export class MlsKeyProvider extends BaseKeyProvider {
 
   /** Set by `close()` and never cleared: every install is refused after it. */
   #closed = false;
+  /**
+   * Moves on every `resetForGroup` (and so on `close`). An install takes it
+   * once `#admits` has let it in, and refuses to land if it moved during the
+   * install's import: the group it was for has been replaced, and landing
+   * would publish that group's keys into the provider that now stands for the
+   * next one (or, against a new group's fence, reset that group's keys away).
+   * Epochs cannot tell old from new: they restart per group, and a group can
+   * be re-established under the same id.
+   */
+  #resetGeneration = 0;
 
   /** The local key's ack wait; set exactly when `#rawKeyBytes` is. */
   readonly #awaitKeyAck:
@@ -559,16 +569,18 @@ export class MlsKeyProvider extends BaseKeyProvider {
    * re-assert (the Add-grace's deferred local install rides one), a lower one
    * has been superseded and must do nothing.
    *
-   * 🔴 The GROUP half is deliberately weaker, and the session owns it. A
-   * different group resets rather than compares, because epochs only count
-   * within one group and a cross-group number is neither newer nor older — but
-   * that means the provider trusts ARRIVAL ORDER to say which group is
-   * current, so a late install for an abandoned group would replace a live
-   * one's keys. Nothing can reach that today: the session re-checks
-   * `groupId !== this.#groupId` after its fetch, and `#resetRotationState`
-   * cancels the grace timer before any group swap. A caller that wants the
-   * provider to enforce it must hand it the authoritative group id; this fence
-   * restates the EPOCH invariant only.
+   * 🔴 The GROUP half is deliberately weaker. A different group resets
+   * rather than compares, because epochs only count within one group and a
+   * cross-group number is neither newer nor older, so the provider trusts
+   * ARRIVAL ORDER to say which group is current. What it does enforce is the
+   * reset itself: an install still importing when its group was replaced
+   * (`resetForGroup`, which the session's `#resetRotationState` runs on a
+   * re-establish, a poisoned successor or a removed-self rejoin) lands
+   * nothing, because every reset moves `#resetGeneration` and an install
+   * refuses to land across a move. The session drops such an install's
+   * result on its own side too. Two installs for different groups that both
+   * start with no reset between them are still ordered by arrival; a caller
+   * that wants more must hand the provider the authoritative group id.
    */
   #admits(groupId: string, epoch: number): boolean {
     // Checked first: a closed provider must not reset for a "new" group.
@@ -600,6 +612,7 @@ export class MlsKeyProvider extends BaseKeyProvider {
    * front of that, but not holding the key is the stronger control.
    */
   resetForGroup(): void {
+    this.#resetGeneration += 1;
     const dropped = this.getKeys();
     this.#replayRemotes = [];
     this.#replayLocal = [];
@@ -716,8 +729,12 @@ export class MlsKeyProvider extends BaseKeyProvider {
     frameKeys: MlsFrameKeys,
     localIdentity: string,
   ): Promise<void> {
-    await this.applyRemoteKeys(frameKeys, localIdentity);
-    await this.applyLocalKey(frameKeys, localIdentity);
+    // 🔴 The local half is held to the generation the remote half was
+    // admitted under. Started fresh after a reset, it would find the next
+    // group's fence (or none), reset or pass, and publish this group's send
+    // key on top of the group that replaced it.
+    const generation = await this.#applyRemote(frameKeys, localIdentity);
+    await this.#applyLocal(frameKeys, localIdentity, generation);
   }
 
   /**
@@ -731,22 +748,40 @@ export class MlsKeyProvider extends BaseKeyProvider {
     frameKeys: MlsFrameKeys,
     localIdentity: string,
   ): Promise<void> {
+    await this.#applyRemote(frameKeys, localIdentity);
+  }
+
+  /**
+   * `applyRemoteKeys`, returning the reset generation it ran under (taken
+   * after its entry check, which may itself reset for a new group), so
+   * `applyKeys` can hold its local half to the same group.
+   */
+  async #applyRemote(
+    frameKeys: MlsFrameKeys,
+    localIdentity: string,
+  ): Promise<number> {
     const epoch = this.#epochOf(frameKeys);
-    if (!this.#admits(frameKeys.group_id, epoch)) return;
+    if (!this.#admits(frameKeys.group_id, epoch)) return this.#resetGeneration;
+    const generation = this.#resetGeneration;
     const imported = await this.#import(
       remoteInstallEntries(frameKeys, localIdentity),
     );
     // Re-check across the import: `#import` awaits, so a newer epoch may have
-    // installed while we were deriving this one.
-    if (!this.#admits(frameKeys.group_id, epoch)) {
+    // installed while we were deriving this one, or the group been replaced
+    // (remote-half generation check).
+    if (
+      generation !== this.#resetGeneration ||
+      !this.#admits(frameKeys.group_id, epoch)
+    ) {
       scrubKeyBytes(imported, []);
-      return;
+      return generation;
     }
     // Replace the remote replay set wholesale rather than merging: a sender
     // removed at this epoch is absent from the imported set, and that absence
     // is exactly what stops LiveKit re-installing their key on the next ack.
     this.#publish(imported, "remotes");
     this.#stamp(frameKeys.group_id, epoch);
+    return generation;
   }
 
   /**
@@ -762,8 +797,22 @@ export class MlsKeyProvider extends BaseKeyProvider {
     frameKeys: MlsFrameKeys,
     localIdentity: string,
   ): Promise<void> {
+    await this.#applyLocal(frameKeys, localIdentity);
+  }
+
+  /**
+   * `applyLocalKey`; `since` (from `applyKeys`) is the generation the remote
+   * half ran under, and a reset since then refuses this half before it starts.
+   */
+  async #applyLocal(
+    frameKeys: MlsFrameKeys,
+    localIdentity: string,
+    since?: number,
+  ): Promise<void> {
     const epoch = this.#epochOf(frameKeys);
+    if (since !== undefined && since !== this.#resetGeneration) return;
     if (!this.#admits(frameKeys.group_id, epoch)) return;
+    const generation = this.#resetGeneration;
     const entries = localInstallEntries(frameKeys, localIdentity);
     if (entries.length === 0) {
       // 🔴 FAIL LOUD, TERMINALLY. An egress with no entry for us means native
@@ -782,7 +831,11 @@ export class MlsKeyProvider extends BaseKeyProvider {
       throw new MissingLocalFrameKeyError(frameKeys.group_id, epoch);
     }
     const imported = await this.#import(entries);
-    if (!this.#admits(frameKeys.group_id, epoch)) {
+    // Local-half generation check: a reset during the import refuses it.
+    if (
+      generation !== this.#resetGeneration ||
+      !this.#admits(frameKeys.group_id, epoch)
+    ) {
       scrubKeyBytes(imported, []);
       return;
     }
