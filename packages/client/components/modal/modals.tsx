@@ -99,6 +99,7 @@ import { SoftResExportModal } from "./modals/SoftResExport";
 import { SoftResReserveModal } from "./modals/SoftResReserve";
 import { SupportSlogaModal } from "./modals/SupportSloga";
 import { SuspendUserModal } from "./modals/SuspendUser";
+import { TakedownQueueModal } from "./modals/TakedownQueue";
 import { TimelockComposeModal } from "./modals/TimelockCompose";
 import { TimeoutMemberModal } from "./modals/TimeoutMember";
 import { UserProfileModal } from "./modals/UserProfile";
@@ -292,6 +293,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <ReportContentModal {...modalProps} />;
     case "report_queue":
       return <ReportQueueModal {...modalProps} />;
+    case "takedown_queue":
+      return <TakedownQueueModal {...modalProps} />;
     case "server_identity":
       return <ServerIdentityModal {...modalProps} />;
     case "server_info":

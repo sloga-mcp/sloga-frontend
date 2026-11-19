@@ -514,6 +514,10 @@ export type Modals =
       client: Client;
     }
   | {
+      type: "takedown_queue";
+      client: Client;
+    }
+  | {
       type: "server_identity";
       member: ServerMember;
     }
