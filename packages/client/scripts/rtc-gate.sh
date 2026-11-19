@@ -99,7 +99,9 @@ EXPECTED=(
   "components/rtc/mlsAdmitPolicy.test.ts 15 0"
   # Re-measured (32 -> 45) by iOS call E2EE phase 2 wave 3: the raw key
   # bytes, the ack-gated local install and its zeroing (L3n).
-  "components/rtc/mlsCallKeys.test.ts 45 0"
+  # Re-measured (45 -> 49) by the import-race fix: close() is terminal, so an
+  # install still importing when the call ends lands nothing.
+  "components/rtc/mlsCallKeys.test.ts 49 0"
   # Re-measured (117 -> 132) by wave J: the witness-only amber escalation,
   # the join-window ledger and readiness "paused" (WJ1); 132 -> 139 by Stage
   # 5 fix round F2 (the chip's pausedByServer, M1's unresolved identities,

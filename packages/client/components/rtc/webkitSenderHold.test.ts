@@ -1072,7 +1072,7 @@ const RELEASE_ORDER = [
   "resetBackstop",
   "unbind",
   "terminate",
-  "resetForGroup",
+  "close",
 ];
 
 /** Every part of a call's media E2EE, each logging its step. */
@@ -1089,7 +1089,7 @@ const callLeftovers = (log: string[], fail: readonly string[] = []) => {
     resetBackstop: step("resetBackstop"),
     unbind: step("unbind"),
     worker: { terminate: step("terminate") },
-    provider: { resetForGroup: step("resetForGroup") },
+    provider: { close: step("close") },
   };
 };
 
@@ -1112,7 +1112,7 @@ test("🔴 a release stops every key writer, then the worker, and zeroes the key
   // zeroed; the tick stops with its worker, never after it (R8).
   const at = (name: string) => log.indexOf(name);
   for (const writer of ["disposeSession", "unlistenKeys"]) {
-    assert.ok(at(writer) < at("resetForGroup"), writer);
+    assert.ok(at(writer) < at("close"), writer);
   }
   assert.ok(at("unbind") < at("terminate"));
 });
@@ -1123,7 +1123,7 @@ test("🔴 every step runs even when an earlier one throws, and every throw is r
     ["unlistenKeys"],
     ["unbind"],
     ["terminate"],
-    ["resetForGroup"],
+    ["close"],
     ["disposeSession", "unbind", "terminate"],
     RELEASE_ORDER,
   ]) {
@@ -1148,7 +1148,7 @@ test("a release with nothing held does nothing; a missing part is skipped", () =
     resetBackstop: "resetBackstop",
     unbind: "unbind",
     worker: "terminate",
-    provider: "resetForGroup",
+    provider: "close",
   };
   for (const missing of Object.keys(stepOf) as (keyof typeof stepOf)[]) {
     const log: string[] = [];
@@ -1201,7 +1201,7 @@ test("🔴 a leftover session that pushes keys while it is disposed cannot outli
     unlistenKeys: () => {
       pushListener = undefined;
     },
-    provider: { resetForGroup: () => keyBytes.fill(0) },
+    provider: { close: () => keyBytes.fill(0) },
   });
   assert.deepEqual(errors, []);
   pushListener?.(); // a push after the release reaches nothing
