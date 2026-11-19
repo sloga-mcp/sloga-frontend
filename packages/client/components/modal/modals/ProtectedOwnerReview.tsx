@@ -13,6 +13,10 @@ import {
 } from "@revolt/client/protectedCopy";
 import { protectedNoticeForError } from "@revolt/client/protectedShield";
 import {
+  protectedSelfIds,
+  signingDeviceOf,
+} from "@revolt/client/protectedSigningDevice";
+import {
   protectedUiOf,
   useProtectedShield,
 } from "@revolt/client/useProtectedChannel";
@@ -76,6 +80,15 @@ export function ProtectedOwnerReviewModal(
       declined: declined(),
     });
 
+  /**
+   * FXU: the settled notice's ctx. This device runs the D21 successor
+   * itself, so a poisoned-group notice reads "Re-securing with a new
+   * group..." here only (the pill's rule, `signingDeviceOf`).
+   */
+  const noticeCtx = () => ({
+    signingDevice: signingDeviceOf(shield(), protectedSelfIds(client())),
+  });
+
   /** Body lines; copy functions only. */
   const lines = (): string[] => {
     const p = panel();
@@ -94,7 +107,9 @@ export function ProtectedOwnerReviewModal(
         return [noticeCopy("owner_changed_unlisted")];
       case "settled": {
         const notice = shield()?.notice ?? null;
-        return notice === null ? [] : [noticeCopy(notice)];
+        return notice === null
+          ? []
+          : [noticeCopy(notice, null, null, null, noticeCtx())];
       }
       default: {
         const _exhaustive: never = p.kind;

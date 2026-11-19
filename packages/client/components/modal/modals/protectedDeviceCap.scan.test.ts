@@ -27,6 +27,10 @@
 //  D13 "Raise the device limit" is signed only on the device that signs
 //      the member list (audit LOW-4): disabled anywhere else, with a line
 //      saying where to do it; two unknown device ids never match.
+//  D14 FXT F-L13: "Try again" waits (disabled, and says so) while a member
+//      may be admitting this device (an Add of it, or its stored intent,
+//      first seen less than the manager's admit window ago); released
+//      after it. The manager holds the intent itself either way.
 //
 // Point `PROTECTED_DEVICE_CAP_FILE` at another copy (a known-bad control)
 // to check that instead; it must fail.
@@ -84,6 +88,16 @@ interface Rules {
     signerDeviceId: string | null,
     selfDeviceId: string | null,
   ): boolean;
+  deviceCapWaitKey(
+    view: unknown,
+    userId: string | null,
+    deviceId: string | null,
+  ): string | null;
+  deviceCapRetryWaiting(
+    seenAtMs: number | null,
+    nowMs: number,
+    windowMs: number,
+  ): boolean;
 }
 const RULE_NAMES = [
   "deviceCapRows",
@@ -91,6 +105,8 @@ const RULE_NAMES = [
   "deviceCapLabel",
   "deviceCapRaise",
   "deviceCapOnSigningDevice",
+  "deviceCapWaitKey",
+  "deviceCapRetryWaiting",
 ] as const;
 
 let rulesPromise: Promise<Rules> | null = null;
@@ -386,7 +402,7 @@ test("D8 Try again asks the bridge to open the channel", () => {
   assert.match(body, /^\s*ui\(\)\?\.protectedOpen\(props\.channel\.id\);$/m);
   assert.match(
     BODY,
-    /text: <Trans>Try again<\/Trans>,\s*onClick: \(\) => \{\s*tryAgain\(\);\s*return false;\s*\},/,
+    /text: retryWaiting\(\) \? \(\s*t`Waiting for a member to add this device…`\s*\) : \(\s*<Trans>Try again<\/Trans>\s*\),\s*onClick: \(\) => \{\s*tryAgain\(\);\s*return false;\s*\},\s*isDisabled: busy\(\) \|\| retryWaiting\(\),/,
   );
   // A raise that went through retries the same way.
   assert.match(
@@ -537,6 +553,7 @@ test("D12 copy and blank-page traps", () => {
     [
       "Last seen ${seenAgo}",
       "Couldn't sign out that device. Try again.",
+      "Waiting for a member to add this device…",
       "Sign out one of your other devices to make room for this one, then try again.",
       "Unnamed device",
       "Signs this channel's member list",
@@ -554,4 +571,114 @@ test("D12 copy and blank-page traps", () => {
   assert.doesNotMatch(CODE, /from "@revolt\/ui";/, "@revolt/ui barrel import");
   assert.doesNotMatch(CODE, /features\/legacy/, "legacy barrel");
   assert.doesNotMatch(CODE, /use:floating/);
+});
+
+const ME = "user-me";
+const G = "group-1";
+const viewOf = (over: {
+  native?: unknown;
+  member_added?: unknown;
+  join_requests?: unknown;
+}) => ({
+  native: over.native ?? { state: "none", group_id: null },
+  serverGroup: {
+    group_id: G,
+    member_added: over.member_added ?? [],
+    join_requests: over.join_requests ?? [],
+  },
+});
+
+test("D14 rule: Try again waits for an Add of this device (newest epoch) or its stored intent, never once it holds the group, never for another device", async () => {
+  const r = await loadRules();
+  const added = (epoch: unknown, device = THIS) => ({
+    user_id: ME,
+    device_id: device,
+    epoch,
+  });
+  const intent = (ref: unknown, device = THIS) => ({
+    user_id: ME,
+    device_id: device,
+    key_package_ref: ref,
+  });
+  assert.equal(
+    r.deviceCapWaitKey(
+      viewOf({ member_added: [added(4), added(7), added(5)] }),
+      ME,
+      THIS,
+    ),
+    `add:${G}:7`,
+  );
+  assert.equal(
+    r.deviceCapWaitKey(viewOf({ join_requests: [intent("KPR-1")] }), ME, THIS),
+    "intent:KPR-1",
+  );
+  // An Add wins over the intent it consumed.
+  assert.equal(
+    r.deviceCapWaitKey(
+      viewOf({ member_added: [added(4)], join_requests: [intent("KPR-1")] }),
+      ME,
+      THIS,
+    ),
+    `add:${G}:4`,
+  );
+  // Holding the server's group: nothing to wait for.
+  assert.equal(
+    r.deviceCapWaitKey(
+      viewOf({
+        native: { state: "active", group_id: G },
+        member_added: [added(4)],
+      }),
+      ME,
+      THIS,
+    ),
+    null,
+  );
+  // Another device's Add or intent, malformed entries, unknown self, no view.
+  assert.equal(
+    r.deviceCapWaitKey(
+      viewOf({
+        member_added: [added(4, OTHER), added("4"), added(1.5)],
+        join_requests: [intent("KPR-9", OTHER), intent(""), intent(7)],
+      }),
+      ME,
+      THIS,
+    ),
+    null,
+  );
+  const ok = viewOf({ join_requests: [intent("KPR-1")] });
+  assert.equal(r.deviceCapWaitKey(ok, null, THIS), null);
+  assert.equal(r.deviceCapWaitKey(ok, ME, null), null);
+  assert.equal(r.deviceCapWaitKey(null, ME, THIS), null);
+  assert.equal(r.deviceCapWaitKey({ serverGroup: null }, ME, THIS), null);
+});
+
+test("D14 rule: the wait lasts the window from first sight, then releases; a clock before it or not finite never waits", async () => {
+  const r = await loadRules();
+  const W = 60_000;
+  assert.equal(r.deviceCapRetryWaiting(null, 5, W), false);
+  assert.equal(r.deviceCapRetryWaiting(1_000, 1_000, W), true);
+  assert.equal(r.deviceCapRetryWaiting(1_000, 1_000 + W - 1, W), true);
+  assert.equal(r.deviceCapRetryWaiting(1_000, 1_000 + W, W), false);
+  assert.equal(r.deviceCapRetryWaiting(1_000, 999, W), false);
+  assert.equal(r.deviceCapRetryWaiting(1_000, Number.NaN, W), false);
+});
+
+test("D14 wiring: the wait reads the manager's view and its admit window, ticks while open, and disables Try again", () => {
+  assert.match(
+    CODE,
+    /import \{ JOIN_ADMIT_WINDOW_MS \} from "@revolt\/client\/protectedText";/,
+  );
+  assert.match(
+    BODY,
+    /deviceCapWaitKey\(\s*ui\(\)\?\.protectedChannels\.get\(props\.channel\.id\) \?\? null,\s*selfId\(\),\s*ui\(\)\?\.selfDeviceId\(\) \?\? null,?\s*\)/,
+  );
+  assert.match(
+    BODY,
+    /return prev\?\.key === key \? prev : \{ key, at: Date\.now\(\) \};/,
+  );
+  assert.match(BODY, /onCleanup\(\(\) => clearInterval\(clock\)\);/);
+  assert.match(
+    BODY,
+    /deviceCapRetryWaiting\(\s*waitSeen\(\)\?\.at \?\? null,\s*now\(\),\s*JOIN_ADMIT_WINDOW_MS,?\s*\)/,
+  );
 });

@@ -124,6 +124,7 @@ import type {
   ProtectedTextManagerDeps,
   ProtectedTextPort,
   RemoveDevicesOptions,
+  SignedAuthority,
   TextApiMethod,
   TextApiResponse,
   TextChannelState,
@@ -198,6 +199,23 @@ export const PROTECTED_SEND_KEY_PREFIX = "protected-send:";
  * the stage is resolved. Handshake bytes only, never message plaintext.
  */
 export const PROTECTED_STAGE_KEY_PREFIX = "protected-stage:";
+
+/**
+ * FXT M1: storage key prefix (`<prefix><userId>:<channelId>`) of the users
+ * a recovery PUT was refused for (`SeatListNamesRemovedUsers.users`), keyed
+ * to the served list version the refused bytes were signed over. Ids only.
+ */
+export const PROTECTED_RECOVERY_REFUSED_KEY_PREFIX =
+  "protected-recovery-refused:";
+
+/**
+ * F-L13: after this device's join intent went out (or its stored intent was
+ * first seen), a member may be admitting it for this long. A join run sends
+ * no intent of its own meanwhile (`joinIntentHeld`): an intent created
+ * after the Add of this device lands reads as a rejoin, members evict the
+ * fresh leaf citing it, and native poisons the group on this device.
+ */
+export const JOIN_ADMIT_WINDOW_MS = 60_000;
 
 /** Decrypted views remembered for cache-restore re-requests. */
 const VIEW_CACHE_MAX = 5_000;
@@ -417,6 +435,122 @@ function parseSeats(body: unknown): ProtectedSeatsResponse | null {
   const gen = body.as_of_generation;
   if (gen !== undefined && gen !== null && !int(gen)) return null;
   return body as unknown as ProtectedSeatsResponse;
+}
+
+/**
+ * F-L4b: a served list's `authority` by the owner flow's rule
+ * (`parseAuthority` in protectedTextOwner.ts, not exported, mirrored):
+ * absent or null = none, `{ body, signature }` strings = those two fields
+ * copied, anything else = malformed (undefined). Never the served object.
+ */
+function servedAuthority(v: unknown): SignedAuthority | null | undefined {
+  if (v === undefined || v === null) return null;
+  if (isRecord(v) && str(v.body) && str(v.signature)) {
+    return { body: v.body, signature: v.signature };
+  }
+  return undefined;
+}
+
+/**
+ * F-L4 + FXT M1 (W4d N3, `serverRemovedSeatIds`): the recovery list's
+ * seats, in the held order. A held user is left off ONLY on positive
+ * evidence that the server released them: released and cooling (in
+ * `cooling[]`, not in `seats[]`), or named by a `SeatListNamesRemovedUsers`
+ * refusal of a recovery PUT signed over this same served list version
+ * (`refused`). Mere absence from `seats[]` never drops anyone: a server
+ * could omit a member from this read alone and have the owner sign them
+ * away behind a dialog that never names them. `self` is always kept, and a
+ * user the held list does not name is never added. null when `seated` or
+ * `cooling` is not well-formed (nothing is guessed from it).
+ */
+export function recoverySeats(
+  held: readonly string[],
+  snapshot: { seats?: unknown; cooling?: unknown },
+  self: string,
+  refused: readonly string[],
+): string[] | null {
+  const seated = snapshot.seats;
+  if (!Array.isArray(seated)) return null;
+  const active = new Set<string>();
+  for (const s of seated) {
+    if (!isRecord(s) || !str(s.user_id)) return null;
+    active.add(s.user_id);
+  }
+  const cooling = new Set<string>();
+  const rows = snapshot.cooling ?? [];
+  if (!Array.isArray(rows)) return null;
+  for (const c of rows) {
+    if (!isRecord(c) || !str(c.user_id)) return null;
+    cooling.add(c.user_id);
+  }
+  const released = (u: string) =>
+    (cooling.has(u) && !active.has(u)) || refused.includes(u);
+  return held.filter((u) => u === self || !released(u));
+}
+
+/**
+ * FXT M1: the users of a recovery PUT refused with 400
+ * `SeatListNamesRemovedUsers { users }`, or null for any other failure. A
+ * malformed `users` is null (nothing is recorded from it).
+ */
+function removedUsersRefusal(err: unknown): string[] | null {
+  if (
+    !isRecord(err) ||
+    err.source !== "server" ||
+    err.status !== 400 ||
+    err.type !== "SeatListNamesRemovedUsers" ||
+    !isRecord(err.body)
+  ) {
+    return null;
+  }
+  const users = err.body.users;
+  if (!Array.isArray(users) || users.length === 0) return null;
+  if (!users.every((u) => str(u))) return null;
+  return users as string[];
+}
+
+/**
+ * F-L13: whether a join run may send an intent now. Held while this
+ * device's own intent is stored on the server (`ownIntentStored`) and was
+ * sent or first seen less than `JOIN_ADMIT_WINDOW_MS` ago (`sinceMs`): a
+ * member may be admitting it right now. Released once the window passes
+ * with no Add. A clock that is not finite or reads before `sinceMs` does
+ * not hold (never a join that waits for good). An Add that already landed
+ * is the run's Welcome path, not a hold (FXT2: `addPending` dropped, no
+ * caller ever set it).
+ */
+export function joinIntentHeld(i: {
+  ownIntentStored: boolean;
+  sinceMs: number | null;
+  nowMs: number;
+}): boolean {
+  if (!i.ownIntentStored || i.sinceMs === null) return false;
+  const age = i.nowMs - i.sinceMs;
+  return Number.isFinite(age) && age >= 0 && age < JOIN_ADMIT_WINDOW_MS;
+}
+
+/**
+ * F-L13: the `key_package_ref` of this device's own stored intent in
+ * `text_group.join_requests`, or null (none, or not readable).
+ */
+function ownStoredIntentRef(
+  g: { join_requests?: unknown } | null,
+  userId: string,
+  deviceId: string,
+): string | null {
+  const raw = g?.join_requests;
+  if (!Array.isArray(raw)) return null;
+  for (const r of raw) {
+    if (
+      isRecord(r) &&
+      r.user_id === userId &&
+      r.device_id === deviceId &&
+      str(r.key_package_ref)
+    ) {
+      return r.key_package_ref;
+    }
+  }
+  return null;
 }
 
 /**
@@ -702,6 +836,20 @@ interface ChannelRec {
   welcomeFetch: Promise<StoredWelcomeResult> | null;
   /** S2-D28: the admission pass over stored `join_requests` in flight. */
   storedAdmit: Promise<void> | null;
+  /** F-L13: `port.now()` when this device's last join intent was taken. */
+  lastIntentAtMs: number | null;
+  /** F-L13: the KeyPackage ref of that intent (FXT2: its exact window). */
+  lastIntentRef: string | null;
+  /**
+   * F-L13: this device's own stored intent (`join_requests`) by its
+   * KeyPackage ref, and when this manager first saw it; null when none.
+   */
+  ownIntentSeen: { ref: string; atMs: number } | null;
+  /**
+   * FXT M1: the served list version the current `recoverOwnership` call
+   * signed its recovery list over; null outside a call or before the sign.
+   */
+  recoverySignedOver: number | null;
 }
 
 type ProcessResult = "ok" | "held" | "parked" | "dropped";
@@ -738,6 +886,14 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    * claims for them again (each claim burns a KeyPackage of the target).
    */
   readonly #admitRefused = new Set<string>();
+  /**
+   * FXT M1: the in-memory copy of each channel's recovery refusal record
+   * (used when the store write failed; the store copy wins when readable).
+   */
+  readonly #recoveryRefusedMem = new Map<
+    string,
+    { version: number; users: string[] }
+  >();
   /** In-flight decrypts keyed by `id:live` (W4b audit L2). */
   readonly #decrypting = new Set<string>();
   /** Final message views (cache restore re-requests re-emit these). */
@@ -928,7 +1084,18 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     // red ("try opening the channel again"): its budget starts over.
     rec.welcomeRetriesExhausted = false;
     this.#resetLeafMissing(rec, "open");
-    this.#resetJoinBackoff(rec, "open");
+    // F-L13: not while this device's intent may be being admitted: the
+    // reset would only bring the next re-broadcast forward into that admit
+    // ("Try again" on the capacity screen is an open). A run started by
+    // this open holds its intents the same way (`#runJoin`).
+    const g = rec.serverGroup;
+    if (g !== null && this.#joinHoldMs(rec, g) > 0) {
+      this.#log("info", "open: join backoff kept, an admit may be landing", {
+        channelId,
+      });
+    } else {
+      this.#resetJoinBackoff(rec, "open");
+    }
     await this.refresh(channelId, "open");
   }
 
@@ -1119,14 +1286,186 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   }
 
   async #recover(rec: ChannelRec): Promise<void> {
-    await this.#deps.owner.recoverOwnership(this, this.#flowPort, rec.id, {
-      retryBudget: RECOVERY_PUT_RETRY_BUDGET,
-      sign: () => this.#signRecovery(rec),
-      ensureLeaf: () => this.#ensureRecoveryLeaf(rec),
-    });
+    if (await this.#recoverOrReview(rec)) {
+      // FXT M2: the native owner-change dialog (the consent) runs in the
+      // background behind a fresh refresh, so after this call resolved; a
+      // cancel leaves "Review owner change" as it was.
+      this.#background(this.#confirmOwnRecovery(rec));
+    }
+  }
+
+  /**
+   * True when the recovery landed and native now asks the 4.7 review of
+   * this device's own key (FXT M2): the owner flow's re-verify answered
+   * `owner_changed { same_user, signer_device_id: this device }` after the
+   * PUT, while the served list is this device's. Native holds the lost
+   * device's pin and refuses a recovery device its held authority lists
+   * (`seat_list.rs` `authority_acceptance`), so this is the designed answer,
+   * not a failure: the call resolves, and `#confirmOwnRecovery` runs the
+   * step the owner flow's `finishSeats` skipped after its verify threw.
+   */
+  async #recoverOrReview(rec: ChannelRec): Promise<boolean> {
+    // Set by `#signRecovery` only: a refusal is recorded only for a
+    // recovery list this call signed (never another flow's resumed bytes).
+    rec.recoverySignedOver = null;
+    try {
+      await this.#deps.owner.recoverOwnership(this, this.#flowPort, rec.id, {
+        retryBudget: RECOVERY_PUT_RETRY_BUDGET,
+        sign: () => this.#signRecovery(rec),
+        ensureLeaf: () => this.#ensureRecoveryLeaf(rec),
+      });
+    } catch (err) {
+      const refused = removedUsersRefusal(err);
+      if (refused !== null && rec.recoverySignedOver !== null) {
+        this.#noteRecoveryRefused(rec, rec.recoverySignedOver, refused);
+      }
+      if (!(await this.#ownRecoveryLanded(rec, err))) throw err;
+      this.#log("info", "ownership recovered: own owner change to confirm", {
+        channelId: rec.id,
+      });
+      this.#clearRecoveryRefused(rec);
+      return true;
+    } finally {
+      rec.recoverySignedOver = null;
+    }
+    this.#clearRecoveryRefused(rec);
     this.#log("info", "ownership recovered on this device", {
       channelId: rec.id,
     });
+    return false;
+  }
+
+  /**
+   * FXT M2: `err` is native's `owner_changed` naming this device as the
+   * same-user signer, and a fresh `GET .../seats` serves a list this device
+   * signed (only this device signs one), so the recovery PUT landed.
+   */
+  async #ownRecoveryLanded(rec: ChannelRec, err: unknown): Promise<boolean> {
+    // A server or client failure is never native's verdict.
+    const n = isFlowFailure(err)
+      ? err.source === "native"
+        ? err.error
+        : null
+      : nativeErrorOf(err);
+    if (
+      n?.type !== "owner_changed" ||
+      n.same_user !== true ||
+      n.signer_user_id !== this.#port.selfUserId ||
+      n.signer_device_id !== this.#port.selfDeviceId
+    ) {
+      return false;
+    }
+    await this.refresh(rec.id, "commit");
+    return this.#servesOwnList(rec);
+  }
+
+  /** The served list is signed by this device (FXT M2). */
+  #servesOwnList(rec: ChannelRec): boolean {
+    const l = rec.seats?.list ?? null;
+    return (
+      l !== null &&
+      l.signer_user_id === this.#port.selfUserId &&
+      l.signer_device_id === this.#port.selfDeviceId
+    );
+  }
+
+  /**
+   * FXT M2 (planner ruling), after a landed recovery:
+   * 1. In place of `finishSeats`' skipped leaf step: the routine
+   *    pending-removal commit `#maintain` also runs
+   *    (`#commitPendingRemovals`). The users the recovery list left off are
+   *    pending removals (the server released them); it adds no authority,
+   *    and does nothing when this device holds no leaf in the open group
+   *    (e.g. a fresh recovery successor).
+   * 2. Native's owner-change confirm for this device's own key: the NATIVE
+   *    dialog is the consent, nothing is confirmed from the webview. Only
+   *    while the served list is still this device's and the verify still
+   *    waits for the review; a cancel (or any refusal) leaves the review.
+   */
+  async #confirmOwnRecovery(rec: ChannelRec): Promise<void> {
+    await this.refresh(rec.id, "commit");
+    await this.#commitPendingRemovals(rec);
+    if (!rec.ownerChangePending || !this.#servesOwnList(rec)) return;
+    try {
+      await this.confirmOwnerChange(rec.id);
+    } catch (err) {
+      if (isDisposed(err)) throw err;
+      this.#log("info", "own owner change left for review", {
+        channelId: rec.id,
+        type: viewTagOf(err),
+      });
+    }
+  }
+
+  #recoveryRefusedKey(rec: ChannelRec): string {
+    return `${PROTECTED_RECOVERY_REFUSED_KEY_PREFIX}${this.#port.selfUserId}:${rec.id}`;
+  }
+
+  /**
+   * FXT M1: remember who a recovery PUT signed over served list `version`
+   * was refused for (persisted, ids only). A later refusal over the same
+   * version adds to it; another version replaces it.
+   */
+  #noteRecoveryRefused(
+    rec: ChannelRec,
+    version: number,
+    users: readonly string[],
+  ): void {
+    const prior = this.#recoveryRefusedFor(rec, version);
+    const all = [...prior];
+    for (const u of users) if (!all.includes(u)) all.push(u);
+    let ok = false;
+    try {
+      ok = this.#port.store.set(
+        this.#recoveryRefusedKey(rec),
+        JSON.stringify({ v: 1, version, users: all }),
+      );
+    } catch {
+      ok = false;
+    }
+    this.#recoveryRefusedMem.set(rec.id, { version, users: all });
+    this.#log(ok ? "info" : "warn", "recovery refused for released users", {
+      channelId: rec.id,
+      count: users.length,
+      persisted: ok,
+    });
+  }
+
+  /**
+   * FXT M1: the users a recovery PUT over served list `version` was refused
+   * for; empty for any other version or an unreadable record.
+   */
+  #recoveryRefusedFor(rec: ChannelRec, version: number): string[] {
+    let stored: unknown = null;
+    try {
+      stored = JSON.parse(
+        this.#port.store.get(this.#recoveryRefusedKey(rec)) ?? "null",
+      );
+    } catch {
+      stored = null;
+    }
+    const mem = this.#recoveryRefusedMem.get(rec.id) ?? null;
+    for (const r of [stored, mem]) {
+      if (
+        isRecord(r) &&
+        r.version === version &&
+        Array.isArray(r.users) &&
+        r.users.every((u) => str(u))
+      ) {
+        return r.users as string[];
+      }
+    }
+    return [];
+  }
+
+  /** FXT M1: a recovery resolved: its refusal record is spent. */
+  #clearRecoveryRefused(rec: ChannelRec): void {
+    this.#recoveryRefusedMem.delete(rec.id);
+    try {
+      this.#port.store.delete(this.#recoveryRefusedKey(rec));
+    } catch {
+      // nothing else to do: a stale record only ever names released users
+    }
   }
 
   /**
@@ -1154,6 +1493,27 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       throw clientFailure("recovery_unavailable");
     }
     const held = n.seat_list;
+    // F-L4 + FXT M1: the server refuses a list still naming a user it
+    // released since the stored list (`SeatListNamesRemovedUsers`) and
+    // nothing re-signs the held list after a release, so a held user is
+    // left off on POSITIVE evidence only: cooling and not seated in the
+    // snapshot of the refresh `recoverOwnership` ran first, or named by a
+    // refusal of a recovery over this same served version. This user
+    // always; never a user the held list does not name.
+    rec.recoverySignedOver = list.version;
+    const seats = recoverySeats(
+      held.seats,
+      rec.seats ?? {},
+      self,
+      this.#recoveryRefusedFor(rec, list.version),
+    );
+    if (seats === null) throw clientFailure("recovery_unavailable");
+    if (seats.length !== held.seats.length) {
+      this.#log("info", "recovery list leaves released users off", {
+        channelId: rec.id,
+        count: held.seats.length - seats.length,
+      });
+    }
     const info = this.#port.channelInfo(rec.id);
     let signed: unknown;
     try {
@@ -1161,14 +1521,14 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       signed = await this.#invoke("e2ee_text_seat_list_sign", {
         channelId: rec.id,
         userId: self,
-        seats: held.seats,
+        seats,
         deviceCap: held.device_cap,
         serverList: { version: list.version, body: list.body },
         format: null,
         authority: null,
         recovery: true,
         channelName: info?.name ?? null,
-        displayNames: this.#port.displayNames(held.seats),
+        displayNames: this.#port.displayNames(seats),
       });
     } catch (err) {
       throw toFailure(err);
@@ -2119,6 +2479,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         this.#report(rec.id, g.group_id, g.generation, "text_group");
         rec.serverGroup = g;
         rec.serverGroupMissing = false;
+        this.#noteOwnIntent(rec, g);
       }
     } else if (groupRes !== null && groupRes.status === 404) {
       rec.serverGroup = null;
@@ -2151,6 +2512,17 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       });
       return;
     }
+    // F-L4b: the server's `list.authority` rides along whatever the signer
+    // (the owner flow's `withAuthority` rule): a body naming an authority
+    // verifies only with it, so a recovery list reaches the 4.7 owner-change
+    // review. A malformed one is omitted, never passed: native then refuses
+    // a body naming an authority (authority_invalid, loud).
+    const authority = servedAuthority(list.authority);
+    if (authority === undefined) {
+      this.#log("warn", "seat list authority malformed: omitted", {
+        channelId: rec.id,
+      });
+    }
     const args: TextCommandArgs["e2ee_text_seat_list_verify"] = {
       channelId: rec.id,
       list: {
@@ -2158,6 +2530,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         signature: list.signature,
         signer_user_id: list.signer_user_id,
         signer_device_id: list.signer_device_id,
+        ...(authority ? { authority } : {}),
       },
       handovers: Array.isArray(list.handovers) ? list.handovers : [],
       serverOwnerId: owner,
@@ -2377,6 +2750,13 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       g !== null &&
       n.group_id === g.group_id &&
       (holdsCurrentGroup(n) || n.state === "poisoned");
+    // FXT2 MAJOR-1: holding the server's group, this device's latest Add
+    // is handled (whichever Welcome joined it): a later wipe or rollback
+    // never takes that Add's stored-Welcome path again.
+    if (g !== null && holdsCurrentGroup(n) && n.group_id === g.group_id) {
+      const own = ownAddedEntry(g, self, this.#port.selfDeviceId);
+      if (own !== null) rec.welcomeDone = own.key;
+    }
     // S2-D28: a member admits from the server's stored intents.
     if (
       g !== null &&
@@ -2639,10 +3019,18 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       // usable) the Add is done and the intent is re-broadcast on the
       // backoff below; that Add is never fetched again.
       const added = ownAddedEntry(g, self, dev);
-      if (
-        added !== null &&
-        welcomePending(added, rec.joinFromEpoch, rec.welcomeDone)
-      ) {
+      // F-L13: with no intent sent this session, an Add of this device not
+      // handled yet is due too, but ONLY while native is `joining`: native
+      // `_join` set it, so an intent of this device (an earlier session's,
+      // or one stored before a reload) is still outstanding and only it
+      // makes a stored Welcome processable. The server keeps `member_added`
+      // for every member device, so a `left` or `none` device (a wiped or
+      // rolled-back leaf) skips this and sends its rejoin intent at once
+      // (FXT2 MAJOR-1: its old Welcome would only be refused as unsolicited).
+      const joining = rec.native?.state === "joining";
+      const fromEpoch =
+        rec.joinFromEpoch ?? (joining ? (added?.epoch ?? null) : null);
+      if (added !== null && welcomePending(added, fromEpoch, rec.welcomeDone)) {
         if (pathRan) {
           pathRan = false;
           if (await this.#joinWait(js, joinRebroadcastDelayMs(js.backoff++))) {
@@ -2665,6 +3053,27 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         }
         if (js.cancelled) return;
         // A held group or a verified failure (the 6c budget) ends it here.
+        const next = await this.#joinRecheck(rec);
+        if (next === null) return;
+        g = next;
+        continue;
+      }
+      // F-L13: EVERY intent (a run's first one and its re-broadcasts, FXT2
+      // MAJOR-2 b) waits while this device's previous intent may be being
+      // admitted (`joinIntentHeld`): a fresh intent racing that admit lands
+      // after the Add, reads as a rejoin and poisons this device. While the
+      // server lists the own intent, the S2-D28 pace is therefore at least
+      // one `JOIN_ADMIT_WINDOW_MS` per intent.
+      const hold = this.#joinHoldMs(rec, g);
+      if (hold > 0) {
+        pathRan = false;
+        this.#log("info", "join intent held: an admit may be landing", {
+          channelId: rec.id,
+          groupId: g.group_id,
+          waitMs: hold,
+        });
+        if (await this.#joinWait(js, hold)) return;
+        if (js.cancelled) return;
         const next = await this.#joinRecheck(rec);
         if (next === null) return;
         g = next;
@@ -2713,6 +3122,37 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       }
       unpublishedRuns = 0;
       if (js.cancelled) return;
+      // F-L13 (FXT2 MAJOR-2 a): re-read right before the POST. The minted
+      // KeyPackage stays unclaimed when the intent is not posted (harmless).
+      const pre = await this.#beforeIntentPost(
+        rec,
+        gid,
+        ownAddedEntry(g, self, dev)?.key ?? null,
+      );
+      if (pre === "joined") return;
+      if (pre !== "post" && pre !== "unknown") {
+        // An Add of this device appeared: its Welcome path, not an intent.
+        this.#log("info", "join intent not posted: an Add landed", {
+          channelId: rec.id,
+          groupId: gid,
+        });
+        g = pre;
+        continue;
+      }
+      if (pre === "unknown") {
+        this.#log("info", "join intent not posted: text_group unread", {
+          channelId: rec.id,
+          groupId: gid,
+        });
+        if (await this.#joinWait(js, joinRebroadcastDelayMs(js.backoff++))) {
+          return;
+        }
+        if (js.cancelled) return;
+        const again = await this.#joinRecheck(rec);
+        if (again === null) return;
+        g = again;
+        continue;
+      }
       // S4 floor (a, OR-3): the verified shell protocol, unsigned, beside
       // native's signed intent (sent as received, never rebuilt).
       const body: TextJoinIntentBody = {
@@ -2722,6 +3162,9 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       const r = await this.#api("POST", `/mls/groups/${gid}/join_intent`, body);
       sent += 1;
       if (r !== null && is2xx(r.status)) {
+        // F-L13: a member may admit it from now on.
+        rec.lastIntentAtMs = this.#port.now();
+        rec.lastIntentRef = joined.intent.key_package_ref;
         // (f) The server took the intent: no longer over a cap.
         if (rec.capacity !== null) {
           rec.capacity = null;
@@ -2771,6 +3214,37 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         this.#markJoinStalled(rec);
       }
     }
+  }
+
+  /**
+   * F-L13 (FXT2 MAJOR-2 a): right before an intent POST. Native state is
+   * read FIRST (any wait in the channel's queue happens here, before the
+   * server read), then a fresh `text_group`; nothing awaits between that
+   * GET's answer and the caller's POST. "joined": this device holds `gid`.
+   * A group: an Add of this device appeared since `addedKey` (the Add the
+   * run last read), so the intent would read as a rejoin. "unknown": the
+   * GET failed (no POST this round: a skipped intent costs a backoff step,
+   * a racing one can poison the device). "post": send it.
+   */
+  async #beforeIntentPost(
+    rec: ChannelRec,
+    gid: string,
+    addedKey: string | null,
+  ): Promise<"joined" | "post" | "unknown" | ProtectedTextGroupResponse> {
+    const n = await this.#readState(rec);
+    if (n && holdsCurrentGroup(n) && n.group_id === gid) return "joined";
+    const r = await this.#api("GET", `/mls/channels/${rec.id}/text_group`);
+    const g = r !== null && is2xx(r.status) ? parseTextGroup(r.body) : null;
+    if (g === null) return "unknown";
+    this.#report(rec.id, g.group_id, g.generation, "text_group");
+    rec.serverGroup = g;
+    this.#noteOwnIntent(rec, g);
+    const added = ownAddedEntry(
+      g,
+      this.#port.selfUserId,
+      this.#port.selfDeviceId,
+    );
+    return added !== null && added.key !== addedKey ? g : "post";
   }
 
   /**
@@ -2833,6 +3307,57 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     if (js.wait) {
       js.reset = true;
       js.wait.abort();
+    }
+  }
+
+  /**
+   * F-L13: how long a join run's next intent still waits (0 = send now):
+   * this device's own intent is stored on the server (`g.join_requests`)
+   * and went out or was first seen less than `JOIN_ADMIT_WINDOW_MS` ago.
+   * The later of the two starts the window. A liveness aid only (server
+   * data never decides trust here). Each new own-intent ref (this device's
+   * own re-broadcast, another window of this device, or a server rotating
+   * refs) starts the window again, so a server can keep a join waiting; it
+   * could withhold the Add anyway.
+   */
+  #joinHoldMs(rec: ChannelRec, g: ProtectedTextGroupResponse): number {
+    const self = this.#port.selfUserId;
+    const dev = this.#port.selfDeviceId;
+    const ref = ownStoredIntentRef(g, self, dev);
+    const seen = rec.ownIntentSeen?.ref === ref ? rec.ownIntentSeen : null;
+    // FXT2: the stored row IS this manager's last intent: its window runs
+    // from that POST (first sight is a refresh later). Any other ref (an
+    // earlier session's, another window's) runs from first sight.
+    const sinceMs =
+      ref !== null && ref === rec.lastIntentRef
+        ? rec.lastIntentAtMs
+        : (seen?.atMs ?? null);
+    const nowMs = this.#port.now();
+    const held = joinIntentHeld({
+      ownIntentStored: ref !== null,
+      sinceMs,
+      nowMs,
+    });
+    return held && sinceMs !== null
+      ? sinceMs + JOIN_ADMIT_WINDOW_MS - nowMs
+      : 0;
+  }
+
+  /**
+   * F-L13: track this device's own stored intent by its KeyPackage ref (a
+   * re-broadcast mints a new one): first seen now, kept while unchanged,
+   * cleared once the server lists none.
+   */
+  #noteOwnIntent(rec: ChannelRec, g: ProtectedTextGroupResponse): void {
+    const ref = ownStoredIntentRef(
+      g,
+      this.#port.selfUserId,
+      this.#port.selfDeviceId,
+    );
+    if (ref === null) {
+      rec.ownIntentSeen = null;
+    } else if (rec.ownIntentSeen?.ref !== ref) {
+      rec.ownIntentSeen = { ref, atMs: this.#port.now() };
     }
   }
 
@@ -4366,6 +4891,10 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         joinEventResetAtMs: null,
         welcomeFetch: null,
         storedAdmit: null,
+        lastIntentAtMs: null,
+        lastIntentRef: null,
+        ownIntentSeen: null,
+        recoverySignedOver: null,
       };
       this.#channels.set(channelId, rec);
     }

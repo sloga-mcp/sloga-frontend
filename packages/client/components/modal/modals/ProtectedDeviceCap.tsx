@@ -1,4 +1,11 @@
-import { For, Show, createMemo, createSignal, onMount } from "solid-js";
+import {
+  For,
+  Show,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import type { Channel } from "stoat.js";
@@ -17,6 +24,7 @@ import {
   type ProtectedErrorUi,
   protectedNoticeForError,
 } from "@revolt/client/protectedShield";
+import { JOIN_ADMIT_WINDOW_MS } from "@revolt/client/protectedText";
 import {
   protectedUiOf,
   useProtectedShield,
@@ -235,6 +243,35 @@ export function ProtectedDeviceCapModal(
     tryAgain();
   }
 
+  /**
+   * F-L13: what "Try again" would race (an Add of this device, or its
+   * stored intent), from the manager's view; null when nothing. The time
+   * this screen first saw it starts the wait.
+   */
+  const waitKey = createMemo(() =>
+    deviceCapWaitKey(
+      ui()?.protectedChannels.get(props.channel.id) ?? null,
+      selfId(),
+      ui()?.selfDeviceId() ?? null,
+    ),
+  );
+  const waitSeen = createMemo<{ key: string; at: number } | null>((prev) => {
+    const key = waitKey();
+    if (key === null) return null;
+    return prev?.key === key ? prev : { key, at: Date.now() };
+  }, null);
+  const [now, setNow] = createSignal(Date.now());
+  const clock = setInterval(() => setNow(Date.now()), 1_000);
+  onCleanup(() => clearInterval(clock));
+
+  /**
+   * F-L13: "Try again" waits (disabled) while a member may be admitting
+   * this device. The manager holds the intent itself either way
+   * (`joinIntentHeld`); this only shows it.
+   */
+  const retryWaiting = () =>
+    deviceCapRetryWaiting(waitSeen()?.at ?? null, now(), JOIN_ADMIT_WINDOW_MS);
+
   /** "Try again": the bridge opens the channel again (D8 refresh + join). */
   function tryAgain() {
     // Open this modal only from an open channel: re-opening it is then a no-op.
@@ -256,12 +293,16 @@ export function ProtectedDeviceCapModal(
       actions={[
         { text: <Trans>Close</Trans> },
         {
-          text: <Trans>Try again</Trans>,
+          text: retryWaiting() ? (
+            t`Waiting for a member to add this device…`
+          ) : (
+            <Trans>Try again</Trans>
+          ),
           onClick: () => {
             tryAgain();
             return false;
           },
-          isDisabled: busy(),
+          isDisabled: busy() || retryWaiting(),
         },
       ]}
       isDisabled={busy()}
@@ -522,6 +563,72 @@ function deviceCapRaise(i: {
   const seats = [i.ownerId];
   for (const id of i.listed) if (!seats.includes(id)) seats.push(id);
   return { seats, deviceCap: ceiling };
+}
+
+/** A non-empty string, else null. */
+function deviceCapText(v: unknown): string | null {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+/**
+ * F-L13: what a "Try again" now would race, from the manager's channel view
+ * (`protectedChannels`; liveness only, never trust), as a key that names
+ * it: an Add of this device in the server's group while this device does
+ * not hold that group (`add:<group>:<epoch>`, its Welcome is due), else
+ * this device's own stored intent (`intent:<KeyPackage ref>`, a member may
+ * admit it any moment); null for neither, an unknown self, or a view that
+ * is not readable. A new Add or a new intent is a new key.
+ */
+function deviceCapWaitKey(
+  view: unknown,
+  userId: string | null,
+  deviceId: string | null,
+): string | null {
+  if (userId === null || deviceId === null) return null;
+  if (typeof view !== "object" || view === null) return null;
+  const v = view as { native?: unknown; serverGroup?: unknown };
+  const g = v.serverGroup;
+  if (typeof g !== "object" || g === null) return null;
+  const group = g as Record<string, unknown>;
+  const groupId = deviceCapText(group.group_id);
+  if (groupId === null) return null;
+  const n = v.native as Record<string, unknown> | null | undefined;
+  if (n && n.state === "active" && n.group_id === groupId) return null;
+  const mine = (e: unknown): e is Record<string, unknown> =>
+    typeof e === "object" &&
+    e !== null &&
+    (e as Record<string, unknown>).user_id === userId &&
+    (e as Record<string, unknown>).device_id === deviceId;
+  let epoch: number | null = null;
+  for (const a of Array.isArray(group.member_added) ? group.member_added : []) {
+    if (!mine(a) || !Number.isSafeInteger(a.epoch)) continue;
+    const e = a.epoch as number;
+    if (epoch === null || e > epoch) epoch = e;
+  }
+  if (epoch !== null) return `add:${groupId}:${epoch}`;
+  for (const r of Array.isArray(group.join_requests)
+    ? group.join_requests
+    : []) {
+    const ref = mine(r) ? deviceCapText(r.key_package_ref) : null;
+    if (ref !== null) return `intent:${ref}`;
+  }
+  return null;
+}
+
+/**
+ * F-L13: "Try again" waits while what it would race was first seen less
+ * than `windowMs` ago (`seenAtMs` null: nothing to wait for). Released
+ * after it, like the manager's hold; a clock that is not finite or reads
+ * before `seenAtMs` does not wait (never a button disabled for good).
+ */
+function deviceCapRetryWaiting(
+  seenAtMs: number | null,
+  nowMs: number,
+  windowMs: number,
+): boolean {
+  if (seenAtMs === null) return false;
+  const age = nowMs - seenAtMs;
+  return Number.isFinite(age) && age >= 0 && age < windowMs;
 }
 // protected-pure:end
 

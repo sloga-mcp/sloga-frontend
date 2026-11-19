@@ -94,7 +94,7 @@ registerHooks({
 });
 
 const { useError }: typeof import("./errors.ts") = await import(ERRORS_URL);
-const { noticeCopy }: typeof import("../client/protectedCopy.ts") =
+const { errorUiCopy, noticeCopy }: typeof import("../client/protectedCopy.ts") =
   await import(COPY_URL);
 
 const translate = useError();
@@ -256,6 +256,49 @@ test("E7 every msgid of these arms is in the en catalog", () => {
     OUTDATED,
     "This member already has {max} devices in this channel.",
     DEVICE_CAP_NO_MAX,
+  ]) {
+    const entry = `\nmsgid "${msgid}"\nmsgstr "${msgid}"\n`;
+    assert.equal(en.split(entry).length - 1, 1, msgid);
+  }
+});
+
+// Lane FXC (S2 live leg): the refusal is a save that didn't land, for any
+// release cause (the live one was `access_lost`, not a server removal).
+const REMOVED_REFUSED =
+  "The seat list wasn't saved because it includes members who no longer have a seat.";
+
+test("E8 SeatListNamesRemovedUsers: a refused save, the protected UI's refusal msgid", () => {
+  for (const body of [
+    { type: "SeatListNamesRemovedUsers", users: ["01USERREMOVEDA0000000000"] },
+    '{"type":"SeatListNamesRemovedUsers","users":[]}',
+    { type: "SeatListNamesRemovedUsers" },
+  ]) {
+    assert.equal(translate(body), REMOVED_REFUSED, JSON.stringify(body));
+  }
+  // The same msgid the owner UI shows when it can't name the users.
+  assert.equal(
+    errorUiCopy({
+      kind: "notice",
+      notice: "seat_list_names_removed_users",
+      max: null,
+      tag: "SeatListNamesRemovedUsers",
+      users: ["01USERREMOVEDA0000000000"],
+    }),
+    REMOVED_REFUSED,
+  );
+  // Not the owner page's note (nothing failed there).
+  assert.notEqual(
+    noticeCopy("seat_list_names_removed_users"),
+    translate({ type: "SeatListNamesRemovedUsers" }),
+  );
+  const en = readFileSync(
+    new URL("./catalogs/en/messages.po", import.meta.url),
+    "utf8",
+  );
+  for (const msgid of [
+    REMOVED_REFUSED,
+    "The seat list wasn't saved because it includes members who no longer have a seat: {list}",
+    "Some members no longer have a seat. They'll be left off the next seat list you save.",
   ]) {
     const entry = `\nmsgid "${msgid}"\nmsgstr "${msgid}"\n`;
     assert.equal(en.split(entry).length - 1, 1, msgid);

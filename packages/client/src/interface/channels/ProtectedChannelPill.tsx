@@ -31,6 +31,7 @@ import {
   protectedNoticeForError,
   shieldPresentation,
 } from "@revolt/client/protectedShield";
+import { signingDeviceOf } from "@revolt/client/protectedSigningDevice";
 import type {
   OwnerDeviceNotice,
   OwnerPinStatus,
@@ -552,6 +553,11 @@ export function ProtectedChannelPill(props: Props) {
     pillRecreateOffered(view(), selfIds(), escalation().action === "recreate");
   const recoverOffered = () => full() && pillRecoverOffered(view(), selfIds());
   const signerLost = () => pillSignerLost(view());
+  /**
+   * FXU: this device runs the D21 successor itself, so a poisoned-group
+   * notice reads "Re-securing with a new group..." here only.
+   */
+  const signingDevice = () => signingDeviceOf(shield(), selfIds());
 
   /**
    * "Retry removal" / "Rejoin" run one manual refresh (`retryNow`) that
@@ -822,7 +828,9 @@ export function ProtectedChannelPill(props: Props) {
               <Show when={notice()}>
                 {(kind) => (
                   <PanelNote>
-                    {noticeCopy(kind(), null, null, channelName())}
+                    {noticeCopy(kind(), null, null, channelName(), {
+                      signingDevice: signingDevice(),
+                    })}
                   </PanelNote>
                 )}
               </Show>

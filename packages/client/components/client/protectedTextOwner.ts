@@ -43,6 +43,9 @@
  *   other publish, and resumes the SAME bytes on every later call until it
  *   resolves; a re-send budget bounds one call, never the entry. A reason
  *   header rides only on a plain seat publish.
+ * - FXO (FXL audit M1): so a recovery list refused for its reason header
+ *   can never land: F3 may discard it, and the next `recoverOwnership`
+ *   drops it and signs afresh instead of re-sending it.
  *
  * Pure of Solid / livekit / lingui; driven through `GroupOps` and the port,
  * so `node --test --conditions=browser` loads it over fakes.
@@ -131,7 +134,8 @@ export interface StoredPublish {
   /**
    * S2 FX-R: the recovery list `recoverOwnership` publishes (design 6.3).
    * Only that flow re-sends it (it creates the successor first); another
-   * flow may resolve it by read-back, never PUT it. Never discarded by F3.
+   * flow may resolve it by read-back, never PUT it. F3 discards it only
+   * while `neverAccepted` (unsent, or refused for its reason header).
    */
   recovery?: true;
 }
@@ -1433,6 +1437,9 @@ export async function moveOwnerKey(
  * - One call gives up after `plan.retryBudget` transient answers; the
  *   entry stays, so the next call re-sends the same bytes (never a fresh
  *   signature). The manager refreshes after every call.
+ * - FXO (FXL audit M1): except a stored recovery publish refused for its
+ *   reason header (`dropRefusedRecovery`): no reason rides on a recovery,
+ *   so it is dropped and this call signs afresh behind the dialog.
  */
 export async function recoverOwnership(
   ops: GroupOps,
@@ -1442,6 +1449,7 @@ export async function recoverOwnership(
 ): Promise<void> {
   await run(ops, port, channelId, async (base) => {
     const ctx: Ctx = { ...base, recovery: plan };
+    dropRefusedRecovery(base);
     const stored = readStored(base);
     if (stored !== null && stored !== "corrupt" && stored.recovery === true) {
       await resolveStoredSeats(ctx, stored, null);
@@ -1480,11 +1488,15 @@ export async function recoverOwnership(
  * publish only while `"unsent"` (no PUT of it went out: the write-ahead
  * records `"sent"` before every PUT); one whose PUTs were all answered 429
  * stays maybe-accepted, so a later recovery never signs fresh bytes for
- * that version. Anything else, a pre-F3 entry without `answer` included,
- * may be on the server and is never dropped.
+ * that version. FXO (FXL audit M1): and a recovery publish refused for its
+ * reason header (`refusedForItsReason`): no reason ever rides on one
+ * (FX-R), so it can never land, and nothing else releases it. Anything
+ * else, a pre-F3 entry without `answer` included, may be on the server and
+ * is never dropped.
  */
 function neverAccepted(e: StoredPublish): boolean {
   if (e.op !== "seats") return false;
+  if (e.recovery === true && refusedForItsReason(e)) return true;
   if (e.recovery === true) return e.answer === "unsent";
   return (
     e.answer === "refused" &&
@@ -1493,12 +1505,43 @@ function neverAccepted(e: StoredPublish): boolean {
 }
 
 /**
+ * FXO (FXL audit M1): every PUT of these bytes so far was refused without
+ * a write (`"refused"`), at least one for its reason header. The server
+ * decides 4.3 step 4d (`RemovalReasonRequired`) inside the write
+ * transaction, before anything is written and after the step-4 return of
+ * a byte-identical list it already holds, so it does not hold these bytes.
+ */
+function refusedForItsReason(e: StoredPublish): boolean {
+  return e.answer === "refused" && e.reasonRequired === true;
+}
+
+/**
+ * FXO (FXL audit M1): drop a stored recovery publish the server never
+ * accepted and has already answered (`neverAccepted`, not `"unsent"`).
+ * Re-sending it could only be refused again (no reason rides on a
+ * recovery), and a re-send without an answer would leave it maybe-accepted
+ * for good. `recoverOwnership` then signs afresh behind the dialog, as
+ * after any other refused recovery PUT. Signs and sends nothing.
+ */
+function dropRefusedRecovery(ctx: Ctx): void {
+  const e = readStored(ctx);
+  if (e === null || e === "corrupt" || e.recovery !== true) return;
+  if (e.answer === "unsent" || !neverAccepted(e)) return;
+  clearStored(ctx);
+  ctx.port.log("info", "[protected] refused recovery list dropped", {
+    channelId: ctx.channelId,
+  });
+}
+
+/**
  * The stored seat publish of a channel, or null (none, protect, corrupt).
  * FX-R: a recovery publish is not a pending seat change: only
  * `recoverOwnership` resumes it. FX-J2 NEW-4: except while no PUT of it
- * went out (`neverAccepted`: still `"unsent"`): then F3 may discard it, so
- * a recovery entry no other owner flow may send never blocks this device
- * for good. Discarding signs nothing; a later recovery is a new decision.
+ * went out (`neverAccepted`: still `"unsent"`), or (FXO) every PUT of it
+ * was refused without a write, one for its reason header: then F3 may
+ * discard it, so a recovery entry no other owner flow may send never
+ * blocks this device for good. Discarding signs nothing; a later recovery
+ * is a new decision.
  */
 function storedSeats(at: StoreAt): StoredPublish | null {
   const e = readStored(at);
@@ -1520,6 +1563,16 @@ export function pendingSeats(
   const key = publishStoreKey(port.selfUserId, channelId);
   const e = storedSeats({ port, key });
   if (e === null) return null;
+  // FXO (FXL audit M1): no reason rides on a recovery publish (FX-R), so
+  // none is asked for: one would release a user the recovery dialog never
+  // named. Offered for discard only.
+  if (e.recovery === true) {
+    return {
+      kind: "seats",
+      reasonRequired: false,
+      discardable: neverAccepted(e) && !running.has(key),
+    };
+  }
   return {
     kind: e.ownerDevices === true ? "owner_devices" : "seats",
     reasonRequired: e.reasonRequired === true,

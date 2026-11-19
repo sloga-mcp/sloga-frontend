@@ -894,9 +894,10 @@ describe("P8 S2 wiring (U2)", () => {
   });
 
   it("notice copy gets the channel NAME (4th arg), never the id", () => {
+    // (FXU: a 5th arg, the signing-device ctx, follows; pinned below)
     assert.match(
       PILL_CODE,
-      /noticeCopy\(kind\(\), null, null, channelName\(\)\)/,
+      /noticeCopy\(kind\(\), null, null, channelName\(\), \{/,
     );
     assert.match(
       PILL_CODE,
@@ -1019,5 +1020,42 @@ describe("P8 S2 wiring (U2)", () => {
     );
     assert.match(PILL_CODE, /<Show when=\{details\(\)\}>/);
     assert.doesNotMatch(PILL_CODE, /<Show when=\{full\(\)\}>/);
+  });
+});
+
+// ---- FXU: the poisoned-group notice's signing-device ctx --------------------
+// FXT2's `noticeCopy` says "Re-securing with a new group..." for a poisoned
+// group only with `ctx.signingDevice: true`. The rule is
+// `signingDeviceOf` (components/client/protectedSigningDevice.ts, spec'd
+// there); this pins that the panel's state notice passes it, un-negated,
+// with the pill's own ids.
+
+describe("FXU poisoned notice ctx", () => {
+  it("FXU the pill's state notice passes signingDevice from signingDeviceOf(shield(), selfIds())", () => {
+    assert.match(
+      PILL_CODE,
+      /import \{ signingDeviceOf \} from "@revolt\/client\/protectedSigningDevice";/,
+    );
+    assert.match(
+      PILL_CODE,
+      /const signingDevice = \(\) => signingDeviceOf\(shield\(\), selfIds\(\)\);/,
+    );
+    const at = PILL_CODE.indexOf(
+      "noticeCopy(kind(), null, null, channelName()",
+    );
+    assert.ok(at >= 0, "state notice missing");
+    assert.equal(enclosingShow(PILL_CODE, at), "<Show when={notice()}>");
+    assert.match(
+      PILL_CODE.slice(at),
+      /^noticeCopy\(kind\(\), null, null, channelName\(\), \{\s*signingDevice: signingDevice\(\),\s*\}\)\}/,
+    );
+    // one rule read, one ctx; the lost-signer line takes no shield notice
+    assert.equal(count(PILL_CODE, /\bsigningDeviceOf\(/g), 1);
+    assert.equal(count(PILL_CODE, /\bsigningDevice: /g), 1);
+    assert.equal(count(PILL_CODE, /\bnoticeCopy\(kind\(\)/g), 2);
+    assert.match(
+      PILL_CODE,
+      /<Show when=\{signerLost\(\)\}>\s*\{\(kind\) => <PanelNote>\{noticeCopy\(kind\(\)\)\}<\/PanelNote>\}/,
+    );
   });
 });

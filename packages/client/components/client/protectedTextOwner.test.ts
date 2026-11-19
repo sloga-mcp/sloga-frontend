@@ -2566,3 +2566,141 @@ test("FXJ2 NEW-4: a recovery entry still unsent is offered for discard and disca
     assert.equal(cancelPendingSeats(h3.port, CH).discarded, false, answer);
   }
 });
+
+// ---------------------------------------------------------------------------
+// S2 live-leg fix lane FXO (FXL audit M1, second half): a recovery list the
+// server refused for its reason header (`RemovalReasonRequired`, decided
+// before any write) can never land, as no reason rides on a recovery; it no
+// longer blocks the owner for good. Tests named "FXO ..." are the targets
+// of /home/mcp/pc-logs/s2/w4/ctl/FXO.
+// ---------------------------------------------------------------------------
+
+/** A second recovery list over the same served version (a new decision). */
+const recV3b = genesis({
+  version: 3,
+  body: "sloga-seat-list-v1\nv:1\nversion:3\nrecovery-again",
+  signature: "S3REC2",
+});
+
+const putBodies = (h: Harness) =>
+  puts(h).map((c) => (c.body as { body: string }).body);
+
+test("FXO M1: a recovery refused for its reason header is offered for discard with no reason prompt; the discard signs and sends nothing, and the next Recover signs afresh and lands", async () => {
+  const h = harness({
+    routes: listRoutes(lostV2, recV3b, [res(400, REASON_REQUIRED), res(200)]),
+    invoke: seatNative(recV3b),
+  });
+  const first = recoveryPlan(h, { answer: () => recV3 });
+  await assert.rejects(recoverOwnership(h.ops, h.port, CH, first.plan), {
+    source: "server",
+    status: 400,
+    type: "RemovalReasonRequired",
+  });
+  const refused = storedEntry(h);
+  assert.equal(refused?.recovery, true);
+  assert.equal(refused?.reasonRequired, true);
+  assert.equal(refused?.answer, "refused", "its one PUT wrote nothing");
+  assert.deepEqual(pendingSeats(h.port, CH), {
+    kind: "seats",
+    reasonRequired: false,
+    discardable: true,
+  });
+  const before = traffic(h);
+  assert.deepEqual(cancelPendingSeats(h.port, CH), { discarded: true });
+  assert.equal(traffic(h), before, "the discard signs and sends nothing");
+  assert.equal(h.store.size, 0);
+  assert.equal(pendingSeats(h.port, CH), null);
+
+  const again = recoveryPlan(h, { answer: () => recV3b });
+  await recoverOwnership(h.ops, h.port, CH, again.plan);
+  assert.equal(again.seen.signs, 1, "a new decision: the dialog again");
+  assert.deepEqual(putBodies(h), [recV3.body, recV3b.body]);
+  assert.equal(puts(h)[1].headers, undefined, "a recovery never has a reason");
+  assert.equal(h.store.size, 0, "resolved");
+});
+
+test("FXO M1: the next Recover never re-sends a recovery list refused for its reason: it drops it, signs afresh behind the dialog and lands, in the same session and after a reload", async () => {
+  const key = publishStoreKey(ME, CH);
+  for (const [label, replies] of [
+    ["reason", [res(400, REASON_REQUIRED)]],
+    ["429 then reason", [res(429), res(400, REASON_REQUIRED)]],
+  ] as [string, Reply[]][]) {
+    _resetOwnerFlowsForTest();
+    const h = recoveryHarness(replies, 20);
+    await assert.rejects(
+      recoverOwnership(h.ops, h.port, CH, recoveryPlan(h).plan),
+      { type: "RemovalReasonRequired" },
+      label,
+    );
+    const refused = h.store.get(key);
+    assert.equal(JSON.parse(refused ?? "null")?.answer, "refused", label);
+    for (const reload of [false, true]) {
+      if (reload) _resetOwnerFlowsForTest();
+      const h2 = harness({
+        routes: listRoutes(lostV2, recV3b, [res(200)]),
+        invoke: seatNative(recV3b),
+      });
+      h2.store.set(key, refused ?? "");
+      const again = recoveryPlan(h2, { answer: () => recV3b });
+      await recoverOwnership(h2.ops, h2.port, CH, again.plan);
+      const at = `${label}, reload ${reload}`;
+      assert.equal(again.seen.signs, 1, `${at}: signed afresh`);
+      assert.deepEqual(putBodies(h2), [recV3b.body], `${at}: never re-sent`);
+      assert.equal(h2.store.size, 0, `${at}: resolved`);
+    }
+  }
+});
+
+test("FXO M1 safety: a recovery list that may be on the server (a PUT without an answer before the reason refusal) or whose PUTs were all 429 is never discarded or dropped, and an unsent one is never dropped: the next Recover re-sends the SAME bytes", async () => {
+  const key = publishStoreKey(ME, CH);
+  const h = recoveryHarness(["transport", res(400, REASON_REQUIRED)]);
+  await assert.rejects(
+    recoverOwnership(h.ops, h.port, CH, recoveryPlan(h).plan),
+    { type: "RemovalReasonRequired" },
+  );
+  assert.equal(puts(h).length, 2);
+  const maybe = storedEntry(h);
+  assert.equal(maybe?.answer, "sent", "one maybe-accepted attempt (F3)");
+  assert.equal(maybe?.reasonRequired, true);
+  const entry = { v: 1, op: "seats", signed: recV3, recovery: true };
+  const cases: [string, string][] = [
+    ["sent, then the reason refusal", JSON.stringify(maybe)],
+    ["every PUT 429", JSON.stringify({ ...entry, answer: "refused" })],
+    [
+      "reason, no answer recorded",
+      JSON.stringify({ ...entry, reasonRequired: true }),
+    ],
+    [
+      "reason, unknown answer",
+      JSON.stringify({ ...entry, reasonRequired: true, answer: "x" }),
+    ],
+  ];
+  for (const [label, raw] of cases) {
+    _resetOwnerFlowsForTest();
+    const h2 = recoveryHarness([res(200)]);
+    h2.store.set(key, raw);
+    assert.equal(pendingSeats(h2.port, CH), null, label);
+    assert.deepEqual(
+      cancelPendingSeats(h2.port, CH),
+      { discarded: false, why: "none" },
+      label,
+    );
+    assert.equal(h2.store.get(key), raw, `${label}: kept`);
+    const again = recoveryPlan(h2, { answer: () => recV3b });
+    await recoverOwnership(h2.ops, h2.port, CH, again.plan);
+    assert.equal(again.seen.signs, 0, `${label}: no fresh signature`);
+    assert.deepEqual(putBodies(h2), [recV3.body], `${label}: SAME bytes`);
+    assert.equal(h2.store.size, 0, `${label}: resolved`);
+  }
+
+  // Unsent (no PUT went out): F3 may discard it, but Recover sends the
+  // bytes already signed (4.9) and never drops them.
+  _resetOwnerFlowsForTest();
+  const h3 = recoveryHarness([res(200)]);
+  h3.store.set(key, JSON.stringify({ ...entry, answer: "unsent" }));
+  const resumed = recoveryPlan(h3, { answer: () => recV3b });
+  await recoverOwnership(h3.ops, h3.port, CH, resumed.plan);
+  assert.equal(resumed.seen.signs, 0, "unsent: no fresh signature");
+  assert.deepEqual(putBodies(h3), [recV3.body], "unsent: SAME bytes");
+  assert.equal(h3.store.size, 0, "unsent: resolved");
+});

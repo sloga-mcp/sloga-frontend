@@ -160,10 +160,11 @@ export function useError() {
         return t`Not available in protected channels.`;
       if (errType === "ProtectedFieldRefused")
         return t`This message couldn't be sent securely.`;
-      // Seat PUT refused for naming users the server removed (the users are
-      // ids, so the generic copy here; the owner UI can name them).
+      // Seat PUT refused for naming users who no longer have a seat, for any
+      // release cause; nothing was saved (the users are ids, so the generic
+      // copy here; the owner UI can name them).
       if (errType === "SeatListNamesRemovedUsers")
-        return t`Some members were removed from this server and were left off the seat list.`;
+        return t`The seat list wasn't saved because it includes members who no longer have a seat.`;
       // S2 D40: a kick, ban or unseat of a protected member needs a reason.
       if (errType === "RemovalReasonRequired")
         return t`This member is protected from removal without a reason. Add a reason to continue.`;

@@ -6356,6 +6356,10 @@ msgid "Couldn't sign out that device. Try again."
 msgstr "Couldn't sign out that device. Try again."
 
 #: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Waiting for a member to add this device…"
+msgstr "Waiting for a member to add this device…"
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
 msgid "Sign out one of your other devices to make room for this one, then try again."
 msgstr "Sign out one of your other devices to make room for this one, then try again."
 
@@ -9850,12 +9854,28 @@ msgid "Someone in this channel isn't on the owner's member list."
 msgstr "Someone in this channel isn't on the owner's member list."
 
 #: components/client/protectedCopy.ts
+msgid "A member made an invalid change to this channel. This device can't read new messages here until the device that signs this channel's member list makes a new group."
+msgstr "A member made an invalid change to this channel. This device can't read new messages here until the device that signs this channel's member list makes a new group."
+
+#: components/client/protectedCopy.ts
+msgid "This channel received a replayed membership change. This device can't read new messages here until the device that signs this channel's member list makes a new group."
+msgstr "This channel received a replayed membership change. This device can't read new messages here until the device that signs this channel's member list makes a new group."
+
+#: components/client/protectedCopy.ts
 msgid "A member made an invalid change to this channel. Re-securing with a new group…"
 msgstr "A member made an invalid change to this channel. Re-securing with a new group…"
 
 #: components/client/protectedCopy.ts
+msgid "A member made an invalid change to this channel, so this device can't read new messages here. The channel owner has to re-create the protected group from their device; that doesn't happen automatically."
+msgstr "A member made an invalid change to this channel, so this device can't read new messages here. The channel owner has to re-create the protected group from their device; that doesn't happen automatically."
+
+#: components/client/protectedCopy.ts
 msgid "This channel received a replayed membership change. Re-securing with a new group…"
 msgstr "This channel received a replayed membership change. Re-securing with a new group…"
+
+#: components/client/protectedCopy.ts
+msgid "This channel received a replayed membership change, so this device can't read new messages here. The channel owner has to re-create the protected group from their device; that doesn't happen automatically."
+msgstr "This channel received a replayed membership change, so this device can't read new messages here. The channel owner has to re-create the protected group from their device; that doesn't happen automatically."
 
 #: components/client/protectedCopy.ts
 msgid "This channel's security check failed."
@@ -9884,6 +9904,19 @@ msgstr "This device can no longer sign this channel's member list. If you didn't
 #: components/client/protectedCopy.ts
 msgid "This device can no longer sign #{channel}'s member list. If you didn't do this, secure your account."
 msgstr "This device can no longer sign #{channel}'s member list. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
+msgid "Some members no longer have a seat. They'll be left off the next seat list you save."
+msgstr "Some members no longer have a seat. They'll be left off the next seat list you save."
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "The seat list wasn't saved because it includes members who no longer have a seat."
+msgstr "The seat list wasn't saved because it includes members who no longer have a seat."
+
+#: components/client/protectedCopy.ts
+msgid "The seat list wasn't saved because it includes members who no longer have a seat: {list}"
+msgstr "The seat list wasn't saved because it includes members who no longer have a seat: {list}"
 
 #: components/client/protectedCopy.ts
 #: components/i18n/errors.ts
@@ -10069,6 +10102,10 @@ msgstr "Only the device that holds this channel's ownership key can move it."
 #: components/client/protectedCopy.ts
 msgid "This channel names its owner devices. Update that list to move ownership instead."
 msgstr "This channel names its owner devices. Update that list to move ownership instead."
+
+#: components/client/protectedCopy.ts
+msgid "This change was refused because it isn't valid for this channel."
+msgstr "This change was refused because it isn't valid for this channel."
 
 #. Protected channel state
 #: components/client/protectedCopy.ts

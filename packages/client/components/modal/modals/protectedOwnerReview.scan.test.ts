@@ -344,14 +344,18 @@ test("R7 no id, key or fingerprint is ever rendered", () => {
   assert.ok(arrays.length >= 4, "every panel returns its lines");
   for (const a of arrays) {
     const rest = a
-      .replace(/noticeCopy\((?:"[a-z_]+"|notice)\)/g, "")
+      .replace(
+        /noticeCopy\((?:"[a-z_]+"|notice, null, null, null, noticeCtx\(\))\)/g,
+        "",
+      )
       .replace(/panelCopy\.\w+\((?:"[a-z_]+")?\)/g, "")
       .replace(/[\s,]/g, "");
     assert.equal(rest, "", `a body line is not a copy call: ${a.trim()}`);
   }
+  // (FXU: the settled notice carries the signing-device ctx, pinned below)
   assert.match(
     linesFn(),
-    /return notice === null \? \[\] : \[noticeCopy\(notice\)\];/,
+    /return notice === null\s*\?\s*\[\]\s*:\s*\[noticeCopy\(notice, null, null, null, noticeCtx\(\)\)\];/,
   );
   // The failure line is copy too.
   for (const m of BODY.matchAll(/setFailure\(([\s\S]*?)\);\n/g)) {
@@ -436,6 +440,30 @@ test("R11 failures map through protectedNoticeForError op owner and errorUiCopy"
   assert.match(
     review,
     /console\.error\("\[protected\] owner review failed", \{ type: answer\.tag \}\);/,
+  );
+});
+
+// FXU: FXT2's `noticeCopy` says "Re-securing with a new group..." for a
+// poisoned group only with `ctx.signingDevice: true`; the rule is
+// `signingDeviceOf` (components/client/protectedSigningDevice.ts, spec'd
+// there). The settled panel shows the shield's notice, so it passes it,
+// un-negated, with ids read inside the rule's module (R7: no id here).
+test("FXU the settled shield notice passes signingDevice from signingDeviceOf", () => {
+  assert.match(
+    CODE,
+    /import \{\s*protectedSelfIds,\s*signingDeviceOf,\s*\} from "@revolt\/client\/protectedSigningDevice";/,
+  );
+  assert.match(
+    BODY,
+    /const noticeCtx = \(\) => \(\{\s*signingDevice: signingDeviceOf\(shield\(\), protectedSelfIds\(client\(\)\)\),\s*\}\);/,
+  );
+  assert.equal(count(CODE, "signingDeviceOf("), 1);
+  assert.equal(count(CODE, "signingDevice: "), 1);
+  // The ctx goes to the shield-notice line only; the fixed kinds take none.
+  assert.equal(count(BODY, "noticeCtx()"), 1);
+  assert.match(
+    linesFn(),
+    /const notice = shield\(\)\?\.notice \?\? null;\s*return notice === null\s*\?\s*\[\]\s*:\s*\[noticeCopy\(notice, null, null, null, noticeCtx\(\)\)\];/,
   );
 });
 

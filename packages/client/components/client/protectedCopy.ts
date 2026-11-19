@@ -115,45 +115,60 @@ function ownerDeviceDroppedCopy(channelName: string | null): string {
 // Channel notices (design 9.2, plan D17; `ProtectedNoticeKind` from A2)
 // ---------------------------------------------------------------------------
 
-/** Most display names `seat_list_names_removed_users` lists inline. */
+/** Most display names a removed-users line lists inline. */
 export const REMOVED_NAMES_LISTED_MAX = 5;
 
-/** Generic `seat_list_names_removed_users` copy (also `errors.ts`). */
-function removedUsersCopy(): string {
-  return t`Some members were removed from this server and were left off the seat list.`;
+// `seat_list_names_removed_users` (W2 C1): the signed list still names users
+// whose seat is no longer active. The refusal doesn't say why the seat went
+// (server_removal, access_lost, device_never_joined; owner_unseat too, should
+// a stale list name one), so the copy says only what holds for every release
+// cause: they no longer have a seat. Never "removed from this server".
+
+/**
+ * The owner page's note over those users (`SeatList`, via `noticeCopy`).
+ * Nothing failed: the page leaves them off every list it submits.
+ */
+function removedUsersNoteCopy(): string {
+  return t`Some members no longer have a seat. They'll be left off the next seat list you save.`;
 }
 
 /**
- * `seat_list_names_removed_users`: lists the display names only when the
- * caller resolved every reported user (a partial list would read as the
- * whole) and there are few enough to show; otherwise the generic copy.
+ * A seat list PUT refused `SeatListNamesRemovedUsers`: nothing was saved
+ * (also `errors.ts`).
  */
-function removedUsersNamedCopy(names: readonly string[] | null): string {
-  const shown = (names ?? []).map((n) => n.trim());
-  if (
-    shown.length === 0 ||
-    shown.length > REMOVED_NAMES_LISTED_MAX ||
-    shown.some((n) => n.length === 0)
-  ) {
-    return removedUsersCopy();
-  }
-  const list = shown.join(", ");
-  return t`Members removed from this server and left off the seat list: ${list}`;
+function removedUsersRefusedCopy(): string {
+  return t`The seat list wasn't saved because it includes members who no longer have a seat.`;
+}
+
+/**
+ * The refusal, naming the users only when the caller resolved every one of
+ * them (a partial list would read as the whole) and there are few enough
+ * to show (`namedList`); otherwise the generic refusal.
+ */
+function removedUsersRefusedNamedCopy(names: readonly string[] | null): string {
+  const list = namedList(names);
+  if (list === null) return removedUsersRefusedCopy();
+  return t`The seat list wasn't saved because it includes members who no longer have a seat: ${list}`;
 }
 
 /**
  * Notice text for a channel-level kind. `max` is `ProtectedErrorUi.max`
  * (seat or device cap); null or absent falls back to copy without a count.
- * `names`: display names for `seat_list_names_removed_users` (from the
- * caller; never ids), ignored by every other kind. `channelName`: the
- * channel's display name for `capacity_device_cap` and `owner_device_dropped`
- * (never its id); null or blank reads "this channel".
+ * `_names` is ignored by every kind: the refusal that names users is
+ * `errorUiCopy`'s, and the slot stays so positional callers keep
+ * `channelName`. `channelName`: the channel's display name for
+ * `capacity_device_cap` and `owner_device_dropped` (never its id); null or
+ * blank reads "this channel". `ctx.signingDevice` (FXT2): this device signs
+ * the channel's member list, so a poisoned group (`invalid_change`,
+ * `replayed_change`) re-secures here on its own; absent or false is any
+ * other device (the owner has to act).
  */
 export function noticeCopy(
   kind: ProtectedNoticeKind,
   max: number | null = null,
-  names: readonly string[] | null = null,
+  _names: readonly string[] | null = null,
   channelName: string | null = null,
+  ctx: { signingDevice?: boolean } = {},
 ): string {
   switch (kind) {
     // shield states
@@ -198,10 +213,20 @@ export function noticeCopy(
       return t`This channel's member list failed verification.`;
     case "off_list_member":
       return t`Someone in this channel isn't on the owner's member list.`;
+    // F-L13 / FXT2: the poisoned-group state (shield step 3). Only the
+    // device that signs the member list makes the successor group, and
+    // automatically only when the group failed on THAT device (D21). On it
+    // (`ctx.signingDevice`) the old re-securing line is true; anywhere else
+    // nothing re-secures on its own: the owner has to re-create the group.
+    // An operation refusal with these kinds reads `errorUiCopy`'s line.
     case "invalid_change":
-      return t`A member made an invalid change to this channel. Re-securing with a new group…`;
+      return ctx.signingDevice === true
+        ? t`A member made an invalid change to this channel. Re-securing with a new group…`
+        : t`A member made an invalid change to this channel, so this device can't read new messages here. The channel owner has to re-create the protected group from their device; that doesn't happen automatically.`;
     case "replayed_change":
-      return t`This channel received a replayed membership change. Re-securing with a new group…`;
+      return ctx.signingDevice === true
+        ? t`This channel received a replayed membership change. Re-securing with a new group…`
+        : t`This channel received a replayed membership change, so this device can't read new messages here. The channel owner has to re-create the protected group from their device; that doesn't happen automatically.`;
     case "security_check_failed":
       return t`This channel's security check failed.`;
     case "owner_changed_review":
@@ -226,7 +251,8 @@ export function noticeCopy(
     case "seat_list_behind":
       return t`The member list changed since you last loaded it. Reloading…`;
     case "seat_list_names_removed_users":
-      return removedUsersNamedCopy(names);
+      // The note; a refused save reads `errorUiCopy`'s refusal instead.
+      return removedUsersNoteCopy();
     case "protect_failed":
       return t`This channel couldn't be protected.`;
     case "channel_protected":
@@ -520,11 +546,12 @@ function clientReasonOf(failure: unknown): ClientReasonWithCopy | null {
 
 /**
  * Text for a `protectedNoticeForError` answer; null for `none` (the bridge
- * handled it, or the user cancelled a native dialog). `opts.removedUserNames`
- * lets the owner UI name the users of `seat_list_names_removed_users`.
- * `opts.failure` is the failure `ui` was mapped from: a client reason in
- * `CLIENT_REASONS_WITH_COPY` replaces a notice's text. A marker, toast or
- * `none` is never replaced.
+ * handled it, or the user cancelled a native dialog). `ui` is always a
+ * refused operation, so `seat_list_names_removed_users` reads as a refused
+ * save here (not `noticeCopy`'s note); `opts.removedUserNames` lets the
+ * owner UI name its users. `opts.failure` is the failure `ui` was mapped
+ * from: a client reason in `CLIENT_REASONS_WITH_COPY` replaces a notice's
+ * text. A marker, toast or `none` is never replaced.
  */
 export function errorUiCopy(
   ui: ProtectedErrorUi,
@@ -534,11 +561,18 @@ export function errorUiCopy(
     case "notice": {
       const reason = clientReasonOf(opts.failure);
       if (reason !== null) return clientReasonCopy(reason);
-      return noticeCopy(
-        ui.notice,
-        ui.max,
-        resolvedNames(ui, opts.removedUserNames),
-      );
+      if (ui.notice === "seat_list_names_removed_users") {
+        return removedUsersRefusedNamedCopy(
+          resolvedNames(ui, opts.removedUserNames),
+        );
+      }
+      // FXT2: here these kinds are an operation's refusal (a stage or an
+      // owner op native refused), which poisons nothing: no claim about
+      // reading messages, no re-secure.
+      if (ui.notice === "invalid_change" || ui.notice === "replayed_change") {
+        return t`This change was refused because it isn't valid for this channel.`;
+      }
+      return noticeCopy(ui.notice, ui.max);
     }
     case "marker":
       return markerCopy(ui.marker);

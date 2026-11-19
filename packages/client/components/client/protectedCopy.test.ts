@@ -21,6 +21,11 @@
  *   `publish_in_flight`, `client_outdated`, `invalid_reason` and
  *   `create_predecessor_unknown` get their own copy from the shield's
  *   notice, so callers that pass no failure (the pill) show it too.
+ * - S2 live leg (lane FXC): `SeatListNamesRemovedUsers` is a refused save
+ *   through `errorUiCopy` ("wasn't saved", the names only when every user
+ *   resolved and at most `REMOVED_NAMES_LISTED_MAX`), and the owner page's
+ *   note through `noticeCopy` (they will be left off); neither names a
+ *   release cause, since any of the four gets there.
  *
  * `@lingui/core/macro` only runs inside the build, so a module hook swaps it
  * for a stand-in `t` that fills in the values. The asserted text is the
@@ -85,6 +90,7 @@ registerHooks({
 
 const {
   CLIENT_REASONS_WITH_COPY,
+  REMOVED_NAMES_LISTED_MAX,
   clientReasonCopy,
   errorUiCopy,
   noticeCopy,
@@ -334,6 +340,120 @@ test("S2 LOW-3: the copy names no id and blames no one", () => {
   }
 });
 
+// --------------------------------- SeatListNamesRemovedUsers (lane FXC) --
+
+// The live leg's refusal came from a member who lost access to the channel
+// (`access_lost`), and the save it refused left nobody off: nothing landed.
+const REFUSED =
+  "The seat list wasn't saved because it includes members who no longer have a seat.";
+const REFUSED_NAMED = (list: string) =>
+  `The seat list wasn't saved because it includes members who no longer have a seat: ${list}`;
+const LEFT_OFF_NOTE =
+  "Some members no longer have a seat. They'll be left off the next seat list you save.";
+
+const REMOVED_A = "01USERREMOVEDA000000000000";
+const REMOVED_B = "01USERREMOVEDB000000000000";
+
+/** The seat PUT refusal as the owner flows throw it (protectedShield.test). */
+const removedFailure = (users: string[]) => ({
+  source: "server",
+  status: 400,
+  type: "SeatListNamesRemovedUsers",
+  body: { type: "SeatListNamesRemovedUsers", users },
+});
+
+/**
+ * The seat picker / settings page / device-cap composition: the real
+ * mapping with `{ op: "owner" }`, the failure and a name resolver.
+ */
+function refusedCopy(
+  users: string[],
+  names: (string | null)[] | undefined,
+): string | null {
+  const failure = removedFailure(users);
+  const ui = protectedNoticeForError(failure, { op: "owner" });
+  assert.equal(
+    ui.kind === "notice" && ui.notice,
+    "seat_list_names_removed_users",
+  );
+  return errorUiCopy(ui, {
+    failure,
+    ...(names === undefined ? {} : { removedUserNames: () => names }),
+  });
+}
+
+test("FXC removed users: a refused save says it wasn't saved and names who, when it can", () => {
+  assert.equal(
+    refusedCopy([REMOVED_A, REMOVED_B], ["Bob", " Carol "]),
+    REFUSED_NAMED("Bob, Carol"),
+  );
+  assert.equal(refusedCopy([REMOVED_A], ["Bob"]), REFUSED_NAMED("Bob"));
+  // Exactly the cap still lists them.
+  const atCap = Array.from(
+    { length: REMOVED_NAMES_LISTED_MAX },
+    (_, i) => `U${i}`,
+  );
+  const atCapNames = atCap.map((_, i) => `Name${i}`);
+  assert.equal(
+    refusedCopy(atCap, atCapNames),
+    REFUSED_NAMED(atCapNames.join(", ")),
+  );
+});
+
+test("FXC removed users: anything less than every user resolved gets the generic refusal", () => {
+  const over = Array.from(
+    { length: REMOVED_NAMES_LISTED_MAX + 1 },
+    (_, i) => `U${i}`,
+  );
+  const cases: [string[], (string | null)[] | undefined, string][] = [
+    [[REMOVED_A, REMOVED_B], undefined, "no resolver (the pill)"],
+    [[REMOVED_A, REMOVED_B], ["Bob", null], "one unresolved"],
+    [[REMOVED_A, REMOVED_B], ["Bob", "  "], "one blank"],
+    [[REMOVED_A, REMOVED_B], ["Bob", REMOVED_B], "one is its id"],
+    [[REMOVED_A, REMOVED_B], ["Bob"], "misaligned"],
+    [over, over.map((_, i) => `Name${i}`), "over the cap"],
+    [[], [], "no users reported"],
+  ];
+  for (const [users, names, label] of cases) {
+    assert.equal(refusedCopy(users, names), REFUSED, label);
+  }
+  // A bare server body (no `source`) and the pill's call without opts.
+  const bare = protectedNoticeForError(
+    { type: "SeatListNamesRemovedUsers", users: [REMOVED_A] },
+    { op: "owner" },
+  );
+  assert.equal(errorUiCopy(bare), REFUSED);
+});
+
+test("FXC removed users: the owner page's note is not a refusal and ignores names", () => {
+  assert.equal(noticeCopy("seat_list_names_removed_users"), LEFT_OFF_NOTE);
+  assert.equal(
+    noticeCopy("seat_list_names_removed_users", null, ["Bob"]),
+    LEFT_OFF_NOTE,
+  );
+  assert.notEqual(LEFT_OFF_NOTE, REFUSED);
+  assert.doesNotMatch(LEFT_OFF_NOTE, /saved because|wasn't saved/);
+});
+
+test("FXC removed users: no copy names a release cause or claims a server removal", () => {
+  for (const text of [
+    REFUSED,
+    REFUSED_NAMED("Bob"),
+    LEFT_OFF_NOTE,
+    refusedCopy([REMOVED_A], ["Bob"]),
+    refusedCopy([REMOVED_A], undefined),
+    noticeCopy("seat_list_names_removed_users"),
+  ]) {
+    assert.ok(text !== null);
+    assert.doesNotMatch(
+      text,
+      /removed from|this server|kicked|banned|lost access|left the/i,
+      text,
+    );
+    assert.doesNotMatch(text, /\b(id|ids)\b|01USER/i, text);
+  }
+});
+
 // ------------------------------------------------------- removal reason --
 
 test("too_long: the audit header cap (kick, unseat) is 512 and the copy names it", () => {
@@ -384,4 +504,74 @@ test("removal reason hint: server-wide copy, not the member-protected refusal no
   // The server refusal keeps the 9.2 notice; the hint never reuses it.
   assert.equal(noticeCopy("removal_reason_required"), REASON_REQUIRED_NOTICE);
   assert.notEqual(removalReasonHintCopy(), REASON_REQUIRED_NOTICE);
+});
+
+// ------------------------------------------------ FXT F-L13 poisoned copy --
+
+const OWNER_HAS_TO_ACT =
+  " so this device can't read new messages here. The channel owner has to re-create the protected group from their device; that doesn't happen automatically.";
+const RESECURING_TAIL = " Re-securing with a new group…";
+const OP_REFUSED =
+  "This change was refused because it isn't valid for this channel.";
+
+/** A native refusal as the owner UI receives it (`ownerCopy`). */
+const nativeRefusal = (type: string) => ({
+  source: "native",
+  error: { type, group_id: "G", user_id: "U", device_id: "D" },
+});
+
+test("FXT F-L13: a poisoned group on any device but the signer says the owner has to re-create it, and never that it re-secures by itself", () => {
+  for (const ctx of [undefined, {}, { signingDevice: false }]) {
+    assert.equal(
+      noticeCopy("replayed_change", null, null, null, ctx),
+      "This channel received a replayed membership change," + OWNER_HAS_TO_ACT,
+    );
+    assert.equal(
+      noticeCopy("invalid_change", null, null, null, ctx),
+      "A member made an invalid change to this channel," + OWNER_HAS_TO_ACT,
+    );
+  }
+  for (const kind of ["replayed_change", "invalid_change"] as const) {
+    assert.doesNotMatch(noticeCopy(kind), /Re-securing/i);
+  }
+});
+
+test("FXT F-L13: on the device that signs the member list (it re-creates the group itself) the poisoned notice says it is re-securing, with no wait for the owner", () => {
+  const ctx = { signingDevice: true };
+  assert.equal(
+    noticeCopy("replayed_change", null, null, null, ctx),
+    "This channel received a replayed membership change." + RESECURING_TAIL,
+  );
+  assert.equal(
+    noticeCopy("invalid_change", null, null, null, ctx),
+    "A member made an invalid change to this channel." + RESECURING_TAIL,
+  );
+  for (const kind of ["replayed_change", "invalid_change"] as const) {
+    assert.doesNotMatch(
+      noticeCopy(kind, null, null, null, ctx),
+      /owner has to|can't read/,
+    );
+  }
+});
+
+test("FXT F-L13: an operation refusal mapped to these kinds poisons nothing: a neutral refusal, no claim about reading messages", () => {
+  for (const type of [
+    "duplicate_leaf",
+    "commit_declaration_mismatch",
+    "mls_leaf_rejected",
+    "replayed_rejoin_intent",
+  ]) {
+    const text = ownerCopy(nativeRefusal(type));
+    assert.equal(text, OP_REFUSED, type);
+    assert.doesNotMatch(text ?? "", /read new messages|Re-securing|owner has/);
+  }
+  // A channel-op roster refusal maps to invalid_change too.
+  assert.equal(
+    errorUiCopy(
+      protectedNoticeForError(nativeRefusal("roster_mismatch"), {
+        op: "channel",
+      }),
+    ),
+    OP_REFUSED,
+  );
 });

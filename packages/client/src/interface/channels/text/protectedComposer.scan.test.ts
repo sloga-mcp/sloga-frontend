@@ -802,9 +802,10 @@ test("U4 the composer reads the line, with the channel's name for the notice", (
     ),
     `protectedBlockedText does not read the line: ${blocked}`,
   );
+  // (FXU: the 5th arg is the signing-device ctx, pinned by its own test)
   assert.ok(
     blocked.includes(
-      "noticeCopy( line.notice, null, null, props.channel.name ?? null, );",
+      "noticeCopy( line.notice, null, null, props.channel.name ?? null, {",
     ),
     "the notice must carry the channel's display name",
   );
@@ -867,4 +868,67 @@ test("U4 Review opens the owner-review modal; the composer never confirms itself
       'import type { ProtectedOwnerReviewProps } from "@revolt/modal/modals/ProtectedOwnerReview";',
     ),
   );
+});
+
+// ---- FXU: the poisoned-group notice's signing-device ctx --------------------
+// FXT2's `noticeCopy` says "Re-securing with a new group..." for a poisoned
+// group only with `ctx.signingDevice: true`; the rule is `signingDeviceOf`
+// (components/client/protectedSigningDevice.ts, spec'd there). Both places
+// the composer renders the shield's notice pass it, un-negated.
+
+test("FXU both composer shield notices pass signingDevice from signingDeviceOf", () => {
+  const all = code(COMPOSITION);
+  assert.ok(
+    all.includes(
+      "import { protectedSelfIds, signingDeviceOf, } from " +
+        '"@revolt/client/protectedSigningDevice";',
+    ),
+    "the rule is imported from its module",
+  );
+  assert.ok(
+    all.includes(
+      "const protectedSigningDevice = () => " +
+        "signingDeviceOf(protectedShield(), protectedSelfIds(client()));",
+    ),
+    "the rule reads the shield and the session's ids",
+  );
+  assert.equal((all.match(/\bsigningDeviceOf\(/g) ?? []).length, 1);
+  // The composer line (not-protected states) ...
+  const blocked = code(
+    COMPOSITION.slice(
+      COMPOSITION.indexOf(
+        "const protectedBlockedText = (): string | undefined => {",
+      ),
+      COMPOSITION.indexOf("const blockedText = () => {"),
+    ),
+  );
+  assert.ok(
+    blocked.includes(
+      "noticeCopy( line.notice, null, null, props.channel.name ?? null, " +
+        "{ signingDevice: protectedSigningDevice() }, );",
+    ),
+    `the composer line drops the ctx: ${blocked}`,
+  );
+  // ... and the unverified banner.
+  const marker = "{noticeCopy(protectedNotice(),";
+  const at = COMPOSITION.indexOf(marker);
+  assert.ok(at >= 0, `missing marker ${marker}`);
+  assert.deepEqual(enclosingConditions(COMPOSITION, at), [
+    'protectedChannel() && protectedShield()?.state === "unverified"',
+  ]);
+  const banner = code(
+    COMPOSITION.slice(at, COMPOSITION.indexOf("</span>", at)),
+  );
+  assert.equal(
+    banner,
+    "{noticeCopy(protectedNotice(), null, null, null, { " +
+      "signingDevice: protectedSigningDevice(), })}",
+  );
+  // Every ctx is the rule, un-negated; no other shield-notice render.
+  assert.equal((all.match(/\bsigningDevice: /g) ?? []).length, 2);
+  assert.equal(
+    (all.match(/signingDevice: protectedSigningDevice\(\)/g) ?? []).length,
+    2,
+  );
+  assert.ok(!all.includes("noticeCopy(protectedNotice())"));
 });

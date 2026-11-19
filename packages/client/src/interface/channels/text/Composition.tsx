@@ -47,6 +47,10 @@ import {
   protectedNoticeForError,
   shieldPresentation,
 } from "@revolt/client/protectedShield";
+import {
+  protectedSelfIds,
+  signingDeviceOf,
+} from "@revolt/client/protectedSigningDevice";
 import type { ProtectedChannelView } from "@revolt/client/protectedTextTypes";
 import {
   useProtectedMessage,
@@ -348,6 +352,14 @@ export function MessageComposition(props: Props) {
   };
 
   /**
+   * FXU: this device runs the D21 successor itself, so a poisoned-group
+   * notice reads "Re-securing with a new group..." here only (the pill's
+   * rule, `signingDeviceOf`).
+   */
+  const protectedSigningDevice = () =>
+    signingDeviceOf(protectedShield(), protectedSelfIds(client()));
+
+  /**
    * D10: the manager found no delivered row for an orphan send. Shown in
    * every shield state until dismissed for this channel (the manager's
    * flag stays set for the session).
@@ -646,6 +658,7 @@ export function MessageComposition(props: Props) {
           null,
           null,
           props.channel.name ?? null,
+          { signingDevice: protectedSigningDevice() },
         );
         return line.draftKept
           ? `${notice} ${composerCopy.draftKept()}`
@@ -2005,7 +2018,11 @@ export function MessageComposition(props: Props) {
       >
         <ProtectedBanner role="status">
           <ProtectedShieldIcon state="unverified" size={16} />
-          <span>{noticeCopy(protectedNotice())}</span>
+          <span>
+            {noticeCopy(protectedNotice(), null, null, null, {
+              signingDevice: protectedSigningDevice(),
+            })}
+          </span>
           <Show
             when={composerReviewOffered(
               protectedShield()?.view,

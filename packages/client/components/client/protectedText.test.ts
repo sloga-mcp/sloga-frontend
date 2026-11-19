@@ -40,9 +40,13 @@ import {
   CHANNEL_CHANGED_COALESCE_MS,
   FIRST_SIGHT_PER_MINUTE,
   HOLD_RETRY_BUDGET,
+  JOIN_ADMIT_WINDOW_MS,
+  joinIntentHeld,
   KEY_PACKAGE_PUT_429_BUDGET,
+  PROTECTED_RECOVERY_REFUSED_KEY_PREFIX,
   ProtectedTextManager,
   RECOVERY_PUT_RETRY_BUDGET,
+  recoverySeats,
   REFETCH_403_PARK_BUDGET,
   STALE_SEATS_REFETCH_BUDGET,
   STICKY_GROUP_ERRORS,
@@ -5820,5 +5824,1039 @@ test("FXF 6c: a Welcome discarded with signer_leaf_missing for a group the serve
   m.onEnvelope(envelope("WNEW", 1, { ...welcome, group_id: G1 }));
   await env.advance(0);
   assert.equal(env.views.get(CH)?.signerLeafMissingRetries, 1, "current");
+  m.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// S2 live-leg fix lane FXL (F-L4b: the member-side verify carries the
+// server's `list.authority`; F-L4: a recovery list leaves off the users the
+// server released since). Tests named "FXL ..." are the targets of
+// /home/mcp/pc-logs/s2/w4/ctl/FXL.
+// ---------------------------------------------------------------------------
+
+/** A v2 list body naming an authority (its `authority:` line). */
+const AUTH_BODY_LINE = "\nauthority:" + "a".repeat(64);
+const SERVED_AUTH = {
+  body: "sloga-channel-authority-v1\nR",
+  signature: "ASIG",
+};
+
+/**
+ * F-L4b, native's rule as the live leg showed it: a body naming an
+ * authority verifies only WITH it (else `authority_invalid`); with it, a
+ * signer other than `heldSigner` is the 4.7 same-user owner change.
+ */
+function authorityVerify(env: Env, heldSigner: string) {
+  const accepted = defaultHandlers(env).e2ee_text_seat_list_verify!;
+  return (a: TextCommandArgs["e2ee_text_seat_list_verify"]) => {
+    if (
+      a.list.body.includes(AUTH_BODY_LINE) &&
+      a.list.authority === undefined
+    ) {
+      throw {
+        type: "seat_list_invalid",
+        channel_id: a.channelId,
+        reason: "authority_invalid",
+      };
+    }
+    if (a.list.signer_device_id !== heldSigner) {
+      throw {
+        type: "owner_changed",
+        channel_id: a.channelId,
+        signer_user_id: a.list.signer_user_id,
+        signer_device_id: a.list.signer_device_id,
+        same_user: true,
+        verified: true,
+      };
+    }
+    return accepted(a);
+  };
+}
+
+/** The recovery list the server serves: another device of the owner. */
+function servedRecoveryList(over: Record<string, unknown> = {}) {
+  return {
+    version: 2,
+    body: "sloga-seat-list-v2" + AUTH_BODY_LINE + "\nR",
+    signature: "RSIG",
+    signer_user_id: OWNER,
+    signer_device_id: OWNER_DEV2,
+    authority: SERVED_AUTH,
+    handovers: [],
+    ...over,
+  };
+}
+
+test("FXL F-L4b: a member holding the old signer's list verifies a recovery list from another device of the owner WITH the server's authority: the owner-change review, never seat_list_invalid", async () => {
+  const env = new Env();
+  env.handlers.e2ee_text_seat_list_verify = authorityVerify(env, OWNER_DEV);
+  const m = make(env);
+  await m.refresh(CH, "open");
+  assert.equal(
+    env.views.get(CH)?.seatListError,
+    null,
+    "the held list verifies",
+  );
+  assert.equal(env.views.get(CH)?.ownerChangePending, false);
+
+  env.seats = seatsBody({ list: servedRecoveryList() });
+  await m.refresh(CH, "interval");
+  const v = env.calls("e2ee_text_seat_list_verify").at(-1)!;
+  assert.deepEqual(v.list, {
+    body: servedRecoveryList().body,
+    signature: "RSIG",
+    signer_user_id: OWNER,
+    signer_device_id: OWNER_DEV2,
+    authority: SERVED_AUTH,
+  });
+  const view = env.views.get(CH);
+  assert.equal(view?.ownerChangePending, true, "the review is offered");
+  assert.equal(view?.seatListError, "owner_changed");
+  assert.equal(env.explain()?.notice, "owner_changed_review");
+  assert.equal(
+    env.logs.some((l) => l.msg.includes("authority malformed")),
+    false,
+  );
+  m.dispose();
+});
+
+test("FXL F-L4b: the served authority reaches verify as its two string fields only; absent or null is omitted; a malformed one is omitted and logged, and a body naming an authority then fails loud", async () => {
+  const env = new Env();
+  env.handlers.e2ee_text_seat_list_verify = authorityVerify(env, OWNER_DEV);
+  const m = make(env);
+  const last = () => env.calls("e2ee_text_seat_list_verify").at(-1)!;
+
+  // Extra fields on the served object are never passed through.
+  env.seats = seatsBody({
+    list: servedRecoveryList({
+      signer_device_id: OWNER_DEV,
+      authority: { ...SERVED_AUTH, extra: "x" },
+    }),
+  });
+  await m.refresh(CH, "open");
+  assert.deepEqual(last().list.authority, SERVED_AUTH);
+  assert.equal(env.views.get(CH)?.seatListError, null);
+
+  // Absent and null: no `authority` key at all (S1 shape unchanged).
+  for (const authority of [undefined, null]) {
+    const list: Record<string, unknown> = {
+      ...seatsBody().list,
+      authority,
+    };
+    if (authority === undefined) delete list.authority;
+    env.seats = seatsBody({ list });
+    await m.refresh(CH, "interval");
+    assert.equal("authority" in last().list, false, String(authority));
+    assert.equal(env.views.get(CH)?.seatListError, null);
+  }
+  assert.equal(
+    env.logs.some((l) => l.msg.includes("authority malformed")),
+    false,
+  );
+
+  // Malformed: omitted (never the served object), logged, and native's
+  // refusal of a body naming an authority is the loud red.
+  for (const authority of [{ body: 5, signature: "S" }, "AUTH", ["A", "S"]]) {
+    env.seats = seatsBody({ list: servedRecoveryList({ authority }) });
+    await m.refresh(CH, "interval");
+    assert.equal("authority" in last().list, false, JSON.stringify(authority));
+    assert.equal(env.views.get(CH)?.seatListError, "seat_list_invalid");
+  }
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.level === "warn" &&
+        l.msg.includes("seat list authority malformed: omitted"),
+    ),
+  );
+  m.dispose();
+});
+
+const FXL_LOST = "dev-lost";
+const FXL_NEW = "UNEW";
+
+/**
+ * F-L4: this user's list signer device was lost; the held list seats
+ * OWNER, PEER and this user (the signer user). The mock DS keeps the
+ * stored list (= the held one) and answers a recovery PUT by
+ * `seat_list_removed_users`: 400 `SeatListNamesRemovedUsers` when the
+ * list names a user (not the signer) of the stored list with no active
+ * seat; else 200 and the landed list is what `GET .../seats` serves.
+ */
+function recoveryEnv(active: string[], opts: { cooling?: string[] } = {}) {
+  const env = new Env();
+  // FXT M1: by default a held user the server does not seat is cooling (a
+  // positive release); `cooling` names exactly who is.
+  const coolingIds =
+    opts.cooling ?? [OWNER, PEER, SELF].filter((u) => !active.includes(u));
+  const coolingRows = coolingIds.map((user_id) => ({
+    user_id,
+    released_at: "",
+    cooldown_until: "",
+    cause: "access_lost",
+  }));
+  const lostList = {
+    ...st().seat_list!,
+    signer_user_id: SELF,
+    signer_device_id: FXL_LOST,
+  };
+  env.states.set(CH, st({ seat_list: lostList }));
+  env.seats = seatsBody({
+    list: {
+      ...seatsBody().list,
+      signer_user_id: SELF,
+      signer_device_id: FXL_LOST,
+    },
+    seats: active.map((user_id) => ({ user_id, seated_at: "" })),
+    cooling: coolingRows,
+  });
+  env.group = groupBody({
+    signer_lost: {
+      user_id: SELF,
+      device_id: FXL_LOST,
+      cause: "device_revoked",
+      at: "",
+    },
+  });
+  // Signed over the served version (the owner flow checks version + 1).
+  const signed = (seats: string[], version = 2) => ({
+    version,
+    body: "sloga-seat-list-v2" + AUTH_BODY_LINE + "\n" + seats.join(","),
+    signature: "RSIG",
+    signer_user_id: SELF,
+    signer_device_id: DEV,
+    authority: SERVED_AUTH,
+  });
+  env.handlers.e2ee_text_seat_list_sign = (a) =>
+    signed(a.seats, (a.serverList?.version ?? 1) + 1);
+  const puts: { status: number; seats: string[] }[] = [];
+  env.routes.push((method, path, body) => {
+    if (method !== "PUT" || path !== "/channels/" + CH + "/seats") {
+      return undefined;
+    }
+    const b = body as { body: string; signature: string };
+    const seats = b.body.split("\n").at(-1)!.split(",");
+    const served = (env.seats as { list: { version: number } }).list.version;
+    const seated = (
+      (env.seats as { seats: { user_id: string }[] }).seats ?? []
+    ).map((s) => s.user_id);
+    const removed = seats.filter(
+      (u) => u !== SELF && lostList.seats.includes(u) && !seated.includes(u),
+    );
+    if (removed.length > 0) {
+      puts.push({ status: 400, seats });
+      return ok({ type: "SeatListNamesRemovedUsers", users: removed }, 400);
+    }
+    puts.push({ status: 200, seats });
+    env.seats = seatsBody({
+      ...env.seats,
+      list: { ...signed(seats, served + 1), handovers: [] },
+    });
+    return ok(env.seats);
+  });
+  return { env, lostList, puts };
+}
+
+test("FXL F-L4: a recovery after a server-side release signs the held seats minus the released user, always this user, and the PUT lands (the mock DS refuses a list naming a released user)", async () => {
+  // PEER released (access_lost): the server lists OWNER and this user.
+  const { env, puts } = recoveryEnv([OWNER, SELF]);
+  const m = make(env);
+  await m.recoverOwnership(CH);
+  const sign = env.calls("e2ee_text_seat_list_sign");
+  assert.equal(sign.length, 1);
+  assert.deepEqual(sign[0].seats, [OWNER, SELF]);
+  assert.equal(sign[0].deviceCap, 5, "the held cap");
+  assert.deepEqual(
+    sign[0].displayNames.map((d) => d.user_id),
+    [OWNER, SELF],
+  );
+  assert.deepEqual(puts, [{ status: 200, seats: [OWNER, SELF] }]);
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg.includes("recovery list leaves released users off") &&
+        l.ids.count === 1,
+    ),
+  );
+  m.dispose();
+
+  // A snapshot that reports this user released too (cooling, not seated):
+  // this user is still signed.
+  const r2 = recoveryEnv([OWNER]);
+  const m2 = make(r2.env);
+  await m2.recoverOwnership(CH);
+  assert.deepEqual(r2.env.calls("e2ee_text_seat_list_sign")[0].seats, [
+    OWNER,
+    SELF,
+  ]);
+  assert.deepEqual(r2.puts, [{ status: 200, seats: [OWNER, SELF] }]);
+  m2.dispose();
+
+  // Nobody released: the held seats verbatim, no log line.
+  const r3 = recoveryEnv([OWNER, PEER, SELF]);
+  const m3 = make(r3.env);
+  await m3.recoverOwnership(CH);
+  assert.deepEqual(
+    r3.env.calls("e2ee_text_seat_list_sign")[0].seats,
+    r3.lostList.seats,
+  );
+  assert.deepEqual(r3.puts, [{ status: 200, seats: r3.lostList.seats }]);
+  assert.equal(
+    r3.env.logs.some((l) => l.msg.includes("leaves released users off")),
+    false,
+  );
+  m3.dispose();
+});
+
+test("FXL F-L4: a user the server lists as seated but the held list does not name is never added to the recovery list; a malformed seats entry refuses the recovery before any dialog", async () => {
+  const { env, puts } = recoveryEnv([OWNER, FXL_NEW, SELF]);
+  const m = make(env);
+  await m.recoverOwnership(CH);
+  const seats = env.calls("e2ee_text_seat_list_sign")[0].seats;
+  assert.deepEqual(seats, [OWNER, SELF]);
+  assert.equal(seats.includes(FXL_NEW), false, "never grown by the server");
+  assert.deepEqual(puts, [{ status: 200, seats: [OWNER, SELF] }]);
+  m.dispose();
+
+  const bad = recoveryEnv([OWNER, SELF]);
+  bad.env.seats = {
+    ...bad.env.seats,
+    seats: [{ user_id: OWNER, seated_at: "" }, { user_id: 7 }],
+  };
+  const mb = make(bad.env);
+  await assert.rejects(
+    mb.recoverOwnership(CH),
+    (e: { reason?: string }) => e.reason === "recovery_unavailable",
+  );
+  assert.equal(bad.env.calls("e2ee_text_seat_list_sign").length, 0);
+  assert.deepEqual(bad.puts, []);
+  mb.dispose();
+});
+
+test("FXL F-L4b: the recoverer re-verifies its own recovery list after the PUT lands WITH the server's authority, never seat_list_invalid", async () => {
+  const { env, puts } = recoveryEnv([OWNER, SELF]);
+  // FXT M2: native as it is (`seat_list.rs` `authority_acceptance`, live
+  // A2): the recoverer's own landed list is the same-user owner change of
+  // ITS OWN device until the native confirm.
+  const native = faithfulRecoveryNative(env);
+  const m = make(env);
+  await m.recoverOwnership(CH);
+  await env.advance(0);
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0].status, 200);
+  assert.ok(native.ownerChanged() > 0, "native raised the review first");
+  const own = env
+    .calls("e2ee_text_seat_list_verify")
+    .filter((v) => v.list.signer_device_id === DEV);
+  assert.ok(own.length > 0, "its own list is verified after the PUT");
+  for (const v of own) assert.deepEqual(v.list.authority, SERVED_AUTH);
+  assert.equal(env.calls("e2ee_text_owner_confirm_change").length, 1);
+  const view = env.views.get(CH);
+  assert.equal(view?.seatListError, null);
+  assert.equal(view?.ownerChangePending, false);
+  assert.equal(view?.ownerChangeUnlisted, false);
+  m.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// S2 live-leg fix lane FXT. F-L13: a join run's first intent waits while
+// this device's stored intent may be being admitted, so "Try again" (an
+// open) or a retry never races that admit into a rejoin eviction (native
+// then poisons the group on this device). M1: a recovery leaves a held
+// user off on positive evidence only. M2: the recoverer's own landed list
+// is native's same-user owner change; the call resolves and the native
+// confirm is asked. Tests named "FXT ..." are the targets of
+// /home/mcp/pc-logs/s2/w4/ctl/FXT.
+// ---------------------------------------------------------------------------
+
+/** This device's own intent as `text_group.join_requests` stores it. */
+function ownStored(ref = "KPR-OLD") {
+  return {
+    user_id: SELF,
+    device_id: DEV,
+    key_package_ref: ref,
+    signature: "JSIG-OLD",
+    created_at: "",
+    rejoin: false,
+  };
+}
+
+/** A Welcome for G0 joins this device at epoch 4. */
+function welcomeJoins(env: Env) {
+  env.handlers.e2ee_text_process = (a) => {
+    env.states.set(CH, st({ epoch: 4 }));
+    return outcome({
+      kind: "welcome_joined",
+      epoch: 4,
+      group_id: a.envelope.group_id,
+    });
+  };
+}
+
+test("FXT F-L13 joinIntentHeld: held while the own stored intent is inside the admit window; released after it; never for a clock before it or not finite", () => {
+  const at = 1_000_000;
+  const held = (o: Partial<Parameters<typeof joinIntentHeld>[0]>) =>
+    joinIntentHeld({
+      ownIntentStored: true,
+      sinceMs: at,
+      nowMs: at,
+      ...o,
+    });
+  assert.equal(held({}), true);
+  assert.equal(held({ nowMs: at + JOIN_ADMIT_WINDOW_MS - 1 }), true);
+  assert.equal(held({ nowMs: at + JOIN_ADMIT_WINDOW_MS }), false);
+  assert.equal(held({ ownIntentStored: false }), false);
+  assert.equal(held({ sinceMs: null }), false);
+  assert.equal(held({ nowMs: at - 1 }), false, "a clock before the start");
+  assert.equal(held({ nowMs: Number.NaN }), false);
+});
+
+test("FXT F-L13: Try again (an open) or a retry while this device's stored intent may be admitted sends no intent; the admit's Welcome joins it and no intent ever races it", async () => {
+  const env = joiningEnv();
+  // The stored intent of an earlier session (or one this device sent while
+  // over the cap was freed): a member can admit it at any moment.
+  env.group = groupBody({ join_requests: [ownStored()] });
+  welcomeJoins(env);
+  const m = make(env);
+  await m.open(CH);
+  await env.advance(0);
+  m.retryNow(CH);
+  await env.advance(0);
+  assert.equal(intents(env), 0, "no intent while the stored one may land");
+  assert.ok(
+    env.logs.some((l) => l.msg.includes("join intent held")),
+    "the hold is logged",
+  );
+  await env.advance(8_000);
+  assert.equal(intents(env), 0);
+  // A member admits the STORED intent: the Add lands, the Welcome arrives.
+  env.group = groupBody({
+    current_epoch: 4,
+    member_added: [{ user_id: SELF, device_id: DEV, epoch: 4, at: "" }],
+  });
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.equal(env.state().state, "active");
+  await env.advance(JOIN_ADMIT_WINDOW_MS * 3);
+  assert.equal(intents(env), 0, "nothing raced the admit");
+  m.close(CH);
+  m.dispose();
+});
+
+test("FXT F-L13: the hold releases once the admit window passes with no Add: the run then sends its intent", async () => {
+  const env = joiningEnv();
+  env.group = groupBody({ join_requests: [ownStored()] });
+  const m = make(env);
+  const times = intentTimes(env);
+  await m.open(CH);
+  await env.advance(JOIN_ADMIT_WINDOW_MS - 1);
+  assert.equal(intents(env), 0);
+  await env.advance(1);
+  assert.equal(intents(env), 1, "released: the window passed with no Add");
+  assert.deepEqual(times, [JOIN_ADMIT_WINDOW_MS]);
+  m.close(CH);
+  m.dispose();
+});
+
+test("FXT F-L13: an Add of this device already landed and no intent sent this session: its Welcome path runs before any intent, and the stored Welcome joins it", async () => {
+  const env = joiningEnv();
+  // FXT2: native as an earlier session's `_join` left it (lifecycle.rs
+  // sets `joining`): its intent is outstanding, so the stored Welcome can
+  // be processed. A `left`/`none` device never takes this path (MAJOR-1).
+  env.states.set(
+    CH,
+    st({ state: "joining", verdict: "joining", epoch: null, members: [] }),
+  );
+  env.group = groupBody({
+    current_epoch: 4,
+    member_added: [{ user_id: SELF, device_id: DEV, epoch: 4, at: "" }],
+  });
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G0, epoch: 4, welcome: "WEL" })),
+  );
+  welcomeJoins(env);
+  const m = make(env);
+  await m.open(CH);
+  await env.advance(WELCOME_FETCH_AFTER_MS - 1);
+  assert.equal(intents(env), 0);
+  assert.equal(welcomeGets(env).length, 0);
+  await env.advance(1);
+  assert.equal(welcomeGets(env).length, 1, "the stored Welcome of that Add");
+  assert.equal(env.state().state, "active");
+  await env.advance(120_000);
+  assert.equal(
+    intents(env),
+    0,
+    "no intent: it would read as a rejoin and evict the fresh leaf",
+  );
+  m.close(CH);
+  m.dispose();
+});
+
+/** The fake DS keeps each accepted intent (one row per device). */
+function storesOwnIntents(env: Env) {
+  env.routes.push((method, path, body) => {
+    if (method === "POST" && /join_intent$/.test(path)) {
+      const b = body as { key_package_ref: string };
+      env.group = groupBody({ join_requests: [ownStored(b.key_package_ref)] });
+    }
+    return undefined;
+  });
+}
+
+test("FXT F-L13: an open during a running join keeps its backoff while this device's intent may be admitted (the next re-broadcast is not brought forward)", async () => {
+  const env = joiningEnv();
+  storesOwnIntents(env);
+  const m = make(env);
+  const times = intentTimes(env);
+  silence(m.ensureJoined(CH));
+  // S2-D28 steps 10, 20, 40, 80, 160 s, each at least the admit window.
+  await env.advance(260_000);
+  assert.deepEqual(times, [0, 60_000, 120_000, 180_000, 260_000]);
+  await env.advance(1_000);
+  await m.open(CH);
+  await env.advance(200_000);
+  assert.deepEqual(
+    times,
+    [0, 60_000, 120_000, 180_000, 260_000, 420_000],
+    "the S2-D28 step (160 s), not brought forward by the open",
+  );
+  m.close(CH);
+  m.dispose();
+});
+
+test("FXT M1 recoverySeats: only positive evidence leaves a held user off (cooling and not seated, or a refusal over this version); absence keeps; this user always; never an addition; malformed reads refuse", () => {
+  const held = [OWNER, PEER, SELF];
+  const seats = (...ids: string[]) => ids.map((user_id) => ({ user_id }));
+  const cool = (...ids: string[]) => ids.map((user_id) => ({ user_id }));
+  const run = (snap: { seats?: unknown; cooling?: unknown }, refused = []) =>
+    recoverySeats(held, snap, SELF, refused);
+  assert.deepEqual(run({ seats: seats(OWNER, SELF) }), held, "absence keeps");
+  assert.deepEqual(run({ seats: seats(OWNER, SELF), cooling: cool(PEER) }), [
+    OWNER,
+    SELF,
+  ]);
+  assert.deepEqual(
+    run({ seats: seats(OWNER, PEER, SELF), cooling: cool(PEER) }),
+    held,
+    "seated wins over cooling",
+  );
+  assert.deepEqual(
+    recoverySeats(held, { seats: seats(OWNER, SELF) }, SELF, [PEER]),
+    [OWNER, SELF],
+    "a refusal over this version",
+  );
+  assert.deepEqual(
+    recoverySeats(held, { seats: [], cooling: cool(SELF) }, SELF, [SELF]),
+    held,
+    "this user always",
+  );
+  assert.deepEqual(
+    run({ seats: seats(OWNER, PEER, SELF, FXL_NEW) }),
+    held,
+    "never added",
+  );
+  assert.equal(run({ seats: "x" }), null);
+  assert.equal(run({ seats: seats(OWNER), cooling: "x" }), null);
+  assert.equal(run({ seats: seats(OWNER), cooling: [{ user_id: 7 }] }), null);
+  assert.deepEqual(run({ seats: seats(OWNER, SELF), cooling: null }), held);
+});
+
+test("FXT M1: a held user the server neither seats nor lists as cooling is KEPT; after the server refuses naming them, the next Recover (after a reload) drops exactly them and lands", async () => {
+  const { env, puts } = recoveryEnv([OWNER, SELF], { cooling: [] });
+  const key = PROTECTED_RECOVERY_REFUSED_KEY_PREFIX + SELF + ":" + CH;
+  const m = make(env);
+  await assert.rejects(
+    m.recoverOwnership(CH),
+    (e: { type?: string }) => e.type === "SeatListNamesRemovedUsers",
+  );
+  const sign = () => env.calls("e2ee_text_seat_list_sign");
+  assert.deepEqual(sign()[0].seats, [OWNER, PEER, SELF], "absence keeps");
+  assert.deepEqual(puts, [{ status: 400, seats: [OWNER, PEER, SELF] }]);
+  assert.deepEqual(JSON.parse(env.storeMap.get(key)!), {
+    v: 1,
+    version: 1,
+    users: [PEER],
+  });
+  m.dispose();
+  // A reload: the new manager reads the persisted refusal.
+  const m2 = make(env);
+  await m2.recoverOwnership(CH);
+  assert.deepEqual(sign()[1].seats, [OWNER, SELF]);
+  assert.deepEqual(puts[1], { status: 200, seats: [OWNER, SELF] });
+  assert.equal(env.storeMap.has(key), false, "spent once recovery resolved");
+  m2.dispose();
+});
+
+test("FXT M1: refusal ids are bound to the served list version they were refused over: another version keeps the user until refused over it", async () => {
+  const { env, puts } = recoveryEnv([OWNER, SELF], { cooling: [] });
+  const m = make(env);
+  const refusedRemoved = (e: { type?: string }) =>
+    e.type === "SeatListNamesRemovedUsers";
+  await assert.rejects(m.recoverOwnership(CH), refusedRemoved);
+  // Another list is served now (version 4): the v1 refusal says nothing.
+  const s = env.seats as { list: Record<string, unknown> };
+  env.seats = { ...env.seats, list: { ...s.list, version: 4 } };
+  await assert.rejects(m.recoverOwnership(CH), refusedRemoved);
+  const sign = () => env.calls("e2ee_text_seat_list_sign");
+  assert.deepEqual(sign()[1].seats, [OWNER, PEER, SELF]);
+  assert.equal(sign()[1].serverList?.version, 4);
+  await m.recoverOwnership(CH);
+  assert.deepEqual(sign()[2].seats, [OWNER, SELF]);
+  assert.deepEqual(
+    puts.map((p) => p.status),
+    [400, 400, 200],
+  );
+  m.dispose();
+});
+
+/**
+ * FXT M2: native's verify for the recoverer (`seat_list.rs`
+ * `authority_acceptance`; live A2): its pin is the lost device and the
+ * recovery authority names only this device, so a list this device signed
+ * is `owner_changed { same_user, signer_device_id: DEV }` until
+ * `_owner_confirm_change`, then it verifies. A body naming an authority
+ * without it is `authority_invalid`; the lost device's held list verifies.
+ */
+function faithfulRecoveryNative(env: Env) {
+  let confirmed = false;
+  let ownerChanged = 0;
+  const accepted = defaultHandlers(env).e2ee_text_seat_list_verify!;
+  env.handlers.e2ee_text_seat_list_verify = (a) => {
+    if (
+      a.list.body.includes(AUTH_BODY_LINE) &&
+      a.list.authority === undefined
+    ) {
+      throw {
+        type: "seat_list_invalid",
+        channel_id: a.channelId,
+        reason: "authority_invalid",
+      };
+    }
+    if (a.list.signer_device_id !== DEV) return accepted(a);
+    const s = env.state();
+    if (!confirmed) {
+      ownerChanged += 1;
+      s.owner_pin = {
+        ...s.owner_pin!,
+        status: "changed",
+        pending_signer: {
+          user_id: SELF,
+          device_id: DEV,
+          same_user: true,
+          verified: true,
+        },
+      };
+      throw {
+        type: "owner_changed",
+        channel_id: a.channelId,
+        signer_user_id: SELF,
+        signer_device_id: DEV,
+        same_user: true,
+        verified: true,
+      };
+    }
+    const seats = a.list.body.split("\n").at(-1)!.split(",");
+    s.seat_list = {
+      ...s.seat_list!,
+      version: 2,
+      signer_user_id: SELF,
+      signer_device_id: DEV,
+      seats,
+    };
+    s.owner_pin = {
+      ...s.owner_pin!,
+      status: "pinned",
+      owner_user_id: SELF,
+      owner_device_id: DEV,
+      pending_signer: null,
+    };
+    return {
+      status: "accepted",
+      version: 2,
+      seats,
+      device_cap: 5,
+      signer_user_id: SELF,
+      signer_device_id: DEV,
+      pinned_now: true,
+    };
+  };
+  env.handlers.e2ee_text_owner_confirm_change = () => {
+    confirmed = true;
+    return null;
+  };
+  return { ownerChanged: () => ownerChanged };
+}
+
+test("FXT M2: a landed recovery whose re-verify is native's same-user change of THIS device resolves; the native confirm is requested only after it, and the re-verify with the authority settles", async () => {
+  const { env, puts } = recoveryEnv([OWNER, SELF]);
+  const native = faithfulRecoveryNative(env);
+  let confirmDuringCall = false;
+  let inCall = true;
+  const confirm = env.handlers.e2ee_text_owner_confirm_change!;
+  env.handlers.e2ee_text_owner_confirm_change = (a) => {
+    confirmDuringCall ||= inCall;
+    return confirm(a);
+  };
+  const m = make(env);
+  await m.recoverOwnership(CH);
+  inCall = false;
+  assert.deepEqual(puts, [{ status: 200, seats: [OWNER, SELF] }]);
+  assert.ok(native.ownerChanged() > 0);
+  await env.advance(0);
+  const confirms = env.calls("e2ee_text_owner_confirm_change");
+  assert.equal(confirms.length, 1, "the NATIVE dialog is the consent");
+  assert.equal(confirms[0].channelId, CH);
+  assert.equal(confirmDuringCall, false, "after the call resolved");
+  const last = env.calls("e2ee_text_seat_list_verify").at(-1)!;
+  assert.equal(last.list.signer_device_id, DEV);
+  assert.deepEqual(last.list.authority, SERVED_AUTH);
+  const view = env.views.get(CH);
+  assert.equal(view?.ownerChangePending, false);
+  assert.equal(view?.seatListError, null);
+  assert.equal(view?.ownerChangeUnlisted, false);
+  assert.equal(
+    env.logs.some((l) => l.msg.includes("own owner change to confirm")),
+    true,
+  );
+  m.dispose();
+});
+
+test("FXT M2: the user cancels the native confirm: the recovery still resolved and the channel stays in Review owner change", async () => {
+  const { env } = recoveryEnv([OWNER, SELF]);
+  faithfulRecoveryNative(env);
+  env.handlers.e2ee_text_owner_confirm_change = () => {
+    throw { type: "declined" };
+  };
+  const m = make(env);
+  await m.recoverOwnership(CH);
+  await env.advance(0);
+  assert.equal(env.calls("e2ee_text_owner_confirm_change").length, 1);
+  const view = env.views.get(CH);
+  assert.equal(view?.ownerChangePending, true);
+  assert.equal(view?.seatListError, "owner_changed");
+  assert.equal(env.explain()?.notice, "owner_changed_review");
+  m.dispose();
+});
+
+test("FXT M2: a landed recovery whose re-verify names ANOTHER device as the new signer is still a failure and asks no confirm", async () => {
+  const { env, puts } = recoveryEnv([OWNER, SELF]);
+  env.handlers.e2ee_text_seat_list_verify = (a) => {
+    if (a.list.signer_device_id === FXL_LOST) {
+      return defaultHandlers(env).e2ee_text_seat_list_verify!(a);
+    }
+    throw {
+      type: "owner_changed",
+      channel_id: a.channelId,
+      signer_user_id: SELF,
+      signer_device_id: "dev-other",
+      same_user: true,
+      verified: true,
+    };
+  };
+  const m = make(env);
+  await assert.rejects(
+    m.recoverOwnership(CH),
+    (e: { source?: string; error?: { type?: string } }) =>
+      e.source === "native" && e.error?.type === "owner_changed",
+  );
+  assert.equal(puts.length, 1);
+  await env.advance(0);
+  assert.equal(env.calls("e2ee_text_owner_confirm_change").length, 0);
+  m.dispose();
+});
+
+test("FXT M2: a member's confirm of a recovery list from another device of the owner carries the authority and settles", async () => {
+  const env = new Env();
+  let confirmed = false;
+  const accepted = defaultHandlers(env).e2ee_text_seat_list_verify!;
+  env.handlers.e2ee_text_seat_list_verify = (a) => {
+    if (
+      a.list.body.includes(AUTH_BODY_LINE) &&
+      a.list.authority === undefined
+    ) {
+      throw {
+        type: "seat_list_invalid",
+        channel_id: a.channelId,
+        reason: "authority_invalid",
+      };
+    }
+    if (a.list.signer_device_id !== OWNER_DEV2) return accepted(a);
+    if (!confirmed) {
+      throw {
+        type: "owner_changed",
+        channel_id: a.channelId,
+        signer_user_id: OWNER,
+        signer_device_id: OWNER_DEV2,
+        same_user: true,
+        verified: true,
+      };
+    }
+    return { ...accepted(a), version: 2, signer_device_id: OWNER_DEV2 };
+  };
+  env.handlers.e2ee_text_owner_confirm_change = () => {
+    confirmed = true;
+    return null;
+  };
+  env.seats = seatsBody({ list: servedRecoveryList() });
+  const m = make(env);
+  await m.refresh(CH, "open");
+  assert.equal(env.views.get(CH)?.ownerChangePending, true);
+  await m.confirmOwnerChange(CH);
+  assert.equal(env.calls("e2ee_text_owner_confirm_change").length, 1);
+  const last = env.calls("e2ee_text_seat_list_verify").at(-1)!;
+  assert.equal(last.list.signer_device_id, OWNER_DEV2);
+  assert.deepEqual(last.list.authority, SERVED_AUTH);
+  const view = env.views.get(CH);
+  assert.equal(view?.ownerChangePending, false);
+  assert.equal(view?.seatListError, null);
+  assert.equal(view?.ownerChangeUnlisted, false);
+  m.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// S2 live-leg fix lane FXT2 (re-review MAJOR-1, MAJOR-2, MINOR-6). Tests
+// named "FXT2 ..." are targets of /home/mcp/pc-logs/s2/w4/ctl/FXT.
+// ---------------------------------------------------------------------------
+
+/** This device's member_added entry as a real server keeps it. */
+const OWN_ADDED = (epoch: number) => ({
+  user_id: SELF,
+  device_id: DEV,
+  epoch,
+  at: "",
+});
+
+const unsolicited = () => {
+  throw { type: "mls_unsolicited_welcome", group_id: G0 };
+};
+
+test("FXT2 MAJOR-1: a device the server still lists as a member (its member_added entry) but native has left sends its rejoin intent at once: no stored-Welcome wait, no unsolicited toast", async () => {
+  const env = new Env();
+  env.states.set(CH, st({ state: "left", verdict: "no_group" }));
+  env.group = groupBody({ member_added: [OWN_ADDED(2)] });
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G0, epoch: 2, welcome: "OLD" })),
+  );
+  env.handlers.e2ee_text_process = unsolicited;
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.equal(intents(env), 1, "the rejoin intent at once");
+  await env.advance(60_000);
+  assert.equal(welcomeGets(env).length, 0, "no old Welcome fetched");
+  assert.deepEqual(env.notified, [], "no false invitation alarm");
+  m.dispose();
+});
+
+test("FXT2 MAJOR-1: an Add a mailbox Welcome handled is done once the device holds the group: after a later wipe it rejoins at once, never taking that Add's stored-Welcome path", async () => {
+  const env = joiningEnv();
+  welcomeJoins(env);
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G0, epoch: 4, welcome: "OLD" })),
+  );
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.equal(intents(env), 1);
+  env.group = groupBody({ current_epoch: 4, member_added: [OWN_ADDED(4)] });
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.equal(env.state().state, "active");
+  // The leaf is later wiped locally; the server still lists the device.
+  env.states.set(CH, st({ state: "left", verdict: "no_group", epoch: 4 }));
+  env.handlers.e2ee_text_process = unsolicited;
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.equal(intents(env), 2, "the rejoin intent at once");
+  await env.advance(60_000);
+  assert.equal(welcomeGets(env).length, 0);
+  assert.deepEqual(env.notified, []);
+  m.dispose();
+});
+
+test("FXT2 F-L13: the run's own re-broadcasts also wait while its stored intent is inside the admit window", async () => {
+  const env = joiningEnv();
+  storesOwnIntents(env);
+  const m = make(env);
+  const times = intentTimes(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(300_000);
+  assert.deepEqual(times, [0, 60_000, 120_000, 180_000, 260_000]);
+  m.dispose();
+});
+
+test("FXT2 F-L13: an Add of this device landing between the run's last read and its next POST stops that POST; the Welcome joins it", async () => {
+  const env = joiningEnv();
+  welcomeJoins(env);
+  let puts = 0;
+  env.routes.push((method, path) => {
+    if (method === "PUT" && path === "/mls/key_packages" && ++puts === 2) {
+      // A member's admit of intent 1 commits while intent 2 is minted.
+      env.group = groupBody({ current_epoch: 4, member_added: [OWN_ADDED(4)] });
+    }
+    return undefined;
+  });
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.equal(intents(env), 1);
+  await env.advance(10_000);
+  assert.equal(puts, 2, "the next intent was minted");
+  assert.equal(intents(env), 1, "but never posted");
+  assert.ok(
+    env.logs.some((l) => l.msg.includes("join intent not posted: an Add")),
+  );
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.equal(env.state().state, "active");
+  await env.advance(300_000);
+  assert.equal(intents(env), 1);
+  m.dispose();
+});
+
+test("FXT2 F-L13: native holding the group when the next intent is ready stops that POST and the run", async () => {
+  const env = joiningEnv();
+  let puts = 0;
+  env.routes.push((method, path) => {
+    if (method === "PUT" && path === "/mls/key_packages" && ++puts === 2) {
+      env.states.set(CH, st({ epoch: 4 }));
+    }
+    return undefined;
+  });
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  await env.advance(10_000);
+  assert.equal(puts, 2);
+  assert.equal(intents(env), 1, "never posted while it holds the group");
+  await env.advance(300_000);
+  assert.equal(intents(env), 1);
+  m.dispose();
+});
+
+test("FXT2 F-L13: an unread text_group right before the POST skips that intent (no blind POST); the next step posts", async () => {
+  const env = joiningEnv();
+  let puts = 0;
+  let failNext = false;
+  env.routes.push((method, path) => {
+    if (method === "PUT" && path === "/mls/key_packages" && ++puts === 2) {
+      failNext = true;
+    }
+    if (failNext && method === "GET" && /text_group$/.test(path)) {
+      failNext = false;
+      return ok({ type: "InternalError" }, 503);
+    }
+    return undefined;
+  });
+  const m = make(env);
+  const times = intentTimes(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(40_000);
+  assert.deepEqual(times, [0, 30_000], "10 s skipped, then 20 s later");
+  assert.ok(
+    env.logs.some((l) => l.msg.includes("join intent not posted: text_group")),
+  );
+  m.dispose();
+});
+
+test("FXT2 M2: native's own-device owner change while the served list is NOT this device's (the PUT did not land) is still a failure, and no confirm is asked", async () => {
+  const { env } = recoveryEnv([OWNER, SELF]);
+  let putAnswered = false;
+  env.routes.unshift((method, path) => {
+    if (method === "PUT" && path === "/channels/" + CH + "/seats") {
+      putAnswered = true;
+      return ok({});
+    }
+    return undefined;
+  });
+  const accepted = defaultHandlers(env).e2ee_text_seat_list_verify!;
+  env.handlers.e2ee_text_seat_list_verify = (a) => {
+    if (!putAnswered) return accepted(a);
+    throw {
+      type: "owner_changed",
+      channel_id: a.channelId,
+      signer_user_id: SELF,
+      signer_device_id: DEV,
+      same_user: true,
+      verified: true,
+    };
+  };
+  const m = make(env);
+  await assert.rejects(
+    m.recoverOwnership(CH),
+    (e: { source?: string; error?: { type?: string } }) =>
+      e.source === "native" && e.error?.type === "owner_changed",
+  );
+  await env.advance(0);
+  assert.equal(env.calls("e2ee_text_owner_confirm_change").length, 0);
+  m.dispose();
+});
+
+test("FXT2 M1: a refusal of resumed recovery bytes this call did not sign records nothing (only a list this call signed can name who to leave off)", async () => {
+  const { env, puts } = recoveryEnv([OWNER, SELF], { cooling: [] });
+  const signed = {
+    version: 2,
+    body:
+      "sloga-seat-list-v2" +
+      AUTH_BODY_LINE +
+      "\n" +
+      [OWNER, PEER, SELF].join(","),
+    signature: "RSIG",
+    signer_user_id: SELF,
+    signer_device_id: DEV,
+    authority: SERVED_AUTH,
+  };
+  env.storeMap.set(
+    publishStoreKey(SELF, CH),
+    JSON.stringify({
+      v: 1,
+      op: "seats",
+      signed,
+      recovery: true,
+      answer: "sent",
+    }),
+  );
+  const m = make(env);
+  await assert.rejects(
+    m.recoverOwnership(CH),
+    (e: { type?: string }) => e.type === "SeatListNamesRemovedUsers",
+  );
+  assert.equal(env.calls("e2ee_text_seat_list_sign").length, 0, "resumed");
+  assert.deepEqual(puts, [{ status: 400, seats: [OWNER, PEER, SELF] }]);
+  assert.equal(
+    env.storeMap.has(PROTECTED_RECOVERY_REFUSED_KEY_PREFIX + SELF + ":" + CH),
+    false,
+  );
+  m.dispose();
+});
+
+test("FXT2 M1: when the store refuses the refusal record, the in-memory copy still drops exactly the refused user on the next Recover", async () => {
+  const { env, puts } = recoveryEnv([OWNER, SELF], { cooling: [] });
+  const key = PROTECTED_RECOVERY_REFUSED_KEY_PREFIX + SELF + ":" + CH;
+  const set = env.store.set;
+  env.store.set = (k: string, v: string) => (k === key ? false : set(k, v));
+  const m = make(env);
+  await assert.rejects(
+    m.recoverOwnership(CH),
+    (e: { type?: string }) => e.type === "SeatListNamesRemovedUsers",
+  );
+  assert.equal(env.storeMap.has(key), false);
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.level === "warn" &&
+        l.msg.includes("recovery refused for released users"),
+    ),
+  );
+  await m.recoverOwnership(CH);
+  assert.deepEqual(env.calls("e2ee_text_seat_list_sign")[1].seats, [
+    OWNER,
+    SELF,
+  ]);
+  assert.deepEqual(
+    puts.map((p) => p.status),
+    [400, 200],
+  );
   m.dispose();
 });
