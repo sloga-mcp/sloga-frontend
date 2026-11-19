@@ -76,3 +76,39 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
 }
+
+// iOS 27 refuses to launch an app built against the iOS 27 SDK that has not
+// adopted the UIScene lifecycle: UIKit traps in
+// _UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption before any app
+// code runs. Info.plist's UIApplicationSceneManifest names this class and
+// Main.storyboard, and UIKit loads the storyboard into the scene's window
+// itself. With a scene, URL opens and universal links arrive here instead of
+// at the app delegate, so forward them to Capacitor the same way.
+class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+
+    var window: UIWindow?
+
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession,
+               options connectionOptions: UIScene.ConnectionOptions) {
+        for context in connectionOptions.urlContexts {
+            _ = ApplicationDelegateProxy.shared.application(
+                UIApplication.shared, open: context.url, options: [:])
+        }
+        for activity in connectionOptions.userActivities {
+            _ = ApplicationDelegateProxy.shared.application(
+                UIApplication.shared, continue: activity, restorationHandler: { _ in })
+        }
+    }
+
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        for context in URLContexts {
+            _ = ApplicationDelegateProxy.shared.application(
+                UIApplication.shared, open: context.url, options: [:])
+        }
+    }
+
+    func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
+        _ = ApplicationDelegateProxy.shared.application(
+            UIApplication.shared, continue: userActivity, restorationHandler: { _ in })
+    }
+}
