@@ -88,6 +88,9 @@ export function CameraEffectsSheet(
 /** The panel's place in the stack (see the component's note). */
 const SHEET_Z_INDEX = 900;
 
+/** How often the panel's own picture checks it still shows the sent track. */
+const SELF_VIEW_CHECK_MS = 500;
+
 /**
  * On the buttons that open the panel. A press on one is left to the button,
  * which closes the panel itself when it is open; if the panel closed on that
@@ -312,6 +315,43 @@ function Sheet(props: { onClose: () => void }) {
 
   let panel: HTMLDivElement | undefined;
 
+  // The picture being sent, shown in the panel itself. The panel covers a
+  // good part of the call, often the user's own tile with it, and a setting
+  // cannot be judged without seeing what it does. It is the track the call
+  // sends, effects included, and it is not mirrored: this is what the other
+  // side sees. An effect swaps the track's output after its apply settles
+  // and a flip restarts the camera, so the binding is checked again on a
+  // timer; nothing is rebound while the track is the same one.
+  let selfView: HTMLVideoElement | undefined;
+  const bindSelfView = () => {
+    if (!selfView) return;
+    let track: MediaStreamTrack | undefined;
+    try {
+      track = untrack(() => voiceContext.localCameraTrack())?.mediaStreamTrack;
+    } catch {
+      track = undefined;
+    }
+    const current = (
+      selfView.srcObject as MediaStream | null
+    )?.getVideoTracks()[0];
+    if (current === track) return;
+    selfView.srcObject = track ? new MediaStream([track]) : null;
+    if (track) selfView.play?.().catch(() => {});
+  };
+  createEffect(() => {
+    void voiceContext.video();
+    void voiceContext.cameraEffectsApplied();
+    bindSelfView();
+  });
+  onMount(() => {
+    bindSelfView();
+    const timer = setInterval(bindSelfView, SELF_VIEW_CHECK_MS);
+    onCleanup(() => {
+      clearInterval(timer);
+      if (selfView) selfView.srcObject = null;
+    });
+  });
+
   // The panel changes the picture being sent. With the camera off or the
   // call over there is none, and the buttons that open it are gone too. A
   // reconnect keeps the call, so the panel stays through one.
@@ -423,6 +463,17 @@ function Sheet(props: { onClose: () => void }) {
           <Trans>Close</Trans>
         </button>
       </Header>
+
+      <SelfView>
+        <video
+          ref={selfView}
+          class={selfViewVideo}
+          autoplay
+          muted
+          playsinline
+          aria-hidden="true"
+        />
+      </SelfView>
 
       <Body>
         <Show when={tone}>
@@ -839,7 +890,8 @@ const Panel = styled("div", {
     // the automatic margins share what is left over
     maxWidth: "480px",
     marginInline: "auto",
-    maxHeight: "60vh",
+    // Tall enough for the picture and a few settings under it
+    maxHeight: "90vh",
     paddingBottom: "env(safe-area-inset-bottom, 0px)",
 
     display: "flex",
@@ -881,6 +933,34 @@ const Header = styled("div", {
 
     padding: "var(--gap-sm) var(--gap-md) var(--gap-sm) var(--gap-lg)",
   },
+});
+
+/**
+ * The user's own picture, above the settings and outside what scrolls, so
+ * it stays in view whichever setting is being changed.
+ */
+const SelfView = styled("div", {
+  base: {
+    flexShrink: 0,
+    height: "min(36vh, 320px)",
+    margin: "0 var(--gap-lg) var(--gap-md)",
+
+    overflow: "hidden",
+    borderRadius: "var(--borderRadius-lg)",
+    background: "#000",
+
+    "@media (orientation: landscape) and (max-height: 500px)": {
+      height: "40vh",
+    },
+  },
+});
+
+/** The whole picture, never cropped: a phone held upright sends a tall one. */
+const selfViewVideo = css({
+  display: "block",
+  width: "100%",
+  height: "100%",
+  objectFit: "contain",
 });
 
 const Heading = styled("div", {
