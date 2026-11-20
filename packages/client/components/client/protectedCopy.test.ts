@@ -575,3 +575,36 @@ test("FXT F-L13: an operation refusal mapped to these kinds poisons nothing: a n
     OP_REFUSED,
   );
 });
+
+// ------------------------------------------------ FXP F-L6 no-group copy --
+
+const NO_GROUP_REFUSED =
+  "This channel's protected group failed a security check on this device, so this device hasn't joined it and can't read new messages here.";
+
+test("FXP F-L6: a device holding no group (its own join was refused; signer or not) reads that the group failed its security check: never that it is only joining, never a wait for the owner, never a re-secure or a retry promise", () => {
+  const ctx = { signingDevice: "no_group" as const };
+  for (const kind of ["replayed_change", "invalid_change"] as const) {
+    const text = noticeCopy(kind, null, null, null, ctx);
+    assert.equal(text, NO_GROUP_REFUSED, kind);
+    assert.match(text, /failed a security check/, kind);
+    assert.doesNotMatch(
+      text,
+      /owner|Re-securing|re-create|finish joining|again|automatically/i,
+      kind,
+    );
+  }
+  // The two answers for a device holding the poisoned group are unchanged.
+  assert.equal(
+    noticeCopy("invalid_change", null, null, null, { signingDevice: true }),
+    "A member made an invalid change to this channel." + RESECURING_TAIL,
+  );
+  assert.equal(
+    noticeCopy("invalid_change", null, null, null, { signingDevice: false }),
+    "A member made an invalid change to this channel," + OWNER_HAS_TO_ACT,
+  );
+  // Only the poisoned-group kinds read it.
+  assert.notEqual(
+    noticeCopy("join_stalled", null, null, null, ctx),
+    NO_GROUP_REFUSED,
+  );
+});

@@ -46,6 +46,7 @@ import {
   JOIN_RETRIES,
   JOIN_RETRY_MS,
   joinEventResetAllowed,
+  joinIntentHeldByOwnerChange,
   joinRebroadcastDelayMs,
   joinRefusal,
   LEAF_STAGGER_MS,
@@ -54,9 +55,14 @@ import {
   leafMissingSpent,
   leafStaggerMs,
   MAX_TEXT_LEAVES,
+  mergeRefusalPaceEntry,
   ownAddedEntry,
   ownSendRowBinds,
   parkedReplay,
+  parseRefusalPaces,
+  pinFailureOutcome,
+  pinRetryAllowed,
+  pinRetryKey,
   PROTECTOR_BACKOFF,
   PROTECTOR_GATE_OPEN,
   protectorBackoffMs,
@@ -67,6 +73,13 @@ import {
   publishResolved,
   publishStep,
   REFRESH_INTERVAL_MS,
+  REFUSAL_PACE_BASE_MS,
+  REFUSAL_PACE_CAP_MS,
+  REFUSAL_PACE_ENTRIES_MAX,
+  refusalPaceAfterGrant,
+  refusalPaceAllows,
+  refusalPaceWindowMs,
+  refusalRetryable,
   resolveProtectReadBack,
   RETRY_AFTER_MAX_MS,
   retryAfterMs,
@@ -77,10 +90,13 @@ import {
   storedJoinRequests,
   WELCOME_FETCH_AFTER_MS,
   WELCOME_FETCH_RETRY_BUDGET,
+  WELCOME_PIN_DEVICES_MAX,
   welcomeDue,
   welcomeFetchStep,
   welcomeParkedFor,
   welcomePending,
+  welcomeRefusalOf,
+  welcomeRefusalRejoin,
 } from "./protectedTextPolicy.ts";
 import {
   type ProtectedChannelView,
@@ -2546,4 +2562,349 @@ test("FXF welcomeParkedFor / parkedReplay: a parked Welcome for the group keeps 
   );
   assert.equal(none.dropped.length, 4);
   assert.deepEqual(parkedReplay([], "G1"), { replay: [], dropped: [] });
+});
+
+// ---------------------------------------------------------------------------
+// S2 live-leg fix lane FXP (F-L6, F-L7). Tests named "FXP ..." are targets of
+// /home/mcp/pc-logs/s2/w4/ctl/FXP.
+// ---------------------------------------------------------------------------
+
+test("FXP pinRetryAllowed: a Welcome pins each distinct device once (one unpinned leaf per refusal), a device named twice ends it, the leaf cap bounds it; a commit retries once whatever device it names (D28)", () => {
+  const a = { user_id: "U1", device_id: "dA" };
+  const b = { user_id: "U1", device_id: "dB" };
+  const c = { user_id: "U2", device_id: "dA" };
+  const w = "mls_welcome";
+  assert.equal(pinRetryAllowed(w, new Set(), a), true);
+  assert.equal(pinRetryAllowed(w, new Set([pinRetryKey(a)]), b), true);
+  assert.equal(pinRetryAllowed(w, new Set([pinRetryKey(a)]), c), true, "user");
+  assert.equal(pinRetryAllowed(w, new Set([pinRetryKey(a)]), a), false);
+  assert.equal(
+    pinRetryAllowed(w, new Set([pinRetryKey(a), pinRetryKey(b)]), a),
+    false,
+  );
+  // Ids never collide through a separator.
+  assert.notEqual(
+    pinRetryKey({ user_id: "U1\n", device_id: "d" }),
+    pinRetryKey({ user_id: "U1", device_id: "\nd" }),
+  );
+  const full = new Set(
+    Array.from({ length: WELCOME_PIN_DEVICES_MAX }, (_, i) =>
+      pinRetryKey({ user_id: "U", device_id: `d${i}` }),
+    ),
+  );
+  assert.equal(WELCOME_PIN_DEVICES_MAX, MAX_TEXT_LEAVES);
+  const fresh = { user_id: "U", device_id: "x" };
+  assert.equal(pinRetryAllowed(w, full, fresh), false, "the cap");
+  full.delete(pinRetryKey({ user_id: "U", device_id: "d0" }));
+  assert.equal(pinRetryAllowed(w, full, fresh), true, "below the cap");
+  for (const ct of ["mls_commit", "", "mls_welcome2"]) {
+    assert.equal(pinRetryAllowed(ct, new Set(), a), true, ct);
+    assert.equal(pinRetryAllowed(ct, new Set([pinRetryKey(a)]), b), false, ct);
+  }
+});
+
+test("FXP pinFailureOutcome: only a fetch, rate-limit or timeout failure, or a 429 / 5xx, is transport; a 4xx, a native error or an unknown shape is refused", () => {
+  const named = (name: string) => {
+    const e = new Error("x");
+    e.name = name;
+    return e;
+  };
+  for (const err of [
+    new TypeError("Failed to fetch"),
+    named("E2EERateLimitError"),
+    named("E2EERequestTimeoutError"),
+    Object.assign(new Error("E2EE API GET failed: 503"), { status: 503 }),
+    Object.assign(new Error("E2EE API GET failed: 429"), { status: 429 }),
+  ]) {
+    assert.equal(pinFailureOutcome(err), "transport", String(err));
+  }
+  for (const err of [
+    Object.assign(new Error("E2EE API GET failed: 404"), { status: 404 }),
+    Object.assign(new Error("E2EE API GET failed: 403"), { status: 403 }),
+    { type: "identity_changed" },
+    { source: "client", reason: "not_capable" },
+    new Error("anything else"),
+    null,
+    "network",
+  ]) {
+    assert.equal(pinFailureOutcome(err), "refused", JSON.stringify(err));
+  }
+});
+
+test("FXP welcomeRefusalOf / refusalRetryable: only a Welcome's mls_leaf_rejected naming a device is a refusal; unknown_identity (a spent pin budget, never a verdict on the device) is retryable, every other reason hard", () => {
+  const welcome = { content_type: "mls_welcome", group_id: "G1", epoch: 7 };
+  const rejected = (reason: unknown) => ({
+    type: "mls_leaf_rejected",
+    user_id: "U",
+    device_id: "D",
+    reason,
+  });
+  const want = {
+    groupId: "G1",
+    epoch: 7,
+    userId: "U",
+    deviceId: "D",
+    reason: "unknown_identity",
+  };
+  assert.deepEqual(
+    welcomeRefusalOf(rejected("unknown_identity"), welcome),
+    want,
+  );
+  assert.deepEqual(
+    welcomeRefusalOf(
+      { source: "native", error: rejected("unknown_identity") },
+      welcome,
+    ),
+    want,
+    "wrapped",
+  );
+  assert.equal(welcomeRefusalOf(rejected(7), welcome)?.reason, "");
+  const commit = { ...welcome, content_type: "mls_commit" };
+  assert.equal(welcomeRefusalOf(rejected("unknown_identity"), commit), null);
+  for (const err of [
+    { type: "mls_leaf_rejected", reason: "unknown_identity" },
+    { type: "identity_pin_required", user_id: "U", device_id: "D" },
+    { source: "server", error: rejected("unknown_identity") },
+    null,
+  ]) {
+    assert.equal(welcomeRefusalOf(err, welcome), null, JSON.stringify(err));
+  }
+  assert.equal(refusalRetryable("unknown_identity"), true);
+  for (const reason of ["identity_changed", "bad_binding_signature", ""]) {
+    assert.equal(refusalRetryable(reason), false, reason);
+  }
+});
+
+test("FXP refusal pace: the first grant is free, then one per window from the S2-D28 cap, doubling per grant up to 24 h; a future stamp counts from now; a broken clock refuses; stored entries are read whole or dropped", () => {
+  assert.equal(REFUSAL_PACE_BASE_MS, JOIN_REBROADCAST.capMs);
+  assert.equal(REFUSAL_PACE_CAP_MS, 24 * 3_600_000);
+  assert.equal(refusalPaceWindowMs(0), 0);
+  assert.equal(refusalPaceWindowMs(1), REFUSAL_PACE_BASE_MS);
+  assert.equal(refusalPaceWindowMs(2), 2 * REFUSAL_PACE_BASE_MS);
+  assert.equal(refusalPaceWindowMs(3), 4 * REFUSAL_PACE_BASE_MS);
+  assert.equal(refusalPaceWindowMs(40), REFUSAL_PACE_CAP_MS, "capped");
+  assert.equal(refusalPaceWindowMs(Number.NaN), REFUSAL_PACE_CAP_MS);
+  const t = 1_000_000_000;
+  assert.equal(refusalPaceAllows(null, t), true);
+  assert.equal(refusalPaceAllows({ grants: 0, atMs: 0 }, t), true, "none yet");
+  const one = refusalPaceAfterGrant(null, t);
+  assert.deepEqual(one, { grants: 1, atMs: t });
+  assert.equal(refusalPaceAllows(one, t + REFUSAL_PACE_BASE_MS - 1), false);
+  assert.equal(refusalPaceAllows(one, t + REFUSAL_PACE_BASE_MS), true);
+  const two = refusalPaceAfterGrant(one, t + REFUSAL_PACE_BASE_MS);
+  assert.equal(two.grants, 2);
+  assert.equal(
+    refusalPaceAllows(two, two.atMs + 2 * REFUSAL_PACE_BASE_MS - 1),
+    false,
+    "doubled",
+  );
+  const many = { grants: 30, atMs: t };
+  assert.equal(refusalPaceAllows(many, t + REFUSAL_PACE_CAP_MS), true, "cap");
+  // m-c: a stamp in the future is read as now, never a wait until then.
+  const future = { grants: 1, atMs: t + 365 * 86_400_000 };
+  assert.equal(refusalPaceAllows(future, t), false);
+  assert.equal(refusalPaceAllows(future, t + REFUSAL_PACE_BASE_MS), false);
+  assert.equal(
+    refusalPaceAllows({ grants: 0, atMs: t + 10 }, t),
+    true,
+    "no grant yet: nothing to wait for",
+  );
+  assert.equal(refusalPaceAllows(one, Number.NaN), false);
+  const entry = {
+    groupId: "G",
+    userId: "U",
+    deviceId: "D",
+    epoch: 4,
+    reason: "identity_changed",
+    grants: 0,
+    atMs: 0,
+  };
+  assert.deepEqual(
+    parseRefusalPaces(JSON.stringify({ v: 2, entries: [entry] })),
+    [entry],
+  );
+  for (const bad of [
+    { ...entry, grants: -1 },
+    { ...entry, grants: 1.5 },
+    { ...entry, atMs: "t" },
+    { ...entry, deviceId: 7 },
+    { ...entry, epoch: -1 },
+    { ...entry, reason: null },
+    null,
+  ]) {
+    assert.deepEqual(
+      parseRefusalPaces(JSON.stringify({ v: 2, entries: [bad, entry] })),
+      [entry],
+      JSON.stringify(bad),
+    );
+  }
+  for (const raw of [
+    null,
+    "",
+    "{",
+    "[]",
+    JSON.stringify({ v: 1, entries: [entry] }),
+  ]) {
+    assert.deepEqual(parseRefusalPaces(raw), [], String(raw));
+  }
+  const lots = Array.from({ length: REFUSAL_PACE_ENTRIES_MAX + 3 }, (_, i) => ({
+    ...entry,
+    deviceId: `D${i}`,
+  }));
+  const kept = parseRefusalPaces(JSON.stringify({ v: 2, entries: lots }));
+  assert.equal(kept.length, REFUSAL_PACE_ENTRIES_MAX);
+  assert.equal(kept.at(-1)?.deviceId, `D${REFUSAL_PACE_ENTRIES_MAX + 2}`);
+});
+
+test("FXP mergeRefusalPaceEntry (m4-2): the stored and in-memory copies merge to the larger grant count and the later grant, taken separately, whichever order; the later refusal's epoch and reason", () => {
+  const T0 = 1_700_000_000_000;
+  const base = {
+    groupId: "G1",
+    userId: "U",
+    deviceId: "D",
+    reason: "unknown_identity",
+  };
+  const a = { ...base, epoch: 4, grants: 2, atMs: T0 };
+  const b = { ...base, epoch: 6, grants: 1, atMs: T0 + 29 * 60_000 };
+  const want = { ...base, epoch: 6, grants: 2, atMs: T0 + 29 * 60_000 };
+  assert.deepEqual(mergeRefusalPaceEntry(a, b), want);
+  assert.deepEqual(mergeRefusalPaceEntry(b, a), want);
+  assert.deepEqual(mergeRefusalPaceEntry(a, a), a);
+});
+
+test("FXP welcomeRefusalRejoin: a newer Add not tried yet runs its own Welcome path; a tried one and the refused Add rejoin under the pace; retryable at once, hard once the group moved past the refused epoch or the member list dropped the device", () => {
+  const refusal = (retryable: boolean) => ({
+    groupId: "G1",
+    epoch: 7,
+    userId: "U",
+    deviceId: "D",
+    reason: retryable ? "unknown_identity" : "identity_changed",
+    retryable,
+  });
+  const listed = [
+    { user_id: "U", device_id: "D" },
+    { user_id: "SELF", device_id: "S" },
+  ];
+  const gone = [{ user_id: "SELF", device_id: "S" }];
+  type In = Parameters<typeof welcomeRefusalRejoin>[0];
+  const go = (o: Partial<In>) =>
+    welcomeRefusalRejoin({
+      refusal: refusal(true),
+      group: { group_id: "G1", current_epoch: 7, members: listed },
+      ownAddEpoch: 7,
+      newerAddTried: false,
+      newerAddPathRuns: true,
+      pace: null,
+      nowMs: 1_000,
+      ...o,
+    });
+  assert.equal(go({}), "rejoin", "retryable, same epoch, still listed");
+  assert.equal(go({ ownAddEpoch: 9 }), "newer_add", "m1");
+  assert.equal(
+    go({ ownAddEpoch: 9, newerAddPathRuns: false }),
+    "rejoin",
+    "MJ-2b: a newer Add whose path would not run is judged now",
+  );
+  assert.equal(
+    go({
+      ownAddEpoch: 9,
+      newerAddPathRuns: false,
+      pace: { grants: 1, atMs: 1_000 },
+      nowMs: 1_001,
+    }),
+    "none",
+    "MJ-2b: and paced",
+  );
+  assert.equal(
+    go({ ownAddEpoch: 9, newerAddTried: true }),
+    "rejoin",
+    "MJ-2: a tried newer Add is paced like the refused one",
+  );
+  assert.equal(
+    go({
+      ownAddEpoch: 9,
+      newerAddTried: true,
+      pace: { grants: 1, atMs: 1_000 },
+      nowMs: 1_001,
+    }),
+    "none",
+  );
+  // m4-3 (round 5): no Add, or an older one, is judged like the refused
+  // Add (paced), never "none" for good (was "none" through round 4).
+  assert.equal(go({ ownAddEpoch: 6 }), "rejoin", "m4-3: an older Add");
+  assert.equal(go({ ownAddEpoch: null }), "rejoin", "m4-3: no Add");
+  assert.equal(
+    go({ ownAddEpoch: null, pace: { grants: 1, atMs: 1_000 }, nowMs: 1_001 }),
+    "none",
+    "m4-3: paced",
+  );
+  assert.equal(go({ refusal: null }), "none");
+  assert.equal(go({ group: null }), "none");
+  assert.equal(
+    go({ group: { group_id: "G2", current_epoch: 9, members: gone } }),
+    "none",
+    "another group",
+  );
+  const hard = refusal(false);
+  assert.equal(go({ refusal: hard }), "none", "hard, listed, same epoch");
+  assert.equal(
+    go({
+      refusal: hard,
+      group: { group_id: "G1", current_epoch: 9, members: listed },
+    }),
+    "rejoin",
+    "hard, moved on: paced, even listed",
+  );
+  assert.equal(
+    go({
+      refusal: hard,
+      group: { group_id: "G1", current_epoch: 7, members: gone },
+    }),
+    "rejoin",
+    "hard, the device gone: at once",
+  );
+  const paced = { grants: 1, atMs: 1_000 };
+  assert.equal(
+    go({ pace: paced, nowMs: 1_000 + REFUSAL_PACE_BASE_MS - 1 }),
+    "none",
+  );
+  assert.equal(
+    go({ pace: paced, nowMs: 1_000 + REFUSAL_PACE_BASE_MS }),
+    "rejoin",
+  );
+  assert.equal(
+    go({ pace: paced, ownAddEpoch: 9, nowMs: 1_001 }),
+    "newer_add",
+    "a newer Add's fetch is not an intent",
+  );
+});
+
+test("FXP joinIntentHeldByOwnerChange: held while a confirm replays the Welcome, or while native holds a same-user pending signer and the Welcome is parked or native discarded this Add's Welcome for signer_leaf_missing; released otherwise", () => {
+  type Hold = Parameters<typeof joinIntentHeldByOwnerChange>[0];
+  const held = (o: Partial<Hold>) =>
+    joinIntentHeldByOwnerChange({
+      welcomeReplaying: false,
+      welcomeParked: false,
+      slmForAdd: true,
+      ownerChangePending: true,
+      ...o,
+    });
+  assert.equal(held({}), true);
+  assert.equal(held({ ownerChangePending: false }), false, "settled");
+  assert.equal(held({ slmForAdd: false }), false, "no SLM for this Add");
+  assert.equal(held({ slmForAdd: false, welcomeParked: true }), true);
+  assert.equal(
+    held({ slmForAdd: false, welcomeParked: true, ownerChangePending: false }),
+    false,
+    "MJ-3: a parked Welcome without a pending signer holds nothing",
+  );
+  assert.equal(
+    held({
+      welcomeReplaying: true,
+      slmForAdd: false,
+      ownerChangePending: false,
+    }),
+    true,
+    "the replay window",
+  );
 });

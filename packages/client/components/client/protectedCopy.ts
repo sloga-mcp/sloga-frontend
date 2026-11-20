@@ -152,6 +152,18 @@ function removedUsersRefusedNamedCopy(names: readonly string[] | null): string {
 }
 
 /**
+ * FXP F-L6: the poisoned-group notice on a device holding no group of the
+ * channel (`ctx.signingDevice === "no_group"`, signer or not): native
+ * refused the group it was invited to (a leaf failed its checks, or a
+ * Welcome or join step was refused), so it holds none and reads nothing.
+ * It promises no retry and no owner action: a rejoin is paced and needs
+ * the refused device gone, and none may ever come.
+ */
+function noGroupRefusedCopy(): string {
+  return t`This channel's protected group failed a security check on this device, so this device hasn't joined it and can't read new messages here.`;
+}
+
+/**
  * Notice text for a channel-level kind. `max` is `ProtectedErrorUi.max`
  * (seat or device cap); null or absent falls back to copy without a count.
  * `_names` is ignored by every kind: the refusal that names users is
@@ -161,14 +173,16 @@ function removedUsersRefusedNamedCopy(names: readonly string[] | null): string {
  * blank reads "this channel". `ctx.signingDevice` (FXT2): this device signs
  * the channel's member list, so a poisoned group (`invalid_change`,
  * `replayed_change`) re-secures here on its own; absent or false is any
- * other device (the owner has to act).
+ * other device (the owner has to act). FXP F-L6: `"no_group"` is any device
+ * holding no group (its own join was refused): it is never told to wait for
+ * the owner, nor that it re-secures (`noGroupRefusedCopy`).
  */
 export function noticeCopy(
   kind: ProtectedNoticeKind,
   max: number | null = null,
   _names: readonly string[] | null = null,
   channelName: string | null = null,
-  ctx: { signingDevice?: boolean } = {},
+  ctx: { signingDevice?: boolean | "no_group" } = {},
 ): string {
   switch (kind) {
     // shield states
@@ -219,11 +233,15 @@ export function noticeCopy(
     // (`ctx.signingDevice`) the old re-securing line is true; anywhere else
     // nothing re-secures on its own: the owner has to re-create the group.
     // An operation refusal with these kinds reads `errorUiCopy`'s line.
+    // FXP F-L6: a device holding no group has no owner to wait for and
+    // nothing re-secures: it reads that the group failed its check.
     case "invalid_change":
+      if (ctx.signingDevice === "no_group") return noGroupRefusedCopy();
       return ctx.signingDevice === true
         ? t`A member made an invalid change to this channel. Re-securing with a new group…`
         : t`A member made an invalid change to this channel, so this device can't read new messages here. The channel owner has to re-create the protected group from their device; that doesn't happen automatically.`;
     case "replayed_change":
+      if (ctx.signingDevice === "no_group") return noGroupRefusedCopy();
       return ctx.signingDevice === true
         ? t`This channel received a replayed membership change. Re-securing with a new group…`
         : t`This channel received a replayed membership change, so this device can't read new messages here. The channel owner has to re-create the protected group from their device; that doesn't happen automatically.`;

@@ -44,6 +44,7 @@ import {
   joinIntentHeld,
   KEY_PACKAGE_PUT_429_BUDGET,
   PROTECTED_RECOVERY_REFUSED_KEY_PREFIX,
+  PROTECTED_REFUSAL_PACE_KEY_PREFIX,
   ProtectedTextManager,
   RECOVERY_PUT_RETRY_BUDGET,
   recoverySeats,
@@ -61,8 +62,10 @@ import {
 import {
   JOIN_RETRIES,
   joinRebroadcastDelayMs,
+  REFUSAL_PACE_BASE_MS,
   SIGNER_LEAF_MISSING_BUDGET,
   WELCOME_FETCH_AFTER_MS,
+  WELCOME_PIN_DEVICES_MAX,
 } from "./protectedTextPolicy.ts";
 import type {
   MessageFlows,
@@ -442,7 +445,55 @@ class Env implements ProtectedTextPort, ProtectedTextPortExtensions {
     if (!h) {
       return Promise.reject({ type: "invalid_argument", field: cmd });
     }
-    return Promise.resolve().then(() => h(args));
+    // FXP (round 4): native records the signer of an `owner_changed` it
+    // answers (`_process`, `_seat_list_verify`) as its pending signer, and
+    // a confirm clears it. m4-4: on the channel the call names (its
+    // `channelId`, or for `_process` the channel holding its group).
+    const ch = this.channelOf(args);
+    return Promise.resolve()
+      .then(() => h(args))
+      .then(
+        (r) => {
+          if (cmd === "e2ee_text_owner_confirm_change") {
+            this.state(ch).owner_pin.pending_signer = null;
+          }
+          return r;
+        },
+        (err: unknown) => {
+          const e = err as Record<string, unknown> | null;
+          if (
+            (cmd === "e2ee_text_process" ||
+              cmd === "e2ee_text_seat_list_verify") &&
+            e?.type === "owner_changed"
+          ) {
+            this.state(ch).owner_pin.pending_signer = {
+              user_id: String(e.signer_user_id),
+              device_id: String(e.signer_device_id),
+              same_user: e.same_user === true,
+              verified: e.verified === true,
+            };
+          }
+          throw err;
+        },
+      );
+  }
+
+  /**
+   * m4-4: the channel a native call names: its `channelId`, or for
+   * `_process` (which names a group) the channel whose state holds the
+   * envelope's group; CH otherwise.
+   */
+  channelOf(args: unknown): string {
+    const a = args as {
+      channelId?: unknown;
+      envelope?: { group_id?: unknown };
+    } | null;
+    if (typeof a?.channelId === "string") return a.channelId;
+    const gid = a?.envelope?.group_id;
+    for (const [ch, s] of this.states) {
+      if (gid !== undefined && s.group_id === gid) return ch;
+    }
+    return CH;
   }
 
   async pinCallIdentities(userId: string, targets: string[]) {
@@ -675,7 +726,13 @@ function defaultHandlers(env: Env): Handlers {
         },
       };
     },
-    e2ee_text_owner_confirm_change: () => null,
+    // m4-4: native refuses a confirm with nothing pending (InvalidArgument).
+    e2ee_text_owner_confirm_change: (a) => {
+      if (env.state(a.channelId).owner_pin.pending_signer == null) {
+        throw { type: "invalid_argument", field: "pending_signer" };
+      }
+      return null;
+    },
   };
 }
 
@@ -6857,6 +6914,1492 @@ test("FXT2 M1: when the store refuses the refusal record, the in-memory copy sti
   assert.deepEqual(
     puts.map((p) => p.status),
     [400, 200],
+  );
+  m.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// S2 live-leg fix lane FXP: F-L6 (a Welcome pins each unpinned device once;
+// a refused Welcome's rejoin is paced by time, persisted, and for a hard
+// refusal needs the refused device gone from the server's member list; its
+// red alarm stays until native accepts the group) and F-L7 (no intent while
+// this device's Welcome waits on an owner change, on native's real
+// signer_leaf_missing + pending_signer shape). Tests named "FXP ..." are the
+// targets of /home/mcp/pc-logs/s2/w4/ctl/FXP.
+// ---------------------------------------------------------------------------
+
+/** Native's D5 refusal naming one unpinned device of PEER. */
+function pinRequired(device_id: string) {
+  return { type: "identity_pin_required", user_id: PEER, device_id };
+}
+
+/** Native's leaf rejection of a Welcome (`reason` as `LeafRejection`). */
+function leafRejected(reason: string) {
+  return {
+    type: "mls_leaf_rejected",
+    user_id: PEER,
+    device_id: "dX",
+    reason,
+  };
+}
+
+/** The Welcome `a` joins this device into its group at its epoch. */
+function welcomeJoinedAt(env: Env, a: TextCommandArgs["e2ee_text_process"]) {
+  env.states.set(
+    CH,
+    st({ group_id: a.envelope.group_id, epoch: a.envelope.epoch }),
+  );
+  return outcome({
+    kind: "welcome_joined",
+    epoch: a.envelope.epoch,
+    group_id: a.envelope.group_id,
+  });
+}
+
+/** Native `_join` as lifecycle.rs leaves the row: `joining`. */
+function joinSetsJoining(env: Env) {
+  const join = env.handlers.e2ee_text_join!;
+  env.handlers.e2ee_text_join = (a) => {
+    const s = env.state();
+    s.state = "joining";
+    s.verdict = "joining";
+    return join(a);
+  };
+}
+
+/**
+ * `_seat_list_verify` answers D15 `owner_changed` until `confirmed()`, and
+ * native records the pending signer meanwhile (`owner_pin.pending_signer`;
+ * the confirm or an adopted list clears it).
+ */
+function ownerChangeUntil(env: Env, confirmed: () => boolean) {
+  const verify = env.handlers.e2ee_text_seat_list_verify!;
+  env.handlers.e2ee_text_seat_list_verify = (a) => {
+    const pin = env.state().owner_pin;
+    if (!confirmed()) {
+      pin.pending_signer = {
+        user_id: OWNER,
+        device_id: OWNER_DEV2,
+        same_user: true,
+        verified: true,
+      };
+      throw OWNER_CHANGED;
+    }
+    pin.pending_signer = null;
+    return verify(a);
+  };
+}
+
+test("FXP F-L6: a Welcome whose roster holds two unpinned devices (two refusals naming different devices) pins each once and joins in the same pass", async () => {
+  const env = joiningEnv();
+  const named = ["dA", "dB"];
+  let n = 0;
+  env.handlers.e2ee_text_process = (a) => {
+    n++;
+    if (n <= named.length) throw pinRequired(named[n - 1]);
+    return welcomeJoinedAt(env, a);
+  };
+  const m = make(env);
+  m.channelProtected(CH);
+  await env.advance(0);
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.deepEqual(env.pins, [
+    { userId: PEER, targets: ["dA"] },
+    { userId: PEER, targets: ["dB"] },
+  ]);
+  assert.equal(n, 3, "each device pinned once, then joined");
+  assert.deepEqual(env.acks, ["W1"]);
+  assert.equal(env.views.get(CH)?.native?.state, "active");
+  assert.equal(env.views.get(CH)?.groupError ?? null, null);
+  m.dispose();
+});
+
+test("FXP F-L6: a Welcome naming the same device twice ends that pass (its pin did not take); fresh names stop at the leaf cap; a commit retries once whatever device the next refusal names (D28)", async () => {
+  const env = joiningEnv();
+  // A loop breaker no bounded retry reaches (an unbounded one would spin).
+  const LOOP = 3 * WELCOME_PIN_DEVICES_MAX;
+  let n = 0;
+  const refuse = (device: (i: number) => string) => () => {
+    n++;
+    if (n > LOOP) throw { type: "busy" };
+    throw pinRequired(device(n));
+  };
+  env.handlers.e2ee_text_process = refuse(() => "dA");
+  const m = make(env);
+  m.channelProtected(CH);
+  await env.advance(0);
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.equal(n, 2, "pinned once, retried once, then held");
+  assert.deepEqual(env.pins, [{ userId: PEER, targets: ["dA"] }]);
+  assert.equal(env.acks.includes("W1"), false, "held, unacked");
+  // Native names a fresh device on every refusal: the cap ends the pass.
+  n = 0;
+  env.pins = [];
+  env.handlers.e2ee_text_process = refuse((i) => `dW${i}`);
+  m.onEnvelope(envelope("W2", 5, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.equal(n, WELCOME_PIN_DEVICES_MAX + 1);
+  assert.equal(env.pins.length, WELCOME_PIN_DEVICES_MAX);
+  // A commit: one retry, whatever device the second refusal names.
+  n = 0;
+  env.pins = [];
+  env.handlers.e2ee_text_process = refuse((i) => `dC${i}`);
+  m.onEnvelope(envelope("C6", 6));
+  await env.advance(0);
+  assert.equal(n, 2, "a commit is retried once (D28)");
+  assert.deepEqual(env.pins, [{ userId: PEER, targets: ["dC1"] }]);
+  m.dispose();
+});
+
+/** The refused device ("dX" of PEER) as the server's member list holds it. */
+const LISTED = [
+  { user_id: SELF, device_id: DEV },
+  { user_id: OWNER, device_id: OWNER_DEV },
+  { user_id: PEER, device_id: PEER_DEV },
+  { user_id: PEER, device_id: "dX" },
+];
+
+/** Every pin of a peer's device fails in transport (a fetch error). */
+function pinsFailInTransport(env: Env) {
+  env.pinCallIdentities = async (userId: string, targets: string[]) => {
+    env.pins.push({ userId, targets });
+    throw new TypeError("Failed to fetch");
+  };
+}
+
+/** Native's step-8 answer: the held list's signer holds no leaf. */
+const SLM = { type: "signer_leaf_missing", channel_id: CH };
+
+/** The pending signer native records for an unconfirmed owner change. */
+const PENDING = {
+  user_id: OWNER,
+  device_id: OWNER_DEV2,
+  same_user: true,
+  verified: true,
+};
+
+/** A Welcome for this device's Add at `epoch` (the refused device listed). */
+async function refusedAt(
+  env: Env,
+  m: ProtectedTextManager,
+  epoch: number,
+  id: string,
+) {
+  env.group = groupBody({
+    current_epoch: epoch,
+    member_added: addedAt(epoch),
+    members: LISTED,
+  });
+  m.onEnvelope(envelope(id, epoch, { content_type: "mls_welcome" }));
+  await env.advance(joinRebroadcastDelayMs(0));
+}
+
+/** The stored pace record of CH (parsed), [] when none. */
+function storedPace(env: Env) {
+  const raw = env.storeMap.get(
+    `${PROTECTED_REFUSAL_PACE_KEY_PREFIX}${SELF}:${CH}`,
+  );
+  const v = raw
+    ? (JSON.parse(raw) as { entries: { groupId: string }[] })
+    : null;
+  return v?.entries ?? [];
+}
+
+test("FXP F-L6 MJ-1/M2: a Welcome refused for unknown_identity (its pin failed in transport) gets ONE paced rejoin at the run's next commit refresh, never fetching the refused Welcome; the red stays through it; a second refusal waits for the window whatever the trigger; native accepting ends the alarm and the pace", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  pinsFailInTransport(env);
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G0, epoch: 4, welcome: "V0VM" })),
+  );
+  let answer: "refuse" | "join" = "refuse";
+  env.handlers.e2ee_text_process = (a) => {
+    if (answer === "refuse") throw leafRejected("unknown_identity");
+    return welcomeJoinedAt(env, a);
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.equal(intents(env), 1);
+  env.group = groupBody({
+    current_epoch: 4,
+    member_added: addedAt(4),
+    members: LISTED,
+  });
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.equal(
+    env.calls("e2ee_text_process").length,
+    1,
+    "its pin failed in transport: no second pass",
+  );
+  assert.deepEqual(env.pins, [{ userId: PEER, targets: ["dX"] }]);
+  assert.equal(env.shield(), "unverified");
+  await env.advance(joinRebroadcastDelayMs(0));
+  assert.equal(intents(env), 2, "the commit refresh's one paced rejoin");
+  assert.equal(welcomeGets(env).length, 0, "the refused Welcome is done");
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg === "[protected] refused welcome: join unblocked" &&
+        l.ids.step === "rejoin" &&
+        l.ids.retryable === true,
+    ),
+  );
+  assert.equal(env.shield(), "unverified", "M2: red through the rejoin");
+  // The re-Add's Welcome is refused again: nothing inside the window.
+  await refusedAt(env, m, 6, "W2");
+  m.retryNow(CH);
+  await env.advance(0);
+  await m.open(CH);
+  m.onChannelChanged(CH, ["text_group"]);
+  await env.advance(60_000);
+  assert.equal(intents(env), 2, "inside the window: no trigger grants");
+  await env.advance(REFUSAL_PACE_BASE_MS);
+  m.onChannelChanged(CH, ["text_group"]);
+  await env.advance(1_000);
+  assert.equal(intents(env), 3, "past the window: an event refresh grants");
+  // Native accepts the next one: the alarm and the pace of G0 are over.
+  answer = "join";
+  env.group = groupBody({
+    current_epoch: 8,
+    member_added: addedAt(8),
+    members: LISTED,
+  });
+  m.onEnvelope(envelope("W3", 8, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.equal(env.views.get(CH)?.native?.state, "active");
+  assert.notEqual(env.shield(), "unverified");
+  assert.equal(env.views.get(CH)?.groupError ?? null, null);
+  assert.deepEqual(storedPace(env), [], "m-c: reset on the join");
+  m.close(CH);
+  m.dispose();
+});
+
+test("FXP F-L6 MJ-1: a Welcome refused for unknown_identity after a pin that answered is processed once more in the same pass: it joins when the pin took; refused again it is retryable (paced at once), never hard", async () => {
+  for (const takes of [true, false]) {
+    const env = joiningEnv();
+    joinSetsJoining(env);
+    let n = 0;
+    env.handlers.e2ee_text_process = (a) => {
+      n++;
+      if (n === 1 || !takes) throw leafRejected("unknown_identity");
+      return welcomeJoinedAt(env, a);
+    };
+    const m = make(env);
+    silence(m.ensureJoined(CH));
+    await env.advance(0);
+    env.group = groupBody({
+      current_epoch: 4,
+      member_added: addedAt(4),
+      members: LISTED,
+    });
+    m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+    await env.advance(0);
+    assert.deepEqual(env.pins, [{ userId: PEER, targets: ["dX"] }]);
+    assert.equal(n, 2, "processed once more after the pin");
+    if (takes) {
+      assert.equal(env.views.get(CH)?.native?.state, "active");
+      assert.notEqual(env.shield(), "unverified");
+      assert.equal(intents(env), 1);
+    } else {
+      assert.equal(env.shield(), "unverified");
+      await env.advance(joinRebroadcastDelayMs(0));
+      assert.equal(intents(env), 2, "retryable: paced, though listed");
+    }
+    m.dispose();
+  }
+});
+
+test("FXP F-L6 MJ-1: a hard refusal (identity_changed) gets no rejoin at the refused epoch while the member list holds the device, whatever the trigger; once the group moved past it ONE paced rejoin goes out though listed; a device gone from the list is rejoined at once", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  env.handlers.e2ee_text_process = () => {
+    throw leafRejected("identity_changed");
+  };
+  const m = make(env);
+  const p = endedOf(m.ensureJoined(CH));
+  await env.advance(0);
+  await refusedAt(env, m, 4, "W1");
+  assert.deepEqual(p.err, { source: "client", reason: "join_failed" });
+  assert.equal(env.calls("e2ee_text_process").length, 1, "no second pass");
+  await m.open(CH);
+  m.retryNow(CH);
+  m.onChannelChanged(CH, ["text_group"]);
+  await env.advance(3_600_000);
+  assert.equal(intents(env), 1, "the refused epoch, still listed");
+  env.group = groupBody({
+    current_epoch: 9,
+    member_added: addedAt(4),
+    members: LISTED,
+  });
+  m.onChannelChanged(CH, ["text_group"]);
+  await env.advance(1_000);
+  assert.equal(intents(env), 2, "moved on: paced, though listed");
+  assert.equal(env.shield(), "unverified", "the alarm stays");
+  m.close(CH);
+  m.dispose();
+
+  const env2 = joiningEnv();
+  joinSetsJoining(env2);
+  env2.handlers.e2ee_text_process = () => {
+    throw leafRejected("identity_changed");
+  };
+  const m2 = make(env2);
+  silence(m2.ensureJoined(CH));
+  await env2.advance(0);
+  // The member list no longer holds the refused device: at once.
+  env2.group = groupBody({ current_epoch: 4, member_added: addedAt(4) });
+  m2.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env2.advance(joinRebroadcastDelayMs(0));
+  assert.equal(intents(env2), 2, "gone from the list: at once");
+  m2.dispose();
+});
+
+test("FXP F-L6 MJ-1: Try again (retryNow) evaluates the refused Welcome's rejoin under the same pace", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  env.handlers.e2ee_text_process = () => {
+    throw leafRejected("identity_changed");
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  await refusedAt(env, m, 4, "W1");
+  assert.equal(intents(env), 1);
+  // The group moved on; nothing refreshed it yet.
+  env.group = groupBody({
+    current_epoch: 9,
+    member_added: addedAt(4),
+    members: LISTED,
+  });
+  m.retryNow(CH);
+  await env.advance(0);
+  assert.equal(intents(env), 2, "Try again grants");
+  await refusedAt(env, m, 11, "W2");
+  env.group = groupBody({
+    current_epoch: 12,
+    member_added: addedAt(11),
+    members: LISTED,
+  });
+  m.retryNow(CH);
+  await env.advance(0);
+  assert.equal(intents(env), 2, "inside the window Try again grants nothing");
+  m.dispose();
+});
+
+test("FXP F-L6 M1a/m-a: the pace and the alarm survive a reload: the reloaded device shows the refusal red, keeps the join blocked and fetches nothing inside the window; past it an open grants; the window doubles per grant", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  pinsFailInTransport(env);
+  let epoch = 4;
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G0, epoch, welcome: "V0VM" })),
+  );
+  env.handlers.e2ee_text_process = () => {
+    throw leafRejected("unknown_identity");
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  await refusedAt(env, m, 4, "W1");
+  assert.equal(intents(env), 2, "the first grant");
+  epoch = 6;
+  await refusedAt(env, m, 6, "W2");
+  assert.equal(intents(env), 2);
+  assert.ok(storedPace(env).length > 0, "persisted");
+  m.close(CH);
+  m.dispose();
+  // A reload: a new manager over the same store.
+  const m2 = make(env);
+  await m2.open(CH);
+  await env.advance(WELCOME_FETCH_AFTER_MS);
+  assert.equal(env.shield(), "unverified", "m-a: the alarm is back");
+  assert.equal(welcomeGets(env).length, 0, "blocked: nothing fetched");
+  assert.equal(intents(env), 2, "the pace survived the reload");
+  await env.advance(REFUSAL_PACE_BASE_MS);
+  await m2.open(CH);
+  await env.advance(0);
+  assert.equal(intents(env), 3, "past the window: an open grants");
+  epoch = 8;
+  await refusedAt(env, m2, 8, "W3");
+  await env.advance(REFUSAL_PACE_BASE_MS);
+  await m2.open(CH);
+  await env.advance(0);
+  assert.equal(intents(env), 3, "the second window is doubled");
+  await env.advance(REFUSAL_PACE_BASE_MS);
+  await m2.open(CH);
+  await env.advance(0);
+  assert.equal(intents(env), 4);
+  m2.close(CH);
+  m2.dispose();
+});
+
+test("FXP F-L6 m-d: with every store write failing the pace holds in memory: a second refusal inside the window gets nothing", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  pinsFailInTransport(env);
+  env.store.set = () => false;
+  env.handlers.e2ee_text_process = () => {
+    throw leafRejected("unknown_identity");
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  await refusedAt(env, m, 4, "W1");
+  assert.equal(intents(env), 2, "the first grant");
+  await refusedAt(env, m, 6, "W2");
+  await m.open(CH);
+  await env.advance(60_000);
+  assert.equal(intents(env), 2, "the memory copy paces it");
+  assert.equal(storedPace(env).length, 0, "nothing was stored");
+  m.close(CH);
+  m.dispose();
+});
+
+test("FXP F-L6 m-d: the stored pace merged with the memory one keeps the stricter: a grant whose write failed still doubles the window", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  pinsFailInTransport(env);
+  const write = env.store.set;
+  let failing = false;
+  env.store.set = (k: string, v: string) => (failing ? false : write(k, v));
+  env.handlers.e2ee_text_process = () => {
+    throw leafRejected("unknown_identity");
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  await refusedAt(env, m, 4, "W1");
+  assert.equal(intents(env), 2, "grant 1, stored");
+  failing = true;
+  await refusedAt(env, m, 6, "W2");
+  await env.advance(REFUSAL_PACE_BASE_MS);
+  await m.open(CH);
+  await env.advance(0);
+  assert.equal(intents(env), 3, "grant 2, in memory only");
+  await refusedAt(env, m, 8, "W3");
+  await env.advance(REFUSAL_PACE_BASE_MS + 60_000);
+  await m.open(CH);
+  await env.advance(0);
+  assert.equal(intents(env), 3, "the doubled window of grant 2 holds");
+  m.close(CH);
+  m.dispose();
+});
+
+test("FXP F-L6 m-c: a stored grant stamped in the future is clamped to now once read: the window runs from then, never from that future time", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  pinsFailInTransport(env);
+  env.storeMap.set(
+    `${PROTECTED_REFUSAL_PACE_KEY_PREFIX}${SELF}:${CH}`,
+    JSON.stringify({
+      v: 2,
+      entries: [
+        {
+          groupId: G0,
+          userId: PEER,
+          deviceId: "dX",
+          epoch: 2,
+          reason: "unknown_identity",
+          grants: 1,
+          atMs: env.clock + 10 * 86_400_000,
+        },
+      ],
+    }),
+  );
+  env.handlers.e2ee_text_process = () => {
+    throw leafRejected("unknown_identity");
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  await refusedAt(env, m, 4, "W1");
+  // m4-3 (round 5): the stored refusal of the current group restores the
+  // block at once (no Add needed), so even the first intent is paced; it
+  // was 1 here through round 4 (no Add shown: no block).
+  assert.equal(intents(env), 0, "the clamped window runs from now");
+  await env.advance(REFUSAL_PACE_BASE_MS);
+  await m.open(CH);
+  await env.advance(0);
+  assert.equal(intents(env), 1, "and ends a window later");
+  m.close(CH);
+  m.dispose();
+});
+
+test("FXP F-L6 m1: a refused Welcome whose Add is no longer the latest (a member re-added this device since) is never rejoined: the block lifts for the newer Add's Welcome path, which joins, with no intent", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  let epoch = 4;
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G0, epoch, welcome: "V0VM" })),
+  );
+  env.handlers.e2ee_text_process = (a) => {
+    if (a.envelope.epoch === 4) throw leafRejected("identity_changed");
+    return welcomeJoinedAt(env, a);
+  };
+  const m = make(env);
+  const p = endedOf(m.ensureJoined(CH));
+  await env.advance(0);
+  await refusedAt(env, m, 4, "W1");
+  assert.deepEqual(p.err, { source: "client", reason: "join_failed" });
+  // Re-added at epoch 6; its mailbox copy never came.
+  epoch = 6;
+  env.group = groupBody({
+    current_epoch: 6,
+    member_added: addedAt(6),
+    members: LISTED,
+  });
+  m.onChannelChanged(CH, ["text_group"]);
+  await env.advance(WELCOME_FETCH_AFTER_MS + 1_000);
+  assert.equal(welcomeGets(env).length, 1, "the newer Add's stored Welcome");
+  assert.equal(env.views.get(CH)?.native?.state, "active");
+  assert.equal(intents(env), 1, "no rejoin evicted the fresh leaf");
+  assert.ok(env.logs.some((l) => l.ids.step === "newer_add"));
+  m.dispose();
+});
+
+test("FXP F-L6 MJ-2: a newer Add whose Welcome path ends without a join (404) restores the block and is judged under the same pace: lying member_added entries never buy more intents than the pace allows", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  env.handlers.e2ee_text_process = () => {
+    throw leafRejected("identity_changed");
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  await refusedAt(env, m, 4, "W1");
+  const lie = async (e: number) => {
+    env.group = groupBody({
+      current_epoch: e,
+      member_added: addedAt(e),
+      members: LISTED,
+    });
+    m.onChannelChanged(CH, ["text_group"]);
+    await env.advance(WELCOME_FETCH_AFTER_MS + joinRebroadcastDelayMs(0));
+  };
+  await lie(6);
+  assert.equal(welcomeGets(env).length, 1);
+  assert.equal(intents(env), 2, "its 404, then the first paced grant");
+  // The members' re-Add of that intent is refused again.
+  await refusedAt(env, m, 7, "W2");
+  await lie(9);
+  await lie(11);
+  assert.equal(welcomeGets(env).length, 3, "each newer Add's one fetch");
+  assert.equal(intents(env), 2, "no intent past the pace");
+  assert.equal(env.shield(), "unverified");
+  m.dispose();
+});
+
+test("FXP F-L6: a later refusal of another kind on the same group (duplicate_leaf) keeps the join blocked and shown: no trigger grants for the older leaf refusal", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  pinsFailInTransport(env);
+  env.handlers.e2ee_text_process = (a) => {
+    if (a.envelope.id === "W1") throw leafRejected("unknown_identity");
+    throw { type: "duplicate_leaf", group_id: G0 };
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  env.group = groupBody({
+    current_epoch: 4,
+    member_added: addedAt(4),
+    members: LISTED,
+  });
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  m.onEnvelope(envelope("W1b", 4, { content_type: "mls_welcome" }));
+  await env.advance(10_000);
+  assert.equal(env.views.get(CH)?.groupError, "duplicate_leaf");
+  await m.open(CH);
+  await env.advance(3_600_000);
+  assert.equal(intents(env), 1);
+  assert.equal(env.views.get(CH)?.groupError, "duplicate_leaf", "shown");
+  m.close(CH);
+  m.dispose();
+});
+
+test("FXP F-L7: a joiner's Welcome native discards for signer_leaf_missing while an owner change is pending waits parked: no rejoin intent, no stored fetch, nothing counted toward 6c; the confirm joins it with that ONE Add", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  let confirmed = false;
+  ownerChangeUntil(env, () => confirmed);
+  env.handlers.e2ee_text_process = (a) => {
+    // Native step 8 reads the HELD list, whose signer's leaf is gone.
+    if (!confirmed) throw SLM;
+    return welcomeJoinedAt(env, a);
+  };
+  env.handlers.e2ee_text_owner_confirm_change = () => {
+    confirmed = true;
+    return null;
+  };
+  const m = make(env);
+  const p = endedOf(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.equal(intents(env), 1);
+  assert.equal(env.views.get(CH)?.ownerChangePending, true);
+  env.group = groupBody({ current_epoch: 4, member_added: addedAt(4) });
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.equal(env.acks.includes("W1"), false, "parked, unacked");
+  assert.equal(env.views.get(CH)?.signerLeafMissingRetries, 0, "not 6c");
+  await env.advance(6 * 3_600_000);
+  assert.equal(intents(env), 1, "no rejoin while it waits");
+  assert.equal(welcomeGets(env).length, 0, "no stored fetch either");
+  assert.equal(p.done, false);
+  await m.confirmOwnerChange(CH);
+  await env.advance(0);
+  assert.equal(p.done, true);
+  assert.equal(p.err, null, "joined from the parked Welcome");
+  assert.equal(env.views.get(CH)?.native?.state, "active");
+  assert.equal(intents(env), 1, "one Add");
+  // m-e: later the leaf is lost while another owner change is pending: the
+  // Add this device already joined from never holds its rejoin.
+  env.states.set(CH, st({ state: "left", verdict: "no_group", epoch: 4 }));
+  confirmed = false;
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.equal(intents(env), 2, "the rejoin goes out at once");
+  m.dispose();
+});
+
+test("FXP F-L7 m4: a Welcome native discards for signer_leaf_missing while the next intent is being minted, with native holding a pending signer by then, parks and stops that POST; the confirm joins it", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  let confirmed = false;
+  env.handlers.e2ee_text_process = (a) => {
+    if (!confirmed) throw SLM;
+    return welcomeJoinedAt(env, a);
+  };
+  env.handlers.e2ee_text_owner_confirm_change = () => {
+    confirmed = true;
+    env.state().owner_pin.pending_signer = null;
+    return null;
+  };
+  const late: { m: ProtectedTextManager | null } = { m: null };
+  let puts = 0;
+  env.routes.push((method, path) => {
+    if (method === "PUT" && path === "/mls/key_packages" && ++puts === 2) {
+      // The owner change reached native, then the Add's mailbox Welcome.
+      env.state().owner_pin.pending_signer = { ...PENDING };
+      late.m?.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+    }
+    return undefined;
+  });
+  const m = make(env);
+  late.m = m;
+  const p = endedOf(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.equal(intents(env), 1);
+  // A member admits intent 1; its stored Welcome is not served (404):
+  // that Add's path is done and the next intent is minted.
+  env.group = groupBody({ current_epoch: 4, member_added: addedAt(4) });
+  await env.advance(joinRebroadcastDelayMs(0) + WELCOME_FETCH_AFTER_MS);
+  assert.equal(welcomeGets(env).length, 1);
+  assert.equal(puts, 2, "the next intent was minted");
+  assert.equal(intents(env), 1, "but never posted");
+  assert.equal(env.acks.includes("W1"), false, "parked");
+  assert.ok(
+    env.logs.some((l) =>
+      l.msg.includes("join intent not posted: an owner change is pending"),
+    ),
+  );
+  await env.advance(6 * 3_600_000);
+  assert.equal(intents(env), 1, "held while parked");
+  await m.confirmOwnerChange(CH);
+  await env.advance(0);
+  assert.equal(p.done, true);
+  assert.equal(p.err, null, "joined");
+  assert.equal(intents(env), 1);
+  m.dispose();
+});
+
+test("FXP F-L7 m4: a join step that resumes while the confirm replays the parked signer_leaf_missing Welcome stays held (no _join, no KeyPackage minted); the replayed Welcome joins it", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G0, epoch: 4, welcome: "V0VM" })),
+  );
+  let confirmed = false;
+  ownerChangeUntil(env, () => confirmed);
+  env.handlers.e2ee_text_process = (a) => {
+    if (!confirmed) throw SLM;
+    return welcomeJoinedAt(env, a);
+  };
+  env.handlers.e2ee_text_owner_confirm_change = () => {
+    confirmed = true;
+    return null;
+  };
+  const m = make(env);
+  const p = endedOf(m.ensureJoined(CH));
+  await env.advance(0);
+  env.group = groupBody({ current_epoch: 4, member_added: addedAt(4) });
+  // 10 s wait, 20 s for the Welcome, the fetch: parked.
+  await env.advance(30_000);
+  assert.equal(env.calls("e2ee_text_process").length, 1, "parked");
+  // The confirm's re-verify is slow: the join's next step coalesces with
+  // it and resumes right after the confirm took the Welcome out of the
+  // parked list to replay it.
+  const gate: { release: (() => void) | null } = { release: null };
+  const verify = env.handlers.e2ee_text_seat_list_verify!;
+  env.handlers.e2ee_text_seat_list_verify = async (a) => {
+    if (gate.release === null) {
+      await new Promise<void>((r) => (gate.release = r));
+    }
+    return verify(a);
+  };
+  const joins = env.calls("e2ee_text_join").length;
+  const puts = env.api$("PUT", /^\/mls\/key_packages$/).length;
+  const confirm = m.confirmOwnerChange(CH);
+  await env.advance(0);
+  assert.ok(gate.release !== null, "the confirm's verify is pending");
+  await env.advance(20 * 60_000);
+  gate.release!();
+  await confirm;
+  await env.advance(0);
+  assert.equal(p.done, true);
+  assert.equal(p.err, null, "joined from the replayed Welcome");
+  assert.equal(env.calls("e2ee_text_join").length, joins, "no _join raced it");
+  assert.equal(
+    env.api$("PUT", /^\/mls\/key_packages$/).length,
+    puts,
+    "no KeyPackage minted",
+  );
+  assert.equal(intents(env), 1);
+  m.dispose();
+});
+
+test("FXP F-L7 m4: a parked signer_leaf_missing Welcome the confirm drops as stale (the server moved to another group) while native asks again: the new group's Add has its stored Welcome parked the same way, and no intent or KeyPackage goes out", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  // OR-10: the confirm resolves, the next verify is owner_changed again.
+  ownerChangeUntil(env, () => false);
+  env.handlers.e2ee_text_process = () => {
+    throw SLM;
+  };
+  env.handlers.e2ee_text_owner_confirm_change = () => null;
+  env.routes.push((method, path) => {
+    const m = /^\/mls\/groups\/([0-9a-f]+)\/welcome\?/.exec(path);
+    if (method !== "GET" || !m) return undefined;
+    return ok({ group_id: m[1], epoch: m[1] === G1 ? 5 : 4, welcome: "V0VM" });
+  });
+  const m = make(env);
+  const p = endedOf(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.equal(intents(env), 1);
+  m.onEnvelope(envelope("W0", 4, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.equal(env.acks.includes("W0"), false, "parked");
+  // The server moved to G1, where an Add of this device landed.
+  env.group = groupBody({
+    group_id: G1,
+    generation: 1,
+    current_epoch: 5,
+    member_added: addedAt(5),
+  });
+  await m.confirmOwnerChange(CH);
+  await env.advance(0);
+  assert.ok(env.acks.includes("W0"), "the stale parked Welcome is dropped");
+  await env.advance(6 * 3_600_000);
+  assert.equal(welcomeGets(env).length, 1, "the G1 Add's stored Welcome");
+  assert.equal(intents(env), 1, "no intent while that Add waits");
+  assert.equal(env.calls("e2ee_text_join").length, 1);
+  assert.equal(env.api$("PUT", /^\/mls\/key_packages$/).length, 1);
+  assert.equal(p.done, false);
+  m.dispose();
+});
+
+test("FXP F-L7 m3: a Welcome native discarded for signer_leaf_missing before the owner change was known holds that Add's intents once native holds a pending signer (no KeyPackage minted); the confirm releases it (the Add, with no Welcome left, gets its rejoin), and so does the server's group moving on", async () => {
+  const held = async (env: Env, flags: { pending: boolean }) => {
+    joinSetsJoining(env);
+    env.handlers.e2ee_text_process = () => {
+      throw SLM;
+    };
+    const m = make(env);
+    silence(m.ensureJoined(CH));
+    await env.advance(0);
+    env.group = groupBody({ current_epoch: 4, member_added: addedAt(4) });
+    m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+    await env.advance(0);
+    assert.ok(env.acks.includes("W1"), "no owner change yet: discarded");
+    flags.pending = true;
+    // Its stored Welcome is gone (404): the Add's path ends; it waits.
+    await env.advance(3_600_000);
+    assert.equal(welcomeGets(env).length, 1);
+    assert.equal(intents(env), 1, "held");
+    assert.equal(env.calls("e2ee_text_join").length, 1, "nothing minted");
+    return m;
+  };
+  const env = joiningEnv();
+  const f = { pending: false, confirmed: false };
+  ownerChangeUntil(env, () => !f.pending || f.confirmed);
+  env.handlers.e2ee_text_owner_confirm_change = () => {
+    f.confirmed = true;
+    return null;
+  };
+  const m = await held(env, f);
+  await m.confirmOwnerChange(CH);
+  await env.advance(joinRebroadcastDelayMs(0));
+  assert.equal(intents(env), 2, "released by the confirm");
+  m.dispose();
+
+  const env2 = joiningEnv();
+  const f2 = { pending: false };
+  ownerChangeUntil(env2, () => !f2.pending);
+  const m2 = await held(env2, f2);
+  // A successor group without this device: nothing waits on that Add.
+  env2.group = groupBody({
+    group_id: G1,
+    generation: 1,
+    current_epoch: 0,
+    members: [{ user_id: OWNER, device_id: OWNER_DEV }],
+  });
+  await env2.advance(16 * 60_000);
+  assert.equal(intents(env2), 2, "released by the group move");
+  assert.equal(intentGroups(env2).at(-1), G1);
+  m2.dispose();
+});
+
+test("FXP F-L7 m5: a confirm whose replayed signer_leaf_missing Welcome is discarded again (no pending signer any more) ends the replay window: the rejoin that Add still needs goes out", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  let confirmed = false;
+  ownerChangeUntil(env, () => confirmed);
+  env.handlers.e2ee_text_process = () => {
+    throw SLM;
+  };
+  env.handlers.e2ee_text_owner_confirm_change = () => {
+    confirmed = true;
+    return null;
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  env.group = groupBody({ current_epoch: 4, member_added: addedAt(4) });
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(3_600_000);
+  assert.equal(intents(env), 1, "parked");
+  await m.confirmOwnerChange(CH);
+  await env.advance(0);
+  assert.equal(env.calls("e2ee_text_process").length, 2, "replayed once");
+  assert.equal(env.views.get(CH)?.signerLeafMissingRetries, 1, "6c counted");
+  await env.advance(joinRebroadcastDelayMs(0) + WELCOME_FETCH_AFTER_MS);
+  assert.equal(intents(env), 2, "the rejoin goes out");
+  m.dispose();
+});
+
+test("FXP F-L7 m5: a signer_leaf_missing Welcome for a group the server no longer names is never parked, even with an owner change pending: acked, and nothing queues behind it", async () => {
+  const env = joiningEnv();
+  ownerChangeUntil(env, () => false);
+  env.group = groupBody({ group_id: G1, generation: 1, current_epoch: 0 });
+  env.handlers.e2ee_text_process = (a) => {
+    if (a.envelope.content_type === "mls_welcome") throw SLM;
+    return outcome({ epoch: a.envelope.epoch, group_id: a.envelope.group_id });
+  };
+  const m = make(env);
+  await m.refresh(CH, "commit");
+  await env.advance(0);
+  m.onEnvelope(
+    envelope("W0", 4, { content_type: "mls_welcome", group_id: G0 }),
+  );
+  await env.advance(0);
+  assert.ok(env.acks.includes("W0"), "acked: not parked");
+  m.onEnvelope(envelope("C1", 1, { group_id: G1 }));
+  await env.advance(0);
+  assert.deepEqual(
+    env.calls("e2ee_text_process").map((c) => c.envelope.id),
+    ["W0", "C1"],
+    "nothing parked behind it",
+  );
+  m.dispose();
+});
+
+test("FXP F-L7 m5: the owner change is native's pending signer: the manager's flag left set without one neither parks a signer_leaf_missing Welcome nor holds the intent", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  // Verify answers owner_changed (the manager's flag); then native adopts
+  // a list without a confirm: no pending signer, the flag left set.
+  const verify = env.handlers.e2ee_text_seat_list_verify!;
+  let adopted = false;
+  env.handlers.e2ee_text_seat_list_verify = (a) => {
+    if (!adopted) throw OWNER_CHANGED;
+    env.state().owner_pin.pending_signer = null;
+    return verify(a);
+  };
+  env.handlers.e2ee_text_process = () => {
+    throw SLM;
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  adopted = true;
+  await m.refresh(CH, "interval");
+  assert.equal(env.views.get(CH)?.ownerChangePending, true, "left set");
+  assert.equal(env.views.get(CH)?.native?.owner_pin.pending_signer, null);
+  env.group = groupBody({ current_epoch: 4, member_added: addedAt(4) });
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.ok(env.acks.includes("W1"), "discarded, not parked");
+  assert.equal(env.views.get(CH)?.signerLeafMissingRetries, 1);
+  await env.advance(joinRebroadcastDelayMs(0) + WELCOME_FETCH_AFTER_MS);
+  assert.equal(intents(env), 2, "the rejoin goes out");
+  m.dispose();
+});
+
+test("FXP F-L7: a left device with an older Add and an owner change pending still sends its rejoin intent at once (an Add older than its intent is not held)", async () => {
+  const env = new Env();
+  joinSetsJoining(env);
+  env.states.set(CH, st({ state: "left", verdict: "no_group" }));
+  env.group = groupBody({ member_added: [OWN_ADDED(2)] });
+  ownerChangeUntil(env, () => false);
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.equal(intents(env), 1, "the rejoin intent at once");
+  m.dispose();
+});
+
+test("FXP F-L6: after a reload the Add's stored Welcome, refused again for unknown_identity while the pin of that device fails in transport, starts its rejoin on that path (no open needed beyond the reload's)", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  pinsFailInTransport(env);
+  // Native as an earlier session's `_join` left it (the reload).
+  env.states.set(
+    CH,
+    st({ state: "joining", verdict: "joining", epoch: null, members: [] }),
+  );
+  env.group = groupBody({
+    current_epoch: 4,
+    member_added: addedAt(4),
+    members: LISTED,
+  });
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G0, epoch: 4, welcome: "V0VM" })),
+  );
+  env.handlers.e2ee_text_process = () => {
+    throw leafRejected("unknown_identity");
+  };
+  const m = make(env);
+  await m.open(CH);
+  await env.advance(WELCOME_FETCH_AFTER_MS);
+  assert.equal(welcomeGets(env).length, 1, "that Add's stored Welcome");
+  assert.equal(intents(env), 1, "its rejoin intent");
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg === "[protected] refused welcome: join unblocked" &&
+        l.ids.why === "stored",
+    ),
+  );
+  assert.equal(env.shield(), "unverified", "the alarm stays");
+  m.close(CH);
+  m.dispose();
+});
+
+test("FXP F-L6 M2: a refused Welcome's alarm also ends when this device joins the channel's successor group by Welcome (the refused group superseded)", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  env.handlers.e2ee_text_process = (a) => {
+    if (a.envelope.group_id === G0) throw leafRejected("identity_changed");
+    env.states.set(
+      CH,
+      st({ group_id: G1, generation: 1, epoch: a.envelope.epoch }),
+    );
+    return outcome({
+      kind: "welcome_joined",
+      epoch: a.envelope.epoch,
+      group_id: G1,
+    });
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  env.group = groupBody({
+    current_epoch: 4,
+    member_added: addedAt(4),
+    members: LISTED,
+  });
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(10_000);
+  assert.equal(env.shield(), "unverified");
+  env.group = groupBody({
+    group_id: G1,
+    generation: 1,
+    current_epoch: 1,
+    member_added: addedAt(1),
+  });
+  m.onEnvelope(
+    envelope("W2", 1, { content_type: "mls_welcome", group_id: G1 }),
+  );
+  await env.advance(0);
+  assert.equal(env.views.get(CH)?.native?.group_id, G1);
+  assert.notEqual(env.shield(), "unverified", "the alarm is over");
+  m.dispose();
+});
+
+test("FXP F-L7 MJ-3: a Welcome parked for signer_leaf_missing is replayed as soon as a state read shows native settled the owner change without a confirm (a list adopted): it joins, the manager's flag clears, no intent", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  let adopted = false;
+  ownerChangeUntil(env, () => adopted);
+  env.handlers.e2ee_text_process = (a) => {
+    if (!adopted) throw SLM;
+    return welcomeJoinedAt(env, a);
+  };
+  const m = make(env);
+  const p = endedOf(m.ensureJoined(CH));
+  await env.advance(0);
+  env.group = groupBody({ current_epoch: 4, member_added: addedAt(4) });
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(3_600_000);
+  assert.equal(env.acks.includes("W1"), false, "parked");
+  assert.equal(p.done, false);
+  // The owner signed its devices: native adopts the list, no confirm.
+  adopted = true;
+  m.onChannelChanged(CH, ["seats"]);
+  await env.advance(1_000);
+  assert.equal(p.done, true);
+  assert.equal(p.err, null, "joined from the parked Welcome");
+  assert.equal(env.views.get(CH)?.native?.state, "active");
+  assert.equal(env.views.get(CH)?.ownerChangePending, false);
+  assert.equal(env.calls("e2ee_text_owner_confirm_change").length, 0);
+  assert.equal(intents(env), 1);
+  m.dispose();
+});
+
+test("FXP F-L7 MJ-3: another user's pending signer (never confirmable) parks nothing: a signer_leaf_missing Welcome takes the S1 handling (discarded, counted toward 6c) and the intents are not held", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  env.handlers.e2ee_text_seat_list_verify = () => {
+    env.state().owner_pin.pending_signer = { ...PENDING, same_user: false };
+    throw { ...OWNER_CHANGED, same_user: false };
+  };
+  env.handlers.e2ee_text_process = () => {
+    throw SLM;
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  env.group = groupBody({ current_epoch: 4, member_added: addedAt(4) });
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.ok(env.acks.includes("W1"), "discarded, not parked");
+  assert.equal(env.views.get(CH)?.signerLeafMissingRetries, 1);
+  await env.advance(joinRebroadcastDelayMs(0) + WELCOME_FETCH_AFTER_MS);
+  assert.equal(intents(env), 2, "not held");
+  m.dispose();
+});
+
+test("FXP F-L6 MJ-1: an own device's pin reports a stale cached listing (served after a failed fetch) as transport, so a Welcome refused for unknown_identity gets no second pass; a fresh listing answers and it is processed once more", async () => {
+  // The bridge serves its cache while younger than 60 s, so an entry 60 s
+  // old or older came after a failed fetch.
+  for (const [age, stale] of [
+    [10 * 60_000, true],
+    [60_000, true],
+    [1_000, false],
+  ] as const) {
+    const env = joiningEnv();
+    joinSetsJoining(env);
+    env.ownDeviceListing = async () => {
+      const own = {
+        hash: "h1",
+        listing: [{ device_id: DEV }],
+        at: env.clock - age,
+      };
+      return own;
+    };
+    env.handlers.e2ee_text_process = () => {
+      throw {
+        type: "mls_leaf_rejected",
+        user_id: SELF,
+        device_id: "dOwn",
+        reason: "unknown_identity",
+      };
+    };
+    const m = make(env);
+    silence(m.ensureJoined(CH));
+    await env.advance(0);
+    env.group = groupBody({ current_epoch: 4, member_added: addedAt(4) });
+    m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+    await env.advance(0);
+    assert.equal(
+      env.calls("e2ee_text_process").length,
+      stale ? 1 : 2,
+      stale ? "transport: no second pass" : "answered: once more",
+    );
+    m.dispose();
+  }
+});
+
+test("FXP F-L6 M2: a member's re-Add that native accepts ends the refusal's alarm and its join block, with no grant", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  env.handlers.e2ee_text_process = (a) => {
+    if (a.envelope.epoch === 4) throw leafRejected("identity_changed");
+    return welcomeJoinedAt(env, a);
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  await refusedAt(env, m, 4, "W1");
+  assert.equal(env.shield(), "unverified");
+  assert.equal(intents(env), 1, "no grant");
+  env.group = groupBody({
+    current_epoch: 6,
+    member_added: addedAt(6),
+    members: LISTED,
+  });
+  m.onEnvelope(envelope("W2", 6, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.equal(env.views.get(CH)?.native?.state, "active");
+  assert.notEqual(env.shield(), "unverified", "alarm and block over");
+  assert.equal(env.views.get(CH)?.groupError ?? null, null);
+  m.dispose();
+});
+
+test("FXP F-L7 m5: a successor's Welcome queued behind a parked owner_changed commit and replayed by the confirm keeps the join held while the replay runs (no _join, no KeyPackage minted); it joins", async () => {
+  const env = new Env();
+  let confirmed = false;
+  ownerChangeUntil(env, () => confirmed);
+  const gateW: { release: (() => void) | null } = { release: null };
+  env.handlers.e2ee_text_process = async (a) => {
+    if (!confirmed) throw OWNER_CHANGED;
+    if (a.envelope.content_type === "mls_welcome") {
+      // The replayed Welcome is slow (a native lock).
+      await new Promise<void>((r) => (gateW.release = r));
+      env.states.set(
+        CH,
+        st({ group_id: G1, generation: 1, epoch: a.envelope.epoch }),
+      );
+      return outcome({
+        kind: "welcome_joined",
+        epoch: a.envelope.epoch,
+        group_id: G1,
+      });
+    }
+    return outcome({ epoch: a.envelope.epoch, group_id: a.envelope.group_id });
+  };
+  env.handlers.e2ee_text_owner_confirm_change = () => {
+    confirmed = true;
+    return null;
+  };
+  // This device holds G0; the server's group is the successor G1.
+  env.group = groupBody({ group_id: G1, generation: 1, current_epoch: 0 });
+  const m = make(env);
+  await m.refresh(CH, "commit");
+  const p = endedOf(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.equal(intentGroups(env).at(-1), G1);
+  env.group = groupBody({
+    group_id: G1,
+    generation: 1,
+    current_epoch: 1,
+    member_added: addedAt(1),
+  });
+  // A commit of G0 parks behind the owner change (D15); the Add's stored
+  // Welcome of G1, fetched by its path, queues behind it.
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G1, epoch: 1, welcome: "V0VM" })),
+  );
+  m.onEnvelope(envelope("C4", 4));
+  await env.advance(3_600_000);
+  assert.equal(welcomeGets(env).length, 1, "that Add's path ran: parked");
+  assert.equal(intents(env), 1, "held while parked");
+  // The confirm's re-verify is slow: the join's next step coalesces with it
+  // and resumes while the confirm's replay of W1 is still running.
+  const gateV: { release: (() => void) | null } = { release: null };
+  const verify = env.handlers.e2ee_text_seat_list_verify!;
+  env.handlers.e2ee_text_seat_list_verify = async (a) => {
+    if (gateV.release === null) {
+      await new Promise<void>((r) => (gateV.release = r));
+    }
+    return verify(a);
+  };
+  const joins = env.calls("e2ee_text_join").length;
+  const puts = env.api$("PUT", /^\/mls\/key_packages$/).length;
+  const confirm = m.confirmOwnerChange(CH);
+  await env.advance(0);
+  assert.ok(gateV.release !== null, "the confirm's verify is pending");
+  await env.advance(20 * 60_000);
+  gateV.release!();
+  await env.advance(0);
+  assert.ok(gateW.release !== null, "the replay of W1 is running");
+  await env.advance(20 * 60_000);
+  gateW.release!();
+  await confirm;
+  await env.advance(0);
+  assert.equal(p.done, true);
+  assert.equal(p.err, null, "joined from the replayed Welcome");
+  assert.equal(env.views.get(CH)?.native?.group_id, G1);
+  assert.equal(env.calls("e2ee_text_join").length, joins, "no _join raced it");
+  assert.equal(
+    env.api$("PUT", /^\/mls\/key_packages$/).length,
+    puts,
+    "no KeyPackage minted",
+  );
+  m.dispose();
+});
+
+test("FXP F-L6 MJ-2b: a newer Add below the epoch of this device's last intent (its Welcome path never runs) lifts nothing: across many refreshes at most one intent per pace window", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  env.handlers.e2ee_text_process = () => {
+    throw leafRejected("identity_changed");
+  };
+  // The server reports a high epoch when this device sends its intent.
+  env.group = groupBody({ current_epoch: 20, members: LISTED });
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.equal(intents(env), 1);
+  const added = (e: number) =>
+    groupBody({ current_epoch: 20, member_added: addedAt(e), members: LISTED });
+  env.group = added(4);
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(joinRebroadcastDelayMs(0));
+  assert.equal(intents(env), 2, "hard, moved on: the first paced grant");
+  env.group = added(5);
+  m.onEnvelope(envelope("W2", 5, { content_type: "mls_welcome" }));
+  await env.advance(joinRebroadcastDelayMs(0));
+  // Fake newer Adds, each below 20: no path runs for them.
+  for (let e = 6; e <= 12; e++) {
+    env.group = added(e);
+    m.onChannelChanged(CH, ["text_group"]);
+    await env.advance(5_000);
+  }
+  assert.equal(welcomeGets(env).length, 0, "no path ran");
+  assert.equal(intents(env), 2, "no intent past the pace");
+  m.dispose();
+});
+
+test("FXP F-L6 MJ-2b: after a reload with a newer Add than the refused one the block is restored and that Add is paced: its 404 path ends in no intent inside the window", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  pinsFailInTransport(env);
+  env.handlers.e2ee_text_process = () => {
+    throw leafRejected("unknown_identity");
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  await refusedAt(env, m, 4, "W1");
+  assert.equal(intents(env), 2, "the first grant");
+  await refusedAt(env, m, 6, "W2");
+  m.dispose();
+  // A newer Add the reloaded device never saw a Welcome for.
+  env.group = groupBody({
+    current_epoch: 8,
+    member_added: addedAt(8),
+    members: LISTED,
+  });
+  const m2 = make(env);
+  await m2.open(CH);
+  await env.advance(WELCOME_FETCH_AFTER_MS + 60_000);
+  assert.equal(env.shield(), "unverified", "the block and alarm are back");
+  assert.equal(welcomeGets(env).length, 1, "that Add's one path (404)");
+  assert.equal(intents(env), 2, "paced: no intent in the window");
+  m2.close(CH);
+  m2.dispose();
+});
+
+test("FXP F-L6 m3-2: a second refused device of the same group starts from the group's pace: two refused devices give one immediate grant, not two", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  pinsFailInTransport(env);
+  let device = "dX";
+  env.handlers.e2ee_text_process = () => {
+    throw { ...leafRejected("unknown_identity"), device_id: device };
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  await refusedAt(env, m, 4, "W1");
+  assert.equal(intents(env), 2, "one immediate grant");
+  device = "dY";
+  await refusedAt(env, m, 6, "W2");
+  m.onChannelChanged(CH, ["text_group"]);
+  // A grant's intent leaves on the join backoff: look for 10 min, still
+  // inside the first grant's 15 min window.
+  await env.advance(10 * 60_000);
+  assert.equal(intents(env), 2, "the new device inherits the window");
+  m.dispose();
+});
+
+test("FXP F-L6 m4-2: refused devices alternating X, Y, X get one grant per pace window: the group's pace, never a device's own laxer one", async () => {
+  const env = joiningEnv();
+  joinSetsJoining(env);
+  pinsFailInTransport(env);
+  let device = "dX";
+  env.handlers.e2ee_text_process = () => {
+    throw { ...leafRejected("unknown_identity"), device_id: device };
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  // Window 1 (15 min from the first grant).
+  await refusedAt(env, m, 4, "W1");
+  assert.equal(intents(env), 2, "window 1: the grant");
+  device = "dY";
+  await refusedAt(env, m, 6, "W2");
+  m.onChannelChanged(CH, ["text_group"]);
+  await env.advance(10 * 60_000);
+  assert.equal(intents(env), 2, "window 1: Y gets none");
+  // Window 2 (30 min from the second grant).
+  await env.advance(6 * 60_000);
+  m.onChannelChanged(CH, ["text_group"]);
+  await env.advance(1_000);
+  const second = intents(env);
+  assert.ok(second > 2, "window 2: the grant");
+  device = "dX";
+  await refusedAt(env, m, 8, "W3");
+  const afterX = intents(env);
+  m.onChannelChanged(CH, ["text_group"]);
+  await env.advance(20 * 60_000);
+  m.onChannelChanged(CH, ["text_group"]);
+  await env.advance(1_000);
+  assert.equal(intents(env), afterX, "window 2: X again gets none");
+  // Window 3.
+  await env.advance(11 * 60_000);
+  m.onChannelChanged(CH, ["text_group"]);
+  await env.advance(1_000);
+  assert.ok(intents(env) > afterX, "window 3: the grant");
+  m.dispose();
+});
+
+test("FXP F-L6 m4-3: after a reload the block is restored whatever Add of this device the server shows (none, or one older than the refused Welcome): paced, no intent inside the window", async () => {
+  for (const [label, hidden] of [
+    ["no Add", []],
+    ["an older Add", addedAt(2)],
+  ] as const) {
+    const env = joiningEnv();
+    joinSetsJoining(env);
+    pinsFailInTransport(env);
+    env.handlers.e2ee_text_process = () => {
+      throw leafRejected("unknown_identity");
+    };
+    const m = make(env);
+    silence(m.ensureJoined(CH));
+    await env.advance(0);
+    await refusedAt(env, m, 4, "W1");
+    assert.equal(intents(env), 2, `${label}: the first grant`);
+    await refusedAt(env, m, 6, "W2");
+    m.dispose();
+    env.group = groupBody({
+      current_epoch: 8,
+      member_added: hidden,
+      members: LISTED,
+    });
+    const m2 = make(env);
+    await m2.open(CH);
+    await env.advance(WELCOME_FETCH_AFTER_MS + 60_000);
+    assert.equal(env.shield(), "unverified", `${label}: blocked, alarm`);
+    assert.equal(intents(env), 2, `${label}: paced, no intent`);
+    m2.close(CH);
+    m2.dispose();
+  }
+});
+
+test("FXP F-L7 m3-1: a confirm whose replay re-parks the owner_changed commit (a second same-user signer) keeps the Welcome queued behind it; once native adopts a list without a confirm, both are replayed and the Welcome joins", async () => {
+  const env = new Env();
+  // 0: before the confirm; 1: a second signer after it; 2: list adopted.
+  let phase = 0;
+  env.handlers.e2ee_text_process = (a) => {
+    if (phase === 0) throw OWNER_CHANGED;
+    if (phase === 1) throw { ...OWNER_CHANGED, signer_device_id: "dev-o3" };
+    if (a.envelope.content_type === "mls_welcome") {
+      env.states.set(
+        CH,
+        st({ group_id: G1, generation: 1, epoch: a.envelope.epoch }),
+      );
+      return outcome({
+        kind: "welcome_joined",
+        epoch: a.envelope.epoch,
+        group_id: G1,
+      });
+    }
+    return outcome({ epoch: a.envelope.epoch, group_id: a.envelope.group_id });
+  };
+  env.handlers.e2ee_text_owner_confirm_change = () => {
+    phase = 1;
+    return null;
+  };
+  env.group = groupBody({
+    group_id: G1,
+    generation: 1,
+    current_epoch: 1,
+    member_added: addedAt(1),
+  });
+  const m = make(env);
+  await m.refresh(CH, "commit");
+  m.onEnvelope(envelope("C4", 4));
+  await env.advance(0);
+  m.onEnvelope(
+    envelope("W1", 1, { content_type: "mls_welcome", group_id: G1 }),
+  );
+  await env.advance(0);
+  const ids = () => env.calls("e2ee_text_process").map((c) => c.envelope.id);
+  assert.deepEqual(ids(), ["C4"], "W1 queued behind C4");
+  await m.confirmOwnerChange(CH);
+  await env.advance(0);
+  assert.deepEqual(ids(), ["C4", "C4"], "C4 re-parked, W1 pushed back");
+  // Native adopts a list: no pending signer, no confirm.
+  phase = 2;
+  env.state().owner_pin.pending_signer = null;
+  m.onChannelChanged(CH, ["seats"]);
+  await env.advance(1_000);
+  assert.deepEqual(ids(), ["C4", "C4", "C4", "W1"], "both replayed");
+  assert.equal(env.views.get(CH)?.native?.group_id, G1);
+  assert.equal(env.views.get(CH)?.native?.state, "active");
+  m.dispose();
+});
+
+test("FXP F-L7 m4-1: a Welcome parked behind a commit parked for another user's owner change (no same-user pending signer: nothing here settles it) ends the join loudly: no intent across refreshes, opens and a day, the owner-change notice shown", async () => {
+  const env = new Env();
+  env.handlers.e2ee_text_process = () => {
+    throw { ...OWNER_CHANGED, same_user: false };
+  };
+  env.group = groupBody({
+    group_id: G1,
+    generation: 1,
+    current_epoch: 1,
+    member_added: addedAt(1),
+  });
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G1, epoch: 1, welcome: "V0VM" })),
+  );
+  const m = make(env);
+  await m.refresh(CH, "commit");
+  m.onEnvelope(envelope("C4", 4));
+  await env.advance(joinRebroadcastDelayMs(0) + WELCOME_FETCH_AFTER_MS);
+  assert.equal(welcomeGets(env).length, 1, "the Add's Welcome, parked");
+  assert.equal(
+    env.state().owner_pin.pending_signer?.same_user,
+    false,
+    "another user's pending signer",
+  );
+  const before = intents(env);
+  for (let i = 0; i < 6; i++) {
+    await m.refresh(CH, i % 2 === 0 ? "commit" : "open");
+    m.onChannelChanged(CH, ["text_group"]);
+    await env.advance(10 * 60_000);
+  }
+  await env.advance(24 * 3_600_000);
+  assert.equal(intents(env), before, "no intent while the park stands");
+  assert.equal(welcomeGets(env).length, 1, "no second fetch");
+  assert.equal(env.views.get(CH)?.groupError, "owner_changed");
+  assert.deepEqual(env.explain(), {
+    state: "unverified",
+    notice: "owner_changed_review",
+  });
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg ===
+        "[protected] join ended: welcome parked behind an owner change",
+    ),
   );
   m.dispose();
 });

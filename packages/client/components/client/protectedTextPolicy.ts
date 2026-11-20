@@ -30,6 +30,11 @@
  * - The 6c budget's binding (S2 final audit FXF): `leafMissingSigner`,
  *   `leafMissingApplies`, `leafMissingSpent`; a Welcome parked behind an
  *   owner change: `welcomeParkedFor`, `parkedReplay`.
+ * - S2 live leg FXP: the Welcome pin retry (`pinRetryAllowed`,
+ *   `pinFailureOutcome`), a refused Welcome's paced rejoin
+ *   (`welcomeRefusalOf`, `refusalRetryable`, `welcomeRefusalRejoin`, the
+ *   persisted `RefusalPace`) and the owner-change intent hold
+ *   (`joinIntentHeldByOwnerChange`).
  *
  * Fail-closed rules this module holds everywhere:
  * - An answer whose outcome is unknown (transport error, lost response, 5xx)
@@ -1923,4 +1928,326 @@ export function parkedReplay<T extends ParkedEnvelope>(
     else replay.push(p);
   }
   return { replay, dropped };
+}
+
+// ---------------------------------------------------------------------------
+// S2 live leg FXP: Welcome pin retries and refusals (F-L6), the owner-change
+// intent hold (F-L7)
+// ---------------------------------------------------------------------------
+
+/**
+ * F-L6: the most devices one pass over a Welcome pins (native
+ * `MAX_TEXT_LEAVES`, the most leaves a text group holds). A Welcome's bytes
+ * are fixed and its leaves were authenticated by the adder, so native can
+ * only ever name its own leaves; the cap holds even if it did not.
+ */
+export const WELCOME_PIN_DEVICES_MAX = MAX_TEXT_LEAVES;
+
+/** F-L6: the key `pinRetryAllowed` reads (ids only, never shown). */
+export function pinRetryKey(device: {
+  user_id: string;
+  device_id: string;
+}): string {
+  return JSON.stringify([device.user_id, device.device_id]);
+}
+
+/**
+ * F-L6 (plan D18 / D28, process.rs `PinBudget`): whether `_process` runs
+ * again after pinning the device an `identity_pin_required` named, given
+ * the devices already pinned in this pass (`pinRetryKey`). A commit: once
+ * per pass, whatever device the refusal names (D28: native counts ONE
+ * budget per group and epoch, so a server rotating the device cannot buy
+ * more). A Welcome: once per DISTINCT device (native counts each leaf on
+ * its own budget, and reports one unpinned leaf per refusal); a device
+ * named twice ends the pass (its pin did not take), and so does the cap.
+ */
+export function pinRetryAllowed(
+  contentType: string,
+  pinned: ReadonlySet<string>,
+  device: { user_id: string; device_id: string },
+): boolean {
+  if (contentType !== "mls_welcome") return pinned.size === 0;
+  return (
+    !pinned.has(pinRetryKey(device)) && pinned.size < WELCOME_PIN_DEVICES_MAX
+  );
+}
+
+/**
+ * F-L6: what one pin of a device named by native gave. `answered`: the
+ * signed listing was fetched and handed to native (it pinned the device,
+ * the device was already pinned, or the listing does not carry it: the
+ * pin call does not say which; only a `_process` re-run tells, MJ-1).
+ * `transport`: the listing could not be fetched (network, timeout, 429,
+ * 5xx; for own devices also a stale cached listing served instead).
+ * `refused`: any other failure (a 4xx, a native refusal).
+ */
+export type PinOutcome = "answered" | "transport" | "refused";
+
+/**
+ * F-L6: the outcome of a pin that rejected with `err`. Only a failure that
+ * says nothing about the listing itself is `transport`: a fetch error
+ * (`TypeError`), the courier's rate-limit or timeout errors, or an HTTP
+ * status of 429 or 5xx. Everything else (a 4xx, a native error, an unknown
+ * shape) is `refused`: never read as "it would have pinned".
+ */
+export function pinFailureOutcome(err: unknown): "transport" | "refused" {
+  if (!isRecord(err)) return "refused";
+  const status = err.status;
+  if (typeof status === "number") {
+    return status === 429 || status >= 500 ? "transport" : "refused";
+  }
+  const name = err instanceof Error ? err.name : null;
+  return name === "TypeError" ||
+    name === "E2EERateLimitError" ||
+    name === "E2EERequestTimeoutError"
+    ? "transport"
+    : "refused";
+}
+
+/** F-L6: a Welcome native refused with `mls_leaf_rejected`. */
+export interface WelcomeRefusal {
+  groupId: string;
+  /** The refused Welcome's epoch (its Add's epoch). */
+  epoch: number;
+  /** The refused leaf (ids only, never shown). */
+  userId: string;
+  deviceId: string;
+  /** Native's `LeafRejection` (unchecked string). */
+  reason: string;
+  /** `refusalRetryable(reason)`. */
+  retryable: boolean;
+}
+
+/**
+ * F-L6: the refused leaf of a Welcome `_process` failure, or null when the
+ * failure is not a leaf rejection of a Welcome naming a device.
+ */
+export function welcomeRefusalOf(
+  err: unknown,
+  wire: { content_type: string; group_id: string; epoch: number },
+): Omit<WelcomeRefusal, "retryable"> | null {
+  if (wire.content_type !== "mls_welcome") return null;
+  let e: unknown = err;
+  if (isRecord(e) && e.source === "native") e = e.error;
+  if (!isRecord(e) || e.type !== "mls_leaf_rejected") return null;
+  if (typeof e.user_id !== "string" || typeof e.device_id !== "string") {
+    return null;
+  }
+  return {
+    groupId: wire.group_id,
+    epoch: wire.epoch,
+    userId: e.user_id,
+    deviceId: e.device_id,
+    reason: typeof e.reason === "string" ? e.reason : "",
+  };
+}
+
+/**
+ * F-L6 (round 3, MJ-1): `unknown_identity` is native's spent pin budget for
+ * one (group, epoch, device) (process.rs `WELCOME_PIN_RETRIES`), never a
+ * verdict on the device, so it is retryable (the next Welcome is another
+ * epoch with a fresh budget). Every other reason is a leaf the roster
+ * really holds (identity changed or revoked, a bad key or signature): hard.
+ */
+export function refusalRetryable(reason: string): boolean {
+  return reason === "unknown_identity";
+}
+
+/**
+ * F-L6 (M1a): the first pace window between two refused-Welcome rejoins
+ * for one refused device: the S2-D28 re-broadcast cap. Each further grant
+ * for the same device doubles it, up to `REFUSAL_PACE_CAP_MS` (m-c).
+ */
+export const REFUSAL_PACE_BASE_MS = JOIN_REBROADCAST.capMs;
+
+/** F-L6 (m-c): the longest pace window: one grant a day at most. */
+export const REFUSAL_PACE_CAP_MS = 24 * 3_600_000;
+
+/** F-L6: grants so far for one (group, refused device), and the last one. */
+export interface RefusalPace {
+  grants: number;
+  atMs: number;
+}
+
+/**
+ * F-L6: the window that must pass after `grants` grants (0: none); a
+ * broken count reads as the cap.
+ */
+export function refusalPaceWindowMs(grants: number): number {
+  if (!Number.isSafeInteger(grants) || grants < 0) return REFUSAL_PACE_CAP_MS;
+  if (grants === 0) return 0;
+  let ms: number = REFUSAL_PACE_BASE_MS;
+  for (let i = 1; i < grants && ms < REFUSAL_PACE_CAP_MS; i++) ms *= 2;
+  return Math.min(ms, REFUSAL_PACE_CAP_MS);
+}
+
+/**
+ * F-L6: a rejoin for this refused device may be granted at `nowMs`. A
+ * clock that is not finite refuses; a last grant stamped in the future is
+ * read as now (m-c: the window runs from now, never from a future time).
+ */
+export function refusalPaceAllows(
+  p: RefusalPace | null,
+  nowMs: number,
+): boolean {
+  if (p === null) return true;
+  if (!Number.isFinite(nowMs) || !Number.isFinite(p.atMs)) return false;
+  const at = Math.min(p.atMs, nowMs);
+  return nowMs - at >= refusalPaceWindowMs(p.grants);
+}
+
+/** F-L6: the pace record after a grant at `nowMs`. */
+export function refusalPaceAfterGrant(
+  p: RefusalPace | null,
+  nowMs: number,
+): RefusalPace {
+  return { grants: (p?.grants ?? 0) + 1, atMs: nowMs };
+}
+
+/**
+ * F-L6: one stored pace entry (ids only): the refused device's pace and
+ * its last refusal (epoch, reason; m-a: the alarm is rebuilt from it).
+ */
+export interface RefusalPaceEntry extends RefusalPace {
+  groupId: string;
+  userId: string;
+  deviceId: string;
+  epoch: number;
+  reason: string;
+}
+
+/** F-L6: pace entries kept per channel (oldest dropped first). */
+export const REFUSAL_PACE_ENTRIES_MAX = 16;
+
+/**
+ * F-L6 (m4-2): two copies of one (group, device) entry, the stored and the
+ * in-memory one, merged to the strictest: the larger grant count and the
+ * later grant, taken separately (`{2, T0}` and `{1, T0 + 29 min}` give
+ * `{2, T0 + 29 min}`); the later refusal's epoch and reason.
+ */
+export function mergeRefusalPaceEntry(
+  a: RefusalPaceEntry,
+  b: RefusalPaceEntry,
+): RefusalPaceEntry {
+  return {
+    ...(b.epoch > a.epoch ? b : a),
+    grants: Math.max(a.grants, b.grants),
+    atMs: Math.max(a.atMs, b.atMs),
+  };
+}
+
+/**
+ * F-L6: the stored pace entries of a channel (`{ v: 2, entries }`). A
+ * malformed entry is dropped; an unreadable record reads as none.
+ */
+export function parseRefusalPaces(raw: string | null): RefusalPaceEntry[] {
+  let v: unknown = null;
+  try {
+    v = JSON.parse(raw ?? "null");
+  } catch {
+    return [];
+  }
+  if (!isRecord(v) || v.v !== 2 || !Array.isArray(v.entries)) return [];
+  const out: RefusalPaceEntry[] = [];
+  for (const e of v.entries) {
+    if (
+      isRecord(e) &&
+      typeof e.groupId === "string" &&
+      typeof e.userId === "string" &&
+      typeof e.deviceId === "string" &&
+      typeof e.reason === "string" &&
+      isEpoch(e.epoch) &&
+      Number.isSafeInteger(e.grants) &&
+      (e.grants as number) >= 0 &&
+      typeof e.atMs === "number" &&
+      Number.isFinite(e.atMs)
+    ) {
+      out.push({
+        groupId: e.groupId,
+        userId: e.userId,
+        deviceId: e.deviceId,
+        epoch: e.epoch,
+        reason: e.reason,
+        grants: e.grants as number,
+        atMs: e.atMs,
+      });
+    }
+  }
+  return out.slice(-REFUSAL_PACE_ENTRIES_MAX);
+}
+
+/**
+ * F-L6: what a refused Welcome allows now.
+ * - `newer_add` (MJ-2): the server shows a newer Add of this device than
+ *   the refused one, not tried yet (`newerAddTried`), whose Welcome path
+ *   will run (`newerAddPathRuns`, MJ-2b: `welcomePending` as the join loop
+ *   reads it): only that path runs (a fetch, no intent). Tried, or a path
+ *   that would not run, that Add is judged like the refused one, under the
+ *   same pace.
+ * - `rejoin`: ONE fresh rejoin intent, when the class allows it and the
+ *   persisted pace for that device does (M1a, m-c). A retryable refusal
+ *   (MJ-1) is allowed at once; a hard one once the server's group moved
+ *   past the refused epoch, or at once when the server's member list no
+ *   longer holds the refused device (a commit removed that leaf). Server
+ *   data only paces this: a lie costs one more refusal per window, and
+ *   native judges every Welcome. m4-3: with no Add of this device shown,
+ *   or one older than the refused Welcome, it is judged the same way
+ *   (paced), never left blocked for good nor let through.
+ * - `none` otherwise.
+ */
+export function welcomeRefusalRejoin(i: {
+  refusal: WelcomeRefusal | null;
+  group: {
+    group_id: string;
+    current_epoch: number;
+    members: readonly { user_id: string; device_id: string }[];
+  } | null;
+  ownAddEpoch: number | null;
+  newerAddTried: boolean;
+  newerAddPathRuns: boolean;
+  pace: RefusalPace | null;
+  nowMs: number;
+}): "rejoin" | "newer_add" | "none" {
+  const r = i.refusal;
+  const g = i.group;
+  if (r === null || g === null || r.groupId !== g.group_id) return "none";
+  if (
+    i.ownAddEpoch !== null &&
+    i.ownAddEpoch > r.epoch &&
+    !i.newerAddTried &&
+    i.newerAddPathRuns
+  ) {
+    return "newer_add";
+  }
+  if (!r.retryable) {
+    const listed = g.members.some(
+      (m) =>
+        isRecord(m) && m.user_id === r.userId && m.device_id === r.deviceId,
+    );
+    const moved = isEpoch(g.current_epoch) && g.current_epoch > r.epoch;
+    if (listed && !moved) return "none";
+  }
+  return refusalPaceAllows(i.pace, i.nowMs) ? "rejoin" : "none";
+}
+
+/**
+ * F-L7 (D15, FXF; m3, MJ-3): no join intent, a run's first or a
+ * re-broadcast, while this device's Welcome for the server's current
+ * group waits for an owner change: a confirm is replaying it
+ * (`welcomeReplaying`), or native holds a same-user pending signer
+ * (`ownerChangePending`) and the Welcome is parked or native answered
+ * `signer_leaf_missing` to the Welcome of this device's latest Add
+ * (`slmForAdd`). With no pending signer (adopted, confirmed, or another
+ * user's) nothing holds: the confirm admits that Welcome.
+ */
+export function joinIntentHeldByOwnerChange(i: {
+  welcomeReplaying: boolean;
+  welcomeParked: boolean;
+  slmForAdd: boolean;
+  ownerChangePending: boolean;
+}): boolean {
+  return (
+    i.welcomeReplaying ||
+    (i.ownerChangePending && (i.welcomeParked || i.slmForAdd))
+  );
 }

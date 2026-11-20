@@ -9919,6 +9919,10 @@ msgid "The seat list wasn't saved because it includes members who no longer have
 msgstr "The seat list wasn't saved because it includes members who no longer have a seat: {list}"
 
 #: components/client/protectedCopy.ts
+msgid "This channel's protected group failed a security check on this device, so this device hasn't joined it and can't read new messages here."
+msgstr "This channel's protected group failed a security check on this device, so this device hasn't joined it and can't read new messages here."
+
+#: components/client/protectedCopy.ts
 #: components/i18n/errors.ts
 msgid "All seats are in use. Released seats count for 14 days."
 msgstr "All seats are in use. Released seats count for 14 days."

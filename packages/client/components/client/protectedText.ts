@@ -61,8 +61,11 @@ import {
 import { TextIdIndex } from "./protectedTextIds.ts";
 import {
   type LeafMissingBinding,
+  type PinOutcome,
   type ProtectorAnswer,
   type ProtectorGate,
+  type RefusalPace,
+  type RefusalPaceEntry,
   type SendAction,
   type SendContext,
   type SendTrigger,
@@ -70,6 +73,7 @@ import {
   type SubmitAction,
   type SubmitContext,
   type TextEnvelopeVerdict,
+  type WelcomeRefusal,
   ADMIT_REFUSED_CAP,
   admitRefusalKey,
   admitRefusedByNative,
@@ -83,19 +87,28 @@ import {
   isProtectorError,
   JOIN_RETRIES,
   joinEventResetAllowed,
+  joinIntentHeldByOwnerChange,
   joinRebroadcastDelayMs,
   joinRefusal,
   leafMissingApplies,
   leafMissingSigner,
   leafMissingSpent,
   leafStaggerMs,
+  mergeRefusalPaceEntry,
   ownAddedEntry,
   parkedReplay,
+  parseRefusalPaces,
+  pinFailureOutcome,
+  pinRetryAllowed,
+  pinRetryKey,
   PROTECTOR_GATE_OPEN,
   protectorGateAfter,
   protectorGateStep,
   publishBackoffMs,
   REFRESH_INTERVAL_MS,
+  REFUSAL_PACE_ENTRIES_MAX,
+  refusalPaceAfterGrant,
+  refusalRetryable,
   retryAfterMs,
   STORED_ADMIT_REASONS,
   storedJoinRequests,
@@ -103,6 +116,8 @@ import {
   welcomeFetchStep,
   welcomeParkedFor,
   welcomePending,
+  welcomeRefusalOf,
+  welcomeRefusalRejoin,
 } from "./protectedTextPolicy.ts";
 import type {
   CancelPendingSeatsResult,
@@ -207,6 +222,33 @@ export const PROTECTED_STAGE_KEY_PREFIX = "protected-stage:";
  */
 export const PROTECTED_RECOVERY_REFUSED_KEY_PREFIX =
   "protected-recovery-refused:";
+
+/**
+ * FXP F-L6 (M1a): storage key prefix (`<prefix><userId>:<channelId>`) of
+ * the pace of refused-Welcome rejoins per (group, refused device), so a
+ * reload or a manager rebuild never restarts it. Ids and times only.
+ */
+export const PROTECTED_REFUSAL_PACE_KEY_PREFIX =
+  "protected-welcome-refusal-pace:";
+
+/**
+ * FXP F-L6 (MJ-1): the e2ee bridge caches the own-device listing this long
+ * (`#protectedOwnListing`) and serves the cached one when a refresh fails;
+ * an entry older than this was served after a failed fetch.
+ */
+const OWN_LISTING_FRESH_MS = 60_000;
+
+/**
+ * FXP F-L6 (m-b, MJ-1): the refreshes on which a refused Welcome's join
+ * block may lift (every grant paced by the persisted window): an open, the
+ * user's `retryNow`, a commit and a `ProtectedChannelChanged`.
+ */
+const REFUSAL_GRANT_REASONS: readonly TextRefreshReason[] = [
+  "open",
+  "manual",
+  "commit",
+  "event",
+];
 
 /**
  * F-L13: after this device's join intent went out (or its stored intent was
@@ -784,6 +826,43 @@ interface ChannelRec {
   stripped: boolean;
   /** Envelopes parked behind an owner change, in arrival order (D15). */
   parked: TextWireEnvelope[];
+  /**
+   * FXP F-L7: the parked envelopes each running confirm took out of
+   * `parked` and is replaying (by confirm token; n4), so the join still
+   * sees its Welcome as parked while a replay runs.
+   */
+  replaying: Map<number, TextWireEnvelope[]>;
+  /**
+   * FXP F-L6 (M2): the last Welcome native refused (`mls_leaf_rejected`),
+   * for (group, refused device). The loud alarm: the view shows it red
+   * (`#view`) until native accepts a Welcome or commit for that group,
+   * whatever a rejoin grant unblocks. Never blocks a join by itself.
+   */
+  welcomeRefusal: WelcomeRefusal | null;
+  /**
+   * FXP F-L7 (m3): the Welcome (group, epoch) native last discarded with
+   * `signer_leaf_missing` for the server's current group.
+   */
+  slmSeen: { groupId: string; epoch: number } | null;
+  /**
+   * FXP F-L7 (MJ-3, m3-1, residual 3): envelopes were parked while native
+   * held a same-user pending signer (an `owner_changed` commit, a
+   * `signer_leaf_missing` Welcome, and whatever queued behind them). When a
+   * state read then shows that signer gone without a confirm (a list
+   * adopted), the parked queue is replayed (`#replayIfSettled`).
+   */
+  parkedUnderPending: boolean;
+  /** FXP F-L7: a confirm is re-verifying (its own replay follows). */
+  confirmInFlight: boolean;
+  /** FXP F-L7 (MJ-3): a replay after a settled owner change is running. */
+  settledReplay: boolean;
+  /**
+   * FXP F-L6 (MJ-2): the newer Add (`ownAddedEntry().key`) a `newer_add`
+   * lifted the refusal's join block for, and that block.
+   */
+  refusalLift: { addKey: string; sticky: StickyGroupError } | null;
+  /** FXP F-L6 (MJ-2): the newer Add whose Welcome path was tried. */
+  newerAddTried: string | null;
   openCtl: AbortController | null;
   join: JoinState | null;
   /** `text_group.current_epoch` when this device last sent a join intent. */
@@ -894,6 +973,13 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     string,
     { version: number; users: string[] }
   >();
+  /**
+   * FXP F-L6 (M1a): the in-memory copy of each channel's refused-Welcome
+   * pace (used when the store write failed; merged with the store copy).
+   */
+  readonly #refusalPaceMem = new Map<string, RefusalPaceEntry[]>();
+  /** FXP F-L7 (n4): the last confirm replay token. */
+  #replayTokens = 0;
   /** In-flight decrypts keyed by `id:live` (W4b audit L2). */
   readonly #decrypting = new Set<string>();
   /** Final message views (cache restore re-requests re-emit these). */
@@ -2044,11 +2130,33 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     // D15: re-run GET .../seats + _seat_list_verify, then reprocess. FXF:
     // of the parked Welcomes only the latest for the server's current
     // group is; the rest are acked and dropped, never replayed.
-    await this.refresh(channelId, "owner_confirmed");
+    rec.confirmInFlight = true;
+    try {
+      await this.refresh(channelId, "owner_confirmed");
+    } finally {
+      rec.confirmInFlight = false;
+    }
+    await this.#replayParked(rec);
+    // FXF: a join waiting on a parked Welcome looks again within a step.
+    this.#resetJoinBackoff(rec, "confirm");
+    this.#emit(rec);
+  }
+
+  /**
+   * D15 replay of the parked envelopes: a confirm's, or (FXP MJ-3) an owner
+   * change native settled without one (`#replayIfSettled`).
+   */
+  async #replayParked(rec: ChannelRec): Promise<boolean> {
+    rec.parkedUnderPending = false;
+    let reparked = false;
     const { replay: parked, dropped } = parkedReplay(
       rec.parked.splice(0),
       rec.serverGroup?.group_id ?? null,
     );
+    // FXP F-L7: until the replay settles the join reads its Welcome as
+    // still parked (no intent races the Welcome being replayed).
+    const token = ++this.#replayTokens;
+    rec.replaying.set(token, parked);
     await this.#enqueue(rec.id, async () => {
       if (dropped.length > 0) {
         this.#log("info", "stale parked welcomes dropped", {
@@ -2063,13 +2171,14 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         if (r === "parked") {
           // Re-parked (a later owner change): keep the rest behind it.
           rec.parked.push(...parked.slice(i + 1));
+          reparked = true;
           return;
         }
       }
+    }).finally(() => {
+      rec.replaying.delete(token);
     });
-    // FXF: a join waiting on a parked Welcome looks again within a step.
-    this.#resetJoinBackoff(rec, "confirm");
-    this.#emit(rec);
+    return reparked;
   }
 
   async recreateGroup(channelId: string): Promise<void> {
@@ -2171,7 +2280,10 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       }
     }
     await this.#ensureOwnPins(false);
-    let pinRetried = false;
+    // Devices pinned in this pass (`pinRetryKey`), and whether a refused
+    // Welcome was already processed once more after its pin (MJ-1).
+    const pinned = new Set<string>();
+    let rerun = false;
     for (;;) {
       let out: TextProcessOutcome;
       try {
@@ -2181,19 +2293,77 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           catchUpTip,
         });
       } catch (err) {
-        const verdict = classifyTextEnvelopeError(err);
+        let verdict = classifyTextEnvelopeError(err);
         const native = nativeErrorOf(err);
         if (
           verdict.action === "pin_identities_retry" &&
-          !pinRetried &&
-          native?.type === "identity_pin_required"
+          native?.type === "identity_pin_required" &&
+          pinRetryAllowed(wire.content_type, pinned, native)
         ) {
-          // D18: pin that user's listing and retry ONCE.
-          pinRetried = true;
+          // D18: pin that user's listing and retry: a commit ONCE (D28), a
+          // Welcome once per device native names (FXP F-L6: one unpinned
+          // leaf per refusal; a device named twice ends the pass).
+          pinned.add(pinRetryKey(native));
           await this.#pinFor(native.user_id, [native.device_id]);
           continue;
         }
         const rec = laneRec ?? this.#recForGroup(wire.group_id);
+        // FXP F-L7: a Welcome for the server's current group whose list
+        // signer holds no leaf, while native holds a pending signer, waits
+        // for that confirm (native's step 8 reads the HELD list; the pending
+        // signer's leaf is the one the roster holds). Parked, unacked and
+        // not counted toward 6c: a discard would rejoin, and members would
+        // evict and re-add this device for a Welcome the confirm admits.
+        // Native's state is re-read here (in the lane), never assumed. MJ-3:
+        // only a same-user pending signer parks it (the one a confirm can
+        // settle); another user's keeps the S1 handling (6c, locked notice).
+        if (
+          rec &&
+          verdict.action === "signer_leaf_missing_retry" &&
+          wire.content_type === "mls_welcome" &&
+          rec.serverGroup?.group_id === wire.group_id
+        ) {
+          rec.slmSeen = { groupId: wire.group_id, epoch: wire.epoch };
+          await this.#readStateDirect(rec);
+          if (this.#ownerChangePending(rec)) {
+            this.#log("info", "welcome waits for the owner change", ids);
+            verdict = { ack: false, action: "park_owner_change" };
+            rec.parkedUnderPending = true;
+          }
+        }
+        // FXP F-L6 (MJ-1): `unknown_identity` is native's spent pin budget
+        // for this (group, epoch, device), never a verdict on the device.
+        // The refused device is pinned once now; when its listing answered
+        // (pinned, already pinned or not listed: the pin call does not say
+        // which), `_process` runs once more in this pass and native decides.
+        const refused = welcomeRefusalOf(err, wire);
+        if (
+          refused !== null &&
+          refused.reason === "unknown_identity" &&
+          !rerun &&
+          (await this.#pinFor(refused.userId, [refused.deviceId])) ===
+            "answered"
+        ) {
+          rerun = true;
+          this.#log("info", "refused welcome processed once more", ids);
+          continue;
+        }
+        // FXP F-L6: a refused Welcome is the loud alarm (M2) and the source
+        // of its paced rejoin (M1), persisted with its pace (m-a).
+        if (rec && refused) {
+          this.#noteRefusal(rec, {
+            ...refused,
+            retryable: refusalRetryable(refused.reason),
+          });
+        }
+        if (
+          rec &&
+          verdict.action === "park_owner_change" &&
+          native?.type === "owner_changed" &&
+          native.same_user
+        ) {
+          rec.parkedUnderPending = true;
+        }
         const tag = viewTagOf(err);
         this.#log("warn", "process failed", { ...ids, type: tag });
         this.#recordGroupError(rec, verdict.groupError, tag, wire.group_id);
@@ -2411,10 +2581,37 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         atMs: now,
       });
     }
+    // FXP F-L6 (M2): native joined a group by Welcome, or accepted a
+    // Welcome or commit of the refused group: the refusal alarm is over.
+    // For the refused group the join block its sticky tag held ends too (it
+    // came from a Welcome, never from a group held; another group's sticky
+    // tag keeps the X#1 rule).
+    const refusal = rec.welcomeRefusal;
+    if (
+      refusal !== null &&
+      (out.kind === "welcome_joined" || refusal.groupId === out.group_id)
+    ) {
+      rec.welcomeRefusal = null;
+      const sticky = rec.stickyGroupError;
+      if (
+        sticky !== null &&
+        sticky.tag === "mls_leaf_rejected" &&
+        sticky.groupId === out.group_id
+      ) {
+        rec.stickyGroupError = null;
+      }
+    }
     if (out.kind === "welcome_joined") {
       this.#resetLeafMissing(rec, "joined");
       rec.welcomeRetriesExhausted = false;
       rec.recreateAvailable = false;
+      rec.slmSeen = null;
+      rec.refusalLift = null;
+      rec.newerAddTried = null;
+      // FXP F-L6 (m-c): the refused devices' pace of that group starts over.
+      if (this.#refusalPaces(rec).some((p) => p.groupId === out.group_id)) {
+        this.#writePaces(rec, null, out.group_id);
+      }
       // (f) Joined: a recorded capacity refusal is over.
       rec.capacity = null;
       const js = rec.join;
@@ -2767,6 +2964,13 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       this.#admitStored(rec, g);
     }
     const seated = n.self_seated && n.seat_list?.seats.includes(self) === true;
+    // FXP F-L6: the alarm survives a reload (m-a); an open, a retryNow, a
+    // commit or an event refresh may lift a refused Welcome's join block
+    // (m-b, MJ-1), every grant under the persisted pace.
+    this.#restoreRefusal(rec);
+    if (REFUSAL_GRANT_REASONS.includes(reason)) {
+      this.#refusalRejoin(rec, reason);
+    }
     // Joining the server's older group would only answer ChannelMismatch.
     // S2 (f): after a capacity refusal only an open or a
     // `ProtectedChannelChanged` (which clears it) joins again. S2-D28:
@@ -2981,6 +3185,9 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     if (n.group_id === g.group_id && n.state === "poisoned") {
       throw clientFailure("poisoned");
     }
+    if (this.#parkUnsettleable(rec, g.group_id)) {
+      throw this.#endUnsettleableJoin(rec, g.group_id);
+    }
     if (this.#joinFailedVerified(rec, g.group_id)) {
       throw clientFailure("join_failed");
     }
@@ -3000,15 +3207,25 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       // owner-change confirm (D15). Its Add is pending: no re-broadcast and
       // no rejoin (members would evict and re-add this device each time)
       // until the confirm resolves it or the server's group moves on.
+      // FXP m3-1: only while that owner change can still settle it (a
+      // same-user pending signer) or a replay of it runs. FXP m4-1: with
+      // neither, nothing this device can do settles the park, and an intent
+      // would only have members evict and re-add it for a Welcome that
+      // parks behind the same head: the join ends loudly instead.
       if (welcomeParkedFor(rec.parked, g.group_id)) {
-        if (await this.#joinWait(js, joinRebroadcastDelayMs(js.backoff++))) {
-          return;
+        if (this.#ownerChangePending(rec) || rec.replaying.size > 0) {
+          if (await this.#joinWait(js, joinRebroadcastDelayMs(js.backoff++))) {
+            return;
+          }
+          if (js.cancelled) return;
+          const next = await this.#joinRecheck(rec);
+          if (next === null) return;
+          g = next;
+          continue;
         }
-        if (js.cancelled) return;
-        const next = await this.#joinRecheck(rec);
-        if (next === null) return;
-        g = next;
-        continue;
+        if (this.#parkUnsettleable(rec, g.group_id)) {
+          throw this.#endUnsettleableJoin(rec, g.group_id);
+        }
       }
       // W4d X#6 / S2-D29, before EVERY `_join`: re-Added at/after our last
       // intent means a Welcome is due, and another intent would read as a
@@ -3041,6 +3258,12 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           if (step === "joined" || js.cancelled) return;
           rec.welcomeDone = added.key;
           pathRan = true;
+          // FXP F-L6 (MJ-2): a newer Add's path ended without a join.
+          this.#endNewerAdd(rec, added.key);
+          // FXP F-L6: native refused that stored Welcome (e.g. on a reload):
+          // its one rejoin per open may start here (`#refusalRejoin`), else
+          // the recheck below ends the join on the sticky refusal.
+          this.#refusalRejoin(rec, "stored");
           // FXF: a parked Welcome is that Add's path too; the wait above
           // holds the rejoin until the confirm resolves it.
           this.#log(
@@ -3053,6 +3276,27 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         }
         if (js.cancelled) return;
         // A held group or a verified failure (the 6c budget) ends it here.
+        const next = await this.#joinRecheck(rec);
+        if (next === null) return;
+        g = next;
+        continue;
+      }
+      // FXP F-L7: this device's Welcome waits on an owner change (parked or
+      // being replayed by a confirm, or an Add of this device while the
+      // change is pending and an intent of this device is outstanding): no
+      // intent, which members would answer by evicting and re-adding this
+      // device. It ends when the confirm resolves it, or the server's group
+      // moves on; while the user declines, the join waits on the backoff.
+      if (this.#ownerChangeHoldsIntent(rec, g)) {
+        pathRan = false;
+        this.#log("info", "join intent held: an owner change is pending", {
+          channelId: rec.id,
+          groupId: g.group_id,
+        });
+        if (await this.#joinWait(js, joinRebroadcastDelayMs(js.backoff++))) {
+          return;
+        }
+        if (js.cancelled) return;
         const next = await this.#joinRecheck(rec);
         if (next === null) return;
         g = next;
@@ -3074,6 +3318,16 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         });
         if (await this.#joinWait(js, hold)) return;
         if (js.cancelled) return;
+        const next = await this.#joinRecheck(rec);
+        if (next === null) return;
+        g = next;
+        continue;
+      }
+      // FXP MJ-2b: no intent ever leaves under a newer-Add lift: its path
+      // did not run here, so the block is back and that Add is judged under
+      // the refused device's pace (a grant is counted, else join_failed).
+      if (rec.refusalLift !== null) {
+        this.#endNewerAdd(rec, rec.refusalLift.addKey);
         const next = await this.#joinRecheck(rec);
         if (next === null) return;
         g = next;
@@ -3130,6 +3384,24 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         ownAddedEntry(g, self, dev)?.key ?? null,
       );
       if (pre === "joined") return;
+      if (pre === "held") {
+        // FXP F-L7: the Welcome parked (or the owner change became pending)
+        // while this intent was minted: not posted; a backoff step, then
+        // the loop's hold takes over (never a tight re-mint).
+        this.#log(
+          "info",
+          "join intent not posted: an owner change is pending",
+          { channelId: rec.id, groupId: gid },
+        );
+        if (await this.#joinWait(js, joinRebroadcastDelayMs(js.backoff++))) {
+          return;
+        }
+        if (js.cancelled) return;
+        const again = await this.#joinRecheck(rec);
+        if (again === null) return;
+        g = again;
+        continue;
+      }
       if (pre !== "post" && pre !== "unknown") {
         // An Add of this device appeared: its Welcome path, not an intent.
         this.#log("info", "join intent not posted: an Add landed", {
@@ -3224,13 +3496,17 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    * A group: an Add of this device appeared since `addedKey` (the Add the
    * run last read), so the intent would read as a rejoin. "unknown": the
    * GET failed (no POST this round: a skipped intent costs a backoff step,
-   * a racing one can poison the device). "post": send it.
+   * a racing one can poison the device). "held" (FXP F-L7): this device's
+   * Welcome now waits on an owner change (`#ownerChangeHoldsIntent`, read
+   * on the fresh state and group). "post": send it.
    */
   async #beforeIntentPost(
     rec: ChannelRec,
     gid: string,
     addedKey: string | null,
-  ): Promise<"joined" | "post" | "unknown" | ProtectedTextGroupResponse> {
+  ): Promise<
+    "joined" | "post" | "unknown" | "held" | ProtectedTextGroupResponse
+  > {
     const n = await this.#readState(rec);
     if (n && holdsCurrentGroup(n) && n.group_id === gid) return "joined";
     const r = await this.#api("GET", `/mls/channels/${rec.id}/text_group`);
@@ -3239,6 +3515,12 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     this.#report(rec.id, g.group_id, g.generation, "text_group");
     rec.serverGroup = g;
     this.#noteOwnIntent(rec, g);
+    if (
+      this.#ownerChangeHoldsIntent(rec, g) ||
+      this.#parkUnsettleable(rec, g.group_id)
+    ) {
+      return "held";
+    }
     const added = ownAddedEntry(
       g,
       this.#port.selfUserId,
@@ -3293,9 +3575,13 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    * Never an extra intent at once (an open joins the running join). FX-J2
    * NEW-2: an event restarts it at most once per `JOIN_EVENT_RESET_GAP_MS`
    * (`joinEventResetAllowed`); an open always does, and so does an owner
-   * change the user confirmed (FXF: a parked Welcome was replayed).
+   * change the user confirmed (FXF: a parked Welcome was replayed) or that
+   * native settled without a confirm (FXP MJ-3, `settled`).
    */
-  #resetJoinBackoff(rec: ChannelRec, why: "open" | "event" | "confirm"): void {
+  #resetJoinBackoff(
+    rec: ChannelRec,
+    why: "open" | "event" | "confirm" | "settled",
+  ): void {
     const js = rec.join;
     if (!js) return;
     if (why === "event") {
@@ -3396,6 +3682,9 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     if (n && n.group_id === g.group_id && n.state === "poisoned") {
       throw clientFailure("poisoned");
     }
+    if (this.#parkUnsettleable(rec, g.group_id)) {
+      throw this.#endUnsettleableJoin(rec, g.group_id);
+    }
     if (this.#joinFailedVerified(rec, g.group_id)) {
       throw clientFailure("join_failed");
     }
@@ -3414,6 +3703,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   #joinFailedVerified(rec: ChannelRec, groupId: string): boolean {
     return (
       rec.stickyGroupError?.groupId === groupId ||
+      this.#parkUnsettleable(rec, groupId) ||
       leafMissingSpent(
         rec.signerLeafMissingRetries,
         rec.signerLeafMissingOn,
@@ -3421,6 +3711,391 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         leafMissingSigner(rec.native),
       )
     );
+  }
+
+  /**
+   * FXP F-L7: an owner change awaits this device's confirm (D15): native
+   * holds a SAME-USER pending signer (`owner_pin.pending_signer`, read
+   * after every verify; MJ-3: another user's is never confirmable, so it
+   * neither parks nor holds). Native's record, never `rec.ownerChangePending`:
+   * native clears it on the confirm AND on any list it adopts, while only a
+   * confirm clears the manager's flag.
+   */
+  #ownerChangePending(rec: ChannelRec): boolean {
+    return rec.native?.owner_pin?.pending_signer?.same_user === true;
+  }
+
+  /**
+   * FXP m4-1: this device's Welcome for `groupId` is parked behind a park
+   * nothing here can settle: no same-user pending signer (a confirm's or
+   * an adopted list's replay would need one, MJ-3), no replay running and
+   * no confirm under way. Only an owner-change park starts the parked
+   * queue, so this is another user's owner change (never an honest
+   * handover: that one records no pending signer). A verified failure
+   * (`#joinFailedVerified`) while it lasts; a reload, or a same-user owner
+   * change the user confirms, ends it.
+   */
+  #parkUnsettleable(rec: ChannelRec, groupId: string): boolean {
+    return (
+      welcomeParkedFor(rec.parked, groupId) &&
+      !this.#ownerChangePending(rec) &&
+      rec.replaying.size === 0 &&
+      !rec.confirmInFlight
+    );
+  }
+
+  /**
+   * FXP m4-1: the join into `groupId` ends with no intent sent: the
+   * owner-change notice (the existing D15 copy) is shown and the join
+   * failure is verified.
+   */
+  #endUnsettleableJoin(rec: ChannelRec, groupId: string): TextFlowFailure {
+    this.#setGroupError(rec, "owner_changed", groupId);
+    this.#log("error", "join ended: welcome parked behind an owner change", {
+      channelId: rec.id,
+      groupId,
+    });
+    return clientFailure("join_failed");
+  }
+
+  /**
+   * FXP F-L7 (`joinIntentHeldByOwnerChange`, m3, MJ-3): no intent into `g`
+   * now. The `signer_leaf_missing` must be of the Welcome of this device's
+   * LATEST Add in `g` (a Welcome's epoch is its Add's epoch).
+   */
+  #ownerChangeHoldsIntent(
+    rec: ChannelRec,
+    g: ProtectedTextGroupResponse,
+  ): boolean {
+    const added = ownAddedEntry(
+      g,
+      this.#port.selfUserId,
+      this.#port.selfDeviceId,
+    );
+    const slm = rec.slmSeen;
+    return joinIntentHeldByOwnerChange({
+      welcomeReplaying: [...rec.replaying.values()].some((l) =>
+        welcomeParkedFor(l, g.group_id),
+      ),
+      welcomeParked: welcomeParkedFor(rec.parked, g.group_id),
+      slmForAdd:
+        slm !== null &&
+        added !== null &&
+        slm.groupId === g.group_id &&
+        slm.epoch === added.epoch,
+      ownerChangePending: this.#ownerChangePending(rec),
+    });
+  }
+
+  /**
+   * FXP F-L7 (MJ-3, m3-1, residual 3): native shows no same-user pending
+   * signer any more (a list was adopted without a confirm) while envelopes
+   * parked under one still wait (`parkedUnderPending`: a Welcome parked for
+   * `signer_leaf_missing`, a commit parked for a same-user `owner_changed`,
+   * or anything parked while a state read showed that signer): the whole
+   * parked queue is replayed as a confirm would (`#replayParked`, minus the
+   * native confirm) and the manager's owner-change flag is cleared. A
+   * confirm's own replay is left to the confirm (`confirmInFlight`). Runs
+   * from every state read.
+   */
+  #replayIfSettled(rec: ChannelRec): void {
+    if (rec.parked.length === 0) return;
+    if (this.#ownerChangePending(rec)) {
+      rec.parkedUnderPending = true;
+      return;
+    }
+    if (rec.settledReplay || rec.confirmInFlight || !rec.parkedUnderPending) {
+      return;
+    }
+    rec.settledReplay = true;
+    rec.ownerChangePending = false;
+    this.#log("info", "owner change settled without a confirm: replayed", {
+      channelId: rec.id,
+    });
+    // m4-5: a replay that re-parked (the owner change pending again)
+    // leaves the join backoff as it was, so a flapping signer cannot
+    // restart it on every state read.
+    let reparked = true;
+    this.#background(
+      this.#replayParked(rec)
+        .then((r) => {
+          reparked = r;
+        })
+        .finally(() => {
+          rec.settledReplay = false;
+          if (!reparked) this.#resetJoinBackoff(rec, "settled");
+          this.#emit(rec);
+        }),
+    );
+  }
+
+  /**
+   * FXP F-L6: a Welcome native refused (`mls_leaf_rejected`, sticky on its
+   * group) blocked the join. On an open, a `retryNow`, a commit or event
+   * refresh, or the Add's stored-Welcome path, `welcomeRefusalRejoin`
+   * decides (m-b; every grant is paced, M1a).
+   * - `newer_add` (MJ-2, MJ-2b): only when that newer Add's Welcome path
+   *   will run, the block lifts for that path only (no intent);
+   *   `#endNewerAdd` restores it if the path ends without a join (or the
+   *   run reaches `_join` with the lift still set), and that Add is then
+   *   judged under the same pace.
+   * - `rejoin`: the block lifts, the refused Add is done (its Welcome never
+   *   fetched again) and the run sends ONE rejoin intent; the grant is
+   *   recorded in the persisted pace.
+   * Neither clears the alarm (M2: `rec.welcomeRefusal` stays until native
+   * accepts that group). True when the block lifted.
+   */
+  #refusalRejoin(rec: ChannelRec, why: string): boolean {
+    const g = rec.serverGroup;
+    const n = rec.native;
+    const sticky = rec.stickyGroupError;
+    const refusal = rec.welcomeRefusal;
+    if (
+      g === null ||
+      n === null ||
+      sticky === null ||
+      sticky.tag !== "mls_leaf_rejected" ||
+      sticky.groupId !== g.group_id ||
+      refusal === null
+    ) {
+      return false;
+    }
+    // n1, defensive: never while native holds that group (an accepted
+    // Welcome or commit of it already cleared the refusal, `#onOutcome`).
+    if (
+      n.group_id === g.group_id &&
+      (n.state === "active" || n.state === "poisoned")
+    ) {
+      return false;
+    }
+    const own = ownAddedEntry(
+      g,
+      this.#port.selfUserId,
+      this.#port.selfDeviceId,
+    );
+    const pace = this.#refusalPace(rec, refusal);
+    // MJ-2b: that Add's Welcome path runs exactly as the join loop reads it.
+    const fromEpoch =
+      rec.joinFromEpoch ?? (n.state === "joining" && own ? own.epoch : null);
+    const step = welcomeRefusalRejoin({
+      refusal,
+      group: g,
+      ownAddEpoch: own?.epoch ?? null,
+      newerAddTried: own !== null && rec.newerAddTried === own.key,
+      newerAddPathRuns:
+        own !== null && welcomePending(own, fromEpoch, rec.welcomeDone),
+      pace,
+      nowMs: this.#port.now(),
+    });
+    // A newer Add judged here (its path cannot run) is tried.
+    if (own !== null && own.epoch > refusal.epoch && step !== "newer_add") {
+      rec.newerAddTried = own.key;
+    }
+    if (step === "none") return false;
+    // The join block lifts; the red stays from the alarm (`#shownGroupError`).
+    rec.stickyGroupError = null;
+    rec.groupError = null;
+    if (step === "newer_add" && own) {
+      rec.newerAddTried = own.key;
+      rec.refusalLift = { addKey: own.key, sticky };
+    }
+    if (step === "rejoin") {
+      this.#notePaceGrant(rec, refusal, pace);
+      // The refused Add is done: its Welcome is never fetched again.
+      if (own) rec.welcomeDone = own.key;
+    }
+    this.#log("warn", "refused welcome: join unblocked", {
+      channelId: rec.id,
+      groupId: g.group_id,
+      why,
+      step,
+      retryable: refusal.retryable,
+    });
+    this.#emit(rec);
+    return true;
+  }
+
+  /**
+   * FXP F-L6 (MJ-2): the Welcome path of the newer Add `addKey` that a
+   * `newer_add` lifted the block for ended without a join: the block is
+   * back (unless that path's own refusal set a new one), and the same
+   * Add is judged now under the refused device's pace.
+   */
+  #endNewerAdd(rec: ChannelRec, addKey: string): void {
+    const lift = rec.refusalLift;
+    if (lift === null || lift.addKey !== addKey) return;
+    rec.refusalLift = null;
+    if (rec.stickyGroupError === null) {
+      rec.stickyGroupError = lift.sticky;
+      rec.groupError = lift.sticky.tag;
+    }
+    this.#refusalRejoin(rec, "newer_add_ended");
+  }
+
+  /**
+   * FXP F-L6 (m-a): after a reload the alarm is rebuilt from the persisted
+   * refusal of the server's current group (native holds no group of it),
+   * and the join block with it (m4-3: whatever Add of this device the
+   * server shows, newer, missing or older); `#refusalRejoin` then judges
+   * it under the group's pace, never letting it through unblocked.
+   */
+  #restoreRefusal(rec: ChannelRec): void {
+    const g = rec.serverGroup;
+    const n = rec.native;
+    if (rec.welcomeRefusal !== null || g === null || n === null) return;
+    if (holdsCurrentGroup(n) && n.group_id === g.group_id) return;
+    const e = [...this.#refusalPaces(rec)]
+      .reverse()
+      .find((p) => p.groupId === g.group_id);
+    if (!e) return;
+    rec.welcomeRefusal = {
+      groupId: e.groupId,
+      epoch: e.epoch,
+      userId: e.userId,
+      deviceId: e.deviceId,
+      reason: e.reason,
+      retryable: refusalRetryable(e.reason),
+    };
+    if (rec.stickyGroupError === null) {
+      this.#setGroupError(rec, "mls_leaf_rejected", g.group_id);
+    }
+    this.#log("info", "refused welcome alarm restored", {
+      channelId: rec.id,
+      groupId: g.group_id,
+    });
+    this.#emit(rec);
+  }
+
+  #refusalPaceKey(rec: ChannelRec): string {
+    return `${PROTECTED_REFUSAL_PACE_KEY_PREFIX}${this.#port.selfUserId}:${rec.id}`;
+  }
+
+  /**
+   * FXP F-L6 (M1a, m-d): the channel's pace entries, the stored copy merged
+   * with the in-memory one (m4-2: the larger grant count and the later
+   * grant, separately, `mergeRefusalPaceEntry`).
+   */
+  #refusalPaces(rec: ChannelRec): RefusalPaceEntry[] {
+    let stored: RefusalPaceEntry[] = [];
+    try {
+      stored = parseRefusalPaces(
+        this.#port.store.get(this.#refusalPaceKey(rec)),
+      );
+    } catch {
+      stored = [];
+    }
+    const out = [...stored];
+    for (const m of this.#refusalPaceMem.get(rec.id) ?? []) {
+      const i = out.findIndex(
+        (e) =>
+          e.groupId === m.groupId &&
+          e.userId === m.userId &&
+          e.deviceId === m.deviceId,
+      );
+      if (i < 0) out.push(m);
+      else out[i] = mergeRefusalPaceEntry(out[i], m);
+    }
+    return out.slice(-REFUSAL_PACE_ENTRIES_MAX);
+  }
+
+  /**
+   * FXP F-L6 (m4-2): the pace of `refusal`'s GROUP, one per group: the most
+   * grants and the latest grant of its entries, taken separately, so never
+   * laxer than any refused device's own (a server alternating which
+   * listing it withholds buys no grant per device). Null when none. A grant
+   * stamped in the future (a clock that ran back) is clamped to now and
+   * stored so (m-c): the window runs from now, never from that time.
+   */
+  #refusalPace(rec: ChannelRec, refusal: WelcomeRefusal): RefusalPace | null {
+    const now = this.#port.now();
+    let found = false;
+    let grants = 0;
+    let atMs = 0;
+    for (const e of this.#refusalPaces(rec)) {
+      if (e.groupId !== refusal.groupId) continue;
+      let at = e.atMs;
+      if (at > now && Number.isFinite(now)) {
+        this.#writePaces(rec, { ...e, atMs: now });
+        at = now;
+      }
+      found = true;
+      grants = Math.max(grants, e.grants);
+      atMs = Math.max(atMs, at);
+    }
+    return found ? { grants, atMs } : null;
+  }
+
+  /**
+   * FXP F-L6: write `entry` in place of the same (group, device) one, or
+   * drop every entry of `dropGroup` (m-c); store first, memory always.
+   */
+  #writePaces(
+    rec: ChannelRec,
+    entry: RefusalPaceEntry | null,
+    dropGroup: string | null = null,
+  ): void {
+    const entries = this.#refusalPaces(rec).filter(
+      (p) =>
+        p.groupId !== dropGroup &&
+        !(
+          entry !== null &&
+          p.groupId === entry.groupId &&
+          p.userId === entry.userId &&
+          p.deviceId === entry.deviceId
+        ),
+    );
+    if (entry !== null) entries.push(entry);
+    const kept = entries.slice(-REFUSAL_PACE_ENTRIES_MAX);
+    let ok = false;
+    try {
+      ok = this.#port.store.set(
+        this.#refusalPaceKey(rec),
+        JSON.stringify({ v: 2, entries: kept }),
+      );
+    } catch {
+      ok = false;
+    }
+    this.#refusalPaceMem.set(rec.id, kept);
+    if (!ok) {
+      this.#log("warn", "refused welcome pace not persisted", {
+        channelId: rec.id,
+      });
+    }
+  }
+
+  /**
+   * FXP F-L6: record a refusal (the alarm) and persist it (m-a). m3-2,
+   * m4-2: the entry carries the group's pace (`#refusalPace`), so a newly
+   * refused device never buys a free grant.
+   */
+  #noteRefusal(rec: ChannelRec, refusal: WelcomeRefusal): void {
+    rec.welcomeRefusal = refusal;
+    const prior = this.#refusalPace(rec, refusal);
+    this.#writePaces(rec, {
+      groupId: refusal.groupId,
+      userId: refusal.userId,
+      deviceId: refusal.deviceId,
+      epoch: refusal.epoch,
+      reason: refusal.reason,
+      grants: prior?.grants ?? 0,
+      atMs: prior?.atMs ?? 0,
+    });
+  }
+
+  /** FXP F-L6: record a grant (M1a). */
+  #notePaceGrant(
+    rec: ChannelRec,
+    refusal: WelcomeRefusal,
+    prior: RefusalPace | null,
+  ): void {
+    this.#writePaces(rec, {
+      groupId: refusal.groupId,
+      userId: refusal.userId,
+      deviceId: refusal.deviceId,
+      epoch: refusal.epoch,
+      reason: refusal.reason,
+      ...refusalPaceAfterGrant(prior, this.#port.now()),
+    });
   }
 
   /**
@@ -4868,6 +5543,14 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         maybeUnsent: false,
         stripped: false,
         parked: [],
+        replaying: new Map(),
+        welcomeRefusal: null,
+        slmSeen: null,
+        parkedUnderPending: false,
+        confirmInFlight: false,
+        settledReplay: false,
+        refusalLift: null,
+        newerAddTried: null,
         openCtl: null,
         join: null,
         joinFromEpoch: null,
@@ -5011,6 +5694,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       } else {
         rec.rosterMismatchSinceMs = null;
       }
+      this.#replayIfSettled(rec);
     } catch (err) {
       if (isDisposed(err)) throw err;
       this.#log("warn", "state read failed", {
@@ -5021,29 +5705,50 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     return rec.native;
   }
 
-  /** D18: own devices pinned with the COMPLETE listing when it changes. */
-  async #ensureOwnPins(force: boolean): Promise<void> {
+  /**
+   * D18: own devices pinned with the COMPLETE listing when it changes.
+   * FXP F-L6 (MJ-1): resolves how it went; callers that ignore it behave as
+   * before (a failure is logged, never thrown). A listing the bridge served
+   * from its cache past its freshness (its `at`, read only if present) came
+   * after a failed fetch: `transport`, though it is still pinned as before.
+   */
+  async #ensureOwnPins(force: boolean): Promise<PinOutcome> {
     try {
-      const { hash, listing } = await this.#port.ownDeviceListing();
-      if (!force && hash === this.#ownPinsHash) return;
+      const own = await this.#port.ownDeviceListing();
+      const { hash, listing } = own;
+      if (!force && hash === this.#ownPinsHash) return "answered";
       await this.#invoke("e2ee_text_pin_own_devices", {
         userId: this.#port.selfUserId,
         devices: listing,
       });
       this.#ownPinsHash = hash;
+      const at: unknown = (own as { at?: unknown }).at;
+      return typeof at === "number" &&
+        this.#port.now() - at >= OWN_LISTING_FRESH_MS
+        ? "transport"
+        : "answered";
     } catch (err) {
       if (isDisposed(err)) throw err;
       this.#log("warn", "own device pin failed", { type: viewTagOf(err) });
+      return pinFailureOutcome(err);
     }
   }
 
-  /** D18: pin a user's devices (own user: the own-device listing). */
-  async #pinFor(userId: string, deviceIds: string[]): Promise<void> {
+  /**
+   * D18: pin a user's devices (own user: the own-device listing). FXP F-L6
+   * (MJ-1): resolves how it went: `answered` once the listing reached
+   * native (the call returns only NEW pins, so "already pinned" and "not
+   * listed" look alike; only a `_process` re-run tells), else
+   * `pinFailureOutcome`. Callers that ignore it behave as before.
+   */
+  async #pinFor(userId: string, deviceIds: string[]): Promise<PinOutcome> {
     if (userId === this.#port.selfUserId) return this.#ensureOwnPins(true);
     try {
       await this.#port.pinCallIdentities(userId, deviceIds);
+      return "answered";
     } catch (err) {
       this.#log("warn", "identity pin failed", { type: viewTagOf(err) });
+      return pinFailureOutcome(err);
     }
   }
 
@@ -5058,11 +5763,24 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     }
   }
 
+  /**
+   * FXP F-L6 (M2): the view's `groupError`. A refused Welcome's alarm
+   * (`rec.welcomeRefusal`) shows as the loud `mls_leaf_rejected` until
+   * native accepts that group, even after a rejoin grant cleared the join
+   * block; only another sticky loud tag (the X#1 record) is shown instead.
+   */
+  #shownGroupError(rec: ChannelRec): ViewErrorTag | null {
+    if (rec.welcomeRefusal === null || rec.stickyGroupError !== null) {
+      return rec.groupError;
+    }
+    return "mls_leaf_rejected";
+  }
+
   #view(rec: ChannelRec): ProtectedChannelView {
     return {
       channelId: rec.id,
       seatListError: rec.seatListError,
-      groupError: rec.groupError,
+      groupError: this.#shownGroupError(rec),
       native: rec.native,
       serverGroup: rec.serverGroup,
       seats: rec.seats,

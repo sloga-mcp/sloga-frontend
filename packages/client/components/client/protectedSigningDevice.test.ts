@@ -88,7 +88,10 @@ test("FXU signingDeviceOf: any other device of the owner, or another user, is no
 });
 
 test("FXU signingDeviceOf: false whenever the manager would not re-create (not poisoned, another or no server group, outdated, flag stripped)", () => {
-  for (const state of ["active", "joining", "left", "none", "", undefined]) {
+  // FXP F-L6: `joining`, `left` and `none` (no group held) are no longer
+  // false but the no_group role (see the FXP test below); every other
+  // state the D21 block does not re-create from stays false.
+  for (const state of ["active", "", undefined]) {
     assert.equal(
       signingDeviceOf(signerShield({ state }), SELF),
       false,
@@ -265,5 +268,44 @@ test("FXU drift tripwire: the manager's D21 successor block still reads the cond
       l.signer_device_id === this.#port.selfDeviceId
     );
   }`),
+  );
+});
+
+test("FXP F-L6 signingDeviceOf: a device whose native holds no group (joining, left, none) has the no_group role whoever signed the list, even outdated; holding the group (active) keeps false, the D21 device true; a stripped flag or no view stays false", () => {
+  for (const state of ["joining", "left", "none"]) {
+    for (const self of [
+      SELF,
+      { userId: "U1", deviceId: "D2" },
+      { userId: "U9", deviceId: "D9" },
+      { userId: null, deviceId: null },
+    ]) {
+      assert.equal(
+        signingDeviceOf(signerShield({ state, group_id: null }), self),
+        "no_group",
+        `${state} ${String(self.deviceId)}`,
+      );
+    }
+    assert.equal(
+      signingDeviceOf(signerShield({ state }, { serverGroup: null }), SELF),
+      "no_group",
+      `${state}, no server group`,
+    );
+    assert.equal(
+      signingDeviceOf(signerShield({ state }, { clientOutdated: 3 }), SELF),
+      "no_group",
+      `${state}, outdated: still no group`,
+    );
+    const stripped = {
+      ...signerShield({ state }),
+      serverProtected: false,
+    } as unknown as Shield;
+    assert.equal(signingDeviceOf(stripped, SELF), false, `${state}, stripped`);
+  }
+  assert.equal(signingDeviceOf(signerShield({ state: "active" }), SELF), false);
+  assert.equal(signingDeviceOf(signerShield(), SELF), true);
+  assert.equal(
+    signingDeviceOf(signerShield({}, { native: null }), SELF),
+    false,
+    "no native state",
   );
 });
