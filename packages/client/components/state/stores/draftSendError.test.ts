@@ -21,9 +21,12 @@ import { pathToFileURL } from "node:url";
 const override = process.env.DRAFT_SEND_ERROR_UNDER_TEST;
 const {
   DM_PAUSED_SEND_ERROR,
+  FIRST_FILE_NEEDS_TEXT_SEND_ERROR,
+  PEER_CHANGED_SIDE,
   canRetrySendAsIs,
   describeSendError,
   encryptionRequiredSendError,
+  sendRefusalSide,
 } = (await import(
   override
     ? pathToFileURL(resolve(override)).href
@@ -88,13 +91,16 @@ describe("describeSendError", () => {
 });
 
 // A send refused for not being encrypted, by the server (`EncryptionRequired`
-// with a `side`) or by the app's guard before any request
-// (`EncryptedOnlyBlockedError` with a `reason`). The row needs the side for
-// its copy and must not offer to send the same message again.
+// with a `side`) or by the app's guard or the encryption bridge before any
+// request (`EncryptedOnlyBlockedError` with a `reason`). The row needs the
+// side for its copy. A retry is allowed: it runs every check again, so it
+// cannot go out unencrypted where that is refused. Files waiting for a text
+// message are the one stored reason that is not retried as is.
 //
 // Known-bad control: run with `DRAFT_SEND_ERROR_UNDER_TEST` pointing at this
-// module as of d9dd3de2 and the first four specs in this block fail (the
-// fifth pins behavior that did not change).
+// module as of d9dd3de2 and the first four specs in this block fail; at the
+// FW2 send path (before the peer-changed side and the retry rule) the retry,
+// peer-changed and first-file specs fail.
 describe("encryption-required sends", () => {
   it("the server's body keeps its side, as a string or parsed", () => {
     for (const side of ["sender", "recipient", "group", "member"] as const) {
@@ -106,7 +112,7 @@ describe("encryption-required sends", () => {
           kind: "encryption-required",
           side,
         });
-        assert.equal(canRetrySendAsIs(stored), false);
+        assert.equal(sendRefusalSide(thrown), side);
       }
     }
   });
@@ -125,11 +131,29 @@ describe("encryption-required sends", () => {
         kind: "encryption-required",
         side: reason,
       });
-      assert.equal(canRetrySendAsIs(stored), false);
     }
   });
 
-  it("an unknown or missing side is still a refusal with no retry", () => {
+  it("a peer that may no longer be Encrypted-only is its own side, never recipient", () => {
+    assert.equal(PEER_CHANGED_SIDE, "peer-changed");
+    const thrown = new EncryptedOnlyBlockedError("peer-changed");
+    assert.equal(sendRefusalSide(thrown), "peer-changed");
+    const stored = describeSendError(thrown);
+    assert.equal(stored, "EncryptionRequired:peer-changed");
+    assert.deepEqual(encryptionRequiredSendError(stored), {
+      kind: "encryption-required",
+      side: "peer-changed",
+    });
+    assert.equal(canRetrySendAsIs(stored), true, "retried after a confirm");
+
+    // Only the app raises it: a server body naming it is not trusted as one
+    assert.equal(
+      sendRefusalSide({ type: "EncryptionRequired", side: "peer-changed" }),
+      "sender",
+    );
+  });
+
+  it("an unknown or missing side is still a refusal", () => {
     for (const thrown of [
       '{"type":"EncryptionRequired"}',
       '{"type":"EncryptionRequired","side":"device"}',
@@ -141,14 +165,38 @@ describe("encryption-required sends", () => {
         encryptionRequiredSendError(stored)?.kind,
         "encryption-required",
       );
-      assert.equal(canRetrySendAsIs(stored), false);
     }
     // A side written by a newer build
     assert.deepEqual(encryptionRequiredSendError("EncryptionRequired:later"), {
       kind: "encryption-required",
       side: "sender",
     });
-    assert.equal(canRetrySendAsIs("EncryptionRequired:later"), false);
+  });
+
+  it("every refusal for not being encrypted may be retried, and keeps its marker", () => {
+    for (const side of [
+      "sender",
+      "recipient",
+      "group",
+      "member",
+      "setup",
+      "open-app",
+      "peer-changed",
+      "later",
+    ]) {
+      const stored = `EncryptionRequired:${side}`;
+      assert.equal(canRetrySendAsIs(stored), true, stored);
+      assert.ok(encryptionRequiredSendError(stored), stored);
+    }
+  });
+
+  it("files waiting for a text message are not retried as is", () => {
+    assert.equal(FIRST_FILE_NEEDS_TEXT_SEND_ERROR, "FirstFileNeedsText");
+    assert.equal(canRetrySendAsIs(FIRST_FILE_NEEDS_TEXT_SEND_ERROR), false);
+    assert.equal(
+      encryptionRequiredSendError(FIRST_FILE_NEEDS_TEXT_SEND_ERROR),
+      undefined,
+    );
   });
 
   it("every other stored reason can be retried", () => {
@@ -182,5 +230,7 @@ describe("encryption-required sends", () => {
       describeSendError({ type: "EncryptionRequiredish", side: "sender" }),
       "The server rejected the message (EncryptionRequiredish)",
     );
+    const reasonless = new Error("peer-changed");
+    assert.equal(sendRefusalSide(reasonless), undefined);
   });
 });

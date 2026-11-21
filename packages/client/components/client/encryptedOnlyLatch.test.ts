@@ -1,7 +1,7 @@
 // Unit spec for the Encrypted-only latch. Run with Node's built-in runner
 // from packages/client:
 //   node --test --conditions=browser components/client/encryptedOnlyLatch.test.ts
-// Declared test count: 27 (the runner also exits 0 when it finds no tests at
+// Declared test count: 34 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 //
 // Focus: the storage keys and values are exact; the server saying "on" sets
@@ -9,7 +9,9 @@
 // the mismatch; only `clearLatch` clears; the latch, its time and the memory
 // of peers and groups survive a reload; a corrupted memory list reads as
 // empty; storage that is missing or throws never reaches the caller, and a
-// value this page already knows keeps holding.
+// value this page already knows keeps holding; the memory is parsed only
+// when the stored string changes; the bound session account keeps a client
+// latched whatever Ready says; confirming a changed peer forgets it.
 //
 // The module keeps state for the page's life, so a "reload" is a fresh copy
 // (`fresh`, a query-string import Node keys as a new module) over the same
@@ -484,6 +486,156 @@ test("a forget that cannot be stored holds for the session", async () => {
   store.throwSet = false;
   latch.rememberSeen(ME, "third");
   assert.deepEqual(JSON.parse(store.items.get(SEEN_KEY)!), [GROUP, "third"]);
+});
+
+test("the memory is parsed again only when the stored string changes", async () => {
+  store.items.set(SEEN_KEY, JSON.stringify([PEER]));
+  const latch = await fresh();
+
+  const parse = JSON.parse;
+  let parses = 0;
+  JSON.parse = ((...args: Parameters<typeof JSON.parse>) => {
+    parses += 1;
+    return parse(...args);
+  }) as typeof JSON.parse;
+
+  try {
+    for (let i = 0; i < 50; i++) {
+      assert.equal(latch.isSeen(ME, PEER), true);
+      assert.equal(latch.isSeen(ME, GROUP), false);
+    }
+    assert.equal(parses, 1);
+
+    // Another window writes: picked up on the next read
+    store.items.set(SEEN_KEY, JSON.stringify([GROUP]));
+    assert.equal(latch.isSeen(ME, PEER), false);
+    assert.equal(latch.isSeen(ME, GROUP), true);
+    assert.equal(parses, 2);
+
+    // A write from this page drops the cache; the next read parses it once
+    latch.rememberSeen(ME, PEER);
+    for (let i = 0; i < 10; i++) {
+      assert.equal(latch.isSeen(ME, PEER), true);
+      assert.equal(latch.isSeen(ME, GROUP), true);
+    }
+    assert.equal(parses, 3);
+  } finally {
+    JSON.parse = parse;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The bound session account
+// ---------------------------------------------------------------------------
+
+test("unbound, a client reads the Ready account only", async () => {
+  const latch = await fresh();
+  assert.equal(latch.latchAccountId(ME), ME);
+  assert.equal(latch.latchAccountId(undefined), undefined);
+  assert.equal(latch.latchAccountId(""), undefined);
+  assert.equal(latch.latchedForClient(ME), false);
+
+  latch.setLatch(ME, 1000);
+  assert.equal(latch.latchedForClient(ME), true);
+  assert.equal(latch.latchedForClient(OTHER), false);
+  assert.equal(latch.latchedForClient(undefined), false);
+});
+
+test("a latched session account holds with a missing or different Ready id", async () => {
+  const latch = await fresh();
+  latch.setLatch(ME, 1000);
+  latch.bindLatchAccount(ME);
+
+  assert.equal(latch.latchedForClient(ME), true);
+  assert.equal(latch.latchedForClient(undefined), true);
+  assert.equal(latch.latchedForClient(""), true);
+  assert.equal(latch.latchedForClient(OTHER), true);
+
+  // Memory and latch keys follow the session account, not the Ready id
+  assert.equal(latch.latchAccountId(undefined), ME);
+  assert.equal(latch.latchAccountId(OTHER), ME);
+});
+
+test("either account latched is enough", async () => {
+  const latch = await fresh();
+  latch.bindLatchAccount(ME);
+  assert.equal(latch.latchedForClient(OTHER), false);
+  assert.equal(latch.latchedForClient(undefined), false);
+
+  // Only the Ready account is latched
+  latch.setLatch(OTHER, 1000);
+  assert.equal(latch.latchedForClient(OTHER), true);
+  assert.equal(latch.latchedForClient(undefined), false);
+  assert.equal(latch.latchedForClient(ME), false);
+
+  latch.clearLatch(OTHER);
+  latch.setLatch(ME, 2000);
+  assert.equal(latch.latchedForClient(OTHER), true);
+});
+
+test("binding follows sign-in and sign-out, and a computation re-runs on it", async () => {
+  const latch = await fresh();
+  latch.setLatch(ME, 1000);
+  const runs: string[] = [];
+
+  const dispose = createRoot((dispose) => {
+    createComputed(() => {
+      runs.push(
+        `${latch.latchAccountId(undefined) ?? "-"}:` +
+          `${latch.latchedForClient(undefined) ? "on" : "off"}`,
+      );
+    });
+    return dispose;
+  });
+
+  latch.bindLatchAccount(ME);
+  latch.bindLatchAccount(ME);
+  latch.bindLatchAccount(OTHER);
+  latch.bindLatchAccount(undefined);
+  latch.bindLatchAccount("");
+  dispose();
+
+  assert.deepEqual(runs, ["-:off", `${ME}:on`, `${OTHER}:off`, "-:off"]);
+  assert.equal(latch.latchAccountId(OTHER), OTHER);
+  // Binding stores nothing
+  assert.deepEqual([...store.items.keys()].sort(), [AT_KEY, LATCH_KEY].sort());
+});
+
+test("confirmPeerChanged forgets the peer for the client's account only", async () => {
+  const latch = await fresh();
+  latch.rememberSeen(ME, PEER);
+  latch.rememberSeen(ME, GROUP);
+  latch.rememberSeen(OTHER, PEER);
+
+  // Bound: the session account's memory, whatever Ready said
+  latch.bindLatchAccount(ME);
+  latch.confirmPeerChanged(PEER, OTHER);
+  assert.equal(latch.isSeen(ME, PEER), false);
+  assert.equal(latch.isSeen(ME, GROUP), true);
+  assert.equal(latch.isSeen(OTHER, PEER), true);
+  assert.deepEqual(JSON.parse(store.items.get(SEEN_KEY)!), [GROUP]);
+
+  // Unbound: the Ready account's
+  latch.bindLatchAccount(undefined);
+  latch.confirmPeerChanged(PEER, OTHER);
+  assert.equal(latch.isSeen(OTHER, PEER), false);
+
+  // Nobody to key it by: nothing happens
+  latch.rememberSeen(ME, PEER);
+  latch.confirmPeerChanged(PEER);
+  assert.equal(latch.isSeen(ME, PEER), true);
+});
+
+test("confirmPeerChanged does nothing while the client is latched", async () => {
+  const latch = await fresh();
+  latch.rememberSeen(ME, PEER);
+  latch.setLatch(ME, 1000);
+  latch.bindLatchAccount(ME);
+
+  latch.confirmPeerChanged(PEER, ME);
+  latch.confirmPeerChanged(PEER, undefined);
+  latch.confirmPeerChanged(PEER, OTHER);
+  assert.equal(latch.isSeen(ME, PEER), true);
 });
 
 // ---------------------------------------------------------------------------

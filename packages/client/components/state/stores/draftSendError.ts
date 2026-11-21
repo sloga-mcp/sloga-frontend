@@ -1,6 +1,7 @@
 import {
-  ENCRYPTION_REQUIRED_FALLBACK_SIDE,
   type EncryptionRequiredSide,
+  ENCRYPTED_ONLY_BLOCKED_ERROR_NAME,
+  ENCRYPTION_REQUIRED_FALLBACK_SIDE,
   encryptionRequiredSide,
   isEncryptionRequiredSide,
 } from "../../client/apiErrorType.ts";
@@ -18,6 +19,13 @@ import {
 export const DM_PAUSED_SEND_ERROR = "DirectMessagesPaused";
 
 /**
+ * Outbox entry `error` for files that wait for a text message: the first
+ * message of a chat that a text message would encrypt. The same string as
+ * `FIRST_FILE_NEEDS_TEXT_SEND_ERROR` in `./Draft.ts`.
+ */
+export const FIRST_FILE_NEEDS_TEXT_SEND_ERROR = "FirstFileNeedsText";
+
+/**
  * Start of the outbox entry `error` for a send refused because it was not
  * encrypted. The side follows, as in `EncryptionRequired:recipient`. Read
  * it back with `encryptionRequiredSendError`.
@@ -25,12 +33,41 @@ export const DM_PAUSED_SEND_ERROR = "DirectMessagesPaused";
 export const ENCRYPTION_REQUIRED_SEND_ERROR_PREFIX = "EncryptionRequired:";
 
 /**
+ * The app's own refusal for a peer who was once Encrypted-only and no
+ * longer says so. Only the app raises it, never the server, and it is told
+ * apart from `recipient`: the user may confirm and send.
+ */
+export const PEER_CHANGED_SIDE = "peer-changed";
+
+/** Why a send was refused for not being encrypted, as stored. */
+export type SendRefusalSide = EncryptionRequiredSide | typeof PEER_CHANGED_SIDE;
+
+/**
  * A send refused because it was not encrypted, by the server or by the
  * app's own guard before any request
  */
 export interface EncryptionRequiredSendError {
   kind: "encryption-required";
-  side: EncryptionRequiredSide;
+  side: SendRefusalSide;
+}
+
+/**
+ * Whether a thrown value refuses a send for not being encrypted, and why.
+ * The peer-changed refusal is read here, before `encryptionRequiredSide`,
+ * which does not know it and would read it as another side.
+ * @param error Thrown value
+ * @returns The side, or undefined for any other error
+ */
+export function sendRefusalSide(error: unknown): SendRefusalSide | undefined {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { name?: unknown }).name === ENCRYPTED_ONLY_BLOCKED_ERROR_NAME &&
+    (error as { reason?: unknown }).reason === PEER_CHANGED_SIDE
+  ) {
+    return PEER_CHANGED_SIDE;
+  }
+  return encryptionRequiredSide(error);
 }
 
 /**
@@ -42,7 +79,7 @@ export interface EncryptionRequiredSendError {
 export function describeSendError(error: unknown): string {
   // Before the message check: the guard's error carries only its reason as
   // the message, which is not text for a person
-  const side = encryptionRequiredSide(error);
+  const side = sendRefusalSide(error);
   if (side) return ENCRYPTION_REQUIRED_SEND_ERROR_PREFIX + side;
 
   if (error instanceof Error && error.message) return error.message;
@@ -87,18 +124,21 @@ export function encryptionRequiredSendError(
   const side = stored.slice(ENCRYPTION_REQUIRED_SEND_ERROR_PREFIX.length);
   return {
     kind: "encryption-required",
-    side: isEncryptionRequiredSide(side)
-      ? side
-      : ENCRYPTION_REQUIRED_FALLBACK_SIDE,
+    side:
+      side === PEER_CHANGED_SIDE || isEncryptionRequiredSide(side)
+        ? side
+        : ENCRYPTION_REQUIRED_FALLBACK_SIDE,
   };
 }
 
 /**
- * Whether a failed entry may be sent again unchanged. False for a send
- * refused for not being encrypted: the same send is refused again, so the
- * row must not offer a plain retry.
+ * Whether a failed entry may be sent again unchanged. False only for files
+ * that wait for a text message: the same send is refused until text is
+ * added. True for a send refused for not being encrypted: a retry runs
+ * every check again and cannot go out unencrypted where that is refused,
+ * and the entry keeps its marker so the row can say why.
  * @param stored The entry's `error`
  */
 export function canRetrySendAsIs(stored: string | undefined): boolean {
-  return encryptionRequiredSendError(stored) === undefined;
+  return stored !== FIRST_FILE_NEEDS_TEXT_SEND_ERROR;
 }

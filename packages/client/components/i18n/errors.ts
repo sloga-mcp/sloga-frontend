@@ -2,7 +2,10 @@ import { useLingui } from "@lingui-solid/solid/macro";
 import { i18n } from "@lingui/core";
 import { API } from "stoat.js";
 
-import { encryptionRequiredSide } from "@revolt/client/apiErrorType";
+import {
+  FIRST_FILE_NEEDS_TEXT_SEND_ERROR,
+  sendRefusalSide,
+} from "@revolt/state/stores/draftSendError";
 
 import { databaseErrorDetail, untranslatedErrorText } from "./errorDetail";
 
@@ -48,10 +51,11 @@ export function useError() {
     }
 
     // A write refused for not being encrypted: the server's
-    // `EncryptionRequired` body, or the error the app's own guard throws
-    // before any request. Ahead of the message pass-through below, since
-    // that error's message is only its reason.
-    const encryptionSide = encryptionRequiredSide(error);
+    // `EncryptionRequired` body, or the error the app's own guard or the
+    // encryption bridge throws before any request. Ahead of the message
+    // pass-through below, since the guard's message is only its reason.
+    // The bridge's English for each side is the same text.
+    const encryptionSide = sendRefusalSide(error);
     if (encryptionSide) {
       switch (encryptionSide) {
         case "recipient":
@@ -59,17 +63,28 @@ export function useError() {
         case "sender":
           return t`You only send encrypted messages. This chat is not encrypted yet.`;
         case "group":
+          return t`This group is encrypted. Send from a device where encryption is set up.`;
         case "member":
           return t`This group is encrypted. Only people with encryption turned on can be added (up to 24).`;
         case "open-app":
           return t`Open the Sloga app to read and send encrypted chats.`;
         case "setup":
           return t`Finish setting up encryption on this device to use your chats.`;
+        case "peer-changed":
+          return t`This person may no longer use Encrypted-only chats. Confirm to send this message.`;
         default: {
           const exhaustive: never = encryptionSide;
           return exhaustive;
         }
       }
+    }
+
+    // Files that wait for a text message, thrown or stored as a marker
+    if (
+      error === FIRST_FILE_NEEDS_TEXT_SEND_ERROR ||
+      (error as { name?: unknown } | null)?.name === "FirstFileNeedsTextError"
+    ) {
+      return t`Add a message to send with your first file.`;
     }
 
     // handle Revolt API errors

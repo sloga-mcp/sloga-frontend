@@ -24,6 +24,13 @@
  *
  * Every read tracks one signal, so a read inside a Solid computation re-runs
  * when the latch or the memory changes on this page.
+ *
+ * Which account: the app binds the account of the locally stored session
+ * (`bindLatchAccount`) before its client can send. A client is latched when
+ * either that account or the one the server named in Ready is latched
+ * (`latchedForClient`), so a server that leaves the id out of Ready, or names
+ * another account, cannot lift the latch. Callers key memory and latch
+ * writes with `latchAccountId`. The binding lives in memory only.
  */
 import { createSignal } from "solid-js";
 
@@ -65,8 +72,10 @@ type Mirror = {
   at: number | null;
   /** `clearLatch` could not remove the latch key; retried on reads */
   clearPending: boolean;
-  /** The last list read from or written to storage */
-  seen: string[];
+  /** The last list read from or written to storage, in stored order */
+  seen: ReadonlySet<string>;
+  /** The stored string `seen` was parsed from; `undefined` until parsed */
+  seenRaw: string | null | undefined;
   /** Ids remembered that could not be written */
   pendingSeen: Set<string>;
   /** Ids forgotten that could not be written */
@@ -82,7 +91,8 @@ function mirror(userId: string): Mirror {
       on: false,
       at: null,
       clearPending: false,
-      seen: [],
+      seen: new Set(),
+      seenRaw: undefined,
       pendingSeen: new Set(),
       pendingForget: new Set(),
     };
@@ -91,24 +101,24 @@ function mirror(userId: string): Mirror {
   return entry;
 }
 
-/** Created on first use, so loading this module does nothing. */
-let version: ReturnType<typeof createSignal<number>> | undefined;
-
-function versionSignal() {
-  return (version ??= createSignal(0));
-}
+// Created on first use, not at load: specs that bundle a stand-in for
+// solid-js load this module without ever reading it
+let versionSignal: ReturnType<typeof createSignal<number>> | undefined;
+const version = () => (versionSignal ??= createSignal(0))[0]();
+const setVersion = (next: (value: number) => number) =>
+  (versionSignal ??= createSignal(0))[1](next);
 
 /**
- * Tracked read that changes whenever a latch or the memory changes on this
- * page. Every read in this module calls it already.
+ * Tracked read that changes whenever a latch, the memory or the bound
+ * account changes on this page. Every read in this module calls it already.
  * @returns A counter
  */
 export function latchVersion(): number {
-  return versionSignal()[0]();
+  return version();
 }
 
 function changed(): void {
-  versionSignal()[1]((value) => value + 1);
+  setVersion((value) => value + 1);
 }
 
 /** `undefined` when storage is missing or the read threw. */
@@ -165,6 +175,47 @@ export function isLatched(userId: string | undefined): boolean {
   latchVersion();
   if (!userId) return false;
   return resolveLatched(userId);
+}
+
+/** The account of the locally stored session, while one is bound. */
+let boundAccount: string | undefined;
+
+/**
+ * Bind the account of the locally stored session. The app calls it before
+ * its client can send, and again with the new value on every sign-in and
+ * sign-out (`undefined` when there is no session).
+ * @param sessionUserId Account id of the stored session
+ */
+export function bindLatchAccount(sessionUserId: string | undefined): void {
+  const next = sessionUserId || undefined;
+  if (next === boundAccount) return;
+  boundAccount = next;
+  changed();
+}
+
+/**
+ * The account whose latch and memory a client uses: the bound session
+ * account, or the Ready account while nothing is bound.
+ * @param readyUserId Account id the server named in Ready, if any
+ * @returns Account id
+ */
+export function latchAccountId(
+  readyUserId: string | undefined,
+): string | undefined {
+  latchVersion();
+  return boundAccount ?? (readyUserId || undefined);
+}
+
+/**
+ * Whether a client is latched: the bound session account or the Ready
+ * account is. A Ready id that is missing, or names another account, never
+ * lifts a latched session account.
+ * @param readyUserId Account id the server named in Ready, if any
+ * @returns Whether it is latched
+ */
+export function latchedForClient(readyUserId: string | undefined): boolean {
+  latchVersion();
+  return isLatched(boundAccount) || isLatched(readyUserId);
 }
 
 /**
@@ -254,27 +305,38 @@ export function noteServerFlag(
   return resolveLatched(userId);
 }
 
-function parseSeen(raw: string | null | undefined): string[] | undefined {
-  if (raw === undefined) return undefined;
-  if (raw === null) return [];
+function parseSeen(raw: string | null): Set<string> {
+  if (raw === null) return new Set();
 
   try {
     const list: unknown = JSON.parse(raw);
-    if (!Array.isArray(list)) return [];
-    return list.filter(
-      (id): id is string => typeof id === "string" && id !== "",
+    if (!Array.isArray(list)) return new Set();
+    return new Set(
+      list.filter((id): id is string => typeof id === "string" && id !== ""),
     );
   } catch {
-    return [];
+    return new Set();
   }
+}
+
+/**
+ * Bring the stored list into the mirror. It is parsed again only when the
+ * stored string differs from the one parsed last, so a write from this page
+ * or another window is picked up. Unreadable storage keeps the last list.
+ */
+function syncSeen(userId: string): Mirror {
+  const entry = mirror(userId);
+  const raw = read(seenKey(userId));
+  if (raw !== undefined && raw !== entry.seenRaw) {
+    entry.seen = parseSeen(raw);
+    entry.seenRaw = raw;
+  }
+  return entry;
 }
 
 /** Storage (or the last known list), plus and minus what never got written. */
 function resolveSeen(userId: string): Set<string> {
-  const entry = mirror(userId);
-  const stored = parseSeen(read(seenKey(userId)));
-  if (stored) entry.seen = stored;
-
+  const entry = syncSeen(userId);
   const ids = new Set(entry.seen);
   for (const id of entry.pendingSeen) ids.add(id);
   for (const id of entry.pendingForget) ids.delete(id);
@@ -284,10 +346,11 @@ function resolveSeen(userId: string): Set<string> {
 /** Write the whole list; on success nothing is pending any more. */
 function storeSeen(userId: string, ids: Set<string>): boolean {
   const entry = mirror(userId);
-  const list = [...ids];
-  if (!write(seenKey(userId), JSON.stringify(list))) return false;
+  if (!write(seenKey(userId), JSON.stringify([...ids]))) return false;
 
-  entry.seen = list;
+  entry.seen = new Set(ids);
+  // The next read parses what was written
+  entry.seenRaw = undefined;
   entry.pendingSeen.clear();
   entry.pendingForget.clear();
   return true;
@@ -316,7 +379,10 @@ export function isSeen(
 ): boolean {
   latchVersion();
   if (!userId || !id) return false;
-  return resolveSeen(userId).has(id);
+
+  const entry = syncSeen(userId);
+  if (entry.pendingForget.has(id)) return false;
+  return entry.pendingSeen.has(id) || entry.seen.has(id);
 }
 
 /**
@@ -342,8 +408,8 @@ export function rememberSeen(
 }
 
 /**
- * Forget one peer or group. Used when the user confirms a send after that
- * peer explicitly turned the setting off.
+ * Forget one peer or group. Used when the user confirms a send to a
+ * remembered peer whose flag is no longer on (`confirmPeerChanged`).
  * @param userId Account
  * @param id Peer user id or group channel id
  */
@@ -362,4 +428,19 @@ export function forgetSeen(
   entry.pendingSeen.delete(id);
   if (!storeSeen(userId, ids)) entry.pendingForget.add(id);
   if (known) changed();
+}
+
+/**
+ * The user confirmed one send to a remembered peer whose flag is no longer
+ * on. Forgets the peer for this account, so the next send is decided as for
+ * anyone else; a peer whose flag is on again is remembered again at once.
+ * Needs no encryption, so it works on the website too. Does nothing while
+ * the client is latched: no send is waiting for a confirmation then, and
+ * the memory is kept.
+ * @param peerId Peer user id
+ * @param readyUserId Account id the server named in Ready, if any
+ */
+export function confirmPeerChanged(peerId: string, readyUserId?: string): void {
+  if (latchedForClient(readyUserId)) return;
+  forgetSeen(latchAccountId(readyUserId), peerId);
 }

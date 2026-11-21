@@ -1,7 +1,7 @@
 // Unit spec for the Encrypted-only write policy. Run with Node's built-in
 // runner from packages/client:
 //   node --test --conditions=browser components/client/encryptedOnlyPolicy.test.ts
-// Declared test count: 16 (the runner also exits 0 when it finds no tests at
+// Declared test count: 17 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 //
 // Focus: the whole input space (3456 combinations) against an expectation
@@ -123,7 +123,7 @@ const DM_PLAIN: Record<string, Decision> = {
   "- off": "allow-plain",
   "- off+": "confirm-peer-changed",
   "- absent": "allow-plain",
-  "- absent+": "block-peer",
+  "- absent+": "confirm-peer-changed",
 };
 
 /** A group message that goes out unencrypted, by latch and group. */
@@ -193,9 +193,9 @@ test("how many inputs get each decision", () => {
     "send-encrypted": 288,
     "block-open-app": 288,
     "block-setup": 288,
-    "block-peer": 252,
+    "block-peer": 192,
     "block-group": 342,
-    "confirm-peer-changed": 60,
+    "confirm-peer-changed": 120,
   });
 });
 
@@ -337,18 +337,33 @@ const NAMED: Named[] = [
     decision: "send-encrypted",
     reason: null,
   },
-  // E15: a missing field never lifts a remembered peer
+  // E15: a missing field never lifts a remembered peer; the user confirms
+  // one send
   {
     name: "latch off, remembered peer, flag absent",
     input: { peerRemembered: true, peerFlag: "absent" },
-    decision: "block-peer",
-    reason: "recipient",
+    decision: "confirm-peer-changed",
+    reason: "peer-changed",
   },
-  // E15 / D3: only an explicit off asks, and the user confirms one send
+  // E15 / D3: an explicit off asks the same way
   {
     name: "latch off, remembered peer, flag explicitly off",
     input: { peerRemembered: true, peerFlag: "off" },
     decision: "confirm-peer-changed",
+    reason: "peer-changed",
+  },
+  // The confirmation needs no encryption, so the website gets it too
+  {
+    name: "latch off, website, remembered peer, flag absent",
+    input: { peerRemembered: true, peerFlag: "absent", device: "web" },
+    decision: "confirm-peer-changed",
+    reason: "peer-changed",
+  },
+  // A remembered peer whose flag is still on is a plain recipient refusal
+  {
+    name: "latch off, remembered peer, flag on",
+    input: { peerRemembered: true, peerFlag: "on" },
+    decision: "block-peer",
     reason: "recipient",
   },
   // D3: chats that are already encrypted stay encrypted, nothing to confirm
@@ -457,7 +472,7 @@ const NAMED: Named[] = [
 ];
 
 test("the named cases", () => {
-  assert.equal(NAMED.length, 33);
+  assert.equal(NAMED.length, 35);
   for (const row of NAMED) {
     const input = { ...BASE, ...row.input };
     const decision = decidePlainWrite(input);
@@ -523,7 +538,7 @@ test("send-encrypted needs a ready device and the adapter's verdict", () => {
 });
 
 // E15: the confirmation exists for exactly one situation
-test("confirm-peer-changed is only a remembered peer who explicitly turned it off", () => {
+test("confirm-peer-changed is only a remembered peer whose flag is no longer on", () => {
   let seen = 0;
   for (const input of ALL) {
     const confirm = decidePlainWrite(input) === "confirm-peer-changed";
@@ -531,12 +546,12 @@ test("confirm-peer-changed is only a remembered peer who explicitly turned it of
       input.channel === "dm" &&
       !input.latched &&
       input.peerRemembered &&
-      input.peerFlag === "off" &&
+      input.peerFlag !== "on" &&
       !(input.encrypted && input.device === "ready");
     assert.equal(confirm, situation, JSON.stringify(input));
     if (confirm) seen += 1;
   }
-  assert.equal(seen, 60);
+  assert.equal(seen, 120);
 });
 
 test("an unknown channel or device is held to the strict side", () => {
@@ -568,7 +583,7 @@ test("every blocking decision has a reason and the others have none", () => {
   assert.deepEqual(sorted("block-open-app"), ["open-app"]);
   assert.deepEqual(sorted("block-peer"), ["recipient", "sender"]);
   assert.deepEqual(sorted("block-group"), ["group", "sender"]);
-  assert.deepEqual(sorted("confirm-peer-changed"), ["recipient"]);
+  assert.deepEqual(sorted("confirm-peer-changed"), ["peer-changed"]);
 });
 
 // P3: the same order the server refuses in
@@ -585,7 +600,35 @@ test("block reasons follow the server's order", () => {
         input.groupMarked || input.groupRemembered ? "group" : "sender",
       );
     }
+    if (decision === "confirm-peer-changed") {
+      assert.equal(reason, "peer-changed");
+    }
   }
+});
+
+// D-a: a changed peer is never reported as a recipient refusal, whatever the
+// kind of write
+test("a changed peer is refused with peer-changed for every kind, never recipient", () => {
+  let seen = 0;
+  for (const input of ALL) {
+    const changed =
+      input.channel === "dm" &&
+      !input.latched &&
+      input.peerRemembered &&
+      input.peerFlag !== "on";
+    for (const kind of ["send", ...NON_SEND_KINDS] as const) {
+      const reason = guardReason(kind, input);
+      const where = `${kind} ${JSON.stringify(input)}`;
+      if (changed) {
+        assert.equal(reason, "peer-changed", where);
+        seen += 1;
+      } else {
+        assert.notEqual(reason, "peer-changed", where);
+      }
+    }
+  }
+  // 144 such inputs (the verdict ignored), times eleven kinds
+  assert.equal(seen, 144 * 11);
 });
 
 // ---------------------------------------------------------------------------
@@ -657,11 +700,16 @@ test("named cases for kinds other than send", () => {
     assert.equal(guardReason(kind, marked), "group", kind);
   }
 
-  // E15: nothing but a send can ask for the confirmation
+  // E15: nothing but a send can ask for the confirmation, and the reason
+  // stays peer-changed
   const changed = { ...BASE, peerRemembered: true, peerFlag: "off" as const };
   assert.equal(decideForKind("send", changed), "confirm-peer-changed");
   assert.equal(decideForKind("forward", changed), "block-peer");
-  assert.equal(guardReason("schedule", changed), "recipient");
+  assert.equal(reasonFor("block-peer", changed), "peer-changed");
+  assert.equal(guardReason("schedule", changed), "peer-changed");
+  const absent = { ...changed, peerFlag: "absent" as const };
+  assert.equal(decideForKind("edit", absent), "block-peer");
+  assert.equal(guardReason("edit", absent), "peer-changed");
 
   // D17 applies to Encrypted-only conversations only: an ordinary encrypted
   // chat keeps its plain extras
@@ -693,7 +741,11 @@ test("the guard refuses an unencrypted send whatever the verdict said", () => {
   // A send still waiting for the confirmation is refused
   assert.equal(
     guardReason("send", { ...BASE, peerRemembered: true, peerFlag: "off" }),
-    "recipient",
+    "peer-changed",
+  );
+  assert.equal(
+    guardReason("send", { ...BASE, peerRemembered: true, peerFlag: "absent" }),
+    "peer-changed",
   );
   // An unencrypted send that slipped past an encrypted verdict is refused
   assert.equal(

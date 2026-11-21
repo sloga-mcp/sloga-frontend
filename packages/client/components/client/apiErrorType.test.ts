@@ -155,7 +155,11 @@ test("the errors mapper words every side, ahead of its other branches", () => {
       "You only send encrypted messages. This chat is not encrypted yet.",
     ],
     [
-      ["group", "member"],
+      ["group"],
+      "This group is encrypted. Send from a device where encryption is set up.",
+    ],
+    [
+      ["member"],
       "This group is encrypted. Only people with encryption turned on can be added (up to 24).",
     ],
     [["open-app"], "Open the Sloga app to read and send encrypted chats."],
@@ -163,9 +167,15 @@ test("the errors mapper words every side, ahead of its other branches", () => {
       ["setup"],
       "Finish setting up encryption on this device to use your chats.",
     ],
+    // The app's own refusal for a peer who may have turned the setting off;
+    // read by `sendRefusalSide`, which knows this side
+    [
+      ["peer-changed"],
+      "This person may no longer use Encrypted-only chats. Confirm to send this message.",
+    ],
   ];
 
-  const start = source.indexOf("encryptionRequiredSide(error)");
+  const start = source.indexOf("sendRefusalSide(error)");
   assert.notEqual(start, -1, "the mapper never asks for the side");
   // The API-error branch would print the type, and the message pass-through
   // would print the guard's bare reason
@@ -190,7 +200,7 @@ test("the errors mapper words every side, ahead of its other branches", () => {
   // Every side has copy, and the switch refuses to compile without one
   assert.deepEqual(
     [...named].sort(),
-    [...underTest.ENCRYPTION_REQUIRED_SIDES].sort(),
+    [...underTest.ENCRYPTION_REQUIRED_SIDES, "peer-changed"].sort(),
   );
   assert.match(block, /const exhaustive: never = encryptionSide;/);
 });

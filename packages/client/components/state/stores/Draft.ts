@@ -1,5 +1,6 @@
 import { Accessor, Setter, batch, createSignal } from "solid-js";
 
+import type { E2EEDraftFile } from "stoat.js";
 import { API, Channel, Client, Message } from "stoat.js";
 // The refusal class is read off the namespace rather than named above: the
 // Draft specs load this file against a stoat.js stand-in that exports only
@@ -19,7 +20,11 @@ import { protectedNoticeForError } from "../../client/protectedShield.ts";
 import { AbstractStore } from ".";
 import { LAYOUT_SECTIONS } from "./Layout";
 import { uploadFileChunked } from "./chunkedUpload";
-import { describeSendError } from "./draftSendError.ts";
+import {
+  canRetrySendAsIs,
+  describeSendError,
+  encryptionRequiredSendError,
+} from "./draftSendError.ts";
 import {
   isProtectedForDraft,
   setProtectedChannelResolver,
@@ -102,7 +107,90 @@ export type UnsentMessage = {
    * Count for the notice copy (seat or device cap), if any
    */
   protectedNoticeMax?: number | null;
+
+  /**
+   * Set on the files half of a split first send once its text half was
+   * accepted: how the text went out. The text is never sent again from
+   * this entry. Not kept across a reload (files are not either).
+   */
+  textWent?: "encrypted" | "plain";
 } & DraftData;
+
+/**
+ * Outbox entry `error`, and the message of the error `sendDraft` throws,
+ * for a first message that has files and no text. Nothing was sent and
+ * nothing was uploaded. Stores can't translate, so the UI shows its own
+ * copy for this marker. The same string as `draftSendError.ts`'s, which
+ * this file can't import under the Draft specs' stand-ins.
+ */
+export const FIRST_FILE_NEEDS_TEXT_SEND_ERROR = "FirstFileNeedsText";
+
+/**
+ * Thrown by `sendDraft` for a first message that has files and no text
+ */
+export class FirstFileNeedsTextError extends Error {
+  constructor() {
+    super(FIRST_FILE_NEEDS_TEXT_SEND_ERROR);
+    this.name = "FirstFileNeedsTextError";
+  }
+}
+
+/**
+ * Whether a thrown value, or an outbox entry's `error`, says the first
+ * message needs text to go with its files
+ * @param value Thrown value or stored error
+ */
+export function isFirstFileNeedsText(value: unknown): boolean {
+  if (typeof value === "string") {
+    return value === FIRST_FILE_NEEDS_TEXT_SEND_ERROR;
+  }
+  return (
+    (value as { name?: unknown } | null)?.name === "FirstFileNeedsTextError"
+  );
+}
+
+/**
+ * The adapter's first-send query, read structurally: importing the bridge
+ * type from @revolt/client would cycle. True when this send is the first
+ * message of an encryptable conversation and has files, so the text must
+ * go out first and the files after it.
+ */
+type FirstSendAdapter = {
+  willSplitFirstSend?: (
+    channel: Channel,
+    draft: { content?: string; files?: readonly unknown[] },
+  ) => boolean | Promise<boolean>;
+};
+
+/**
+ * Attachment preparation with the bridge's extra option, read structurally
+ * like `FirstSendAdapter`. `textWentPlain`: the files follow a text message
+ * of the same draft that went out unencrypted, so they are not held back
+ * for a text message.
+ */
+type PrepareAttachments = (
+  channel: Channel,
+  items: E2EEDraftFile[],
+  options?: { textWentPlain?: boolean },
+) => Promise<string[] | null>;
+
+/**
+ * Whether a send error is one the composer handles itself, so `sendDraft`
+ * throws it on as well as failing the entry: a fail-closed E2EE send, or a
+ * peer who may no longer be Encrypted-only (the composer asks to confirm).
+ * By name, to avoid a dependency cycle into @revolt/client.
+ * @param error Thrown value
+ */
+function reachesComposer(error: unknown): boolean {
+  const { name, reason } = (error ?? {}) as {
+    name?: unknown;
+    reason?: unknown;
+  };
+  return (
+    name === "E2EESendError" ||
+    (name === "EncryptedOnlyBlockedError" && reason === "peer-changed")
+  );
+}
 
 /**
  * `TextFlowFailure` client reasons the bridge only raises before the first
@@ -534,6 +622,17 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
                 msg.replies = message.replies;
               }
 
+              // A refusal for not being encrypted stays on the entry with
+              // its marker, so a reload keeps the words and sends nothing
+              // by itself
+              if (
+                typeof message.error === "string" &&
+                encryptionRequiredSendError(message.error)
+              ) {
+                msg.status = "failed";
+                msg.error = message.error;
+              }
+
               messages.push(msg);
             }
           }
@@ -622,7 +721,7 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
     channel: Channel,
     existingDraft?: DraftData,
     retryOf?: string,
-  ) {
+  ): Promise<void> {
     // Protected channels (plan D9e) are decided FIRST, from the SDK's own
     // predicate (server flag or local pin, independent of `client.e2ee`),
     // before any pop, Autumn upload or prepareDraftAttachments below
@@ -640,6 +739,45 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
       return;
     }
 
+    // The files half of a split first send (its text already went out) is
+    // never split again and never asked for text
+    const textWent = (existingDraft as Partial<UnsentMessage> | undefined)
+      ?.textWent;
+
+    // First message with files: decided here, before any upload and before
+    // attachment preparation. The text goes first and establishes the
+    // session; the files follow as a second, encrypted message.
+    if (!textWent && draft.files?.length) {
+      const adapter = client.e2ee as unknown as FirstSendAdapter | undefined;
+      let split: boolean;
+      try {
+        split = (await adapter?.willSplitFirstSend?.(channel, draft)) === true;
+      } catch (error) {
+        return this.refuseUnqueued(
+          channel.id,
+          draft,
+          error,
+          existingDraft,
+          retryOf,
+        );
+      }
+
+      if (split) {
+        // Files with no text can't establish the session: nothing is sent
+        if (!draft.content) {
+          return this.refuseUnqueued(
+            channel.id,
+            draft,
+            new FirstFileNeedsTextError(),
+            existingDraft,
+            retryOf,
+          );
+        }
+
+        return this.sendSplitFirst(client, channel, draft, retryOf);
+      }
+    }
+
     // Fail-closed E2EE gate at the shared chokepoint (composer, retrySend,
     // any future caller), BEFORE the outbox entry and BEFORE any plaintext
     // byte reaches the ordinary Autumn store. The adapter decides from
@@ -648,9 +786,14 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
     // ciphertext blobs (refs travel inside the envelope); blocked /
     // unverifiable ⇒ throws E2EESendError — never a plaintext fallback.
     let e2eeAttachments: string[] | null;
+    const e2ee = client.e2ee as
+      | (NonNullable<Client["e2ee"]> & {
+          prepareDraftAttachments: PrepareAttachments;
+        })
+      | undefined;
     try {
-      e2eeAttachments = client.e2ee
-        ? await client.e2ee.prepareDraftAttachments(
+      e2eeAttachments = e2ee
+        ? await e2ee.prepareDraftAttachments(
             channel,
             (draft.files ?? []).map((fileId) => {
               const entry = this.getFile(fileId);
@@ -660,9 +803,40 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
                   entry.uploadProgress[1](fraction),
               };
             }),
+            { textWentPlain: textWent === "plain" },
           )
         : null;
-    } catch (error) {
+
+      // The text of this split send went out encrypted, so its files go
+      // encrypted or not at all: no plain upload below
+      if (
+        textWent === "encrypted" &&
+        draft.files?.length &&
+        !e2eeAttachments?.length
+      ) {
+        throw new Error(
+          "The files were not sent: encryption for this chat could not be confirmed",
+        );
+      }
+    } catch (caught) {
+      let error = caught;
+
+      // The adapter saw only now that this is a first message with files
+      // (its split answer came before its state had loaded) and refused
+      // before any upload. With text to send first, split after all;
+      // without text it is the refusal above, in the same form.
+      const refusal = caught as { name?: unknown; kind?: unknown } | null;
+      if (
+        !textWent &&
+        refusal?.name === "E2EESendError" &&
+        refusal.kind === "first_file"
+      ) {
+        if (draft.content) {
+          return this.sendSplitFirst(client, channel, draft, retryOf);
+        }
+        error = new FirstFileNeedsTextError();
+      }
+
       // Nothing was queued or sent. A retried entry is still in the outbox
       // (retrySend only marks it "sending"), so put it back as failed
       // rather than letting the message disappear. A fresh send was popped
@@ -707,6 +881,10 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
       // Add any files if attached (plaintext path only — for an encrypted
       // conversation they were already uploaded as ciphertext blobs above)
       if (files?.length && !e2eeAttachments) {
+        // A plain upload asks the guard first: a refusal throws here,
+        // before any byte leaves, and fails the entry below
+        client.plainWriteGuard?.(channel, "upload");
+
         // TODO: allow individual files to be cancelled
         for (const fileId of files) {
           // Prepare for upload
@@ -847,12 +1025,140 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
       // A fail-closed E2EE send (peer identity change, no usable device,
       // delivery failure) must surface loudly — the message was NOT sent in
       // plaintext. Re-throw so the composer shows the explicit hard error
-      // instead of a silent "failed" outbox entry. (Name check avoids a
-      // dependency cycle into @revolt/client.)
-      if ((error as { name?: string })?.name === "E2EESendError") {
+      // instead of a silent "failed" outbox entry. So is a peer who may no
+      // longer be Encrypted-only: the composer asks to confirm, then the
+      // failed entry can be retried.
+      if (reachesComposer(error)) {
         throw error;
       }
     }
+  }
+
+  /**
+   * Refuse a send that has no outbox entry of its own yet. A retried entry
+   * is still in the outbox (retrySend only marks it "sending"), so it goes
+   * back to failed; a fresh send was popped out of the composer, so it
+   * goes back there.
+   * @param channelId Channel ID
+   * @param draft Draft being sent
+   * @param error Why it is refused
+   * @param existingDraft Outbox entry being retried
+   * @param retryOf Idempotency key of the outbox entry being retried
+   * @throws always, with `error`
+   */
+  private refuseUnqueued(
+    channelId: string,
+    draft: DraftData,
+    error: unknown,
+    existingDraft?: DraftData,
+    retryOf?: string,
+  ): never {
+    if (retryOf) this.markFailed(channelId, retryOf, error);
+    else if (!existingDraft) this.restoreUnsentDraft(channelId, draft);
+    throw error;
+  }
+
+  /**
+   * Send the first message of an encryptable conversation that has files,
+   * as two messages: the text and replies first, under their own key, then
+   * the files. The outbox shows one row for each.
+   * @param client Client
+   * @param channel Channel
+   * @param draft Draft with text and files
+   * @param retryOf Idempotency key of the outbox entry being retried
+   */
+  private async sendSplitFirst(
+    client: Client,
+    channel: Channel,
+    draft: DraftData,
+    retryOf?: string,
+  ): Promise<void> {
+    const { content, replies, files } = draft;
+    const textKey = ulid();
+    const filesKey = ulid();
+
+    this.set("outbox", channel.id, [
+      ...this.getPendingMessages(channel.id).filter(
+        (entry) => entry.idempotencyKey !== retryOf,
+      ),
+      {
+        content,
+        replies,
+        idempotencyKey: textKey,
+        status: "sending",
+      } as UnsentMessage,
+      {
+        files,
+        idempotencyKey: filesKey,
+        status: "sending",
+      } as UnsentMessage,
+    ]);
+
+    let sent: Message;
+    try {
+      sent = await channel.sendMessage({ content, replies }, textKey);
+    } catch (error) {
+      // The text did not go, so no file is uploaded. Back to one failed row
+      // holding the whole draft: a retry decides the split again.
+      const reason = describeSendError(error);
+      const pending = this.getPendingMessages(channel.id);
+      const textRowLeft = pending.some(
+        (entry) => entry.idempotencyKey === textKey,
+      );
+      this.set(
+        "outbox",
+        channel.id,
+        pending.flatMap((entry): UnsentMessage[] => {
+          if (entry.idempotencyKey === textKey) {
+            return [{ ...entry, files, status: "failed", error: reason }];
+          }
+          if (entry.idempotencyKey !== filesKey) return [entry];
+          // The text row was cancelled meanwhile: the files row fails alone
+          return textRowLeft
+            ? []
+            : [{ ...entry, status: "failed", error: reason }];
+        }),
+      );
+
+      // Same rule as a single send: an error the composer handles reaches
+      // it, anything else is a failed row
+      if (reachesComposer(error)) {
+        throw error;
+      }
+      return;
+    }
+
+    // The text was accepted: its row goes, and what is left in the outbox
+    // is files only, so no retry can send the text a second time. Whether
+    // the text went out encrypted is the adapter's answer, never a flag on
+    // the message. Not encrypted means the peer could not be reached and
+    // this account may still write plain (a refusal would have thrown
+    // above): the files then go the way they do today.
+    const textWent: UnsentMessage["textWent"] = client.e2ee?.isEncryptedMessage(
+      sent.id,
+    )
+      ? "encrypted"
+      : "plain";
+
+    let filesEntry: UnsentMessage | undefined;
+    this.set(
+      "outbox",
+      channel.id,
+      this.getPendingMessages(channel.id).flatMap((entry): UnsentMessage[] => {
+        if (entry.idempotencyKey === textKey) return [];
+        if (entry.idempotencyKey !== filesKey) return [entry];
+        filesEntry = { ...entry, textWent };
+        return [filesEntry];
+      }),
+    );
+
+    // The files row was cancelled while the text was sending
+    if (!filesEntry) return;
+
+    // Attachment preparation runs again now that the session exists. With
+    // encrypted text, anything but prepared encrypted files stops the send.
+    // With plain text, preparation is told so and does not ask for text.
+    return this.sendDraft(client, channel, filesEntry, filesKey);
   }
 
   /**
@@ -1084,6 +1390,16 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
       );
       // TODO: validation?
       if (!draft || draft.status === "sending") return;
+
+      // Files that wait for a text message: refused again until text is
+      // added, so a retry asks nothing and sends nothing. An entry refused
+      // for not being encrypted is retried like any other: sendDraft runs
+      // every check again, so the retry cannot go out unencrypted where
+      // that is refused.
+      if (!canRetrySendAsIs(draft.error)) {
+        onError?.(new FirstFileNeedsTextError());
+        return;
+      }
 
       // The entry stays in the outbox, shown as sending, until sendDraft
       // queues its replacement; a send refused before that (the E2EE gate)

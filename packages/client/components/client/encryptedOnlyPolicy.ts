@@ -9,25 +9,27 @@
  * the adapter says this send goes out encrypted AND this device is ready;
  * a device that is not ready never counts as encrypted.
  *
- * | channel      | condition                                  | decision             | reason    |
- * |--------------|--------------------------------------------|----------------------|-----------|
- * | saved        | any                                        | allow-plain          |           |
- * | server       | any                                        | allow-plain          |           |
- * | dm, group    | encrypted                                  | send-encrypted       |           |
- * | dm, group    | latch on, website                          | block-open-app       | open-app  |
- * | dm, group    | latch on, encryption not set up here       | block-setup          | setup     |
- * | dm           | latch on                                   | block-peer           | sender    |
- * | dm           | peer flag on                               | block-peer           | recipient |
- * | dm           | peer remembered, flag absent               | block-peer           | recipient |
- * | dm           | peer remembered, flag explicitly off       | confirm-peer-changed | recipient |
- * | dm           | otherwise                                  | allow-plain          |           |
- * | group        | marked or remembered (latch on or off)     | block-group          | group     |
- * | group        | latch on, not marked, not remembered       | block-group          | sender    |
- * | group        | otherwise                                  | allow-plain          |           |
+ * | channel      | condition                                  | decision             | reason       |
+ * |--------------|--------------------------------------------|----------------------|--------------|
+ * | saved        | any                                        | allow-plain          |              |
+ * | server       | any                                        | allow-plain          |              |
+ * | dm, group    | encrypted                                  | send-encrypted       |              |
+ * | dm, group    | latch on, website                          | block-open-app       | open-app     |
+ * | dm, group    | latch on, encryption not set up here       | block-setup          | setup        |
+ * | dm           | latch on                                   | block-peer           | sender       |
+ * | dm           | peer flag on                               | block-peer           | recipient    |
+ * | dm           | peer remembered, flag absent or off        | confirm-peer-changed | peer-changed |
+ * | dm           | otherwise                                  | allow-plain          |              |
+ * | group        | marked or remembered (latch on or off)     | block-group          | group        |
+ * | group        | latch on, not marked, not remembered       | block-group          | sender       |
+ * | group        | otherwise                                  | allow-plain          |              |
  *
  * The reasons match the server's refusal: a direct message is refused for
  * the sender's own setting before the recipient's, a group for its mark
- * before the sender's setting.
+ * before the sender's setting. `peer-changed` has no server side: the peer
+ * may have left the setting, and only the user can confirm one send. Only an
+ * explicit off makes the app say the peer turned it off; that notice is not
+ * this module's business.
  *
  * The server's advert (`features.e2ee.only`) is part of the input and decides
  * nothing: an absent advert, or enforcement switched off, never lifts the
@@ -66,7 +68,8 @@ export type BlockReason =
   | "recipient"
   | "group"
   | "setup"
-  | "open-app";
+  | "open-app"
+  | "peer-changed";
 
 /**
  * Where the write goes: a direct message, a group, Saved Notes, or any
@@ -140,11 +143,14 @@ export function decidePlainWrite(input: PlainWriteInput): Decision {
 
   // A direct message, and anything unknown is held to the same rules
   if (input.peerFlag === "on") return "block-peer";
-  if (input.peerRemembered) {
-    return input.peerFlag === "off" ? "confirm-peer-changed" : "block-peer";
-  }
+  if (input.peerRemembered) return "confirm-peer-changed";
 
   return "allow-plain";
+}
+
+/** A remembered peer whose flag is no longer on, with the latch off. */
+function peerChanged(input: PlainWriteInput): boolean {
+  return !input.latched && input.peerRemembered && input.peerFlag !== "on";
 }
 
 /**
@@ -152,7 +158,9 @@ export function decidePlainWrite(input: PlainWriteInput): Decision {
  * @param decision The decision
  * @param input The facts it was made from
  * @returns The reason, or `null` when the decision refuses nothing
- * (`confirm-peer-changed` refuses until the user confirmed)
+ * (`confirm-peer-changed` refuses until the user confirmed). A kind other
+ * than a send that is refused for a changed peer (`block-peer` from
+ * `decideForKind`) carries `peer-changed` too, never `recipient`.
  */
 export function reasonFor(
   decision: Decision,
@@ -167,9 +175,10 @@ export function reasonFor(
     case "block-open-app":
       return "open-app";
     case "block-peer":
-      return input.latched ? "sender" : "recipient";
+      if (input.latched) return "sender";
+      return peerChanged(input) ? "peer-changed" : "recipient";
     case "confirm-peer-changed":
-      return "recipient";
+      return "peer-changed";
     case "block-group":
       return input.groupMarked || input.groupRemembered ? "group" : "sender";
     default: {
@@ -202,7 +211,8 @@ export const NON_SEND_KINDS = (Object.keys(KINDS) as PlainWriteKind[]).filter(
  * Decide what a write of the given kind may do. A send follows the table.
  * Any other kind is `allow-plain` only where an unencrypted send would be,
  * and is otherwise blocked with the decision that send would get
- * (`block-peer` in place of the confirmation, which only a send can ask for).
+ * (`block-peer` in place of the confirmation, which only a send can ask for;
+ * its reason stays `peer-changed`).
  * @param kind What is about to be written
  * @param input The facts
  * @returns The decision; never `send-encrypted` or `confirm-peer-changed`
@@ -222,7 +232,8 @@ export function decideForKind(
  * For the plain write guard: the reason to refuse an unencrypted write of
  * any kind, or `null` to let it through. The guard only runs for a write
  * that is about to go out unencrypted, so the adapter's verdict is not
- * consulted; a send still waiting for the user's confirmation is refused.
+ * consulted; a send still waiting for the user's confirmation is refused
+ * with `peer-changed`.
  * @param kind What is about to be written
  * @param input The facts
  * @returns The reason, or `null`

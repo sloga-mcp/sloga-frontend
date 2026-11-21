@@ -397,8 +397,12 @@ const STUBS: Record<string, string> = {
     globalThis.__protectedDraftUploads = (globalThis.__protectedDraftUploads ?? 0) + 1;
     throw new Error("chunked path not under test");
   }`,
+  // Draft.ts also names the two refusal readers, taken from the real module
   "./draftSendError.ts": `export const describeSendError = (e) =>
-    "described:" + (e && e.message);`,
+    "described:" + (e && e.message);
+    export { canRetrySendAsIs, encryptionRequiredSendError } from ${JSON.stringify(
+      new URL("./draftSendError.ts", import.meta.url).href,
+    )};`,
   "../../client/protectedSendError.ts": `export * from ${JSON.stringify(
     new URL("../../client/protectedSendError.ts", import.meta.url).href,
   )};`,

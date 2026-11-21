@@ -42,10 +42,12 @@ import type {
 import {
   ProtectedChannelUnavailable,
   ProtectedFieldRefusedClient,
+  UserFlags,
 } from "stoat.js";
 
 import type { ResumeCommitRef, ResumePrefetch } from "../rtc/mlsRejoinPolicy";
 import { workerProbeResult } from "../rtc/workerProbe";
+import { ENCRYPTED_ONLY_BLOCKED_ERROR_NAME } from "./apiErrorType.ts";
 import { classifyDeviceDelete } from "./deviceDeleteClassifier.ts";
 import { nativeRejectError } from "./e2eeCallPlaneIos";
 import {
@@ -118,6 +120,20 @@ import {
   isTrustedId,
   trustEncryptedId,
 } from "./e2eeTrustedRow";
+import { buildPlainWriteInput, peerTurnedOff } from "./encryptedOnlyGuard.ts";
+import {
+  forgetSeen,
+  isSeen,
+  latchAccountId,
+  latchedForClient,
+  rememberSeen,
+} from "./encryptedOnlyLatch.ts";
+import {
+  type BlockReason,
+  type PlainWriteInput,
+  decidePlainWrite,
+  reasonFor,
+} from "./encryptedOnlyPolicy.ts";
 import {
   activeDeviceCount,
   claimIncludeFlight,
@@ -612,10 +628,68 @@ export class E2EESendError extends Error {
        *  unencrypted: nothing was sent; the user must confirm first. */
       | "group_unconfirmed"
       /** As above, with encrypted traffic for the group seen here. */
-      | "group_unestablished",
+      | "group_unestablished"
+      /** Refused because it would go out unencrypted
+       *  (`E2EEEncryptedOnlyError`). */
+      | "encrypted_only"
+      /** As above, for a peer that turned Encrypted-only off
+       *  (`E2EEPeerChangedError`). */
+      | "peer_changed"
+      /** Files for a chat that a text message has to encrypt first. */
+      | "first_file",
   ) {
     super(message);
     this.name = "E2EESendError";
+  }
+}
+
+/**
+ * What a send refused for not being encrypted says, by reason. The same
+ * English as `components/i18n/errors.ts`, which translates it.
+ */
+const ENCRYPTED_ONLY_COPY: Record<BlockReason, string> = {
+  sender: "You only send encrypted messages. This chat is not encrypted yet.",
+  recipient: "This person only accepts encrypted messages.",
+  group:
+    "This group is encrypted. Send from a device where encryption is set up.",
+  setup: "Finish setting up encryption on this device to use your chats.",
+  "open-app": "Open the Sloga app to read and send encrypted chats.",
+  "peer-changed":
+    "This person may no longer use Encrypted-only chats. Confirm to send this message.",
+};
+
+/**
+ * A send, an upload or a downgrade refused because the result would not be
+ * encrypted. Nothing was sent and no file left the device.
+ *
+ * Still an `E2EESendError` for `instanceof`, but its `name` is the one
+ * `apiErrorType.ts` reads (`encryptionRequiredSide`), so a failed message
+ * stores `reason` as its marker. A retry of that message runs every check
+ * again. A check for the name "E2EESendError" does not match it.
+ */
+export class E2EEEncryptedOnlyError extends E2EESendError {
+  /** Why it was refused; the failed message stores this. */
+  readonly reason: BlockReason;
+
+  constructor(
+    reason: BlockReason,
+    kind: "encrypted_only" | "peer_changed" = "encrypted_only",
+  ) {
+    super(ENCRYPTED_ONLY_COPY[reason], kind);
+    this.name = ENCRYPTED_ONLY_BLOCKED_ERROR_NAME;
+    this.reason = reason;
+  }
+}
+
+/**
+ * The peer was once Encrypted-only and no longer says so (the flag is
+ * missing, or an update said off). Nothing was sent. Its reason is
+ * `peer-changed`, never `recipient`. `confirmPeerChanged` in
+ * `encryptedOnlyLatch.ts` lets the next send be decided as for anyone else.
+ */
+export class E2EEPeerChangedError extends E2EEEncryptedOnlyError {
+  constructor() {
+    super("peer-changed", "peer_changed");
   }
 }
 
@@ -2124,11 +2198,30 @@ export class E2EEBridge implements E2EEAdapter {
   #splitProbed = false;
   #splitProbing = false;
 
+  /**
+   * Peers an encryption attempt found with no usable device, as
+   * "account:peer". While an entry holds, a first message with files is not
+   * split and its files are not held back for a text message, so the send
+   * goes as it did before. Not persisted. Cleared when the peer's devices
+   * change, when the chat reads as encrypted, on `ready` and on a wipe.
+   */
+  #noUsableDevice = new Set<string>();
+
   constructor(client: Client) {
     this.#client = client;
     this.#transport = createNativeTransport();
 
+    // A deleted account loses its Encrypted-only flag with the account.
+    // That is not "turned off": the peer is forgotten instead.
+    client.on("userUpdate", (user) => {
+      if ((user.flags & UserFlags.Deleted) === UserFlags.Deleted) {
+        this.#onPeerDeleted(user.id);
+      }
+    });
+
     client.on("ready", () => {
+      // Device facts about peers may be stale after any gap
+      this.#noUsableDevice.clear();
       // A new connection: its device claim has not landed yet
       this.#claimAccepted = null;
       this.#claimWaitSpent = false;
@@ -2913,10 +3006,12 @@ export class E2EEBridge implements E2EEAdapter {
             event.split_from ?? null,
           );
         } else {
+          this.#forgetNoUsableDevice(event.user_id);
           void this.#onDeviceCreate(event.user_id);
         }
         break;
       case "E2EEDeviceDelete":
+        this.#forgetNoUsableDevice(event.user_id);
         void this.#onDeviceDelete(event.user_id, event.device_id);
         break;
       case "MlsJoinRequested": {
@@ -3959,8 +4054,10 @@ export class E2EEBridge implements E2EEAdapter {
           "native",
         );
       }
+      this.#refusePlainFallback(channel);
       return null;
     }
+    this.#noteEncryptedOnly(channel, peerId);
 
     // The NATIVE layer is the SOLE authority for plaintext-vs-encrypt — the
     // webview never caches or second-guesses it (a stale cache is the
@@ -3979,7 +4076,7 @@ export class E2EEBridge implements E2EEAdapter {
         "native",
       );
     }
-    this.sendModes.set(peerId, this.#composerMode(verdict));
+    this.#setDmMode(peerId, this.#composerMode(verdict));
 
     if (verdict.mode === "peer_downgraded") {
       throw new E2EESendError(
@@ -4008,7 +4105,10 @@ export class E2EEBridge implements E2EEAdapter {
           "native",
         );
       }
-      if (!(await this.#shouldInitiate(peerId, data))) return null;
+      if (!(await this.#shouldInitiate(peerId, data))) {
+        this.#refusePlainFallback(channel);
+        return null;
+      }
       opportunistic = true;
     }
 
@@ -4041,7 +4141,11 @@ export class E2EEBridge implements E2EEAdapter {
     if (!result) {
       // Opportunistic establishment found no usable peer keys (stale or
       // spoofed advertisement) — nothing was pinned, the conversation is
-      // genuinely still plaintext. Fall through to the ordinary path.
+      // genuinely still plaintext. Fall through to the ordinary path,
+      // unless an unencrypted send is refused here. Kept for the page, so
+      // later first sends with files are not split for this peer.
+      this.#noteNoUsableDevice(peerId);
+      this.#refusePlainFallback(channel);
       return null;
     }
 
@@ -4142,6 +4246,7 @@ export class E2EEBridge implements E2EEAdapter {
   ): Promise<Message | null> {
     if (channel.type !== "Group") return null;
     const conversationId = channel.id;
+    this.#noteEncryptedOnly(channel);
 
     let verdict: SendModeVerdict;
     try {
@@ -4201,7 +4306,9 @@ export class E2EEBridge implements E2EEAdapter {
         );
       }
       // Never-encrypted group (proven, confirmed, or no E2EE account
-      // here): the ordinary plaintext path
+      // here): the ordinary plaintext path, unless an unencrypted send
+      // is refused here
+      this.#refusePlainFallback(channel);
       return null;
     }
 
@@ -5030,6 +5137,7 @@ export class E2EEBridge implements E2EEAdapter {
    * control message fans out and the sticky state clears.
    */
   async downgradeConversation(channel: Channel): Promise<void> {
+    this.#refusePlaintextExit(channel);
     const conversationId =
       channel.type === "Group" ? channel.id : this.#peerOf(channel);
     if (!conversationId) return;
@@ -5219,6 +5327,8 @@ export class E2EEBridge implements E2EEAdapter {
    * opens plaintext; declining keeps the conversation encrypted.
    */
   async confirmPeerDowngrade(channel: Channel, accept: boolean): Promise<void> {
+    // Declining keeps the conversation encrypted and is always allowed
+    if (accept) this.#refusePlaintextExit(channel);
     const conversationId =
       channel.type === "Group" ? channel.id : this.#peerOf(channel);
     if (!conversationId) return;
@@ -5733,6 +5843,7 @@ export class E2EEBridge implements E2EEAdapter {
     conversationId: string,
     expected: "unconfirmed" | "unestablished",
   ): Promise<void> {
+    this.#refusePlaintextExit(this.#groupChannel(conversationId));
     await this.#invoke<null>("e2ee_acknowledge_group_plaintext", {
       conversationId,
       expected,
@@ -5779,10 +5890,20 @@ export class E2EEBridge implements E2EEAdapter {
     // the draft path (guardSend saw a plaintext verdict) — upgrading now
     // would hard-error on attachments and orphan the upload. Text-only
     // sends upgrade; attachment sends keep the plaintext status quo.
+    // A first message with files no longer gets here while the chat could
+    // be encrypted: the draft path sends its text first
+    // (`willSplitFirstSend`) and `prepareDraftAttachments` refuses the
+    // upload otherwise.
     if (data.attachments?.length) return false;
 
-    // The peer must advertise opt-in (UI/discovery hint — see User docs)
-    if (!this.#client.users.get(peerId)?.e2eeEnabled) return false;
+    // The peer must advertise opt-in (UI/discovery hint — see User docs),
+    // or be Encrypted-only, which needs no hint
+    if (
+      !this.#client.users.get(peerId)?.e2eeEnabled &&
+      !this.#peerMustEncrypt(peerId)
+    ) {
+      return false;
+    }
 
     // Never opportunistically PROVISION an unprovisioned device here: the
     // status query below would open the engine and write the store, pre-empting
@@ -6022,7 +6143,7 @@ export class E2EEBridge implements E2EEAdapter {
     // Cached proof only, never a listing: opening history must not undo a
     // standing proof's "plaintext" [B1].
     if (isGroup) this.#writeGroupModeCached(conversationId, channel, verdict);
-    else this.sendModes.set(conversationId, this.#composerMode(verdict));
+    else this.#setDmMode(conversationId, this.#composerMode(verdict));
     // A group with no local record has no local transcript: its history is
     // the server's, exactly as for plaintext [B1].
     if (historySource(verdict) === "server") return null;
@@ -6104,6 +6225,207 @@ export class E2EEBridge implements E2EEAdapter {
     return [...channel.recipientIds.values()].find(
       (id) => id !== this.#client.user!.id,
     );
+  }
+
+  // ================================================================
+  // Encrypted-only chats: refusing what would go out unencrypted
+  // ================================================================
+
+  /** Whether this device can encrypt, from the status last read. */
+  #deviceReady(): boolean {
+    const status = this.status.get("state");
+    return !!status && status.enabled && status.published && !!status.device_id;
+  }
+
+  /** The account whose latch and memory this client reads. */
+  #latchAccount(): string | undefined {
+    return latchAccountId(this.#client.user?.id);
+  }
+
+  /**
+   * Whether a peer has to be written to encrypted whatever their opt-in
+   * hint says: their Encrypted-only flag is on, or this device remembers it
+   * on.
+   */
+  #peerMustEncrypt(peerId: string): boolean {
+    return (
+      this.#client.users.get(peerId)?.e2eeOnly === true ||
+      isSeen(this.#latchAccount(), peerId)
+    );
+  }
+
+  /** Remember a peer or a group whose Encrypted-only flag is on. */
+  #noteEncryptedOnly(channel: Channel, peerId?: string): void {
+    const account = this.#latchAccount();
+    if (channel.type === "Group") {
+      if (channel.e2eeOnly) rememberSeen(account, channel.id);
+    } else if (peerId && this.#client.users.get(peerId)?.e2eeOnly) {
+      rememberSeen(account, peerId);
+    }
+  }
+
+  /**
+   * A peer's account was deleted. Its flag went with the account, which says
+   * nothing about the peer's choice, so the peer is forgotten rather than
+   * read as having turned the setting off.
+   */
+  #onPeerDeleted(userId: string): void {
+    const account = this.#latchAccount();
+    if (!account || userId === account || userId === this.#client.user?.id) {
+      return;
+    }
+    forgetSeen(account, userId);
+    this.#forgetNoUsableDevice(userId);
+  }
+
+  /** The `#noUsableDevice` entry for a peer; none without an account. */
+  #noUsableDeviceKey(peerId: string): string | undefined {
+    const account = this.#latchAccount();
+    return account ? `${account}:${peerId}` : undefined;
+  }
+
+  /** An encryption attempt found no usable device for this peer. */
+  #noteNoUsableDevice(peerId: string): void {
+    const key = this.#noUsableDeviceKey(peerId);
+    if (key) this.#noUsableDevice.add(key);
+  }
+
+  /** The peer's devices changed, or the chat reads as encrypted. */
+  #forgetNoUsableDevice(peerId: string): void {
+    const key = this.#noUsableDeviceKey(peerId);
+    if (key) this.#noUsableDevice.delete(key);
+  }
+
+  /** Cache a direct message's send mode. "encrypt" ends a no-device note. */
+  #setDmMode(peerId: string, mode: ComposerE2EEMode): void {
+    this.sendModes.set(peerId, mode);
+    if (mode === "encrypt") this.#forgetNoUsableDevice(peerId);
+  }
+
+  /**
+   * The policy facts for a write that is about to go out unencrypted, so it
+   * never counts as encrypted. Built by the guard module, the one builder.
+   */
+  #plainFacts(channel: Channel): PlainWriteInput {
+    return { ...buildPlainWriteInput(this.#client, channel), encrypted: false };
+  }
+
+  /**
+   * Called at every point where a send or an upload is about to go out
+   * unencrypted. Returns when the policy allows that. Otherwise it throws
+   * and nothing is sent.
+   */
+  #refusePlainFallback(channel: Channel): void {
+    const facts = this.#plainFacts(channel);
+    const decision = decidePlainWrite(facts);
+    if (decision === "allow-plain") return;
+    const reason = reasonFor(decision, facts) ?? "sender";
+    if (decision === "confirm-peer-changed" || reason === "peer-changed") {
+      throw new E2EEPeerChangedError();
+    }
+    throw new E2EEEncryptedOnlyError(reason);
+  }
+
+  /**
+   * Under the latch nothing may turn a conversation unencrypted. Throws
+   * before any native call; without the latch it does nothing.
+   */
+  #refusePlaintextExit(channel: Channel | undefined): void {
+    if (!latchedForClient(this.#client.user?.id)) return;
+    let reason: BlockReason | null = null;
+    if (channel) {
+      const facts = this.#plainFacts(channel);
+      reason = reasonFor(decidePlainWrite(facts), facts);
+    }
+    throw new E2EEEncryptedOnlyError(reason ?? "sender");
+  }
+
+  /**
+   * Whether a text message to this peer would be the one that makes the
+   * chat encrypted: the chat is unencrypted so far, the peer has
+   * encryption on (or is Encrypted-only), this device can encrypt, and no
+   * attempt on this page found the peer without a usable device.
+   */
+  #firstSendEncryptable(
+    peerId: string,
+    mode: ComposerE2EEMode | undefined,
+  ): boolean {
+    if (mode !== "plaintext") return false;
+    const key = this.#noUsableDeviceKey(peerId);
+    if (key && this.#noUsableDevice.has(key)) return false;
+    if (
+      !this.#client.users.get(peerId)?.e2eeEnabled &&
+      !this.#peerMustEncrypt(peerId)
+    ) {
+      return false;
+    }
+    return this.#deviceReady();
+  }
+
+  /**
+   * Whether a draft with files has to be sent as two messages: its text
+   * first, then its files.
+   *
+   * True exactly when the channel is a direct message that is unencrypted
+   * so far but that a text message would make encrypted (the peer has
+   * encryption on and so does this device), and the draft has files. A
+   * chat only becomes encrypted through a text message, so files sent
+   * with that first message used to go to plain storage. Always false for
+   * groups (a group is encrypted by "enable encryption", never by a
+   * message), Saved Notes and servers, and for a draft without files.
+   * Also false while an attempt on this page found the peer with no usable
+   * device (until the peer's devices change or the chat reads as
+   * encrypted), so such a peer is sent to as before. `content` is not
+   * read: a draft with files and no text still answers true, and the
+   * caller asks for a message.
+   *
+   * It reads only what this page has cached and changes nothing, so it can
+   * be called at any time. The caller, before any upload:
+   * 1. sends the text (and the reply) alone, as its own message;
+   * 2. then calls `prepareDraftAttachments` with the files and sends them
+   *    as a second message, passing `textWentPlain` when step 1 did not go
+   *    out encrypted.
+   *
+   * What step 2 gets back:
+   * - ids: step 1 made the chat encrypted, the files went up encrypted.
+   * - `null`: step 1 found no way to encrypt (the peer was unreachable or
+   *   has no usable device) and its text went out unencrypted; the files
+   *   follow it to plain storage as before. Never for an Encrypted-only
+   *   account or peer: step 1 throws for those.
+   * - a throw: nothing was uploaded. `E2EESendError` of kind `first_file`
+   *   means no text message was tried first (the caller skipped step 1, or
+   *   this answered false from a cache that was not loaded yet; asking
+   *   again now answers true).
+   */
+  willSplitFirstSend(
+    channel: Channel,
+    draft: { content?: string; files?: readonly unknown[] },
+  ): boolean {
+    if (!draft.files?.length) return false;
+    if (channel.type !== "DirectMessage") return false;
+    const peerId = this.#peerOf(channel);
+    if (!peerId) return false;
+    return this.#firstSendEncryptable(peerId, this.sendModes.get(peerId));
+  }
+
+  /**
+   * What a direct message peer's Encrypted-only setting looks like from
+   * here, for labels and notices: `"on"`; `"turned-off"` (remembered, and
+   * an update on this page said off: the only case for the "turned off"
+   * notice); `"remembered"` (once seen on, the flag missing now); or
+   * `"none"`. In both remembered states an unencrypted send throws
+   * `E2EEPeerChangedError` until `confirmPeerChanged` (in
+   * `encryptedOnlyLatch.ts`) forgets the peer. Tracked.
+   */
+  peerEncryptedOnlyState(
+    channel: Channel,
+  ): "on" | "turned-off" | "remembered" | "none" {
+    const peerId =
+      channel.type === "DirectMessage" ? this.#peerOf(channel) : undefined;
+    if (!peerId) return "none";
+    if (this.#client.users.get(peerId)?.e2eeOnly) return "on";
+    if (!isSeen(this.#latchAccount(), peerId)) return "none";
+    return peerTurnedOff(this.#client, peerId) ? "turned-off" : "remembered";
   }
 
   /**
@@ -6371,16 +6693,26 @@ export class E2EEBridge implements E2EEAdapter {
    * the CIPHERTEXT is uploaded to the opaque-blob route, and the prepared
    * local ids are returned for `e2eeAttachments`; blocked / unverifiable ⇒
    * throws (even for text-only drafts — preserves the early gate).
+   *
+   * `textWentPlain`: these files follow a text message of the same draft
+   * that just went out unencrypted (see `willSplitFirstSend`), so they are
+   * not held back for a text message.
    */
   async prepareDraftAttachments(
     channel: Channel,
     items: E2EEDraftFile[],
+    options?: { textWentPlain?: boolean },
   ): Promise<string[] | null> {
     const isGroup = channel.type === "Group";
     if (channel.type !== "DirectMessage" && !isGroup) return null;
 
     const conversationId = isGroup ? channel.id : this.#peerOf(channel);
-    if (!conversationId) return null;
+    if (!conversationId) {
+      // No peer to encrypt to: the files would go to plain storage
+      if (items.length) this.#refusePlainFallback(channel);
+      return null;
+    }
+    this.#noteEncryptedOnly(channel, isGroup ? undefined : conversationId);
 
     let mode: "encrypt" | "blocked" | "plaintext" | "peer_downgraded";
     if (isGroup) {
@@ -6469,6 +6801,23 @@ export class E2EEBridge implements E2EEAdapter {
         "Encryption was turned off for this conversation. Choose whether to continue before sending.",
         "blocked",
       );
+    }
+    if (mode === "plaintext" && items.length) {
+      // The null below hands these files to plain storage
+      if (
+        !isGroup &&
+        options?.textWentPlain !== true &&
+        this.#firstSendEncryptable(conversationId, mode)
+      ) {
+        // A text message would make this chat encrypted, and none was
+        // tried before these files (see `willSplitFirstSend`).
+        throw new E2EESendError(
+          "Add a message to send with your first file.",
+          "first_file",
+        );
+      }
+      // Refused where an unencrypted write is not allowed
+      this.#refusePlainFallback(channel);
     }
     if (mode === "plaintext" || !items.length) return null;
 
@@ -6756,7 +7105,7 @@ export class E2EEBridge implements E2EEAdapter {
       const verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode", {
         peerUserId: peerId,
       });
-      this.sendModes.set(peerId, this.#composerMode(verdict));
+      this.#setDmMode(peerId, this.#composerMode(verdict));
     } catch {
       // Do NOT fabricate a mode on error: leave any known value untouched.
       // Fabricating "encrypt" here would show a lock the send path can't
@@ -6783,7 +7132,7 @@ export class E2EEBridge implements E2EEAdapter {
       peerUserId: peerId,
     });
     const mode = this.#composerMode(verdict);
-    this.sendModes.set(peerId, mode);
+    this.#setDmMode(peerId, mode);
     // A DM verdict never carries the group-only modes; one that did is no
     // plaintext proof, so it reads as blocked (fail closed).
     return mode === "unconfirmed" ? "blocked" : mode;
@@ -6818,7 +7167,7 @@ export class E2EEBridge implements E2EEAdapter {
         peerUserId: conversationId,
       });
       const mode = this.#composerMode(verdict);
-      this.sendModes.set(conversationId, mode);
+      this.#setDmMode(conversationId, mode);
       return mode;
     }
 
@@ -7087,6 +7436,7 @@ export class E2EEBridge implements E2EEAdapter {
     // by a post-restore reconcile, a stale open-TTL would suppress the
     // first real reconcile for 60s, and stale composer verdicts lie.
     this.#bundleNeeded.clear();
+    this.#noUsableDevice.clear();
     this.#reconciledAt.clear();
     this.#selfDevicesUnpinned = false;
     this.sendModes.clear();
