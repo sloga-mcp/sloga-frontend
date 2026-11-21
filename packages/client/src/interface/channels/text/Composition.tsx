@@ -14,9 +14,10 @@ import {
 } from "solid-js";
 
 import { useLingui } from "@lingui-solid/solid/macro";
-import type { ApplicationCommandData, Message } from "stoat.js";
+import type { ApplicationCommandData, Message, PlainWriteKind } from "stoat.js";
 import {
   Channel,
+  EncryptedOnlyBlockedError,
   ProtectedChannelUnavailable,
   ProtectedFieldRefusedClient,
 } from "stoat.js";
@@ -28,6 +29,16 @@ import { serverActionsBlocked } from "@revolt/app/interface/channels/text/e2eeTr
 import type { E2EEBridge } from "@revolt/client";
 import { E2EESendError, useClient, useE2EE, useSound } from "@revolt/client";
 import { composerE2EEModeFor } from "@revolt/client/e2eeBadge";
+import {
+  buildPlainWriteInput,
+  dmPeerId,
+} from "@revolt/client/encryptedOnlyGuard";
+import {
+  confirmPeerChanged,
+  latchVersion,
+  latchedForClient,
+} from "@revolt/client/encryptedOnlyLatch";
+import { decideForKind } from "@revolt/client/encryptedOnlyPolicy";
 import {
   composerCopy,
   errorUiCopy,
@@ -55,12 +66,20 @@ import {
 import { useWindowCtx } from "@revolt/client/windowCtx";
 import { CONFIGURATION, debounce, useDevice } from "@revolt/common";
 import { pickUploadLimit } from "@revolt/common/lib/uploadLimit";
-import { useTime } from "@revolt/i18n";
+import { useError, useTime } from "@revolt/i18n";
 import { Keybind, KeybindAction, createKeybind } from "@revolt/keybinds";
 import { unicodeEmojiPackPrefix } from "@revolt/markdown/emoji/UnicodeEmoji";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
-import { ALLOWED_IMAGE_TYPES } from "@revolt/state/stores/Draft";
+import {
+  ALLOWED_IMAGE_TYPES,
+  isFirstFileNeedsText,
+} from "@revolt/state/stores/Draft";
+import {
+  FIRST_FILE_NEEDS_TEXT_SEND_ERROR,
+  PEER_CHANGED_SIDE,
+  sendRefusalSide,
+} from "@revolt/state/stores/draftSendError";
 import {
   type ZipTarget,
   CameraMessageButton,
@@ -89,6 +108,16 @@ import { UserSlowmodes } from "stoat.js/lib/events/v1";
 import { createTimedOutUntil } from "../../../lib/timedOut";
 
 import { GameLookupPicker } from "./GameLookupPicker";
+import {
+  type ComposerAction,
+  type ComposerNotice,
+  type ComposerView,
+  composerBlockFor,
+  composerViewFor,
+  kindBlockFor,
+  peerChangedKeys,
+  refusalBlock,
+} from "./encryptedOnlyComposer";
 import {
   type GameCommand,
   type GameLookupOutcome,
@@ -125,6 +154,7 @@ const [maybeUnsentDismissed, setMaybeUnsentDismissed] = createSignal<
 export function MessageComposition(props: Props) {
   const state = useState();
   const { t } = useLingui();
+  const describeError = useError();
   const client = useClient();
   const e2ee = useE2EE();
   const sound = useSound();
@@ -379,6 +409,47 @@ export function MessageComposition(props: Props) {
   );
 
   /**
+   * What this device's cache says about a conversation, for the
+   * Encrypted-only composer block
+   * @param channel Conversation
+   */
+  function encryptedOnlyViewFor(channel: Channel): ComposerView {
+    const peerId = dmPeerId(client(), channel);
+    return composerViewFor(
+      e2ee,
+      channel,
+      peerId,
+      !!(peerId && client().users.get(peerId)?.e2eeEnabled),
+    );
+  }
+
+  /**
+   * Encrypted-only chats: the policy facts for this conversation. Tracks
+   * the latch and the memory of peers and groups, the peer and the group.
+   * Declared before `pollAllowed`, which reads it eagerly (see above).
+   */
+  const encryptedOnlyInput = createMemo(() => {
+    latchVersion();
+    return buildPlainWriteInput(client(), props.channel);
+  });
+
+  /**
+   * Whether a plain write of this kind may go into this conversation. Only
+   * ever false in a DM or group that Encrypted-only chats applies to.
+   * @param kind What would be written
+   */
+  const encryptedOnlyAllows = (kind: PlainWriteKind) =>
+    decideForKind(kind, encryptedOnlyInput()) === "allow-plain";
+
+  /**
+   * The composer block when the policy refuses a send here: the reason in
+   * words in place of the editor, with a button where one helps
+   */
+  const encryptedOnlyBlock = createMemo(() =>
+    composerBlockFor(encryptedOnlyInput(), encryptedOnlyViewFor(props.channel)),
+  );
+
+  /**
    * Polls are server-counted plaintext by construction, so the composer
    * fails closed for encrypted (or blocked) conversations — this client-side
    * gate is the E2EE enforcement point, mirroring message_send (the server
@@ -392,6 +463,7 @@ export function MessageComposition(props: Props) {
       props.channel.havePermission("SendMessage") &&
       !plaintextFeaturesBlocked() &&
       !protectedHides("poll") &&
+      encryptedOnlyAllows("poll") &&
       e2eeMode() !== "encrypt" &&
       e2eeMode() !== "blocked" &&
       // Peer downgraded but this side hasn't consented to plaintext yet —
@@ -410,7 +482,10 @@ export function MessageComposition(props: Props) {
    */
   const softresAllowed = createMemo(
     () =>
-      SOFTRES_CREATION_ENABLED && !protectedHides("softres") && pollAllowed(),
+      SOFTRES_CREATION_ENABLED &&
+      !protectedHides("softres") &&
+      encryptedOnlyAllows("softres") &&
+      pollAllowed(),
   );
 
   /**
@@ -427,6 +502,7 @@ export function MessageComposition(props: Props) {
       props.channel.havePermission("SendMessage") &&
       !plaintextFeaturesBlocked() &&
       !protectedHides("schedule") &&
+      encryptedOnlyAllows("schedule") &&
       e2eeMode() !== "encrypt" &&
       e2eeMode() !== "blocked" &&
       e2eeMode() !== "peer_downgraded",
@@ -607,6 +683,11 @@ export function MessageComposition(props: Props) {
     if (protectedMode !== undefined && protectedMode !== "enabled") {
       return false;
     }
+    // Encrypted-only chats: a send here would be refused, so the reason
+    // shows in place of the editor (the draft is kept)
+    if (encryptedOnlyBlock()) {
+      return false;
+    }
     return (
       props.channel.havePermission("SendMessage") &&
       // Archived/locked threads are read-only unless the user can manage
@@ -646,6 +727,11 @@ export function MessageComposition(props: Props) {
       return protectedText;
     }
 
+    const block = encryptedOnlyBlock();
+    if (block) {
+      return encryptedOnlyText(block.notice);
+    }
+
     const until = timedOutUntil();
     if (!until) {
       return undefined;
@@ -653,6 +739,206 @@ export function MessageComposition(props: Props) {
 
     const time = dayjs(until).format("lll");
     return t`You are timed out until ${time}`;
+  };
+
+  /**
+   * Encrypted-only chats: the words for a refused write. Where they are the
+   * refusal's own, the app's error words (`useError`) give them.
+   * @param notice Which words
+   */
+  function encryptedOnlyText(notice: ComposerNotice | "first-file"): string {
+    switch (notice) {
+      case "group-not-encrypted":
+        // The full sentence and "Leave" are in the banner above the messages
+        return t`You can't write in this group while Encrypted-only chats is on.`;
+      case "group-enable":
+        // Comes with the "Turn on encryption" button
+        return t`Turn on encryption for this group to send messages.`;
+      case "sender-dm":
+        return describeError(new EncryptedOnlyBlockedError("sender"));
+      case "recipient":
+      case "group":
+      case "setup":
+      case "open-app":
+      case "peer-changed":
+        return describeError(new EncryptedOnlyBlockedError(notice));
+      case "first-file":
+        return describeError(FIRST_FILE_NEEDS_TEXT_SEND_ERROR);
+      default: {
+        const exhaustive: never = notice;
+        return exhaustive;
+      }
+    }
+  }
+
+  /**
+   * Encrypted-only chats: the button text for an action
+   * @param action Action
+   */
+  function encryptedOnlyActionLabel(action: ComposerAction): string {
+    switch (action) {
+      case "enable-device":
+      case "enable-group":
+        return t`Turn on encryption`;
+      case "send-anyway":
+        return t`Send anyway`;
+      default: {
+        const exhaustive: never = action;
+        return exhaustive;
+      }
+    }
+  }
+
+  /**
+   * A refused write shown above the composer, until the draft or the
+   * channel changes. `draftBack`: the refused send was this channel's draft
+   * and nothing was queued (files refused before any upload), so the draft
+   * is back in the composer and "Send anyway" sends it.
+   */
+  const [encryptedOnlyNotice, setEncryptedOnlyNotice] = createSignal<{
+    channelId: string;
+    text: string;
+    action: ComposerAction | null;
+    draftBack: boolean;
+  } | null>(null);
+
+  /**
+   * Failed messages in this channel refused for a peer who may have left
+   * Encrypted-only. Read from the outbox, so the notice that offers
+   * "Send anyway" for them outlives typing, a channel switch and a reload.
+   */
+  const peerChangedRows = createMemo(() => {
+    latchVersion();
+    return peerChangedKeys(
+      state.draft.getPendingMessages(props.channel.id),
+      latchedForClient(client().user?.id),
+    );
+  });
+
+  /**
+   * The line above the composer: a refused write, or else the failed
+   * messages waiting for "Send anyway" (unless the composer block already
+   * offers it)
+   */
+  const encryptedOnlyLine = () => {
+    const notice = encryptedOnlyNotice();
+    if (notice?.channelId === props.channel.id) return notice;
+    if (
+      !peerChangedRows().length ||
+      encryptedOnlyBlock()?.action === "send-anyway"
+    ) {
+      return undefined;
+    }
+    return {
+      channelId: props.channel.id,
+      text: encryptedOnlyText("peer-changed"),
+      action: "send-anyway" as const,
+      draftBack: false,
+    };
+  };
+
+  /**
+   * Show a write refused for not being encrypted, in words: the app's guard
+   * (`EncryptedOnlyBlockedError`), the encryption bridge
+   * (`E2EEEncryptedOnlyError`, `E2EEPeerChangedError`) or the server
+   * (`EncryptionRequired`). Never the bare reason.
+   * @param error What the write threw
+   * @param channel Where it went
+   * @param draftBack The refused write was the channel's draft, back in the
+   * composer with nothing queued
+   * @returns Whether it was such a refusal
+   */
+  function showEncryptedOnlyRefusal(
+    error: unknown,
+    channel: Channel,
+    draftBack: boolean,
+  ): boolean {
+    const side = sendRefusalSide(error);
+    if (!side) return false;
+
+    const block = refusalBlock(
+      side,
+      buildPlainWriteInput(client(), channel),
+      encryptedOnlyViewFor(channel),
+    );
+    setEncryptedOnlyNotice({
+      channelId: channel.id,
+      text: block ? encryptedOnlyText(block.notice) : describeError(error),
+      action: block?.action ?? null,
+      draftBack: draftBack && block?.action === "send-anyway",
+    });
+    return true;
+  }
+
+  /**
+   * A retried message was refused again. A refusal for a changed peer is
+   * already on the message, and the line above the composer is built from
+   * those; anything else is shown there in words.
+   * @param error What the retry threw
+   * @param channel Where it went
+   */
+  function retryRefused(error: unknown, channel: Channel) {
+    if (sendRefusalSide(error) === PEER_CHANGED_SIDE) return;
+    void showEncryptedOnlyRefusal(error, channel, false);
+  }
+
+  /**
+   * Run an Encrypted-only action for this channel
+   * @param action Action
+   * @param draftBack Send the draft in the composer after "Send anyway"
+   */
+  function runEncryptedOnlyAction(action: ComposerAction, draftBack: boolean) {
+    const channel = props.channel;
+    switch (action) {
+      case "enable-device":
+        // Keys that were never registered finish setup instead, as on the
+        // Encryption settings page
+        openModal({
+          type: e2ee?.publishPending.get("state")
+            ? "e2ee_finish_setup"
+            : "e2ee_enable",
+        });
+        return;
+      case "enable-group":
+        openModal({ type: "e2ee_enable_group", channelId: channel.id });
+        return;
+      case "send-anyway": {
+        const peerId = dmPeerId(client(), channel);
+        if (!peerId) return;
+        confirmPeerChanged(peerId, client().user?.id);
+        setEncryptedOnlyNotice(null);
+
+        // Messages refused for this peer are sent now; every check runs
+        // again on the retry
+        for (const key of peerChangedKeys(
+          state.draft.getPendingMessages(channel.id),
+          latchedForClient(client().user?.id),
+        )) {
+          state.draft.retrySend(client(), channel, key, (error) =>
+            retryRefused(error, channel),
+          );
+        }
+
+        if (draftBack) void sendReporting();
+        return;
+      }
+      default: {
+        const exhaustive: never = action;
+        return exhaustive;
+      }
+    }
+  }
+
+  /**
+   * The button inside the composer block, if it offers one
+   */
+  const encryptedOnlyBlockedAction = () => {
+    const action = encryptedOnlyBlock()?.action;
+    if (!action || protectedBlockedText()) return undefined;
+    return {
+      label: encryptedOnlyActionLabel(action),
+      onClick: () => runEncryptedOnlyAction(action, false),
+    };
   };
 
   // Whether the send button should be active/clickable
@@ -834,11 +1120,24 @@ export function MessageComposition(props: Props) {
       return;
     }
 
+    // Encrypted-only chats: this raw request bypasses the SDK, so its plain
+    // write guard runs here before it. Rolls only reach server channels
+    // today (above), where the guard always lets them through; it stays as
+    // the key for when that changes.
+    const channel = props.channel;
+    try {
+      client().plainWriteGuard?.(channel, "roll");
+    } catch (error) {
+      if (showEncryptedOnlyRefusal(error, channel, false)) return;
+      openModal({ type: "error2", error });
+      return;
+    }
+
     try {
       const c = client();
       const [authHeader, authValue] = c.authenticationHeader;
       const response = await fetch(
-        `${c.options.baseURL}/channels/${props.channel.id}/roll`,
+        `${c.options.baseURL}/channels/${channel.id}/roll`,
         {
           method: "POST",
           headers: {
@@ -853,6 +1152,8 @@ export function MessageComposition(props: Props) {
         let detail = "";
         try {
           const data = await response.json();
+          // The server's refusal for not being encrypted, in words
+          if (showEncryptedOnlyRefusal(data, channel, false)) return;
           detail = data?.error ?? data?.type ?? "";
         } catch {
           /* no body */
@@ -861,7 +1162,7 @@ export function MessageComposition(props: Props) {
       }
 
       // Success — clear the /roll command from the draft
-      state.draft.setDraft(props.channel.id, { content: "" });
+      state.draft.setDraft(channel.id, { content: "" });
       sound.playSound("messageSent");
       props.onMessageSend?.();
     } catch (error) {
@@ -891,6 +1192,7 @@ export function MessageComposition(props: Props) {
       () => {
         setLookupNotice(null);
         setGameResults(null);
+        setEncryptedOnlyNotice(null);
       },
       { defer: true },
     ),
@@ -994,10 +1296,8 @@ export function MessageComposition(props: Props) {
       await sendMessage();
     } catch (error) {
       restoreIfUnsent();
-      openModal({
-        type: "error2",
-        error: error instanceof Error ? error : new Error(String(error)),
-      });
+      // As it is, so the dialog puts an API error into words
+      openModal({ type: "error2", error });
       return;
     }
 
@@ -1126,6 +1426,24 @@ export function MessageComposition(props: Props) {
       }
     }
 
+    // Encrypted-only chats: a command is a plain write. Refused here with
+    // the reason; the SDK's guard and the server refuse it as well.
+    const commandChannel = props.channel;
+    const commandBlock = kindBlockFor(
+      "interaction",
+      buildPlainWriteInput(client(), commandChannel),
+      encryptedOnlyViewFor(commandChannel),
+    );
+    if (commandBlock) {
+      setEncryptedOnlyNotice({
+        channelId: commandChannel.id,
+        text: encryptedOnlyText(commandBlock.notice),
+        action: commandBlock.action,
+        draftBack: false,
+      });
+      return;
+    }
+
     try {
       const interactionId = await props.channel.createInteraction(
         command._id,
@@ -1148,6 +1466,7 @@ export function MessageComposition(props: Props) {
         });
       }, 15_000);
     } catch (error) {
+      if (showEncryptedOnlyRefusal(error, commandChannel, false)) return;
       const type = (error as { type?: string })?.type;
       openModal({
         type: "error2",
@@ -1173,11 +1492,11 @@ export function MessageComposition(props: Props) {
    * @param useContent Content to send
    */
   function sendReporting(useContent?: unknown) {
+    // The thrown value as it is: the dialog puts an API error into words,
+    // where wrapping it would show the raw response body (a GIF or sticker
+    // the server refused printed its JSON)
     return sendMessage(useContent).catch((error) =>
-      openModal({
-        type: "error2",
-        error: error instanceof Error ? error : new Error(String(error)),
-      }),
+      openModal({ type: "error2", error }),
     );
   }
 
@@ -1377,6 +1696,9 @@ export function MessageComposition(props: Props) {
 
     // The channel this send targets, kept for the error routing below
     const sendChannel = props.channel;
+    // Messages already waiting for "Send anyway", to tell whether a refusal
+    // of this send left one more
+    const peerChangedBefore = new Set(peerChangedRows());
     try {
       if (typeof useContent === "string") {
         const currentDraft = draft();
@@ -1391,11 +1713,61 @@ export function MessageComposition(props: Props) {
           });
           return await state.draft.sendDraft(client(), props.channel);
         }
+        // In a direct message a picked GIF or sticker goes through the
+        // outbox as well: a refusal leaves a failed message that says why
+        // and can be sent again, after "Send anyway" where that applies.
+        // The composer's own draft is not touched.
+        if (sendChannel.type === "DirectMessage") {
+          return await state.draft.sendDraft(client(), sendChannel, {
+            content: useContent,
+          });
+        }
         return await props.channel.sendMessage(useContent);
       }
 
       await state.draft.sendDraft(client(), props.channel);
     } catch (error) {
+      // Files that wait for a text message: nothing was sent and the draft
+      // is back in the composer. Before the E2EESendError branch below,
+      // which `first_file` would otherwise reach.
+      if (
+        isFirstFileNeedsText(error) ||
+        (error instanceof E2EESendError && error.kind === "first_file")
+      ) {
+        setEncryptedOnlyNotice({
+          channelId: sendChannel.id,
+          text: encryptedOnlyText("first-file"),
+          action: null,
+          draftBack: false,
+        });
+        return;
+      }
+
+      // Refused for a peer who may have left Encrypted-only, and the
+      // message is in the outbox as failed: the line above the composer is
+      // built from such messages and offers "Send anyway" for them
+      if (
+        sendRefusalSide(error) === PEER_CHANGED_SIDE &&
+        sendChannel.id === props.channel.id &&
+        peerChangedRows().some((key) => !peerChangedBefore.has(key))
+      ) {
+        return;
+      }
+
+      // Any other refusal for not being encrypted, in words. Also before
+      // the E2EESendError branch: the bridge's refusals are E2EESendErrors
+      // too. A draft with files refused before any upload was never queued
+      // and is back in the composer: "Send anyway" sends it.
+      if (
+        showEncryptedOnlyRefusal(
+          error,
+          sendChannel,
+          typeof useContent !== "string",
+        )
+      ) {
+        return;
+      }
+
       // An encrypt-mode send that could not be delivered is a HARD error —
       // the message was NOT sent in plaintext. Surface it and restore the
       // draft so the user does not lose their text.
@@ -1798,11 +2170,14 @@ export function MessageComposition(props: Props) {
         e2eeMode(),
         plaintextFeaturesBlocked(),
         protectedHides("slash_commands"),
-      ] as [string, string, string | undefined, boolean, boolean],
-    async ([, type, mode, blocked, protectedHidden]) => {
+        // Encrypted-only chats: a command is a plain write
+        encryptedOnlyAllows("interaction"),
+      ] as [string, string, string | undefined, boolean, boolean, boolean],
+    async ([, type, mode, blocked, protectedHidden, plainAllowed]) => {
       if (
         protectedHidden ||
         blocked ||
+        !plainAllowed ||
         mode === "encrypt" ||
         mode === "blocked" ||
         mode === "peer_downgraded"
@@ -2079,6 +2454,26 @@ export function MessageComposition(props: Props) {
           </Symbol>
           <span>{lookupPending() ? t`Looking up…` : lookupNotice()}</span>
         </LookupNotice>
+      </Show>
+      <Show when={encryptedOnlyLine()}>
+        {(notice) => (
+          <EncryptedOnlyNotice role="status">
+            <Symbol style={{ "font-size": "1rem" }}>info</Symbol>
+            <span>{notice().text}</span>
+            <Show when={notice().action}>
+              {(action) => (
+                <EncryptedOnlyNoticeAction
+                  type="button"
+                  onClick={() =>
+                    runEncryptedOnlyAction(action(), notice().draftBack)
+                  }
+                >
+                  {encryptedOnlyActionLabel(action())}
+                </EncryptedOnlyNoticeAction>
+              )}
+            </Show>
+          </EncryptedOnlyNotice>
+        )}
       </Show>
       <Show when={gameResults()}>
         {(results) => (
@@ -2679,6 +3074,7 @@ export function MessageComposition(props: Props) {
         }
         sendingAllowed={sendingAllowed()}
         blockedText={blockedText()}
+        blockedAction={encryptedOnlyBlockedAction()}
         autoCompleteSearchSpace={searchSpace}
         updateDraftSelection={(start, end) =>
           state.draft.setSelection(props.channel.id, start, end)
@@ -3058,6 +3454,38 @@ const SlowmodeText = styled("span", {
   base: {
     fontSize: "0.75rem",
     fontWeight: "600",
+  },
+});
+
+/**
+ * A write refused by Encrypted-only chats, above the composer
+ */
+const EncryptedOnlyNotice = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    padding: "4px 12px",
+    fontSize: "0.75rem",
+    fontWeight: "600",
+    color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+/**
+ * Button on the Encrypted-only notice
+ */
+const EncryptedOnlyNoticeAction = styled("button", {
+  base: {
+    marginInlineStart: "auto",
+    flexShrink: 0,
+    padding: "2px 8px",
+    borderRadius: "var(--borderRadius-md)",
+    border: "1px solid currentColor",
+    background: "transparent",
+    color: "var(--md-sys-color-primary)",
+    font: "inherit",
+    cursor: "pointer",
   },
 });
 

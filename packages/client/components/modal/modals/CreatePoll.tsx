@@ -1,16 +1,21 @@
-import { Index, Show, createSignal } from "solid-js";
+import { Index, Show, createMemo, createSignal } from "solid-js";
 
 import { createFormControl, createFormGroup } from "solid-forms";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { EncryptedOnlyBlockedError } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
-import { useE2EE } from "@revolt/client";
+import { useClient, useE2EE } from "@revolt/client";
+import { buildPlainWriteInput } from "@revolt/client/encryptedOnlyGuard";
+import { useError } from "@revolt/i18n";
 import { Column, Dialog, DialogProps, Form2, IconButton, MenuItem } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import { useModals } from "..";
 import { Modals } from "../types";
+
+import { writeRefusal } from "./encryptedOnlyModals";
 
 /** Server-enforced answer limits */
 const MIN_ANSWERS = 2;
@@ -24,8 +29,16 @@ export function CreatePollModal(
   props: DialogProps & Modals & { type: "create_poll" },
 ) {
   const { t } = useLingui();
+  const client = useClient();
   const e2ee = useE2EE();
+  const err = useError();
   const { showError } = useModals();
+
+  // Encrypted-only chats: a poll is server-counted plaintext, so it is
+  // refused wherever the policy refuses that, with the reason in words
+  const blocked = createMemo(() =>
+    writeRefusal("poll", buildPlainWriteInput(client(), props.channel)),
+  );
 
   const group = createFormGroup({
     question: createFormControl("", { required: true }),
@@ -67,6 +80,7 @@ export function CreatePollModal(
 
   const canSubmit = () =>
     !pending() &&
+    !blocked() &&
     group.controls.question.value.trim().length > 0 &&
     validAnswers().length >= MIN_ANSWERS &&
     // No blank rows in between — every present row must be filled
@@ -232,6 +246,15 @@ export function CreatePollModal(
               encrypted — the question, answers and votes are visible to it.
             </Trans>
           </Notice>
+        </Show>
+
+        <Show when={blocked()}>
+          {(reason) => (
+            <ErrorNotice role="alert">
+              <Symbol size={16}>lock</Symbol>
+              {err(new EncryptedOnlyBlockedError(reason()))}
+            </ErrorNotice>
+          )}
         </Show>
 
         <Show when={refused()}>

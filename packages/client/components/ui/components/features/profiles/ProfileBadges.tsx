@@ -67,13 +67,35 @@ export function ProfileBadges(props: { user: User }) {
   }
 
   return (
-    <Show when={props.user.badges || props.user.customBadge || cipher()}>
+    <Show
+      when={
+        props.user.badges ||
+        props.user.customBadge ||
+        cipher() ||
+        props.user.e2eeOnly
+      }
+    >
       <ProfileCard>
         <Text class="title" size="large">
           <Trans>Badges</Trans>
         </Text>
 
         <BadgeRow>
+          {/* Encrypted-only chats is public: senders must know before they
+              send. A label, not an award. */}
+          <Show when={props.user.e2eeOnly}>
+            <span
+              class={cipherBadge({ featured: false })}
+              use:floating={{
+                tooltip: {
+                  placement: "top",
+                  content: t`This person only accepts encrypted messages.`,
+                },
+              }}
+            >
+              {t`Encrypted-only`}
+            </span>
+          </Show>
           <Show when={props.user.customBadge}>
             {(badge) => (
               <img

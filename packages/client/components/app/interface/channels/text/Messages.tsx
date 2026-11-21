@@ -16,13 +16,28 @@ import {
   splitProps,
 } from "solid-js";
 
-import { useLingui } from "@lingui-solid/solid/macro";
+import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import isEqual from "lodash.isequal";
 import { Channel, Message as MessageInterface } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient, useClientLifecycle, useE2EE } from "@revolt/client";
 import { State } from "@revolt/client/Controller";
+import {
+  notEncryptedRow,
+  plainGroupUnderLatch,
+} from "@revolt/client/encryptedOnlyChat";
+import {
+  buildPlainWriteInput,
+  channelKindOf,
+  dmPeerId,
+  peerTurnedOff,
+} from "@revolt/client/encryptedOnlyGuard";
+import {
+  latchAccountId,
+  latchedAt,
+  latchedForClient,
+} from "@revolt/client/encryptedOnlyLatch";
 import { timelineCopy } from "@revolt/client/protectedCopy";
 import { protectedActionsBlocked } from "@revolt/client/protectedShield";
 import type { TimelineMarker } from "@revolt/client/protectedTextTypes";
@@ -31,9 +46,11 @@ import {
   useProtectedTimeline,
 } from "@revolt/client/useProtectedChannel";
 import { useTime } from "@revolt/i18n";
+import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import {
   BlockedMessage,
+  Button,
   ConversationStart,
   Deferred,
   JumpToBottom,
@@ -283,6 +300,68 @@ export function Messages(props: Props) {
   const e2ee = useE2EE();
   const state = useState();
   const dayjs = useTime();
+  const { t } = useLingui();
+  const { openModal } = useModals();
+
+  /**
+   * When this device set the Encrypted-only latch, or `null` while it is
+   * off. A latch whose time is not known reads 0, so every unencrypted
+   * message counts as newer.
+   */
+  const latchTime = createMemo((): number | null => {
+    const readyId = client().user?.id;
+    if (!latchedForClient(readyId)) return null;
+    return latchedAt(latchAccountId(readyId)) ?? latchedAt(readyId) ?? 0;
+  });
+
+  /**
+   * Whether a message row carries the "Not encrypted" label: under the
+   * latch, an unencrypted message in a direct message or group sent after
+   * the latch was set. It is never shown as encrypted.
+   * @param message Message
+   * @returns Whether to label it
+   */
+  function notEncryptedLabel(message: MessageInterface): boolean {
+    const kind = channelKindOf(props.channel);
+    return notEncryptedRow({
+      latchedAt: latchTime(),
+      conversation: kind === "dm" || kind === "group",
+      encrypted: isTrustedMessage(message.id),
+      system: !!message.systemMessage,
+      createdAtMs: +message.createdAt,
+    });
+  }
+
+  /**
+   * A group that is not encrypted, under the latch: read-only, with a way
+   * out. Other members can still write here.
+   */
+  const plainGroup = createMemo(
+    () =>
+      props.channel.type === "Group" &&
+      plainGroupUnderLatch(buildPlainWriteInput(client(), props.channel)),
+  );
+
+  /**
+   * The other person of a direct message, once an update said they turned
+   * Encrypted-only off while this app was running
+   */
+  const peerTurnedOffName = createMemo((): string | undefined => {
+    const c = client();
+    const peerId = dmPeerId(c, props.channel);
+    if (!peerId || !peerTurnedOff(c, peerId)) return undefined;
+    const peer = c.users.get(peerId);
+    return peer?.displayName || peer?.username || undefined;
+  });
+
+  /**
+   * The notice for a peer who turned Encrypted-only off
+   * @param name Their name
+   * @returns Text
+   */
+  function turnedOffText(name: string): string {
+    return t`${name} turned off Encrypted-only chats.`;
+  }
 
   /**
    * Local timeline markers of this channel (protected channels, plan D22)
@@ -1342,6 +1421,33 @@ export function Messages(props: Props) {
 
   return (
     <>
+      <Show when={plainGroup()}>
+        <EncryptedOnlyNotice role="status">
+          <MaterialSymbol size={20}>lock_open</MaterialSymbol>
+          <span>
+            <Trans>
+              This group is not encrypted. You can read it, but you can't write
+              here while Encrypted-only chats is on.
+            </Trans>
+          </span>
+          <Button
+            variant="tonal"
+            onPress={() =>
+              openModal({ type: "delete_channel", channel: props.channel })
+            }
+          >
+            <Trans>Leave</Trans>
+          </Button>
+        </EncryptedOnlyNotice>
+      </Show>
+      <Show when={peerTurnedOffName()}>
+        {(name) => (
+          <EncryptedOnlyNotice role="status">
+            <MaterialSymbol size={20}>info</MaterialSymbol>
+            <span>{turnedOffText(name())}</span>
+          </EncryptedOnlyNotice>
+        )}
+      </Show>
       <ListView2
         fetchTop={caseFetchUpwards}
         fetchBottom={caseFetchDownwards}
@@ -1362,6 +1468,7 @@ export function Messages(props: Props) {
                     {...entry}
                     highlightedMessageId={props.highlightedMessageId}
                     editingMessageId={editingMessageId()}
+                    notEncryptedLabel={notEncryptedLabel}
                   />
                 )}
               </For>
@@ -1412,6 +1519,45 @@ const Padding = styled("div", {
 });
 
 /**
+ * Encrypted-only notice above the messages
+ */
+const EncryptedOnlyNotice = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: "var(--gap-md)",
+    flexShrink: 0,
+    margin: "0 var(--gap-md) var(--gap-sm) 0",
+    padding: "var(--gap-sm) var(--gap-md)",
+    borderRadius: "var(--borderRadius-lg)",
+    fontSize: "0.875em",
+    background: "var(--md-sys-color-surface-container-high)",
+    color: "var(--md-sys-color-on-surface)",
+
+    "& > span": {
+      flex: "1 1 200px",
+      minWidth: 0,
+    },
+  },
+});
+
+/**
+ * "Not encrypted" label under a message, in line with its content
+ */
+const NotEncryptedRow = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-xs)",
+    paddingInlineStart:
+      "calc(var(--gap-lg) + max(54px, calc(var(--message-avatar-size, 36px) + 18px)))",
+    fontSize: "0.75em",
+    color: "var(--md-sys-color-error)",
+  },
+});
+
+/**
  * List entries
  */
 type ListEntry =
@@ -1444,12 +1590,16 @@ type ListEntry =
  */
 function Entry(
   props: ListEntry &
-    Pick<Props, "highlightedMessageId"> & { editingMessageId?: string },
+    Pick<Props, "highlightedMessageId"> & {
+      editingMessageId?: string;
+      notEncryptedLabel: (message: MessageInterface) => boolean;
+    },
 ) {
   const [local, other] = splitProps(props, [
     "t",
     "highlightedMessageId",
     "editingMessageId",
+    "notEncryptedLabel",
   ]);
 
   return (
@@ -1466,6 +1616,18 @@ function Entry(
             local.editingMessageId
           }
         />
+        {/* Encrypted-only: an unencrypted message after the latch is
+            labelled, never shown as encrypted */}
+        <Show
+          when={local.notEncryptedLabel(
+            (other as ListEntry & { t: 0 }).message,
+          )}
+        >
+          <NotEncryptedRow>
+            <MaterialSymbol size={14}>lock_open</MaterialSymbol>
+            <Trans>Not encrypted</Trans>
+          </NotEncryptedRow>
+        </Show>
       </Match>
       <Match when={local.t === 1}>
         <MessageDivider {...(other as ListEntry & { t: 1 })} />
