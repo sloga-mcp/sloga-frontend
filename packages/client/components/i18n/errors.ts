@@ -2,6 +2,8 @@ import { useLingui } from "@lingui-solid/solid/macro";
 import { i18n } from "@lingui/core";
 import { API } from "stoat.js";
 
+import { encryptionRequiredSide } from "@revolt/client/apiErrorType";
+
 import { databaseErrorDetail, untranslatedErrorText } from "./errorDetail";
 
 const RE_BREAK = /\s*\n\s*/g;
@@ -42,6 +44,31 @@ export function useError() {
         error = JSON.parse(error);
       } catch {
         // Ignore JSON parse errors
+      }
+    }
+
+    // A write refused for not being encrypted: the server's
+    // `EncryptionRequired` body, or the error the app's own guard throws
+    // before any request. Ahead of the message pass-through below, since
+    // that error's message is only its reason.
+    const encryptionSide = encryptionRequiredSide(error);
+    if (encryptionSide) {
+      switch (encryptionSide) {
+        case "recipient":
+          return t`This person only accepts encrypted messages.`;
+        case "sender":
+          return t`You only send encrypted messages. This chat is not encrypted yet.`;
+        case "group":
+        case "member":
+          return t`This group is encrypted. Only people with encryption turned on can be added (up to 24).`;
+        case "open-app":
+          return t`Open the Sloga app to read and send encrypted chats.`;
+        case "setup":
+          return t`Finish setting up encryption on this device to use your chats.`;
+        default: {
+          const exhaustive: never = encryptionSide;
+          return exhaustive;
+        }
       }
     }
 
