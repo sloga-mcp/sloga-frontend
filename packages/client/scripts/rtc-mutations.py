@@ -13333,6 +13333,51 @@ MUTATIONS += [
         specs=[CALL_KEYS_SPEC],
     ),
     Mutation(
+        id='keys-close-not-latched',
+        what='import race: close only resets, so an install still importing passes the cleared fence and posts fresh key bytes',
+        file=CALL_KEYS,
+        search="""    this.#closed = true;
+    this.resetForGroup();
+""",
+        replace="""    this.resetForGroup();
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-close-not-zeroed',
+        what='import race: close latches but keeps (and never zeroes) the keys it held',
+        file=CALL_KEYS,
+        search="""    this.#closed = true;
+    this.resetForGroup();
+""",
+        replace="""    this.#closed = true;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-admits-ignores-closed',
+        what='import race: the fence never reads the latch',
+        file=CALL_KEYS,
+        search="""    if (this.#closed) return false;
+""",
+        replace="""""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-admits-closed-after-fence',
+        what='import race: the latch is read only once a fence exists, which close() has just cleared',
+        file=CALL_KEYS,
+        search="""    if (this.#closed) return false;
+    const fence = this.#fence;
+    if (!fence) return true;
+""",
+        replace="""    const fence = this.#fence;
+    if (!fence) return true;
+    if (this.#closed) return false;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
         id='keys-raw-zeroes-live-set',
         what='the scrub zeroes the keys still in use',
         file=CALL_KEYS,
@@ -14609,7 +14654,7 @@ MUTATIONS += [
         id='sender-hold-release-no-key-reset',
         what="MINOR 2: the release never zeroes the provider's raw key bytes (A-3)",
         file=SENDER_HOLD,
-        search="""  run(provider && (() => provider.resetForGroup()));
+        search="""  run(provider && (() => provider.close()));
 """,
         replace="""""",
         specs=[SENDER_HOLD_SPEC],
@@ -14627,17 +14672,27 @@ MUTATIONS += [
         specs=[SENDER_HOLD_SPEC],
     ),
     Mutation(
+        id='sender-hold-release-resets-not-closes',
+        what='import race: the release only resets the provider, leaving it open to an install still importing',
+        file=SENDER_HOLD,
+        search="""  run(provider && (() => provider.close()));
+""",
+        replace="""  run(provider && (() => (provider as unknown as { resetForGroup(): void }).resetForGroup()));
+""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
         id='sender-hold-release-zeroes-before-session',
         what="MINOR 2 (review MAJOR): the keys are zeroed before the session is disposed, so the dying session can refill them",
         file=SENDER_HOLD,
         search="""  run(leftovers.disposeSession);
 """,
-        replace="""  run(provider && (() => provider.resetForGroup()));
+        replace="""  run(provider && (() => provider.close()));
   run(leftovers.disposeSession);
 """,
         specs=[SENDER_HOLD_SPEC],
         also=[("""  run(worker && (() => worker.terminate()));
-  run(provider && (() => provider.resetForGroup()));
+  run(provider && (() => provider.close()));
 """, """  run(worker && (() => worker.terminate()));
 """)],
     ),
@@ -14770,7 +14825,7 @@ MUTATIONS += [
         id='state-ios-construct-catch-no-zeroing',
         what='A-3: the construct-catch drops the provider without zeroing its raw key bytes',
         file=STATE,
-        search="""        this.#mlsKeyProvider?.resetForGroup();
+        search="""        this.#mlsKeyProvider?.close();
         this.#mlsKeyProvider = undefined;
 """,
         replace="""        this.#mlsKeyProvider = undefined;
@@ -14781,10 +14836,32 @@ MUTATIONS += [
         id='state-ios-teardown-no-zeroing',
         what='A-3: teardown drops the provider without zeroing its raw key bytes',
         file=STATE,
-        search="""        this.#mlsKeyProvider?.resetForGroup();
+        search="""        this.#mlsKeyProvider?.close();
       } catch {""",
         replace="""        void 0;
       } catch {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-teardown-resets-not-closes',
+        what='import race: teardown only resets the provider, so an install still importing lands after the call',
+        file=STATE,
+        search="""        this.#mlsKeyProvider?.close();
+      } catch {""",
+        replace="""        this.#mlsKeyProvider?.resetForGroup();
+      } catch {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-construct-catch-resets-not-closes',
+        what='import race: the construct-catch only resets the provider it drops',
+        file=STATE,
+        search="""        this.#mlsKeyProvider?.close();
+        this.#mlsKeyProvider = undefined;
+""",
+        replace="""        this.#mlsKeyProvider?.resetForGroup();
+        this.#mlsKeyProvider = undefined;
+""",
         specs=[STATE_WIRING_SPEC],
     ),
     Mutation(
