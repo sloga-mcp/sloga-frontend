@@ -1986,3 +1986,261 @@ test("🔴 D15: no code under components/ reaches livekit's ratchet path", () =>
   );
   assert.deepEqual(hits, [], "a ratchet call site exists under components/");
 });
+
+// ---------------------------------------------------------------------------
+// A group replaced mid-install (resetForGroup)
+//
+// `resetForGroup` runs mid-call too (`#resetRotationState`: a re-establish, a
+// poisoned successor, a removed-self rejoin). It clears the fence, so an
+// install whose import was still in flight passed `#admits` on its re-check
+// and posted the OUTGOING group's keys into the provider that now stands for
+// the incoming one: the send key the members who removed us hold, replayed on
+// every `enable` ack. Each reset moves a generation; an install refuses to
+// land across a move, exactly like a superseded one.
+// ---------------------------------------------------------------------------
+
+test("🔴 an install still importing when its group is replaced lands nothing", async () => {
+  const provider = new MlsKeyProvider();
+  await rotateThrough(provider, 5, [LOCAL, BOB, LOCAL_LEG]);
+  const gate = importGate();
+  let remote: Promise<void>;
+  let local: Promise<void>;
+  const log = new PostLog();
+  try {
+    // Both halves of epoch 6 are admitted on entry, then park in `#import`.
+    gate.arm();
+    const at6 = frameKeys(6, [LOCAL, BOB, LOCAL_LEG]);
+    remote = provider.applyRemoteKeys(at6, LOCAL);
+    local = provider.applyLocalKey(at6, LOCAL);
+    await Promise.resolve();
+    gate.disarm();
+
+    provider.resetForGroup();
+    log.attach(provider);
+    await gate.release();
+    await remote;
+    await local;
+    await settle();
+  } finally {
+    gate.restore();
+  }
+  assert.deepEqual(
+    log.posts,
+    [],
+    "the replaced group's keys reached the worker",
+  );
+  assert.deepEqual(
+    provider.getKeys(),
+    [],
+    "the replaced group's keys are served",
+  );
+  assert.equal(provider.lastLocalScreenKey(), undefined);
+});
+
+test("🔴 the replaced group's late install does not wipe the group that replaced it", async () => {
+  const provider = new MlsKeyProvider();
+  const tag = await rotateThrough(provider, 5);
+  const gate = importGate();
+  const next = frameKeys(0, [LOCAL, CAROL], [LOCAL, CAROL], "group-2");
+  try {
+    gate.arm();
+    const stale = provider.applyKeys(frameKeys(6, [LOCAL, BOB]), LOCAL);
+    await Promise.resolve();
+    gate.disarm();
+
+    // The re-establish: reset, then the new group's first key lands.
+    provider.resetForGroup();
+    await tag.during(next, () => provider.applyKeys(next, LOCAL));
+
+    await gate.release();
+    await stale;
+    await settle();
+  } finally {
+    gate.restore();
+  }
+  // Without the generation the late install saw group-2's fence, RESET for
+  // "a different group" and published group-1's epoch 6 over it.
+  assert.deepEqual(replayIds(provider), [`${CAROL}-0`, `${LOCAL}-0`]);
+  const worker = new FakeWorker();
+  worker.replay(provider);
+  assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e0`);
+});
+
+test("🔴 a group re-established under the SAME id is not fenced out by its old incarnation", async () => {
+  const provider = new MlsKeyProvider();
+  const tag = await rotateThrough(provider, 5);
+  const gate = importGate();
+  try {
+    gate.arm();
+    const stale = provider.applyKeys(frameKeys(6, [LOCAL, BOB]), LOCAL);
+    await Promise.resolve();
+    gate.disarm();
+
+    provider.resetForGroup();
+    await gate.release();
+    await stale;
+    await settle();
+  } finally {
+    gate.restore();
+  }
+  // The new incarnation starts again at epoch 0. Had the stale install
+  // stamped the fence at 6, every epoch below it would be refused as
+  // superseded and the call would keep sending under the old epoch 6 key.
+  const fresh = frameKeys(0, [LOCAL, BOB]);
+  await tag.during(fresh, () => provider.applyKeys(fresh, LOCAL));
+  const worker = new FakeWorker();
+  worker.replay(provider);
+  assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e0`);
+  assert.deepEqual(replayIds(provider), [`${BOB}-0`, `${LOCAL}-0`]);
+});
+
+test("🔴 raw mode: a local install still importing when its group is replaced asks no ack and posts no bytes", async () => {
+  const asked: string[] = [];
+  const provider = rawProvider((identity, keyIndex) => {
+    asked.push(`${identity}-${keyIndex}`);
+    return Promise.resolve(true);
+  });
+  await rotateThrough(provider, 3);
+  const held = [...servedBytes(provider).values()];
+  const gate = importGate();
+  const log = new PostLog();
+  try {
+    gate.arm();
+    const local = provider.applyLocalKey(frameKeys(4, [LOCAL, BOB]), LOCAL);
+    await Promise.resolve();
+    gate.disarm();
+
+    provider.resetForGroup();
+    assert.ok(held.every(isZero), "the reset must zero everything it held");
+    log.attach(provider);
+    asked.length = 0;
+    await gate.release();
+    await local;
+    await settle();
+  } finally {
+    gate.restore();
+  }
+  assert.deepEqual(log.posts, []);
+  assert.deepEqual(asked, [], "an ack wait started for the replaced group");
+  assert.deepEqual(provider.getKeys(), []);
+});
+
+test("a new group's local key installed on its own over the old group's fence still lands", async () => {
+  // keys-local-gen-captured-before-admits: the entry check resets for the new
+  // group, which moves the generation; taken before it, the install would
+  // refuse itself.
+  const provider = new MlsKeyProvider();
+  const tag = await rotateThrough(provider, 3);
+  const next = frameKeys(0, [LOCAL, CAROL], [LOCAL, CAROL], "group-2");
+  await tag.during(next, () => provider.applyLocalKey(next, LOCAL));
+  const worker = new FakeWorker();
+  worker.replay(provider);
+  assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e0`);
+});
+
+test("🔴 a replaced group's late local install does not wipe the group that replaced it", async () => {
+  // keys-local-reset-gen-after-admits: an Add-grace local install resumes
+  // over group-2's fence; read before the generation, `#admits` would reset
+  // group-2 away before the install refused itself.
+  const provider = new MlsKeyProvider();
+  const tag = await rotateThrough(provider, 5);
+  const gate = importGate();
+  const next = frameKeys(0, [LOCAL, CAROL], [LOCAL, CAROL], "group-2");
+  try {
+    gate.arm();
+    const stale = provider.applyLocalKey(frameKeys(6, [LOCAL, BOB]), LOCAL);
+    await Promise.resolve();
+    gate.disarm();
+
+    provider.resetForGroup();
+    await tag.during(next, () => provider.applyKeys(next, LOCAL));
+
+    await gate.release();
+    await stale;
+    await settle();
+  } finally {
+    gate.restore();
+  }
+  assert.deepEqual(replayIds(provider), [`${CAROL}-0`, `${LOCAL}-0`]);
+  const worker = new FakeWorker();
+  worker.replay(provider);
+  assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e0`);
+});
+
+test("🔴 raw mode: an install refused across a reset zeroes the bytes it imported", async () => {
+  // keys-remote-refused-not-scrubbed, keys-local-refused-not-scrubbed
+  const provider = rawProvider(() => Promise.resolve(true));
+  await rotateThrough(provider, 3);
+  const gate = importGate();
+  const gated = crypto.subtle.importKey;
+  const imported: string[] = [];
+  Object.defineProperty(crypto.subtle, "importKey", {
+    value: (...args: unknown[]) => {
+      imported.push(Buffer.from(args[1] as Uint8Array).toString("hex"));
+      return (gated as (...a: unknown[]) => Promise<CryptoKey>)(...args);
+    },
+    configurable: true,
+    writable: true,
+  });
+  const realFill = Uint8Array.prototype.fill;
+  const zeroed = new Map<string, number>();
+  Uint8Array.prototype.fill = function (this: Uint8Array, ...args) {
+    if (args[0] === 0) {
+      const hex = Buffer.from(this).toString("hex");
+      zeroed.set(hex, (zeroed.get(hex) ?? 0) + 1);
+    }
+    return realFill.apply(this, args);
+  } as typeof realFill;
+  try {
+    gate.arm();
+    const at4 = frameKeys(4, [LOCAL, BOB]);
+    const remote = provider.applyRemoteKeys(at4, LOCAL);
+    const local = provider.applyLocalKey(at4, LOCAL);
+    await Promise.resolve();
+    gate.disarm();
+    provider.resetForGroup();
+    zeroed.clear(); // the reset's own zeroing (the epoch-3 set) is not counted
+    await gate.release();
+    await remote;
+    await local;
+    await settle();
+  } finally {
+    Uint8Array.prototype.fill = realFill;
+    Object.defineProperty(crypto.subtle, "importKey", {
+      value: gated,
+      configurable: true,
+      writable: true,
+    });
+    gate.restore();
+  }
+  assert.ok(imported.length >= 2, "both installs must have imported");
+  // Each entry exists twice: the decoded input (zeroed once imported) and
+  // the copy handed to the worker, which only the refusal can zero.
+  for (const hex of imported) {
+    assert.equal(zeroed.get(hex), 2, "a refused install left its key bytes");
+  }
+  assert.deepEqual(provider.getKeys(), []);
+});
+
+test("CONTROL: an install with no reset under it still lands after its import", async () => {
+  // Proves the specs above park a REAL install: the same shape, minus the
+  // reset, publishes epoch 6.
+  const provider = new MlsKeyProvider();
+  const tag = await rotateThrough(provider, 5);
+  const gate = importGate();
+  const at6 = frameKeys(6, [LOCAL, BOB]);
+  try {
+    gate.arm();
+    const install = tag.during(at6, () => provider.applyKeys(at6, LOCAL));
+    await Promise.resolve();
+    gate.disarm();
+    await gate.release();
+    await install;
+    await settle();
+  } finally {
+    gate.restore();
+  }
+  const worker = new FakeWorker();
+  worker.replay(provider);
+  assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e6`);
+});
