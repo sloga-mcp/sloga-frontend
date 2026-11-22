@@ -1,11 +1,20 @@
-// Behavior of the iOS orphaned recovery-bundle courier (audit M2, Stage 6
-// fixes MAJOR-1, MINOR-2, MINOR-3), against the REAL `E2EEBridge`.
+// Behavior of the backup refresh courier against the REAL `E2EEBridge`: the
+// iOS orphaned recovery bundle (audit M2, Stage 6 fixes MAJOR-1, MINOR-2,
+// MINOR-3), and the refresh that also runs on the desktop shells after a
+// claim and on main-window focus (at most hourly), never on Android, and
+// never marks an upload the server did not store.
 //
 // e2ee.ts cannot be imported under `node --test` directly (extensionless
 // sibling imports, bare packages that need a browser), so this bundles it
 // with esbuild, stubs the bare packages, and drives a real bridge on a fake
-// iOS `E2ee` plugin, a fake client and a stubbed `fetch`. Every assertion
-// counts native takes (`e2ee_backup_refresh_if_due`) and backup PUTs.
+// native layer (the iOS/Android `E2ee` plugin, `__TAURI__` or
+// `slogaShell.e2ee`), a fake client and a stubbed `fetch`. Every assertion
+// counts native takes (`e2ee_backup_refresh_if_due`), backup PUTs and
+// `e2ee_backup_mark_uploaded` calls.
+//
+// The stubbed `PUT /e2ee/backup` answers like the real route: 200 with
+// `{ generation }`, the sent one when stored, the stored one when the sent
+// one is stale.
 //
 // `E2EE_COURIER_TS` swaps in another e2ee.ts (resolved against THIS
 // directory), which is how the fail-first control runs these tests against
@@ -15,7 +24,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, before, test } from "node:test";
+import { after, afterEach, before, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
@@ -23,9 +32,11 @@ const SOURCE =
   process.env.E2EE_COURIER_TS ||
   fileURLToPath(new URL("./e2ee.ts", import.meta.url));
 
+const HOUR = 60 * 60 * 1000;
+
 type Listener = () => void;
 
-/** The fake iOS plugin every bridge in a test shares (process-lifetime). */
+/** The fake native layer every bridge in a test shares (process-lifetime). */
 class FakePlugin {
   listeners = new Set<Listener>();
   removed = 0;
@@ -38,6 +49,8 @@ class FakePlugin {
   held: ((bundle: unknown) => void)[] = [];
   /** When true, every take waits for `release`. */
   hold = false;
+  /** Bundles the next takes return when not held (then null: not due). */
+  due: unknown[] = [];
 
   addListener(name: string, fn: Listener) {
     assert.equal(name, "backupBundleWaiting");
@@ -62,7 +75,7 @@ class FakePlugin {
       try {
         const bundle = this.hold
           ? await new Promise((resolve) => this.held.push(resolve))
-          : null;
+          : (this.due.shift() ?? null);
         return { json: JSON.stringify(bundle) };
       } finally {
         this.inFlight--;
@@ -81,6 +94,10 @@ class FakePlugin {
   takes() {
     return this.calls.filter((c) => c === "e2ee_backup_refresh_if_due").length;
   }
+
+  marks() {
+    return this.calls.filter((c) => c === "e2ee_backup_mark_uploaded").length;
+  }
 }
 
 const BUNDLE = { header: "h", ciphertext: "c", generation: 7 };
@@ -95,11 +112,18 @@ type EsbuildHook = (
   options: { filter: RegExp; namespace?: string },
   callback: (args: { path: string }) => unknown,
 ) => void;
+type Shell = "ios" | "android" | "web" | "tauri" | "electron";
+type FakeWindow = EventTarget & Record<string, unknown>;
 
 let plugin: FakePlugin;
-let puts: string[] = [];
+let puts: number[] = [];
+/** When set, the server echoes this generation instead of the sent one. */
+let storedGeneration: number | null = null;
+/** What `Capacitor.getPlatform()` answers. */
+let capacitorPlatform = "ios";
 let E2EEBridge: BridgeCtor;
 let outDir: string;
+const realNow = Date.now;
 
 before(async () => {
   const require = createRequire(import.meta.url);
@@ -161,20 +185,26 @@ before(async () => {
   writeFileSync(file, bundled.outputFiles[0].text);
 
   const g = globalThis as Record<string, unknown>;
-  // popout.ts reads `window.location.pathname` at module scope.
-  g.window ??= { location: new URL("http://localhost/") };
+  // popout.ts reads `window.location.pathname` at module scope: the main
+  // window, so the bridge's main-window flag is true.
+  g.window = newWindow();
   g.__courierStub = {
     Capacitor: {
-      getPlatform: () => "ios",
-      isNativePlatform: () => true,
+      getPlatform: () => capacitorPlatform,
+      isNativePlatform: () => capacitorPlatform !== "web",
       isPluginAvailable: () => true,
     },
     plugin: () => plugin,
   };
-  g.fetch = async (url: string, init: { method: string }) => {
+  g.fetch = async (url: string, init: { method: string; body?: string }) => {
     if (init.method === "PUT" && url.endsWith("/e2ee/backup")) {
-      puts.push(url);
-      return new Response(null, { status: 204 });
+      const sent = (JSON.parse(init.body ?? "{}") as { generation: number })
+        .generation;
+      puts.push(sent);
+      return new Response(
+        JSON.stringify({ generation: storedGeneration ?? sent }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
     }
     return new Response("{}", { status: 500 });
   };
@@ -186,6 +216,85 @@ before(async () => {
 after(() => {
   if (outDir) rmSync(outDir, { recursive: true, force: true });
 });
+
+afterEach(() => {
+  Date.now = realNow;
+});
+
+/**
+ * A main window: an event target with a location, which counts the "focus"
+ * listeners attached to it (`focusListeners`).
+ */
+function newWindow(): FakeWindow {
+  const target = new EventTarget();
+  const focus = new Set<unknown>();
+  const add = target.addEventListener.bind(target);
+  const remove = target.removeEventListener.bind(target);
+  return Object.assign(target, {
+    location: new URL("http://localhost/"),
+    focusListeners: () => focus.size,
+    addEventListener(type: string, fn: EventListener) {
+      if (type === "focus") focus.add(fn);
+      add(type, fn);
+    },
+    removeEventListener(type: string, fn: EventListener) {
+      if (type === "focus") focus.delete(fn);
+      remove(type, fn);
+    },
+  }) as unknown as FakeWindow;
+}
+
+function focusListeners(): number {
+  return (win().focusListeners as () => number)();
+}
+
+function win(): FakeWindow {
+  return (globalThis as Record<string, unknown>).window as FakeWindow;
+}
+
+function focusMain() {
+  win().dispatchEvent(new Event("focus"));
+}
+
+/**
+ * A fresh native layer and window for `shell`. The desktop fakes forward to
+ * THIS test's plugin, so a bridge left over from another test never reaches
+ * it.
+ */
+function fresh(shell: Shell = "ios") {
+  const p = new FakePlugin();
+  plugin = p;
+  puts = [];
+  storedGeneration = null;
+  capacitorPlatform = shell === "tauri" || shell === "electron" ? "web" : shell;
+  const w = newWindow();
+  (globalThis as Record<string, unknown>).window = w;
+  if (shell === "tauri") {
+    w.__TAURI__ = {
+      core: {
+        invoke: async (command: string, args?: Record<string, unknown>) =>
+          JSON.parse((await p.call({ __cmd: command, ...args })).json),
+      },
+      event: { listen: async () => () => {} },
+    };
+  } else if (shell === "electron") {
+    w.slogaShell = {
+      name: "test",
+      platform: "linux",
+      e2ee: {
+        invoke: async (command: string, args?: Record<string, unknown>) => {
+          try {
+            const { json } = await p.call({ __cmd: command, ...args });
+            return { ok: JSON.parse(json) };
+          } catch (err) {
+            return { err };
+          }
+        },
+        on: () => () => {},
+      },
+    };
+  }
+}
 
 function fakeClient() {
   const handlers = new Map<string, ((...a: unknown[]) => void)[]>();
@@ -224,10 +333,7 @@ async function claimedBridge(deviceId: string | null = "01DEVICE") {
   return { bridge, client };
 }
 
-function fresh() {
-  plugin = new FakePlugin();
-  puts = [];
-}
+// ---- iOS: the kept recovery bundle -----------------------------------------
 
 test("dispose: a disposed bridge removes its listener and ignores a late event", async () => {
   fresh();
@@ -332,4 +438,165 @@ test("control: a claimed, connected bridge does take and PUT", async () => {
   await settle();
   assert.equal(plugin.takes(), 1);
   assert.equal(puts.length, 1);
+});
+
+// ---- Which shells refresh after a claim -------------------------------------
+
+for (const shell of ["tauri", "electron", "ios"] as const) {
+  test(`${shell}: an accepted claim runs the due check and uploads a due backup`, async () => {
+    fresh(shell);
+    plugin.due = [BUNDLE];
+    await claimedBridge();
+    assert.equal(plugin.takes(), 1, "no due check after the claim");
+    assert.deepEqual(puts, [7]);
+    assert.equal(plugin.marks(), 1);
+  });
+}
+
+for (const shell of ["android", "web"] as const) {
+  test(`${shell}: no due check after a claim, and none on focus`, async () => {
+    fresh(shell);
+    plugin.due = [BUNDLE];
+    await claimedBridge();
+    focusMain();
+    await settle();
+    assert.equal(plugin.takes(), 0, `${shell} asked native for a refresh`);
+    assert.equal(puts.length, 0);
+  });
+}
+
+test("tauri: no due check before the claim is accepted", async () => {
+  fresh("tauri");
+  plugin.due = [BUNDLE];
+  const bridge = new E2EEBridge(fakeClient());
+  bridge.status.set("state", {
+    enabled: true,
+    published: true,
+    device_id: "01DEVICE",
+    claimed: false,
+  });
+  focusMain();
+  bridge.onEvent({ type: "E2EEClaimResult", accepted: false });
+  await settle();
+  focusMain();
+  await settle();
+  assert.equal(plugin.takes(), 0, "took before an accepted claim");
+});
+
+// ---- Main-window focus, at most hourly --------------------------------------
+
+for (const shell of ["tauri", "electron"] as const) {
+  test(`${shell}: main-window focus re-checks at most once an hour`, async () => {
+    let now = 1_000_000;
+    Date.now = () => now;
+    fresh(shell);
+    await claimedBridge();
+    assert.equal(plugin.takes(), 1, "the claim's check");
+
+    now += HOUR - 1;
+    focusMain();
+    await settle();
+    assert.equal(plugin.takes(), 1, "focus re-checked inside the hour");
+
+    now += 1;
+    plugin.due = [BUNDLE];
+    focusMain();
+    await settle();
+    assert.equal(plugin.takes(), 2, "focus did not re-check after an hour");
+    assert.deepEqual(puts, [7]);
+
+    focusMain();
+    focusMain();
+    await settle();
+    assert.equal(plugin.takes(), 2, "back-to-back focus re-checked again");
+  });
+}
+
+test("focus: a refused guard neither asks native nor uses up the hour", async () => {
+  let now = 1_000_000;
+  Date.now = () => now;
+  fresh("tauri");
+  const { bridge } = await claimedBridge();
+  assert.equal(plugin.takes(), 1);
+  const on = bridge.status.get("state") as Record<string, unknown>;
+  now += HOUR;
+  bridge.status.set("state", { ...on, published: false });
+  focusMain();
+  await settle();
+  assert.equal(plugin.takes(), 1, "took for an unpublished device");
+  bridge.status.set("state", on);
+  focusMain();
+  await settle();
+  assert.equal(plugin.takes(), 2, "the refused focus used up the hour");
+});
+
+test("focus: a disposed bridge stops listening", async () => {
+  let now = 1_000_000;
+  Date.now = () => now;
+  fresh("electron");
+  const { bridge } = await claimedBridge();
+  assert.equal(plugin.takes(), 1);
+  assert.equal(focusListeners(), 1, "want one focus listener per bridge");
+  await bridge.dispose!();
+  await bridge.dispose!();
+  assert.equal(focusListeners(), 0, "dispose left the focus listener");
+  now += 2 * HOUR;
+  focusMain();
+  await settle();
+  assert.equal(plugin.takes(), 1, "a disposed bridge re-checked on focus");
+});
+
+// ---- The server's echoed generation ----------------------------------------
+
+for (const shell of ["tauri", "ios"] as const) {
+  test(`${shell}: an echoed generation other than the one sent is not marked, and not retried`, async () => {
+    let now = 1_000_000;
+    Date.now = () => now;
+    fresh(shell);
+    storedGeneration = 9;
+    plugin.due = [BUNDLE];
+    await claimedBridge();
+    assert.equal(plugin.takes(), 1);
+    assert.deepEqual(puts, [7], "want one PUT of the due bundle");
+    assert.equal(plugin.marks(), 0, "a refused upload was marked uploaded");
+
+    // Nothing runs again by itself, and a later trigger asks native, which
+    // says not due (the refresh already reset its clock): no second PUT.
+    await settle();
+    assert.equal(plugin.takes(), 1, "the courier retried on its own");
+    now += HOUR;
+    focusMain();
+    await settle();
+    assert.deepEqual(puts, [7], "the refused bundle was PUT again");
+    assert.equal(plugin.marks(), 0);
+  });
+}
+
+test("echo: a missing generation in the answer is not marked", async () => {
+  fresh("tauri");
+  const g = globalThis as Record<string, unknown>;
+  const realFetch = g.fetch;
+  g.fetch = async (url: string, init: { method: string }) => {
+    if (init.method === "PUT" && url.endsWith("/e2ee/backup")) {
+      puts.push(0);
+      return new Response(null, { status: 204 });
+    }
+    return new Response("{}", { status: 500 });
+  };
+  try {
+    plugin.due = [BUNDLE];
+    await claimedBridge();
+    assert.equal(puts.length, 1);
+    assert.equal(plugin.marks(), 0, "an answer with no echo was marked");
+  } finally {
+    g.fetch = realFetch;
+  }
+});
+
+test("echo control: the matching echo is marked with the sent generation", async () => {
+  fresh("electron");
+  plugin.due = [BUNDLE];
+  await claimedBridge();
+  assert.deepEqual(puts, [7]);
+  assert.equal(plugin.marks(), 1);
 });

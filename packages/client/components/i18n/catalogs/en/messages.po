@@ -1427,6 +1427,10 @@ msgstr "Shows only your chats and calls. Servers are hidden, not left. Server no
 msgid "You can't change Slim view during a call."
 msgstr "You can't change Slim view during a call."
 
+#: components/app/interface/settings/user/appearance/SlimViewChoice.tsx
+msgid "Set up Encrypted-only chats"
+msgstr "Set up Encrypted-only chats"
+
 #: src/interface/channels/text/TextChannel.tsx
 msgid "Auto-archive"
 msgstr "Auto-archive"
@@ -3922,6 +3926,16 @@ msgid "Encrypted direct messages"
 msgstr "Encrypted direct messages"
 
 #: components/app/interface/settings/user/Encryption.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "I only accept encrypted messages on Sloga. To message me, turn on encryption in the Sloga app: Settings > Encryption."
+msgstr "I only accept encrypted messages on Sloga. To message me, turn on encryption in the Sloga app: Settings > Encryption."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Invite copied to the clipboard."
+msgstr "Invite copied to the clipboard."
+
+#: components/app/interface/settings/user/Encryption.tsx
 #: components/app/interface/settings/user/Privacy.tsx
 msgid "On for your account."
 msgstr "On for your account."
@@ -3969,6 +3983,11 @@ msgstr "Turn off on this device too"
 #: components/app/interface/settings/user/Encryption.tsx
 msgid "Turn on again"
 msgstr "Turn on again"
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Share invite"
+msgstr "Share invite"
 
 #: components/app/interface/settings/user/Encryption.tsx
 msgid "A device restored from a recovery code has no backup of its own until you make a new recovery code."
@@ -7857,6 +7876,14 @@ msgstr "Reported by"
 #: components/modal/modals/ReportQueue.tsx
 msgid "Reported content (as seen by the reporter)"
 msgstr "Reported content (as seen by the reporter)"
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "Unverified: this text was supplied by the reporter. Sloga has no copy of this message (it was end-to-end encrypted or deleted) and cannot confirm who sent it or what it said."
+msgstr "Unverified: this text was supplied by the reporter. Sloga has no copy of this message (it was end-to-end encrypted or deleted) and cannot confirm who sent it or what it said."
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "The reporter's app marked it as end-to-end encrypted."
+msgstr "The reporter's app marked it as end-to-end encrypted."
 
 #: components/modal/modals/ReportQueue.tsx
 msgid "Reported content (server copy)"

@@ -1,11 +1,17 @@
-import { Show } from "solid-js";
+import { Show, createMemo } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 
+import { useClient } from "@revolt/client";
+import { deviceStateOf } from "@revolt/client/encryptedOnlyGuard";
+import { latchedForClient } from "@revolt/client/encryptedOnlyLatch";
 import { useSlimOffered } from "@revolt/client/useSlimMode";
+import { useModals } from "@revolt/modal";
+import { useOnlyAdvert } from "@revolt/modal/modals/EncryptedOnlyOnboarding";
+import { onlyCardState } from "@revolt/modal/modals/encryptedOnlySetup";
 import { useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
-import { Checkbox, Text } from "@revolt/ui";
+import { Button, Checkbox, Text } from "@revolt/ui";
 
 /**
  * Slim view on or off, for this device: the layout that shows chats and
@@ -19,6 +25,8 @@ import { Checkbox, Text } from "@revolt/ui";
  *
  * It cannot be changed during a call: the box is disabled while one is up,
  * with a line under it saying so.
+ *
+ * Under it sits a short offer of Encrypted-only chats (`EncryptedOnlyOffer`).
  */
 export function SlimViewChoice() {
   const state = useState();
@@ -68,6 +76,52 @@ export function SlimViewChoice() {
           <Trans>You can't change Slim view during a call.</Trans>
         </Text>
       </Show>
+      <EncryptedOnlyOffer />
+    </Show>
+  );
+}
+
+/**
+ * A short offer of Encrypted-only chats under the Slim view choice. Shown
+ * only in an app (never on the website), while the server offers the
+ * setting and this account does not have it on. The button opens the
+ * guided setup, which does the rest.
+ */
+function EncryptedOnlyOffer() {
+  const client = useClient();
+  const { openModal, isOpen } = useModals();
+  const advert = useOnlyAdvert();
+
+  // The settings card's own states: "off" is the one that opens the setup
+  const shown = createMemo(
+    () =>
+      deviceStateOf(client()) !== "web" &&
+      onlyCardState({
+        advert: advert(),
+        userKnown: !!client().user,
+        latched: latchedForClient(client().user?.id),
+        serverOn: client().user?.e2eeOnly === true,
+        settingUp: isOpen("encrypted_only_onboarding"),
+      }) === "off",
+  );
+
+  return (
+    <Show when={shown()}>
+      <Text class="label" size="small">
+        <Trans>Encrypted-only chats</Trans>:{" "}
+        <Trans>
+          Only send encrypted direct messages and group messages from this
+          account.
+        </Trans>
+      </Text>
+      <div>
+        <Button
+          size="sm"
+          onPress={() => openModal({ type: "encrypted_only_onboarding" })}
+        >
+          <Trans>Set up Encrypted-only chats</Trans>
+        </Button>
+      </div>
     </Show>
   );
 }

@@ -67,6 +67,7 @@ import {
   serverActionsBlocked,
   splitUntrusted,
 } from "./e2eeTranscriptTrust";
+import { offersEncryptGroup } from "./encryptedOnlyInvite";
 
 /**
  * Initial fetch limit
@@ -328,6 +329,24 @@ export function Messages(props: Props) {
       props.channel.type === "Group" &&
       plainGroupUnderLatch(buildPlainWriteInput(client(), props.channel)),
   );
+
+  /**
+   * Whether that banner offers "Encrypt this group": 24 people or fewer
+   * counting you, every other member with encryption on and none a bot. A
+   * member this device does not know yet counts as without encryption.
+   */
+  const encryptGroupOffered = createMemo(() => {
+    if (props.channel.type !== "Group") return false;
+    const c = client();
+    const selfId = c.user?.id;
+    const others = [...(props.channel.recipientIds ?? [])]
+      .filter((id) => id !== selfId)
+      .map((id) => {
+        const user = c.users.get(id);
+        return { encrypted: user?.e2eeEnabled === true, bot: !!user?.bot };
+      });
+    return offersEncryptGroup(buildPlainWriteInput(c, props.channel), others);
+  });
 
   /**
    * The other person of a direct message, once an update said they turned
@@ -1417,6 +1436,19 @@ export function Messages(props: Props) {
               here while Encrypted-only chats is on.
             </Trans>
           </span>
+          <Show when={encryptGroupOffered()}>
+            <Button
+              variant="tonal"
+              onPress={() =>
+                openModal({
+                  type: "e2ee_enable_group",
+                  channelId: props.channel.id,
+                })
+              }
+            >
+              <Trans>Encrypt this group</Trans>
+            </Button>
+          </Show>
           <Button
             variant="tonal"
             onPress={() =>

@@ -3,11 +3,17 @@
 // rule and the one shell predicate. The older phase-1 pins stay in
 // `e2eeIosGate.test.ts`.
 //
+// Also the backup refresh rules: which shells refresh the key backup by
+// themselves (Tauri, Electron, iOS; never Android or the web, never outside
+// the main window) and the hourly focus throttle. Those rows are checked
+// against in-suite mutants of the module too.
+//
 // `E2EE_PLATFORM_MODULE` points the spec at another copy of the module, so
 // a mutated copy can be shown to fail it.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 
@@ -219,3 +225,249 @@ test("e2eePlatform.ts stays pure: no imports, no require", () => {
   assert.doesNotMatch(src, /\bimport\s*\(/);
   assert.doesNotMatch(src, /\brequire\s*\(/);
 });
+
+// ---- Backup refresh: which shells, and how often on focus ------------------
+
+type Module = typeof import("./e2eePlatform.ts");
+type RefreshInput = Parameters<Module["shellRefreshesBackup"]>[0];
+
+const HOUR = 60 * 60 * 1000;
+
+/** [label, input, expected]: every shell and platform the bridge can see. */
+const REFRESH_ROWS: [string, RefreshInput, boolean][] = [
+  [
+    "Tauri main window",
+    { shell: "tauri", capacitorPlatform: "web", mainWindow: true },
+    true,
+  ],
+  [
+    "Electron main window",
+    { shell: "electron", capacitorPlatform: "web", mainWindow: true },
+    true,
+  ],
+  [
+    "iOS",
+    { shell: "capacitor", capacitorPlatform: "ios", mainWindow: true },
+    true,
+  ],
+  [
+    "Android",
+    { shell: "capacitor", capacitorPlatform: "android", mainWindow: true },
+    false,
+  ],
+  [
+    "web",
+    { shell: "capacitor", capacitorPlatform: "web", mainWindow: true },
+    false,
+  ],
+  [
+    "Android under a Tauri shell value",
+    { shell: "tauri", capacitorPlatform: "android", mainWindow: true },
+    false,
+  ],
+  [
+    "Android under an Electron shell value",
+    { shell: "electron", capacitorPlatform: "android", mainWindow: true },
+    false,
+  ],
+  [
+    "Tauri, not the main window",
+    { shell: "tauri", capacitorPlatform: "web", mainWindow: false },
+    false,
+  ],
+  [
+    "Electron, not the main window",
+    { shell: "electron", capacitorPlatform: "web", mainWindow: false },
+    false,
+  ],
+  [
+    "iOS, not the main window",
+    { shell: "capacitor", capacitorPlatform: "ios", mainWindow: false },
+    false,
+  ],
+  [
+    "Tauri, main window flag 1",
+    {
+      shell: "tauri",
+      capacitorPlatform: "web",
+      mainWindow: 1 as unknown as boolean,
+    },
+    false,
+  ],
+  [
+    "unknown shell",
+    { shell: "", capacitorPlatform: "web", mainWindow: true },
+    false,
+  ],
+  [
+    "shell spelled Tauri",
+    { shell: "Tauri", capacitorPlatform: "web", mainWindow: true },
+    false,
+  ],
+  [
+    "Capacitor platform IOS",
+    { shell: "capacitor", capacitorPlatform: "IOS", mainWindow: true },
+    false,
+  ],
+  [
+    "Capacitor platform electron",
+    { shell: "capacitor", capacitorPlatform: "electron", mainWindow: true },
+    false,
+  ],
+  [
+    "Capacitor platform empty",
+    { shell: "capacitor", capacitorPlatform: "", mainWindow: true },
+    false,
+  ],
+];
+
+/** [label, lastAt, now, expected] for the focus throttle. */
+const FOCUS_ROWS: [string, number | null, number, boolean][] = [
+  ["first focus on this bridge", null, 5, true],
+  ["right after a check", 1_000, 1_000, false],
+  ["one ms short of an hour", 1_000, 1_000 + HOUR - 1, false],
+  ["exactly an hour", 1_000, 1_000 + HOUR, true],
+  ["over an hour", 1_000, 1_000 + 3 * HOUR, true],
+  ["the clock went backwards", 10 * HOUR, 9 * HOUR, true],
+];
+
+/** Every row `m` gets wrong, labelled. */
+function refreshFailures(m: Module): string[] {
+  const out: string[] = [];
+  for (const [label, input, want] of REFRESH_ROWS) {
+    const got = m.shellRefreshesBackup({ ...input });
+    if (got !== want) out.push(`refresh ${label}: ${got}, want ${want}`);
+  }
+  for (const [label, lastAt, now, want] of FOCUS_ROWS) {
+    const got = m.backupRefreshFocusDue(lastAt, now);
+    if (got !== want) out.push(`focus ${label}: ${got}, want ${want}`);
+  }
+  if (m.BACKUP_REFRESH_FOCUS_MS !== HOUR) {
+    out.push(`focus interval ${m.BACKUP_REFRESH_FOCUS_MS}, want ${HOUR}`);
+  }
+  return out;
+}
+
+test("shellRefreshesBackup: Tauri, Electron and iOS refresh in the main window", () => {
+  for (const [label, input, want] of REFRESH_ROWS) {
+    if (want) assert.equal(mod.shellRefreshesBackup(input), true, label);
+  }
+});
+
+test("shellRefreshesBackup: Android and the web never refresh", () => {
+  for (const [label, input] of REFRESH_ROWS) {
+    if (input.capacitorPlatform === "android" || label === "web") {
+      assert.equal(mod.shellRefreshesBackup(input), false, label);
+    }
+  }
+});
+
+test("shellRefreshesBackup: never outside the main window, and only a literal true counts", () => {
+  for (const [label, input] of REFRESH_ROWS) {
+    if (input.mainWindow !== true) {
+      assert.equal(mod.shellRefreshesBackup(input), false, label);
+    }
+  }
+});
+
+test("shellRefreshesBackup: unknown shells and platforms fail closed", () => {
+  assert.deepEqual(
+    refreshFailures(mod).filter((f) => f.startsWith("refresh ")),
+    [],
+  );
+});
+
+test("backupRefreshFocusDue: the first focus is due, then at most once an hour", () => {
+  assert.equal(mod.BACKUP_REFRESH_FOCUS_MS, HOUR);
+  assert.deepEqual(
+    refreshFailures(mod).filter((f) => !f.startsWith("refresh ")),
+    [],
+  );
+});
+
+/**
+ * The module under test with `swaps` applied (exact, unique snippets),
+ * type-stripped and imported from a data: URL: no file is written.
+ */
+async function moduleCopy(swaps: [string, string][]): Promise<Module> {
+  let src = readFileSync(MODULE_URL, "utf8");
+  for (const [from, to] of swaps) {
+    assert.equal(src.split(from).length, 2, `swap not unique: ${from}`);
+    src = src.replace(from, to);
+  }
+  const js = stripTypeScriptTypes(src);
+  return (await import(
+    `data:text/javascript,${encodeURIComponent(js)}`
+  )) as Module;
+}
+
+/** Mutants of the backup refresh rules, and the row each must fail. */
+const REFRESH_MUTANTS: {
+  label: string;
+  swap: [string, string];
+  kills: RegExp;
+}[] = [
+  {
+    label: "the Android rule dropped",
+    swap: ['  if (input.capacitorPlatform === "android") return false;\n', ""],
+    kills: /^refresh Android under a Tauri shell value: true/,
+  },
+  {
+    label: "the main window ignored",
+    swap: ["  if (input.mainWindow !== true) return false;\n", ""],
+    kills: /^refresh Tauri, not the main window: true/,
+  },
+  {
+    label: "the main window read truthy",
+    swap: ["input.mainWindow !== true", "!input.mainWindow"],
+    kills: /^refresh Tauri, main window flag 1: true/,
+  },
+  {
+    label: "every Capacitor platform refreshes",
+    swap: [
+      'input.shell === "capacitor" && input.capacitorPlatform === "ios"',
+      'input.shell === "capacitor"',
+    ],
+    kills: /^refresh web: true/,
+  },
+  {
+    label: "Electron left out",
+    swap: [
+      'input.shell === "tauri" || input.shell === "electron"',
+      'input.shell === "tauri"',
+    ],
+    kills: /^refresh Electron main window: false/,
+  },
+  {
+    label: "no throttle",
+    swap: ["now < lastAt || now - lastAt >= BACKUP_REFRESH_FOCUS_MS", "true"],
+    kills: /^focus right after a check: true/,
+  },
+  {
+    label: "the hour boundary excluded",
+    swap: [
+      "now - lastAt >= BACKUP_REFRESH_FOCUS_MS",
+      "now - lastAt > BACKUP_REFRESH_FOCUS_MS",
+    ],
+    kills: /^focus exactly an hour: false/,
+  },
+  {
+    label: "a backwards clock blocks the check",
+    swap: ["now < lastAt || ", ""],
+    kills: /^focus the clock went backwards: false/,
+  },
+];
+
+test("backup refresh mutation harness: the unmutated module, loaded the same way, passes every row", async () => {
+  assert.deepEqual(refreshFailures(await moduleCopy([])), []);
+});
+
+for (const { label, swap, kills } of REFRESH_MUTANTS) {
+  test(`backup refresh mutation: ${label} fails its row`, async () => {
+    const found = refreshFailures(await moduleCopy([swap]));
+    assert.ok(
+      found.some((f) => kills.test(f)),
+      `${label}: want ${kills}, got ${JSON.stringify(found, null, 2)}`,
+    );
+  });
+}

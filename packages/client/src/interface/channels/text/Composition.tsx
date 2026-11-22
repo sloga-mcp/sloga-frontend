@@ -11,6 +11,7 @@ import {
   on,
   onCleanup,
   onMount,
+  useContext,
 } from "solid-js";
 
 import { useLingui } from "@lingui-solid/solid/macro";
@@ -26,6 +27,12 @@ import { styled } from "styled-system/jsx";
 
 import { SOFTRES_CREATION_ENABLED } from "@revolt/app";
 import { serverActionsBlocked } from "@revolt/app/interface/channels/text/e2eeTranscriptTrust";
+import {
+  browserShareDeps,
+  composerOffersInvite,
+  inviteToastFor,
+  shareInviteText,
+} from "@revolt/app/interface/channels/text/encryptedOnlyInvite";
 import type { E2EEBridge } from "@revolt/client";
 import { E2EESendError, useClient, useE2EE, useSound } from "@revolt/client";
 import { composerE2EEModeFor } from "@revolt/client/e2eeBadge";
@@ -99,6 +106,7 @@ import {
   usePickedFolder,
   zipJobs,
 } from "@revolt/ui";
+import { SnackbarContext } from "@revolt/ui/components/design/Snackbar";
 import { ProtectedShieldIcon } from "@revolt/ui/components/features/protected/ProtectedShieldIcon";
 import { expandTrailingEmoticon } from "@revolt/ui/components/features/texteditor/emoticonExpansion";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -900,13 +908,57 @@ export function MessageComposition(props: Props) {
    * The button inside the composer block, if it offers one
    */
   const encryptedOnlyBlockedAction = () => {
+    if (protectedBlockedText()) return undefined;
     const action = encryptedOnlyBlock()?.action;
-    if (!action || protectedBlockedText()) return undefined;
+    if (!action) {
+      return encryptedOnlyInviteOffered()
+        ? {
+            label: t`Share invite`,
+            onClick: () => void shareEncryptionInvite(),
+          }
+        : undefined;
+    }
     return {
       label: encryptedOnlyActionLabel(action),
       onClick: () => runEncryptedOnlyAction(action),
     };
   };
+
+  /**
+   * Your own message is refused here because the other person does not
+   * have encryption on: offer to invite them
+   */
+  const encryptedOnlyInviteOffered = createMemo(() =>
+    composerOffersInvite(
+      encryptedOnlyBlock(),
+      encryptedOnlyInput(),
+      encryptedOnlyViewFor(props.channel).peerOptedIn,
+    ),
+  );
+
+  /** Not every window that shows a composer has a snackbar */
+  const snackbar = useContext(SnackbarContext);
+
+  /**
+   * Share the invite to turn on encryption: the share sheet, or else the
+   * clipboard with a toast
+   */
+  async function shareEncryptionInvite() {
+    const outcome = await shareInviteText(
+      t`I only accept encrypted messages on Sloga. To message me, turn on encryption in the Sloga app: Settings > Encryption.`,
+      browserShareDeps(),
+    );
+    const toast = inviteToastFor(outcome);
+    if (!toast) return;
+    snackbar?.show({
+      message:
+        toast === "copied"
+          ? t`Invite copied to the clipboard.`
+          : t`Could not copy to the clipboard.`,
+      placement: "bottom",
+      closeable: true,
+    });
+  }
 
   // Whether the send button should be active/clickable
   const canSend = createMemo(() => {

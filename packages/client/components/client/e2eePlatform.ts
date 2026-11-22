@@ -186,3 +186,43 @@ export function capacitorClipboardImageInWebview(platform: string): boolean {
 export function capacitorCouriersOrphanedRecovery(platform: string): boolean {
   return platform === "ios";
 }
+
+/**
+ * Whether this page refreshes the key backup by itself: after each accepted
+ * device claim and when the main window regains focus. Tauri, Electron and
+ * iOS do. Android never does: it writes a new backup key before the code is
+ * shown, so a refresh after a cancelled or killed rotate would replace the
+ * blob the old code still opens. The web has no native layer, and a page
+ * that is not the main window never does. Any other shell or platform
+ * fails closed.
+ *
+ * - `shell` is the transport: "tauri", "electron" or "capacitor".
+ * - `capacitorPlatform` is `Capacitor.getPlatform()` ("web" off Capacitor).
+ * - `mainWindow` is false in the popout and the voice overlay.
+ */
+export function shellRefreshesBackup(input: {
+  shell: string;
+  capacitorPlatform: string;
+  mainWindow: boolean;
+}): boolean {
+  if (input.capacitorPlatform === "android") return false;
+  if (input.mainWindow !== true) return false;
+  if (input.shell === "tauri" || input.shell === "electron") return true;
+  return input.shell === "capacitor" && input.capacitorPlatform === "ios";
+}
+
+/** The least time between two focus re-checks of the backup, in ms. */
+export const BACKUP_REFRESH_FOCUS_MS = 60 * 60 * 1000;
+
+/**
+ * Whether a main-window focus may re-check the backup now: no check yet on
+ * this bridge, or the last one is an hour old or more. A clock that went
+ * backwards reads as due, so a wrong clock cannot block the check for good.
+ */
+export function backupRefreshFocusDue(
+  lastAt: number | null,
+  now: number,
+): boolean {
+  if (lastAt === null) return true;
+  return now < lastAt || now - lastAt >= BACKUP_REFRESH_FOCUS_MS;
+}

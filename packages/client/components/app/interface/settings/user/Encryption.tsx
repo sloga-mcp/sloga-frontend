@@ -1,8 +1,14 @@
 import { Capacitor } from "@capacitor/core";
 import { Match, Show, Switch, createSignal, onMount } from "solid-js";
 
-import { Trans } from "@lingui-solid/solid/macro";
+import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
+import {
+  browserShareDeps,
+  cardOffersInvite,
+  inviteToastFor,
+  shareInviteText,
+} from "@revolt/app/interface/channels/text/encryptedOnlyInvite";
 import type { BackupStatusView } from "@revolt/client";
 import { useClient, useE2EE } from "@revolt/client";
 import { latchedForClient } from "@revolt/client/encryptedOnlyLatch";
@@ -17,11 +23,19 @@ import {
   fetchIosCallSwitchValue,
   iosCallSwitch,
 } from "@revolt/rtc/iosCallSwitch";
-import { CategoryButton, Checkbox, Column, Text, iconSize } from "@revolt/ui";
+import {
+  CategoryButton,
+  Checkbox,
+  Column,
+  Text,
+  iconSize,
+  useSnackbar,
+} from "@revolt/ui";
 
 import MdDevices from "@material-design-icons/svg/outlined/devices.svg?component-solid";
 import MdKey from "@material-design-icons/svg/outlined/key.svg?component-solid";
 import MdLock from "@material-design-icons/svg/outlined/lock.svg?component-solid";
+import MdShare from "@material-design-icons/svg/outlined/share.svg?component-solid";
 import MdVideocam from "@material-design-icons/svg/outlined/videocam.svg?component-solid";
 import MdWarning from "@material-design-icons/svg/outlined/warning.svg?component-solid";
 
@@ -384,7 +398,9 @@ function EncryptionCard() {
  * it off here too, or on again.
  */
 function EncryptedOnlyCard() {
+  const { t } = useLingui();
   const client = useClient();
+  const snackbar = useSnackbar();
   const { openModal, isOpen } = useModals();
   const advert = useOnlyAdvert();
   // The servers' refusal is stated only while they enforce it
@@ -399,6 +415,27 @@ function EncryptedOnlyCard() {
       // The setup latches before the server answers
       settingUp: isOpen("encrypted_only_onboarding"),
     });
+
+  /**
+   * Share the invite to turn on encryption: the share sheet, or else the
+   * clipboard with a toast
+   */
+  async function shareInvite() {
+    const outcome = await shareInviteText(
+      t`I only accept encrypted messages on Sloga. To message me, turn on encryption in the Sloga app: Settings > Encryption.`,
+      browserShareDeps(),
+    );
+    const toast = inviteToastFor(outcome);
+    if (!toast) return;
+    snackbar.show({
+      message:
+        toast === "copied"
+          ? t`Invite copied to the clipboard.`
+          : t`Could not copy to the clipboard.`,
+      placement: "bottom",
+      closeable: true,
+    });
+  }
 
   return (
     <Show when={state() !== "hidden"}>
@@ -478,6 +515,16 @@ function EncryptedOnlyCard() {
             onClick={() => openModal({ type: "encrypted_only_onboarding" })}
           >
             <Trans>Turn on again</Trans>
+          </CategoryButton>
+        </Show>
+
+        <Show when={cardOffersInvite(state())}>
+          <CategoryButton
+            icon={<MdShare {...iconSize(24)} />}
+            action="chevron"
+            onClick={() => void shareInvite()}
+          >
+            <Trans>Share invite</Trans>
           </CategoryButton>
         </Show>
       </CategoryButton.Group>
