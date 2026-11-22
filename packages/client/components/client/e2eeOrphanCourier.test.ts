@@ -16,9 +16,15 @@
 // `{ generation }`, the sent one when stored, the stored one when the sent
 // one is stale.
 //
+// A desktop create or rotate waits for its recovery window's courier, and a
+// backup the server did not keep rejects it with the words `useError` in
+// `../i18n/errors.ts` shows (bundled the same way, lingui stubbed to plain
+// English). A background refresh only logs. `refreshBackupIfDue()` refuses
+// by itself on Android, the website and a window that is not the main one.
+//
 // `E2EE_COURIER_TS` swaps in another e2ee.ts (resolved against THIS
-// directory), which is how the fail-first control runs these tests against
-// the pre-fix source.
+// directory) and `E2EE_COURIER_ERRORS_TS` another errors.ts, which is how
+// the fail-first control runs these tests against the pre-fix source.
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -31,6 +37,14 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 const SOURCE =
   process.env.E2EE_COURIER_TS ||
   fileURLToPath(new URL("./e2ee.ts", import.meta.url));
+const ERRORS_SOURCE =
+  process.env.E2EE_COURIER_ERRORS_TS ||
+  fileURLToPath(new URL("../i18n/errors.ts", import.meta.url));
+const I18N_DIR = fileURLToPath(new URL("../i18n/", import.meta.url));
+
+const NOT_STORED_WORDS =
+  "Sloga's servers kept a different backup. Remove the backup in" +
+  " Settings > Encryption, then make a new recovery code.";
 
 const HOUR = 60 * 60 * 1000;
 
@@ -51,6 +65,22 @@ class FakePlugin {
   hold = false;
   /** Bundles the next takes return when not held (then null: not due). */
   due: unknown[] = [];
+  /** Bundles the next `e2ee_backup_take_pending_upload` calls return. */
+  pending: unknown[] = [];
+  /** Desktop shell event listeners (`__TAURI__.event` / `slogaShell.e2ee.on`). */
+  events = new Map<string, Set<(payload: unknown) => void>>();
+
+  on(name: string, fn: (payload: unknown) => void) {
+    const set = this.events.get(name) ?? new Set();
+    set.add(fn);
+    this.events.set(name, set);
+    return () => set.delete(fn);
+  }
+
+  /** The desktop shell delivers `name` to every listener. */
+  emit(name: string, payload: unknown) {
+    for (const fn of [...(this.events.get(name) ?? [])]) fn(payload);
+  }
 
   addListener(name: string, fn: Listener) {
     assert.equal(name, "backupBundleWaiting");
@@ -82,6 +112,11 @@ class FakePlugin {
       }
     }
     if (args.__cmd === "e2ee_backup_mark_uploaded") return { json: "null" };
+    // The desktop recovery window opens; its outcome comes later as an event
+    if (args.__cmd === "e2ee_backup_open_recovery") return { json: "null" };
+    if (args.__cmd === "e2ee_backup_take_pending_upload") {
+      return { json: JSON.stringify(this.pending.shift() ?? null) };
+    }
     throw new Error(`unstubbed command ${args.__cmd}`);
   }
 
@@ -106,6 +141,9 @@ type Bridge = {
   status: Map<string, unknown>;
   onEvent(event: { type: string; accepted?: boolean }): void;
   dispose?: () => Promise<void>;
+  refreshBackupIfDue(): Promise<void>;
+  createRecoveryCode(): Promise<void>;
+  rotateRecoveryCode(): Promise<void>;
 };
 type BridgeCtor = new (client: unknown) => Bridge;
 type EsbuildHook = (
@@ -122,6 +160,10 @@ let storedGeneration: number | null = null;
 /** What `Capacitor.getPlatform()` answers. */
 let capacitorPlatform = "ios";
 let E2EEBridge: BridgeCtor;
+/** The same module loaded as the popout document (not the main window). */
+let PopoutBridge: BridgeCtor;
+/** `useError()` from errors.ts, lingui stubbed to plain English. */
+let describeError: (error: unknown) => string;
 let outDir: string;
 const realNow = Date.now;
 
@@ -211,6 +253,63 @@ before(async () => {
   ({ E2EEBridge } = (await import(pathToFileURL(file).href)) as {
     E2EEBridge: BridgeCtor;
   });
+  // popout.ts reads the path once, at module scope: a second instance of
+  // the module, loaded under the popout path, is a non-main document.
+  g.window = newWindow("/friends-popout");
+  ({ E2EEBridge: PopoutBridge } = (await import(
+    `${pathToFileURL(file).href}?popout`
+  )) as { E2EEBridge: BridgeCtor });
+  g.window = newWindow();
+
+  const errors = await esbuild.build({
+    stdin: {
+      contents: readFileSync(ERRORS_SOURCE, "utf8"),
+      resolveDir: I18N_DIR,
+      sourcefile: "errors.ts",
+      loader: "ts",
+    },
+    bundle: true,
+    write: false,
+    format: "esm",
+    platform: "neutral",
+    logLevel: "silent",
+    plugins: [
+      {
+        name: "stub-errors-imports",
+        setup(build: { onResolve: EsbuildHook; onLoad: EsbuildHook }) {
+          build.onResolve({ filter: /^[^./]/ }, (a: { path: string }) => ({
+            path: a.path,
+            namespace: "stub",
+          }));
+          build.onLoad(
+            { filter: /.*/, namespace: "stub" },
+            (a: { path: string }) => {
+              const stubs: Record<string, string> = {
+                // The macro's `t` as a plain template: the English msgid
+                "@lingui-solid/solid/macro":
+                  "export const useLingui = () => ({ t: (s, ...v) =>" +
+                  " s.reduce((a, x, i) => a + x + (i < v.length ? v[i] : ''), '') });",
+                "@lingui/core": "export const i18n = { locale: 'en' };",
+                "@revolt/state/stores/draftSendError":
+                  "export const FIRST_FILE_NEEDS_TEXT_SEND_ERROR = 'FirstFileNeedsText';" +
+                  "export const sendRefusalSide = () => undefined;",
+              };
+              return {
+                contents: stubs[a.path] ?? "export const API = {};",
+                loader: "js",
+              };
+            },
+          );
+        },
+      },
+    ],
+  });
+  const errorsFile = join(outDir, "errors.mjs");
+  writeFileSync(errorsFile, errors.outputFiles[0].text);
+  const { useError } = (await import(pathToFileURL(errorsFile).href)) as {
+    useError: () => (error: unknown) => string;
+  };
+  describeError = useError();
 });
 
 after(() => {
@@ -225,13 +324,13 @@ afterEach(() => {
  * A main window: an event target with a location, which counts the "focus"
  * listeners attached to it (`focusListeners`).
  */
-function newWindow(): FakeWindow {
+function newWindow(path = "/"): FakeWindow {
   const target = new EventTarget();
   const focus = new Set<unknown>();
   const add = target.addEventListener.bind(target);
   const remove = target.removeEventListener.bind(target);
   return Object.assign(target, {
-    location: new URL("http://localhost/"),
+    location: new URL(path, "http://localhost/"),
     focusListeners: () => focus.size,
     addEventListener(type: string, fn: EventListener) {
       if (type === "focus") focus.add(fn);
@@ -275,7 +374,10 @@ function fresh(shell: Shell = "ios") {
         invoke: async (command: string, args?: Record<string, unknown>) =>
           JSON.parse((await p.call({ __cmd: command, ...args })).json),
       },
-      event: { listen: async () => () => {} },
+      event: {
+        listen: async (name: string, fn: (e: { payload: unknown }) => void) =>
+          p.on(name, (payload) => fn({ payload })),
+      },
     };
   } else if (shell === "electron") {
     w.slogaShell = {
@@ -290,7 +392,7 @@ function fresh(shell: Shell = "ios") {
             return { err };
           }
         },
-        on: () => () => {},
+        on: (name: string, fn: (payload: unknown) => void) => p.on(name, fn),
       },
     };
   }
@@ -319,9 +421,12 @@ async function settle() {
 }
 
 /** A bridge on the shared plugin, enabled, published and claimed. */
-async function claimedBridge(deviceId: string | null = "01DEVICE") {
+async function claimedBridge(
+  deviceId: string | null = "01DEVICE",
+  Ctor: BridgeCtor = E2EEBridge,
+) {
   const client = fakeClient();
-  const bridge = new E2EEBridge(client);
+  const bridge = new Ctor(client);
   bridge.status.set("state", {
     enabled: true,
     published: true,
@@ -599,4 +704,177 @@ test("echo control: the matching echo is marked with the sent generation", async
   await claimedBridge();
   assert.deepEqual(puts, [7]);
   assert.equal(plugin.marks(), 1);
+});
+
+// ---- A backup the server did not keep: shown only when the user asked ----
+
+/**
+ * Run `fn` with console.error captured; returns the backup lines it logged
+ * (the fake native layer leaves other housekeeping logging too).
+ */
+async function capturingErrors(fn: () => Promise<void>): Promise<unknown[][]> {
+  const seen: unknown[][] = [];
+  const real = console.error;
+  console.error = (...args: unknown[]) => void seen.push(args);
+  try {
+    await fn();
+  } finally {
+    console.error = real;
+  }
+  return seen.filter(
+    (args) =>
+      typeof args[0] === "string" && args[0].startsWith("[e2ee] backup"),
+  );
+}
+
+/** Start a desktop create or rotate; it settles only after the courier. */
+function startRecovery(bridge: Bridge, mode: "create" | "rotate") {
+  const run =
+    mode === "create"
+      ? bridge.createRecoveryCode()
+      : bridge.rotateRecoveryCode();
+  const state: { done: boolean; error?: unknown } = { done: false };
+  run.then(
+    () => void (state.done = true),
+    (error: unknown) => {
+      state.done = true;
+      state.error = error;
+    },
+  );
+  return state;
+}
+
+test("useError: the not-stored error shows its own words, never the log text", () => {
+  const error = Object.assign(
+    new Error("The server did not store this backup generation"),
+    { name: "BackupNotStoredError" },
+  );
+  assert.equal(describeError(error), NOT_STORED_WORDS);
+});
+
+for (const shell of ["tauri", "electron"] as const) {
+  for (const mode of ["create", "rotate"] as const) {
+    test(`${shell} ${mode}: a backup the server did not keep rejects with the words`, async () => {
+      fresh(shell);
+      const { bridge } = await claimedBridge();
+      plugin.calls = [];
+      storedGeneration = 9;
+      plugin.pending = [BUNDLE];
+
+      const run = startRecovery(bridge, mode);
+      await settle();
+      assert.equal(
+        run.done,
+        false,
+        `${mode} returned before the window's outcome`,
+      );
+      assert.ok(plugin.calls.includes("e2ee_backup_open_recovery"));
+
+      const logged = await capturingErrors(async () => {
+        plugin.emit("e2ee:recovery-complete", mode);
+        await settle();
+      });
+      assert.equal(run.done, true, `${mode} still waiting after the courier`);
+      assert.deepEqual(puts, [7]);
+      assert.equal(plugin.marks(), 0, "a refused upload was marked uploaded");
+      assert.equal(
+        (run.error as { name?: unknown } | undefined)?.name,
+        "BackupNotStoredError",
+        `${mode} did not reject with the not-stored error`,
+      );
+      assert.equal(describeError(run.error), NOT_STORED_WORDS);
+      assert.equal(logged.length, 1, "the courier failure is still logged");
+    });
+  }
+
+  test(`${shell} create control: a kept backup resolves and is marked`, async () => {
+    fresh(shell);
+    const { bridge } = await claimedBridge();
+    plugin.pending = [BUNDLE];
+    const run = startRecovery(bridge, "create");
+    await settle();
+    assert.equal(run.done, false);
+    plugin.emit("e2ee:recovery-complete", "create");
+    await settle();
+    assert.equal(run.done, true);
+    assert.equal(run.error, undefined);
+    assert.deepEqual(puts, [7]);
+    assert.equal(plugin.marks(), 1);
+  });
+
+  test(`${shell} create: a cancelled window resolves without a PUT`, async () => {
+    fresh(shell);
+    const { bridge } = await claimedBridge();
+    const run = startRecovery(bridge, "create");
+    await settle();
+    plugin.emit("e2ee:recovery-complete", "cancel");
+    await settle();
+    assert.equal(run.done, true);
+    assert.equal(run.error, undefined);
+    assert.equal(puts.length, 0);
+  });
+}
+
+test("tauri create: dispose ends the wait without an error", async () => {
+  fresh("tauri");
+  const { bridge } = await claimedBridge();
+  const run = startRecovery(bridge, "create");
+  await settle();
+  assert.equal(run.done, false);
+  await bridge.dispose!();
+  await settle();
+  assert.equal(run.done, true, "a disposed bridge left the caller waiting");
+  assert.equal(run.error, undefined);
+});
+
+test("tauri: a background refresh the server did not keep only logs its name", async () => {
+  fresh("tauri");
+  storedGeneration = 9;
+  plugin.due = [BUNDLE];
+  const logged = await capturingErrors(async () => {
+    await claimedBridge();
+  });
+  assert.deepEqual(puts, [7]);
+  assert.equal(plugin.marks(), 0);
+  assert.deepEqual(logged, [
+    ["[e2ee] backup refresh failed:", "BackupNotStoredError"],
+  ]);
+});
+
+// ---- refreshBackupIfDue() refuses by itself ---------------------------------
+
+for (const shell of ["android", "web"] as const) {
+  test(`${shell}: a direct refreshBackupIfDue() never asks native`, async () => {
+    fresh(shell);
+    const { bridge } = await claimedBridge();
+    plugin.calls = [];
+    plugin.due = [BUNDLE];
+    await bridge.refreshBackupIfDue();
+    await settle();
+    assert.equal(plugin.takes(), 0, `${shell} asked native for a refresh`);
+    assert.equal(puts.length, 0);
+  });
+}
+
+for (const shell of ["tauri", "electron"] as const) {
+  test(`${shell} popout: a direct refreshBackupIfDue() never asks native`, async () => {
+    fresh(shell);
+    const { bridge } = await claimedBridge("01DEVICE", PopoutBridge);
+    plugin.calls = [];
+    plugin.due = [BUNDLE];
+    await bridge.refreshBackupIfDue();
+    await settle();
+    assert.equal(plugin.takes(), 0, "a non-main window asked native");
+    assert.equal(puts.length, 0);
+  });
+}
+
+test("control: a direct refreshBackupIfDue() in the tauri main window takes", async () => {
+  fresh("tauri");
+  const { bridge } = await claimedBridge();
+  plugin.calls = [];
+  plugin.due = [BUNDLE];
+  await bridge.refreshBackupIfDue();
+  assert.equal(plugin.takes(), 1);
+  assert.deepEqual(puts, [7]);
 });

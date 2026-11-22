@@ -541,7 +541,9 @@ export class E2EEApiError extends Error {
 
 /**
  * `PUT /e2ee/backup` answered with a generation other than the one sent: the
- * server kept another blob, so this upload is not recorded as done.
+ * server kept another blob, so this upload is not recorded as done. The
+ * message is for logs only; `components/i18n/errors.ts` matches the name
+ * and shows its own words.
  */
 export class BackupNotStoredError extends Error {
   constructor() {
@@ -1121,6 +1123,12 @@ export function nativeE2EEAvailable(): boolean {
  * one this module sees.
  */
 const IS_MAIN_WINDOW = !IS_POPOUT_WINDOW && !IS_OVERLAY_WINDOW;
+
+/**
+ * The longest a desktop create or rotate waits for its recovery window's
+ * outcome before it returns without one.
+ */
+const RECOVERY_WAIT_MS = 15 * 60 * 1000;
 
 // ================================================================
 // Native transports
@@ -7961,6 +7969,13 @@ export class E2EEBridge implements E2EEAdapter {
   #backupFocusListener: (() => void) | null = null;
 
   /**
+   * Desktop create and rotate callers waiting for the recovery window's
+   * outcome (`#openRecoveryAndWait`). The next recovery-complete courier
+   * settles all of them with its `BackupNotStoredError`, or with null.
+   */
+  #recoveryWaiters = new Set<(error: BackupNotStoredError | null) => void>();
+
+  /**
    * Post-restore fresh-OTK republish payload, held between a RESTORE and its
    * device claim. A restore recovers the OLD device_id, so on the server the
    * republish takes the `existing.assert_bound_session` path — it is accepted
@@ -8092,10 +8107,57 @@ export class E2EEBridge implements E2EEAdapter {
     if (!this.#transport.subscribeRecoveryComplete) return;
     this.#backupCourierReady = true;
     await this.#transport.subscribeRecoveryComplete((mode) => {
-      this.#courierRecovery(mode).catch((error) =>
-        console.error("[e2ee] backup courier failed", error),
+      this.#courierRecovery(mode).then(
+        () => this.#settleRecoveryWaiters(null),
+        (error: unknown) => {
+          console.error("[e2ee] backup courier failed", error);
+          this.#settleRecoveryWaiters(error);
+        },
       );
     });
+  }
+
+  /**
+   * Hand a courier's outcome to every waiting create or rotate. Only a
+   * `BackupNotStoredError` is passed on, for the caller to show; any other
+   * courier failure stays in the console, as before.
+   */
+  #settleRecoveryWaiters(error: unknown): void {
+    const waiters = [...this.#recoveryWaiters];
+    this.#recoveryWaiters.clear();
+    const shown = error instanceof BackupNotStoredError ? error : null;
+    for (const settle of waiters) settle(shown);
+  }
+
+  /**
+   * Open the desktop recovery window for a create or rotate and wait for
+   * its courier, so a backup the server did not keep reaches the caller,
+   * which shows it. A background refresh never comes here and only logs.
+   * The wait ends after `RECOVERY_WAIT_MS` if no outcome arrives (the
+   * courier still runs and logs then), and when the bridge is disposed.
+   */
+  async #openRecoveryAndWait(
+    mode: "create" | "rotate",
+    userId: string,
+  ): Promise<void> {
+    if (!this.#backupCourierReady) {
+      await this.#invoke("e2ee_backup_open_recovery", { mode, userId });
+      return;
+    }
+    let settle: (error: BackupNotStoredError | null) => void = () => {};
+    const outcome = new Promise<BackupNotStoredError | null>((resolve) => {
+      settle = resolve;
+    });
+    this.#recoveryWaiters.add(settle);
+    const timer = setTimeout(() => settle(null), RECOVERY_WAIT_MS);
+    try {
+      await this.#invoke("e2ee_backup_open_recovery", { mode, userId });
+      const error = await outcome;
+      if (error) throw error;
+    } finally {
+      clearTimeout(timer);
+      this.#recoveryWaiters.delete(settle);
+    }
   }
 
   async #courierRecovery(mode: string): Promise<void> {
@@ -8209,8 +8271,9 @@ export class E2EEBridge implements E2EEAdapter {
    * Refresh the backup if native says one is due (timer / message delta), and
    * upload the resulting blob. No-op when no backup exists or none is due. On
    * iOS the native arm first returns a bundle the recovery sheet kept (see
-   * `#watchOrphanedBackup`). Only `#courierBackupRefresh` calls it, so only
-   * on the shells whose transport `refreshesBackup` (never Android).
+   * `#watchOrphanedBackup`). Only `#courierBackupRefresh` calls it, and it
+   * also refuses by itself unless the transport `refreshesBackup` (never
+   * Android, the website or a window that is not the main one).
    *
    * Single flight per bridge: a caller arriving while a pass runs gets the
    * same promise, and the chain runs ONE more pass after the current one
@@ -8221,6 +8284,7 @@ export class E2EEBridge implements E2EEAdapter {
    * follow-up; the chain then rejects with the last failure.
    */
   refreshBackupIfDue(): Promise<void> {
+    if (!this.#transport.refreshesBackup) return Promise.resolve();
     if (this.#backupRefresh) {
       this.#backupRefreshAgain = true;
       return this.#backupRefresh;
@@ -8283,9 +8347,10 @@ export class E2EEBridge implements E2EEAdapter {
   /**
    * Tear this bridge down when the Controller replaces its client (Stage 6
    * MAJOR-1). Marks it disposed, so the courier and any pending follow-up
-   * pass refuse; forgets the claim; removes the main-window focus listener;
-   * and removes the iOS `backupBundleWaiting` listener, which is
-   * process-lifetime and would otherwise outlive the bridge. A pass already
+   * pass refuse; forgets the claim; ends any desktop create or rotate wait;
+   * removes the main-window focus listener; and removes the iOS
+   * `backupBundleWaiting` listener, which is process-lifetime and would
+   * otherwise outlive the bridge. A pass already
    * past its native take still finishes its PUT: the take cleared the kept
    * bundle, so that PUT is its only copy. Idempotent, and never rejects.
    */
@@ -8300,6 +8365,7 @@ export class E2EEBridge implements E2EEAdapter {
     this.#disposed = true;
     this.#claimAccepted = null;
     this.#backupRefreshAgain = false;
+    this.#settleRecoveryWaiters(null);
     const focus = this.#backupFocusListener;
     if (focus) {
       this.#backupFocusListener = null;
@@ -8427,10 +8493,7 @@ export class E2EEBridge implements E2EEAdapter {
       return;
     }
     await this.#ensureBackupCourier();
-    await this.#invoke("e2ee_backup_open_recovery", {
-      mode: "create",
-      userId: selfId,
-    });
+    await this.#openRecoveryAndWait("create", selfId);
   }
 
   /** Rotate the recovery code (re-auth-gated in the UI). */
@@ -8447,10 +8510,7 @@ export class E2EEBridge implements E2EEAdapter {
       return;
     }
     await this.#ensureBackupCourier();
-    await this.#invoke("e2ee_backup_open_recovery", {
-      mode: "rotate",
-      userId: selfId,
-    });
+    await this.#openRecoveryAndWait("rotate", selfId);
   }
 
   /**

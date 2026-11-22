@@ -422,7 +422,7 @@ function EncryptedOnlyCard() {
    */
   async function shareInvite() {
     const outcome = await shareInviteText(
-      t`I only accept encrypted messages on Sloga. To message me, turn on encryption in the Sloga app: Settings > Encryption.`,
+      t`Sloga only delivers encrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption.`,
       browserShareDeps(),
     );
     const toast = inviteToastFor(outcome);

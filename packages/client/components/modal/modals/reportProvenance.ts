@@ -76,24 +76,54 @@ export function reporterCopyLabel(
   };
 }
 
+/** Who enforcement would act on, and on what evidence. */
+export type ReportTarget = {
+  /** User id */
+  id: string;
+  /**
+   * Only the reporter's copy names this user: no server copy names an
+   * author, so staff confirm before acting on it
+   */
+  claimedOnly: boolean;
+};
+
 /**
- * Who a report is about, for enforcement: the author on the server's copy
- * when there is one, else the author the reporter's copy claims.
+ * Who a report is about, for enforcement: the reported user for a user
+ * report; for a message, the author on the server's copy when there is one,
+ * else the author the reporter's copy claims.
+ * @param content The report's `content`
+ * @param snapshots Every snapshot of the report
+ * @returns The target, or `undefined`
+ */
+export function reportTargetOf(
+  content: { type: string; id: string } | undefined,
+  snapshots: readonly SnapshotLike[],
+): ReportTarget | undefined {
+  if (content?.type === "User") {
+    const id = text(content.id);
+    return id ? { id, claimedOnly: false } : undefined;
+  }
+
+  let claimed: string | undefined;
+  for (const snapshot of snapshots) {
+    const snap = record(snapshot.content);
+    if (snap?._type === "Message") {
+      const author = text(record(snap.message)?.author);
+      if (author) return { id: author, claimedOnly: false };
+    } else if (snap?._type === "ReporterMessage" && !claimed) {
+      claimed = text(record(snap.message)?.author);
+    }
+  }
+  return claimed ? { id: claimed, claimedOnly: true } : undefined;
+}
+
+/**
+ * The author a message report is about (`reportTargetOf`).
  * @param snapshots Every snapshot of the report
  * @returns The user id, or `undefined`
  */
 export function reportedAuthorOf(
   snapshots: readonly SnapshotLike[],
 ): string | undefined {
-  let claimed: string | undefined;
-  for (const snapshot of snapshots) {
-    const content = record(snapshot.content);
-    if (content?._type === "Message") {
-      const author = text(record(content.message)?.author);
-      if (author) return author;
-    } else if (content?._type === "ReporterMessage" && !claimed) {
-      claimed = text(record(content.message)?.author);
-    }
-  }
-  return claimed;
+  return reportTargetOf(undefined, snapshots)?.id;
 }

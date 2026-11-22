@@ -86,6 +86,10 @@ msgstr "This person may no longer use Encrypted-only chats. If you send anyway, 
 msgid "Add a message to send with your first file."
 msgstr "Add a message to send with your first file."
 
+#: components/i18n/errors.ts
+msgid "Sloga's servers kept a different backup. Remove the backup in Settings > Encryption, then make a new recovery code."
+msgstr "Sloga's servers kept a different backup. Remove the backup in Settings > Encryption, then make a new recovery code."
+
 #: components/app/interface/settings/server/roles/ServerRoleOverview.tsx
 msgid "(changes are being saved…)"
 msgstr "(changes are being saved…)"
@@ -3927,8 +3931,8 @@ msgstr "Encrypted direct messages"
 
 #: components/app/interface/settings/user/Encryption.tsx
 #: src/interface/channels/text/Composition.tsx
-msgid "I only accept encrypted messages on Sloga. To message me, turn on encryption in the Sloga app: Settings > Encryption."
-msgstr "I only accept encrypted messages on Sloga. To message me, turn on encryption in the Sloga app: Settings > Encryption."
+msgid "Sloga only delivers encrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption."
+msgstr "Sloga only delivers encrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption."
 
 #: components/app/interface/settings/user/Encryption.tsx
 #: src/interface/channels/text/Composition.tsx
@@ -9507,6 +9511,16 @@ msgstr "Suspend"
 #: components/modal/modals/ReportQueue.tsx
 msgid "Suspend {0}"
 msgstr "Suspend {0}"
+
+#. placeholder {0}: username(reportedUserId())
+#: components/modal/modals/ReportQueue.tsx
+msgid "Suspend {0} (named by the reporter)"
+msgstr "Suspend {0} (named by the reporter)"
+
+#. placeholder {0}: username(reportedUserId())
+#: components/modal/modals/ReportQueue.tsx
+msgid "Suspend {0} anyway"
+msgstr "Suspend {0} anyway"
 
 #: components/app/menus/UserContextMenu.tsx
 msgid "Suspend from platform"

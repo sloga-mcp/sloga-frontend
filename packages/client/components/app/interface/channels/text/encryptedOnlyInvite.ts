@@ -25,39 +25,47 @@ export type GroupMember = {
  * Whether the read-only banner of a group offers "Encrypt this group": the
  * group is read-only for this account's own setting, this device can
  * encrypt, the group has at most `E2EE_GROUP_MAX` members counting this
- * account, and every other member has encryption on and none is a bot.
+ * account, every other member has encryption on and none is a bot, and the
+ * group is not known to have webhooks.
  * @param input The policy facts for the group (`buildPlainWriteInput`)
  * @param others Every other member; one this device does not know yet is
  * passed as without encryption, so the button stays hidden
+ * @param webhooksKnown Whether this device knows the group has a webhook;
+ * asked last, so a caller only reads its sources when it matters
  * @returns Whether to offer it
  */
 export function offersEncryptGroup(
   input: PlainWriteInput,
   others: readonly GroupMember[],
+  webhooksKnown: () => boolean,
 ): boolean {
   if (!plainGroupUnderLatch(input) || input.device !== "ready") return false;
   if (others.length < 1 || others.length + 1 > E2EE_GROUP_MAX) return false;
-  return others.every((member) => member.encrypted && !member.bot);
+  if (!others.every((member) => member.encrypted && !member.bot)) return false;
+  return !webhooksKnown();
 }
 
 /**
  * Whether the composer block offers "Share invite": this account's own
  * message is refused in a direct message on a device that can encrypt, for
- * a peer who does not have encryption on. A block that already has a button
- * keeps it.
+ * a peer who does not have encryption on and is not a bot. A block that
+ * already has a button keeps it.
  * @param block The composer block, if any
  * @param input The policy facts (`buildPlainWriteInput`)
  * @param peerOptedIn The peer has encryption on (the server's hint)
+ * @param peerIsBot The peer is a bot, which cannot turn encryption on
  * @returns Whether to offer it
  */
 export function composerOffersInvite(
   block: { reason: BlockReason; action: unknown } | null | undefined,
   input: PlainWriteInput,
   peerOptedIn: boolean,
+  peerIsBot: boolean,
 ): boolean {
   if (!block || block.action !== null || block.reason !== "sender") {
     return false;
   }
+  if (peerIsBot) return false;
   return (
     input.latched &&
     input.channel === "dm" &&
@@ -69,7 +77,7 @@ export function composerOffersInvite(
 /**
  * Whether the Encrypted-only card offers "Share invite": while the account
  * has the setting on. Not once it was turned off elsewhere, where the
- * invite's "I only accept encrypted messages" would no longer be true.
+ * invite's "only delivers encrypted direct messages" would no longer be true.
  * @param state The card's state (`onlyCardState`)
  * @returns Whether to offer it
  */
@@ -134,22 +142,61 @@ export function inviteToastFor(
   return outcome === "copied" || outcome === "failed" ? outcome : null;
 }
 
+/** The part of a window the invite uses. */
+export type ShareWindow = {
+  navigator?: {
+    share?: (data: { text: string }) => Promise<void>;
+    clipboard?: { writeText?: (text: string) => Promise<void> };
+  };
+};
+
 /**
- * The share sheet and clipboard of this window. There is no native share
- * plugin in the apps: Android's web view has no share sheet, so it copies.
+ * The share sheet and clipboard of one window. Both need that window: the
+ * sheet opens only from a tap in it, and the clipboard only writes while
+ * its document has focus. There is no native share plugin in the apps:
+ * Android's web view has no share sheet, so it copies.
+ * @param win The window
  * @returns The ways to share
  */
-export function browserShareDeps(): ShareDeps {
-  if (typeof navigator === "undefined") return {};
-  const nav = navigator as Navigator & {
-    share?: (data: { text: string }) => Promise<void>;
-  };
+export function windowShareDeps(
+  win: ShareWindow | null | undefined,
+): ShareDeps {
+  const nav = win?.navigator;
+  if (!nav) return {};
+  const clipboard = nav.clipboard;
   return {
     share:
       typeof nav.share === "function" ? (data) => nav.share!(data) : undefined,
     copy:
-      typeof nav.clipboard?.writeText === "function"
-        ? (text) => nav.clipboard.writeText(text)
+      typeof clipboard?.writeText === "function"
+        ? (text) => clipboard.writeText!(text)
         : undefined,
+  };
+}
+
+/**
+ * The share sheet and clipboard of the global window.
+ * @returns The ways to share
+ */
+export function browserShareDeps(): ShareDeps {
+  if (typeof navigator === "undefined") return {};
+  return windowShareDeps({ navigator } as ShareWindow);
+}
+
+/**
+ * How to share from the window a tap came from: that window's sheet and
+ * clipboard, and a toast only where the snackbar shows in that same window,
+ * never one behind it.
+ * @param clickWin The window the tap came from
+ * @param snackbarWin The window the snackbar shows in, if there is one
+ * @returns The ways to share, and whether a toast may show
+ */
+export function inviteShareIn<W extends ShareWindow>(
+  clickWin: W,
+  snackbarWin: W | undefined,
+): { deps: ShareDeps; toast: boolean } {
+  return {
+    deps: windowShareDeps(clickWin),
+    toast: snackbarWin !== undefined && snackbarWin === clickWin,
   };
 }

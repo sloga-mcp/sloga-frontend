@@ -331,24 +331,6 @@ export function Messages(props: Props) {
   );
 
   /**
-   * Whether that banner offers "Encrypt this group": 24 people or fewer
-   * counting you, every other member with encryption on and none a bot. A
-   * member this device does not know yet counts as without encryption.
-   */
-  const encryptGroupOffered = createMemo(() => {
-    if (props.channel.type !== "Group") return false;
-    const c = client();
-    const selfId = c.user?.id;
-    const others = [...(props.channel.recipientIds ?? [])]
-      .filter((id) => id !== selfId)
-      .map((id) => {
-        const user = c.users.get(id);
-        return { encrypted: user?.e2eeEnabled === true, bot: !!user?.bot };
-      });
-    return offersEncryptGroup(buildPlainWriteInput(c, props.channel), others);
-  });
-
-  /**
    * The other person of a direct message, once an update said they turned
    * Encrypted-only off while this app was running
    */
@@ -417,6 +399,41 @@ export function Messages(props: Props) {
    * Loaded messages
    */
   const [messages, setMessages] = createSignal<MessageInterface[]>([]);
+
+  /**
+   * Whether this device knows the group has a webhook. Listing a group's
+   * webhooks needs Manage Webhooks and no event announces a new one, so
+   * nothing is fetched for this: it reads only webhooks already loaded
+   * this session and loaded messages a webhook sent.
+   */
+  const groupWebhooksKnown = () =>
+    messages().some((message) => !!message.webhook) ||
+    client()
+      .channelWebhooks.toList()
+      .some((webhook) => webhook.channelId === props.channel.id);
+
+  /**
+   * Whether the plain group banner offers "Encrypt this group": 24 people
+   * or fewer counting you, every other member with encryption on and none
+   * a bot, and no known webhook. A member this device does not know yet
+   * counts as without encryption. Declared after `messages`, which it reads.
+   */
+  const encryptGroupOffered = createMemo(() => {
+    if (props.channel.type !== "Group") return false;
+    const c = client();
+    const selfId = c.user?.id;
+    const others = [...(props.channel.recipientIds ?? [])]
+      .filter((id) => id !== selfId)
+      .map((id) => {
+        const user = c.users.get(id);
+        return { encrypted: user?.e2eeEnabled === true, bot: !!user?.bot };
+      });
+    return offersEncryptGroup(
+      buildPlainWriteInput(c, props.channel),
+      others,
+      groupWebhooksKnown,
+    );
+  });
 
   /**
    * Whether we've reached the start of the conversation

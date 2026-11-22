@@ -28,8 +28,8 @@ import { styled } from "styled-system/jsx";
 import { SOFTRES_CREATION_ENABLED } from "@revolt/app";
 import { serverActionsBlocked } from "@revolt/app/interface/channels/text/e2eeTranscriptTrust";
 import {
-  browserShareDeps,
   composerOffersInvite,
+  inviteShareIn,
   inviteToastFor,
   shareInviteText,
 } from "@revolt/app/interface/channels/text/encryptedOnlyInvite";
@@ -70,7 +70,7 @@ import {
   useProtectedMessage,
   useProtectedShield,
 } from "@revolt/client/useProtectedChannel";
-import { useWindowCtx } from "@revolt/client/windowCtx";
+import { MAIN_CTX, useWindowCtx } from "@revolt/client/windowCtx";
 import { CONFIGURATION, debounce, useDevice } from "@revolt/common";
 import { pickUploadLimit } from "@revolt/common/lib/uploadLimit";
 import { useError, useTime } from "@revolt/i18n";
@@ -928,28 +928,36 @@ export function MessageComposition(props: Props) {
    * Your own message is refused here because the other person does not
    * have encryption on: offer to invite them
    */
-  const encryptedOnlyInviteOffered = createMemo(() =>
-    composerOffersInvite(
+  const encryptedOnlyInviteOffered = createMemo(() => {
+    const peerId = dmPeerId(client(), props.channel);
+    return composerOffersInvite(
       encryptedOnlyBlock(),
       encryptedOnlyInput(),
       encryptedOnlyViewFor(props.channel).peerOptedIn,
-    ),
-  );
+      !!(peerId && client().users.get(peerId)?.bot),
+    );
+  });
 
   /** Not every window that shows a composer has a snackbar */
   const snackbar = useContext(SnackbarContext);
 
   /**
    * Share the invite to turn on encryption: the share sheet, or else the
-   * clipboard with a toast
+   * clipboard with a toast. Both use the window this composer is in, so a
+   * chat window shares from itself. The one snackbar renders in the main
+   * window (`src/index.tsx`), so a chat window gets no toast.
    */
   async function shareEncryptionInvite() {
+    const { deps, toast: toastHere } = inviteShareIn(
+      windowCtx.win,
+      snackbar ? MAIN_CTX.win : undefined,
+    );
     const outcome = await shareInviteText(
-      t`I only accept encrypted messages on Sloga. To message me, turn on encryption in the Sloga app: Settings > Encryption.`,
-      browserShareDeps(),
+      t`Sloga only delivers encrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption.`,
+      deps,
     );
     const toast = inviteToastFor(outcome);
-    if (!toast) return;
+    if (!toast || !toastHere) return;
     snackbar?.show({
       message:
         toast === "copied"

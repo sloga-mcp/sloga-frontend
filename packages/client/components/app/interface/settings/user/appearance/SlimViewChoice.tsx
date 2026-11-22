@@ -8,10 +8,11 @@ import { latchedForClient } from "@revolt/client/encryptedOnlyLatch";
 import { useSlimOffered } from "@revolt/client/useSlimMode";
 import { useModals } from "@revolt/modal";
 import { useOnlyAdvert } from "@revolt/modal/modals/EncryptedOnlyOnboarding";
-import { onlyCardState } from "@revolt/modal/modals/encryptedOnlySetup";
 import { useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import { Button, Checkbox, Text } from "@revolt/ui";
+
+import { slimOffersEncryptedOnly } from "./slimEncryptedOnlyOffer";
 
 /**
  * Slim view on or off, for this device: the layout that shows chats and
@@ -89,26 +90,40 @@ export function SlimViewChoice() {
  */
 function EncryptedOnlyOffer() {
   const client = useClient();
+
+  // The offer asks the server for its advert, so the website never mounts it
+  return (
+    <Show when={deviceStateOf(client()) !== "web"}>
+      <EncryptedOnlyOfferBody />
+    </Show>
+  );
+}
+
+/**
+ * The offer itself, in an app only (`EncryptedOnlyOffer`)
+ */
+function EncryptedOnlyOfferBody() {
+  const client = useClient();
   const { openModal, isOpen } = useModals();
   const advert = useOnlyAdvert();
 
-  // The settings card's own states: "off" is the one that opens the setup
-  const shown = createMemo(
-    () =>
-      deviceStateOf(client()) !== "web" &&
-      onlyCardState({
-        advert: advert(),
-        userKnown: !!client().user,
-        latched: latchedForClient(client().user?.id),
-        serverOn: client().user?.e2eeOnly === true,
-        settingUp: isOpen("encrypted_only_onboarding"),
-      }) === "off",
+  const shown = createMemo(() =>
+    slimOffersEncryptedOnly({
+      app: deviceStateOf(client()) !== "web",
+      advert: advert(),
+      userKnown: !!client().user,
+      latched: latchedForClient(client().user?.id),
+      serverOn: client().user?.e2eeOnly === true,
+      settingUp: isOpen("encrypted_only_onboarding"),
+    }),
   );
 
   return (
     <Show when={shown()}>
       <Text class="label" size="small">
-        <Trans>Encrypted-only chats</Trans>:{" "}
+        <Trans>Encrypted-only chats</Trans>
+      </Text>
+      <Text class="label" size="small">
         <Trans>
           Only send encrypted direct messages and group messages from this
           account.
