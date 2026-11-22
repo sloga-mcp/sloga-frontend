@@ -214,6 +214,8 @@ export function ReportQueueModal(
   function MessageLine(lineProps: {
     message: SnapshotMessage;
     highlight?: boolean;
+    /** The line came from the reporter's app; the server never checked it */
+    supplied?: boolean;
   }) {
     return (
       <div
@@ -227,6 +229,12 @@ export function ReportQueueModal(
       >
         <Text class="label">{username(lineProps.message.author)}</Text>{" "}
         <Text>{lineProps.message.content || <i>(no text content)</i>}</Text>
+        <Show when={lineProps.supplied}>
+          {" "}
+          <Text class="label">
+            <Trans>Supplied by the reporter</Trans>
+          </Text>
+        </Show>
       </div>
     );
   }
@@ -375,6 +383,20 @@ export function ReportQueueModal(
                           </Show>
                         </div>
                       </Show>
+                      <Show when={label().mismatch}>
+                        <div
+                          role="note"
+                          style={{
+                            padding: "4px 6px",
+                            "border-radius": "4px",
+                            border: "1px solid var(--md-sys-color-error)",
+                          }}
+                        >
+                          <Text>
+                            <Trans>Does not match the stored message</Trans>
+                          </Text>
+                        </div>
+                      </Show>
                       <div>
                         <For
                           each={(
@@ -383,7 +405,7 @@ export function ReportQueueModal(
                             (entry) => entry.id < snapshot.content.message.id,
                           )}
                         >
-                          {(entry) => <MessageLine message={entry} />}
+                          {(entry) => <MessageLine message={entry} supplied />}
                         </For>
                         <MessageLine
                           message={snapshot.content.message}
@@ -396,7 +418,7 @@ export function ReportQueueModal(
                             (entry) => entry.id > snapshot.content.message.id,
                           )}
                         >
-                          {(entry) => <MessageLine message={entry} />}
+                          {(entry) => <MessageLine message={entry} supplied />}
                         </For>
                       </div>
                     </Match>

@@ -101,9 +101,13 @@ const SRC = readFileSync(FILE, "utf8");
  * `readonly refreshesBackup = shellRefreshesBackup({...})` member in each of
  * TauriTransport, ElectronTransport and CapacitorTransport. Against the
  * 099e8c89 region (8814ad34..., the value above) it only ADDS those lines.
+ *
+ * Re-pinned when Tauri was taken out of the backup refresh (M3 final audit
+ * B: its backup commands are sync and block the main thread): only the
+ * `NativeTransport.refreshesBackup` doc comment changed, to say so.
  */
 const TRANSPORT_REGION_SHA256 =
-  "4d1c5b527a1b5ae8c74f306cba7d0baddd14bbfd749770689e061d2d65f96d57";
+  "dd95a02537c7f5c03caf9a753bf1888ac4cb3ed8696a7d2dc19b6ba1cc20ddb0";
 
 /**
  * S7 D9 / PA-7: the text commands Android signs only after a tap on a native

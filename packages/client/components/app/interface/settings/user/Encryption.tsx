@@ -6,7 +6,8 @@ import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import {
   browserShareDeps,
   cardOffersInvite,
-  inviteToastFor,
+  desktopShell,
+  inviteOutcomeShown,
   shareInviteText,
 } from "@revolt/app/interface/channels/text/encryptedOnlyInvite";
 import type { BackupStatusView } from "@revolt/client";
@@ -418,18 +419,19 @@ function EncryptedOnlyCard() {
 
   /**
    * Share the invite to turn on encryption: the share sheet, or else the
-   * clipboard with a toast
+   * clipboard with a toast. A desktop shell always copies. Settings render
+   * in the main window, where the snackbar is.
    */
   async function shareInvite() {
     const outcome = await shareInviteText(
-      t`Sloga only delivers encrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption.`,
-      browserShareDeps(),
+      t`Sloga's servers refuse unencrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption.`,
+      browserShareDeps(desktopShell()),
     );
-    const toast = inviteToastFor(outcome);
-    if (!toast) return;
+    const shown = inviteOutcomeShown(outcome, true);
+    if (!shown) return;
     snackbar.show({
       message:
-        toast === "copied"
+        shown.kind === "copied"
           ? t`Invite copied to the clipboard.`
           : t`Could not copy to the clipboard.`,
       placement: "bottom",
@@ -518,7 +520,7 @@ function EncryptedOnlyCard() {
           </CategoryButton>
         </Show>
 
-        <Show when={cardOffersInvite(state())}>
+        <Show when={cardOffersInvite(state(), advert())}>
           <CategoryButton
             icon={<MdShare {...iconSize(24)} />}
             action="chevron"

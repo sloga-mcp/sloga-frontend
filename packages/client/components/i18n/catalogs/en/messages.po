@@ -87,8 +87,12 @@ msgid "Add a message to send with your first file."
 msgstr "Add a message to send with your first file."
 
 #: components/i18n/errors.ts
-msgid "Sloga's servers kept a different backup. Remove the backup in Settings > Encryption, then make a new recovery code."
-msgstr "Sloga's servers kept a different backup. Remove the backup in Settings > Encryption, then make a new recovery code."
+msgid "Sloga's servers kept a different backup. Delete the backup in Settings > Encryption, then make a new recovery code."
+msgstr "Sloga's servers kept a different backup. Delete the backup in Settings > Encryption, then make a new recovery code."
+
+#: components/i18n/errors.ts
+msgid "Your backup did not reach Sloga. Try again."
+msgstr "Your backup did not reach Sloga. Try again."
 
 #: components/app/interface/settings/server/roles/ServerRoleOverview.tsx
 msgid "(changes are being saved…)"
@@ -1461,6 +1465,10 @@ msgstr "You already have an import from {sourceLabel} running."
 #: components/modal/modals/ReportQueue.tsx
 msgid "Automated detection"
 msgstr "Automated detection"
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "Supplied by the reporter"
+msgstr "Supplied by the reporter"
 
 #: components/app/interface/settings/user/Language.tsx
 #: components/app/interface/settings/user/Language.tsx
@@ -3931,8 +3939,8 @@ msgstr "Encrypted direct messages"
 
 #: components/app/interface/settings/user/Encryption.tsx
 #: src/interface/channels/text/Composition.tsx
-msgid "Sloga only delivers encrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption."
-msgstr "Sloga only delivers encrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption."
+msgid "Sloga's servers refuse unencrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption."
+msgstr "Sloga's servers refuse unencrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption."
 
 #: components/app/interface/settings/user/Encryption.tsx
 #: src/interface/channels/text/Composition.tsx
@@ -7888,6 +7896,10 @@ msgstr "Unverified: this text was supplied by the reporter. Sloga has no copy of
 #: components/modal/modals/ReportQueue.tsx
 msgid "The reporter's app marked it as end-to-end encrypted."
 msgstr "The reporter's app marked it as end-to-end encrypted."
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "Does not match the stored message"
+msgstr "Does not match the stored message"
 
 #: components/modal/modals/ReportQueue.tsx
 msgid "Reported content (server copy)"

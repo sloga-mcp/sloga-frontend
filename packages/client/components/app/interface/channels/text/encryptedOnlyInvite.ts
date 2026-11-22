@@ -11,7 +11,11 @@ import {
   type PlainWriteInput,
   E2EE_GROUP_MAX,
 } from "../../../../client/encryptedOnlyPolicy.ts";
-import type { OnlyCardState } from "../../../../modal/modals/encryptedOnlySetup.ts";
+import { tauriInvoke } from "../../../../common/lib/tauriInvoke.ts";
+import type {
+  OnlyAdvert,
+  OnlyCardState,
+} from "../../../../modal/modals/encryptedOnlySetup.ts";
 
 /** Another member of a group, as this device's cache knows them. */
 export type GroupMember = {
@@ -48,12 +52,15 @@ export function offersEncryptGroup(
 /**
  * Whether the composer block offers "Share invite": this account's own
  * message is refused in a direct message on a device that can encrypt, for
- * a peer who does not have encryption on and is not a bot. A block that
- * already has a button keeps it.
+ * a peer who does not have encryption on and is not a bot. The invite says
+ * Sloga's servers refuse unencrypted direct messages to this account, so it
+ * is offered only while the account's server flag is on and the server
+ * enforces it. A block that already has a button keeps it.
  * @param block The composer block, if any
  * @param input The policy facts (`buildPlainWriteInput`)
  * @param peerOptedIn The peer has encryption on (the server's hint)
  * @param peerIsBot The peer is a bot, which cannot turn encryption on
+ * @param serverOn The server's flag for this account (`e2ee_only`)
  * @returns Whether to offer it
  */
 export function composerOffersInvite(
@@ -61,11 +68,13 @@ export function composerOffersInvite(
   input: PlainWriteInput,
   peerOptedIn: boolean,
   peerIsBot: boolean,
+  serverOn: boolean,
 ): boolean {
   if (!block || block.action !== null || block.reason !== "sender") {
     return false;
   }
   if (peerIsBot) return false;
+  if (serverOn !== true || input.advert !== "enforced") return false;
   return (
     input.latched &&
     input.channel === "dm" &&
@@ -76,13 +85,28 @@ export function composerOffersInvite(
 
 /**
  * Whether the Encrypted-only card offers "Share invite": while the account
- * has the setting on. Not once it was turned off elsewhere, where the
- * invite's "only delivers encrypted direct messages" would no longer be true.
+ * has the setting on and the server enforces it, so the invite's "Sloga's
+ * servers refuse" is true. Not once it was turned off elsewhere.
  * @param state The card's state (`onlyCardState`)
+ * @param advert The server's advert; not known yet offers nothing
  * @returns Whether to offer it
  */
-export function cardOffersInvite(state: OnlyCardState): boolean {
-  return state === "on";
+export function cardOffersInvite(
+  state: OnlyCardState,
+  advert: OnlyAdvert | null | undefined,
+): boolean {
+  return state === "on" && advert?.enforced === true;
+}
+
+/**
+ * Whether the app runs in a desktop shell: Electron (its preload's
+ * `window.native`) or Tauri (`tauriInvoke`), the same check as the settings
+ * pages. Read off the main window, which is where this code runs.
+ * @returns Whether it is a desktop shell
+ */
+export function desktopShell(): boolean {
+  if (typeof window === "undefined") return false;
+  return !!(window as { native?: unknown }).native || !!tauriInvoke();
 }
 
 /** The ways this window can share text. */
@@ -91,15 +115,35 @@ export type ShareDeps = {
   share?: (data: { text: string }) => Promise<void>;
   /** Copy to the clipboard, where it exists */
   copy?: (text: string) => Promise<void>;
+  /**
+   * A desktop shell: its web view's share sheet cannot be relied on, so the
+   * invite is copied straight away
+   */
+  desktopShell?: boolean;
 };
 
 /** What happened to the invite. */
 export type ShareOutcome = "shared" | "dismissed" | "copied" | "failed";
 
 /**
+ * Whether a share sheet's rejection means the user closed it. Chromium
+ * rejects with an `AbortError` whose message starts with "Internal error"
+ * when the platform sheet could not open at all; that is a refusal.
+ * @param error What the sheet rejected with
+ * @returns Whether it was closed by the user
+ */
+function sheetClosed(error: unknown): boolean {
+  const shape = error as { name?: unknown; message?: unknown } | null;
+  if (shape?.name !== "AbortError") return false;
+  const message = shape.message;
+  return !(typeof message === "string" && message.startsWith("Internal error"));
+}
+
+/**
  * Share the invite text: the share sheet where there is one, else the
- * clipboard. Closing the sheet is not a failure. The sheet is opened before
- * anything is awaited, as browsers only open it straight from a tap.
+ * clipboard. A desktop shell skips the sheet. Closing the sheet is not a
+ * failure. The sheet is opened before anything is awaited, as browsers only
+ * open it straight from a tap.
  * @param text The invite
  * @param deps The ways to share
  * @returns What happened
@@ -108,14 +152,12 @@ export async function shareInviteText(
   text: string,
   deps: ShareDeps,
 ): Promise<ShareOutcome> {
-  if (deps.share) {
+  if (deps.share && deps.desktopShell !== true) {
     try {
       await deps.share({ text });
       return "shared";
     } catch (error) {
-      if ((error as { name?: unknown } | null)?.name === "AbortError") {
-        return "dismissed";
-      }
+      if (sheetClosed(error)) return "dismissed";
       // A sheet that refused (no handler, not allowed): copy instead
     }
   }
@@ -132,14 +174,19 @@ export async function shareInviteText(
 }
 
 /**
- * The toast for an outcome: only a copy is confirmed, and a failure said.
+ * How an outcome is shown: only a copy is confirmed, and a failure always
+ * said. As a toast where one shows in the window of the tap, else inline
+ * in the composer block (a desktop chat window has no snackbar).
  * @param outcome What happened
- * @returns Which toast, or `null` for none
+ * @param toastHere A toast shows in the window of the tap
+ * @returns Where and what, or `null` for nothing
  */
-export function inviteToastFor(
+export function inviteOutcomeShown(
   outcome: ShareOutcome,
-): "copied" | "failed" | null {
-  return outcome === "copied" || outcome === "failed" ? outcome : null;
+  toastHere: boolean,
+): { place: "toast" | "inline"; kind: "copied" | "failed" } | null {
+  if (outcome !== "copied" && outcome !== "failed") return null;
+  return { place: toastHere === true ? "toast" : "inline", kind: outcome };
 }
 
 /** The part of a window the invite uses. */
@@ -156,10 +203,12 @@ export type ShareWindow = {
  * its document has focus. There is no native share plugin in the apps:
  * Android's web view has no share sheet, so it copies.
  * @param win The window
+ * @param inDesktopShell The app runs in a desktop shell (`desktopShell`)
  * @returns The ways to share
  */
 export function windowShareDeps(
   win: ShareWindow | null | undefined,
+  inDesktopShell: boolean,
 ): ShareDeps {
   const nav = win?.navigator;
   if (!nav) return {};
@@ -171,16 +220,18 @@ export function windowShareDeps(
       typeof clipboard?.writeText === "function"
         ? (text) => clipboard.writeText!(text)
         : undefined,
+    desktopShell: inDesktopShell,
   };
 }
 
 /**
  * The share sheet and clipboard of the global window.
+ * @param inDesktopShell The app runs in a desktop shell (`desktopShell`)
  * @returns The ways to share
  */
-export function browserShareDeps(): ShareDeps {
+export function browserShareDeps(inDesktopShell: boolean): ShareDeps {
   if (typeof navigator === "undefined") return {};
-  return windowShareDeps({ navigator } as ShareWindow);
+  return windowShareDeps({ navigator } as ShareWindow, inDesktopShell);
 }
 
 /**
@@ -189,14 +240,16 @@ export function browserShareDeps(): ShareDeps {
  * never one behind it.
  * @param clickWin The window the tap came from
  * @param snackbarWin The window the snackbar shows in, if there is one
+ * @param inDesktopShell The app runs in a desktop shell (`desktopShell`)
  * @returns The ways to share, and whether a toast may show
  */
 export function inviteShareIn<W extends ShareWindow>(
   clickWin: W,
   snackbarWin: W | undefined,
+  inDesktopShell: boolean,
 ): { deps: ShareDeps; toast: boolean } {
   return {
-    deps: windowShareDeps(clickWin),
+    deps: windowShareDeps(clickWin, inDesktopShell),
     toast: snackbarWin !== undefined && snackbarWin === clickWin,
   };
 }

@@ -552,6 +552,20 @@ export class BackupNotStoredError extends Error {
   }
 }
 
+/**
+ * A desktop create or rotate whose recovery window's upload failed for any
+ * other reason (a 413, 429 or 5xx, the network, a native take that threw),
+ * or that had no outcome within `RECOVERY_WAIT_MS`. The message is for logs
+ * only; `components/i18n/errors.ts` matches the name and shows its own
+ * words. The underlying error is not kept: it may carry a server body.
+ */
+export class BackupUploadFailedError extends Error {
+  constructor() {
+    super("The backup upload did not complete");
+    this.name = "BackupUploadFailedError";
+  }
+}
+
 /** IPC-safe attachment metadata (mirrors native `AttachmentMeta` — no keys) */
 export type E2EEAttachmentMeta = {
   local_id: string;
@@ -1164,7 +1178,8 @@ interface NativeTransport {
   /**
    * Whether the bridge refreshes the key backup by itself on this page, after
    * each accepted claim and on main-window focus (`shellRefreshesBackup`):
-   * Tauri, Electron and iOS in the main window. Never Android.
+   * Electron and iOS in the main window. Never Android, and not Tauri while
+   * its backup commands run on the main thread.
    */
   readonly refreshesBackup: boolean;
   invoke<T>(
@@ -3321,9 +3336,10 @@ export class E2EEBridge implements E2EEAdapter {
     }
 
     // Refresh the backup if native says one is due, on the shells that do
-    // (`refreshesBackup`: Tauri, Electron, iOS; never Android). On iOS this
-    // also uploads a recovery bundle the native sheet kept for an earlier
-    // page whose event came before this claim (see `#watchOrphanedBackup`).
+    // (`refreshesBackup`: Electron, iOS; not Tauri for now, never Android).
+    // On iOS this also uploads a recovery bundle the native sheet kept for
+    // an earlier page whose event came before this claim (see
+    // `#watchOrphanedBackup`).
     // Outside the try so a failed reconcile does not skip it.
     if (this.#transport.refreshesBackup) {
       await this.#courierBackupRefresh();
@@ -7971,9 +7987,12 @@ export class E2EEBridge implements E2EEAdapter {
   /**
    * Desktop create and rotate callers waiting for the recovery window's
    * outcome (`#openRecoveryAndWait`). The next recovery-complete courier
-   * settles all of them with its `BackupNotStoredError`, or with null.
+   * settles all of them with its failure (`#settleRecoveryWaiters`), or
+   * with null.
    */
-  #recoveryWaiters = new Set<(error: BackupNotStoredError | null) => void>();
+  #recoveryWaiters = new Set<
+    (error: BackupNotStoredError | BackupUploadFailedError | null) => void
+  >();
 
   /**
    * Post-restore fresh-OTK republish payload, held between a RESTORE and its
@@ -8108,33 +8127,42 @@ export class E2EEBridge implements E2EEAdapter {
     this.#backupCourierReady = true;
     await this.#transport.subscribeRecoveryComplete((mode) => {
       this.#courierRecovery(mode).then(
-        () => this.#settleRecoveryWaiters(null),
+        () => this.#settleRecoveryWaiters(),
         (error: unknown) => {
-          console.error("[e2ee] backup courier failed", error);
-          this.#settleRecoveryWaiters(error);
+          // The name only: a server error body may follow the message
+          console.error("[e2ee] backup courier failed:", errorName(error));
+          this.#settleRecoveryWaiters({ error });
         },
       );
     });
   }
 
   /**
-   * Hand a courier's outcome to every waiting create or rotate. Only a
-   * `BackupNotStoredError` is passed on, for the caller to show; any other
-   * courier failure stays in the console, as before.
+   * Hand a courier's outcome to every waiting create or rotate. Every
+   * `failure` is passed on for the caller to show: a `BackupNotStoredError`
+   * as it is (it has its own words), anything else (a 413, 429 or 5xx, the
+   * network, a native take that threw, even a bare `throw null`) as a
+   * `BackupUploadFailedError`. No `failure` (success, a cancelled window, a
+   * disposed bridge) resolves them.
    */
-  #settleRecoveryWaiters(error: unknown): void {
+  #settleRecoveryWaiters(failure?: { error: unknown }): void {
     const waiters = [...this.#recoveryWaiters];
     this.#recoveryWaiters.clear();
-    const shown = error instanceof BackupNotStoredError ? error : null;
+    const shown = !failure
+      ? null
+      : failure.error instanceof BackupNotStoredError
+        ? failure.error
+        : new BackupUploadFailedError();
     for (const settle of waiters) settle(shown);
   }
 
   /**
    * Open the desktop recovery window for a create or rotate and wait for
-   * its courier, so a backup the server did not keep reaches the caller,
-   * which shows it. A background refresh never comes here and only logs.
-   * The wait ends after `RECOVERY_WAIT_MS` if no outcome arrives (the
-   * courier still runs and logs then), and when the bridge is disposed.
+   * its courier, so an upload that failed reaches the caller, which shows
+   * it. A background refresh never comes here and only logs. The wait
+   * rejects with a `BackupUploadFailedError` after `RECOVERY_WAIT_MS` if no
+   * outcome arrives (the courier still runs and logs then), and resolves
+   * when the bridge is disposed.
    */
   async #openRecoveryAndWait(
     mode: "create" | "rotate",
@@ -8144,12 +8172,16 @@ export class E2EEBridge implements E2EEAdapter {
       await this.#invoke("e2ee_backup_open_recovery", { mode, userId });
       return;
     }
-    let settle: (error: BackupNotStoredError | null) => void = () => {};
-    const outcome = new Promise<BackupNotStoredError | null>((resolve) => {
+    type Outcome = BackupNotStoredError | BackupUploadFailedError | null;
+    let settle: (error: Outcome) => void = () => {};
+    const outcome = new Promise<Outcome>((resolve) => {
       settle = resolve;
     });
     this.#recoveryWaiters.add(settle);
-    const timer = setTimeout(() => settle(null), RECOVERY_WAIT_MS);
+    const timer = setTimeout(
+      () => settle(new BackupUploadFailedError()),
+      RECOVERY_WAIT_MS,
+    );
     try {
       await this.#invoke("e2ee_backup_open_recovery", { mode, userId });
       const error = await outcome;
@@ -8208,7 +8240,11 @@ export class E2EEBridge implements E2EEAdapter {
    * server answers a stale or equal generation with a 200 that echoes the
    * generation it kept, so the upload counts only when the echo is the one
    * sent. Anything else throws `BackupNotStoredError` and is not marked;
-   * nothing here retries it.
+   * nothing here retries it. Every upload goes through here, so the check
+   * holds on every transport: the desktop recovery courier, the Android and
+   * iOS create and rotate dialogs, and the background refresh (with iOS's
+   * kept bundle). On Android and iOS a create or rotate the server did not
+   * keep now rejects to its caller instead of resolving (intended).
    */
   async #putBackup(bundle: BackupBundle): Promise<void> {
     const deviceId = this.status.get("state")?.device_id;
@@ -8229,6 +8265,16 @@ export class E2EEBridge implements E2EEAdapter {
     await this.#invoke("e2ee_backup_mark_uploaded", {
       generation: bundle.generation,
     });
+  }
+
+  /**
+   * Whether this bridge's native backup status and refresh commands block
+   * the shell's main thread: true on Tauri, where they are sync commands
+   * run under the engine lock (see `shellRefreshesBackup`). The
+   * Encrypted-only setup reads it to poll less often (`recoveryPollMs`).
+   */
+  get backupCommandsBlockMainThread(): boolean {
+    return this.#transport instanceof TauriTransport;
   }
 
   /**
@@ -8365,7 +8411,7 @@ export class E2EEBridge implements E2EEAdapter {
     this.#disposed = true;
     this.#claimAccepted = null;
     this.#backupRefreshAgain = false;
-    this.#settleRecoveryWaiters(null);
+    this.#settleRecoveryWaiters();
     const focus = this.#backupFocusListener;
     if (focus) {
       this.#backupFocusListener = null;

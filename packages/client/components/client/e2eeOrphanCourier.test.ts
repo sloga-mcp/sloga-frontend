@@ -1,8 +1,10 @@
 // Behavior of the backup refresh courier against the REAL `E2EEBridge`: the
 // iOS orphaned recovery bundle (audit M2, Stage 6 fixes MAJOR-1, MINOR-2,
-// MINOR-3), and the refresh that also runs on the desktop shells after a
-// claim and on main-window focus (at most hourly), never on Android, and
-// never marks an upload the server did not store.
+// MINOR-3), and the refresh that also runs on Electron after a claim and on
+// main-window focus (at most hourly), never on Tauri while its backup
+// commands are sync and engine-locked, never on Android, and never marks an
+// upload the server did not store (on any transport: the desktop courier,
+// the Android and iOS create and rotate dialogs, the refresh).
 //
 // e2ee.ts cannot be imported under `node --test` directly (extensionless
 // sibling imports, bare packages that need a browser), so this bundles it
@@ -16,11 +18,15 @@
 // `{ generation }`, the sent one when stored, the stored one when the sent
 // one is stale.
 //
-// A desktop create or rotate waits for its recovery window's courier, and a
-// backup the server did not keep rejects it with the words `useError` in
+// A desktop create or rotate waits for its recovery window's courier, and
+// any courier failure rejects it with the words `useError` in
 // `../i18n/errors.ts` shows (bundled the same way, lingui stubbed to plain
-// English). A background refresh only logs. `refreshBackupIfDue()` refuses
-// by itself on Android, the website and a window that is not the main one.
+// English): a backup the server did not keep has its own words, anything
+// else (413, 429, 5xx, network, a native take that threw) and the 15-minute
+// wait running out the generic ones. The console gets the error's name
+// only. A background refresh only logs. `refreshBackupIfDue()` refuses by
+// itself on Tauri, Android, the website and a window that is not the main
+// one.
 //
 // `E2EE_COURIER_TS` swaps in another e2ee.ts (resolved against THIS
 // directory) and `E2EE_COURIER_ERRORS_TS` another errors.ts, which is how
@@ -43,10 +49,18 @@ const ERRORS_SOURCE =
 const I18N_DIR = fileURLToPath(new URL("../i18n/", import.meta.url));
 
 const NOT_STORED_WORDS =
-  "Sloga's servers kept a different backup. Remove the backup in" +
+  "Sloga's servers kept a different backup. Delete the backup in" +
   " Settings > Encryption, then make a new recovery code.";
 
+const UPLOAD_FAILED_WORDS = "Your backup did not reach Sloga. Try again.";
+
 const HOUR = 60 * 60 * 1000;
+
+/** The bridge's `RECOVERY_WAIT_MS`: how long a desktop create waits. */
+const RECOVERY_WAIT_MS = 15 * 60 * 1000;
+
+/** Planted in every failure body and message: it must never be logged. */
+const SENTINEL = "SENTINEL-BODY-7f3a";
 
 type Listener = () => void;
 
@@ -67,6 +81,8 @@ class FakePlugin {
   due: unknown[] = [];
   /** Bundles the next `e2ee_backup_take_pending_upload` calls return. */
   pending: unknown[] = [];
+  /** When true, `e2ee_backup_take_pending_upload` throws. */
+  takeThrows = false;
   /** Desktop shell event listeners (`__TAURI__.event` / `slogaShell.e2ee.on`). */
   events = new Map<string, Set<(payload: unknown) => void>>();
 
@@ -115,9 +131,25 @@ class FakePlugin {
     // The desktop recovery window opens; its outcome comes later as an event
     if (args.__cmd === "e2ee_backup_open_recovery") return { json: "null" };
     if (args.__cmd === "e2ee_backup_take_pending_upload") {
+      if (this.takeThrows) {
+        throw Object.assign(new Error(`take failed ${SENTINEL}`), {
+          name: "TakeFailed",
+        });
+      }
       return { json: JSON.stringify(this.pending.shift() ?? null) };
     }
     throw new Error(`unstubbed command ${args.__cmd}`);
+  }
+
+  /** The Android dialog / iOS sheet mints a code and hands back the bundle. */
+  async backupCreate() {
+    this.calls.push("backupCreate");
+    return { json: JSON.stringify(BUNDLE) };
+  }
+
+  async backupRotate() {
+    this.calls.push("backupRotate");
+    return { json: JSON.stringify(BUNDLE) };
   }
 
   release(bundle: unknown) {
@@ -157,6 +189,8 @@ let plugin: FakePlugin;
 let puts: number[] = [];
 /** When set, the server echoes this generation instead of the sent one. */
 let storedGeneration: number | null = null;
+/** When set, `PUT /e2ee/backup` answers (or throws) with this instead. */
+let putAnswer: (() => Response) | null = null;
 /** What `Capacitor.getPlatform()` answers. */
 let capacitorPlatform = "ios";
 let E2EEBridge: BridgeCtor;
@@ -243,6 +277,7 @@ before(async () => {
       const sent = (JSON.parse(init.body ?? "{}") as { generation: number })
         .generation;
       puts.push(sent);
+      if (putAnswer) return putAnswer();
       return new Response(
         JSON.stringify({ generation: storedGeneration ?? sent }),
         { status: 200, headers: { "Content-Type": "application/json" } },
@@ -365,6 +400,7 @@ function fresh(shell: Shell = "ios") {
   plugin = p;
   puts = [];
   storedGeneration = null;
+  putAnswer = null;
   capacitorPlatform = shell === "tauri" || shell === "electron" ? "web" : shell;
   const w = newWindow();
   (globalThis as Record<string, unknown>).window = w;
@@ -547,7 +583,7 @@ test("control: a claimed, connected bridge does take and PUT", async () => {
 
 // ---- Which shells refresh after a claim -------------------------------------
 
-for (const shell of ["tauri", "electron", "ios"] as const) {
+for (const shell of ["electron", "ios"] as const) {
   test(`${shell}: an accepted claim runs the due check and uploads a due backup`, async () => {
     fresh(shell);
     plugin.due = [BUNDLE];
@@ -558,20 +594,28 @@ for (const shell of ["tauri", "electron", "ios"] as const) {
   });
 }
 
-for (const shell of ["android", "web"] as const) {
+// Tauri: `e2ee_backup_refresh_if_due` is a sync, engine-locked command on
+// the main thread until the sloga-desktop follow-up makes it async.
+for (const shell of ["tauri", "android", "web"] as const) {
   test(`${shell}: no due check after a claim, and none on focus`, async () => {
+    let now = 1_000_000;
+    Date.now = () => now;
     fresh(shell);
     plugin.due = [BUNDLE];
     await claimedBridge();
     focusMain();
     await settle();
+    now += 2 * HOUR;
+    focusMain();
+    await settle();
     assert.equal(plugin.takes(), 0, `${shell} asked native for a refresh`);
     assert.equal(puts.length, 0);
+    assert.equal(focusListeners(), 0, `${shell} listens for focus`);
   });
 }
 
-test("tauri: no due check before the claim is accepted", async () => {
-  fresh("tauri");
+test("electron: no due check before the claim is accepted", async () => {
+  fresh("electron");
   plugin.due = [BUNDLE];
   const bridge = new E2EEBridge(fakeClient());
   bridge.status.set("state", {
@@ -590,7 +634,7 @@ test("tauri: no due check before the claim is accepted", async () => {
 
 // ---- Main-window focus, at most hourly --------------------------------------
 
-for (const shell of ["tauri", "electron"] as const) {
+for (const shell of ["electron"] as const) {
   test(`${shell}: main-window focus re-checks at most once an hour`, async () => {
     let now = 1_000_000;
     Date.now = () => now;
@@ -620,7 +664,7 @@ for (const shell of ["tauri", "electron"] as const) {
 test("focus: a refused guard neither asks native nor uses up the hour", async () => {
   let now = 1_000_000;
   Date.now = () => now;
-  fresh("tauri");
+  fresh("electron");
   const { bridge } = await claimedBridge();
   assert.equal(plugin.takes(), 1);
   const on = bridge.status.get("state") as Record<string, unknown>;
@@ -653,7 +697,7 @@ test("focus: a disposed bridge stops listening", async () => {
 
 // ---- The server's echoed generation ----------------------------------------
 
-for (const shell of ["tauri", "ios"] as const) {
+for (const shell of ["electron", "ios"] as const) {
   test(`${shell}: an echoed generation other than the one sent is not marked, and not retried`, async () => {
     let now = 1_000_000;
     Date.now = () => now;
@@ -678,7 +722,7 @@ for (const shell of ["tauri", "ios"] as const) {
 }
 
 test("echo: a missing generation in the answer is not marked", async () => {
-  fresh("tauri");
+  fresh("electron");
   const g = globalThis as Record<string, unknown>;
   const realFetch = g.fetch;
   g.fetch = async (url: string, init: { method: string }) => {
@@ -702,6 +746,89 @@ test("echo control: the matching echo is marked with the sent generation", async
   fresh("electron");
   plugin.due = [BUNDLE];
   await claimedBridge();
+  assert.deepEqual(puts, [7]);
+  assert.equal(plugin.marks(), 1);
+});
+
+// The echo check on the other transports (final audit B, code 8): every
+// upload goes through `#putBackup`, so a create or rotate on Android or iOS
+// that the server did not keep now rejects instead of resolving, and the
+// iOS kept bundle is not marked either.
+
+/** Run a create or rotate to its end; the rejection, or undefined. */
+async function recoveryOutcome(
+  bridge: Bridge,
+  mode: "create" | "rotate",
+): Promise<unknown> {
+  const run =
+    mode === "create"
+      ? bridge.createRecoveryCode()
+      : bridge.rotateRecoveryCode();
+  return run.then(
+    () => undefined,
+    (error: unknown) => error ?? new Error("rejected with nothing"),
+  );
+}
+
+for (const shell of ["android", "ios"] as const) {
+  for (const mode of ["create", "rotate"] as const) {
+    const dialog = mode === "create" ? "backupCreate" : "backupRotate";
+    test(`${shell} ${mode}: a backup the server did not keep rejects, unmarked`, async () => {
+      fresh(shell);
+      const { bridge } = await claimedBridge();
+      plugin.calls = [];
+      storedGeneration = 9;
+      const error = await recoveryOutcome(bridge, mode);
+      assert.deepEqual(
+        plugin.calls.filter((c) => c === dialog),
+        [dialog],
+      );
+      assert.deepEqual(puts, [7], "want one PUT of the dialog's bundle");
+      assert.equal(plugin.marks(), 0, "a refused upload was marked uploaded");
+      assert.equal(
+        (error as { name?: unknown } | undefined)?.name,
+        "BackupNotStoredError",
+        `${shell} ${mode} did not reject with the not-stored error`,
+      );
+      assert.equal(describeError(error), NOT_STORED_WORDS);
+    });
+
+    test(`${shell} ${mode} control: a kept backup resolves and is marked`, async () => {
+      fresh(shell);
+      const { bridge } = await claimedBridge();
+      plugin.calls = [];
+      const error = await recoveryOutcome(bridge, mode);
+      assert.equal(error, undefined);
+      assert.deepEqual(
+        plugin.calls.filter((c) => c === dialog),
+        [dialog],
+      );
+      assert.deepEqual(puts, [7]);
+      assert.equal(plugin.marks(), 1);
+    });
+  }
+}
+
+test("ios: a kept bundle the server did not keep is not marked", async () => {
+  fresh("ios");
+  await claimedBridge();
+  plugin.calls = [];
+  storedGeneration = 9;
+  plugin.due = [BUNDLE];
+  plugin.fire();
+  await settle();
+  assert.equal(plugin.takes(), 1);
+  assert.deepEqual(puts, [7]);
+  assert.equal(plugin.marks(), 0, "a refused kept bundle was marked uploaded");
+});
+
+test("ios control: a kept bundle the server kept is marked", async () => {
+  fresh("ios");
+  await claimedBridge();
+  plugin.calls = [];
+  plugin.due = [BUNDLE];
+  plugin.fire();
+  await settle();
   assert.deepEqual(puts, [7]);
   assert.equal(plugin.marks(), 1);
 });
@@ -744,12 +871,76 @@ function startRecovery(bridge: Bridge, mode: "create" | "rotate") {
   return state;
 }
 
+/** Let queued work run until `done()` or `ms` of real time pass. */
+async function settleUntil(done: () => boolean, ms = 5000) {
+  const end = realNow() + ms;
+  await settle();
+  while (!done() && realNow() < end) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  await settle();
+}
+
+/**
+ * Courier failures other than a backup the server did not keep. Each body
+ * or message carries `SENTINEL`, which the log must never show.
+ */
+const UPLOAD_FAILURES: { label: string; arm: () => void }[] = [
+  {
+    label: "a 413",
+    arm: () => {
+      putAnswer = () =>
+        new Response(JSON.stringify({ type: "PayloadTooLarge", SENTINEL }), {
+          status: 413,
+          headers: { "Content-Type": "application/json" },
+        });
+    },
+  },
+  {
+    label: "a 429 that outlasts the retries",
+    arm: () => {
+      putAnswer = () =>
+        new Response(SENTINEL, {
+          status: 429,
+          headers: { "X-RateLimit-Reset-After": "0" },
+        });
+    },
+  },
+  {
+    label: "a 500",
+    arm: () => {
+      putAnswer = () => new Response(SENTINEL, { status: 500 });
+    },
+  },
+  {
+    label: "a network failure",
+    arm: () => {
+      putAnswer = () => {
+        throw new TypeError(`Failed to fetch ${SENTINEL}`);
+      };
+    },
+  },
+  {
+    label: "a native take that threw",
+    arm: () => {
+      plugin.takeThrows = true;
+    },
+  },
+];
+
 test("useError: the not-stored error shows its own words, never the log text", () => {
   const error = Object.assign(
     new Error("The server did not store this backup generation"),
     { name: "BackupNotStoredError" },
   );
   assert.equal(describeError(error), NOT_STORED_WORDS);
+});
+
+test("useError: the upload-failed error shows the generic words, never the log text", () => {
+  const error = Object.assign(new Error("The backup upload did not complete"), {
+    name: "BackupUploadFailedError",
+  });
+  assert.equal(describeError(error), UPLOAD_FAILED_WORDS);
 });
 
 for (const shell of ["tauri", "electron"] as const) {
@@ -783,7 +974,88 @@ for (const shell of ["tauri", "electron"] as const) {
         `${mode} did not reject with the not-stored error`,
       );
       assert.equal(describeError(run.error), NOT_STORED_WORDS);
-      assert.equal(logged.length, 1, "the courier failure is still logged");
+      assert.deepEqual(
+        logged,
+        [["[e2ee] backup courier failed:", "BackupNotStoredError"]],
+        "the courier failure is logged by name only",
+      );
+    });
+  }
+
+  for (const mode of ["create", "rotate"] as const) {
+    for (const failure of UPLOAD_FAILURES) {
+      test(`${shell} ${mode}: ${failure.label} rejects with the generic words`, async () => {
+        fresh(shell);
+        const { bridge } = await claimedBridge();
+        plugin.calls = [];
+        plugin.pending = [BUNDLE];
+        failure.arm();
+
+        const run = startRecovery(bridge, mode);
+        await settle();
+        assert.equal(run.done, false, `${mode} returned before the outcome`);
+
+        const logged = await capturingErrors(async () => {
+          plugin.emit("e2ee:recovery-complete", mode);
+          await settleUntil(() => run.done);
+        });
+        assert.equal(run.done, true, `${mode} still waiting after the courier`);
+        assert.equal(plugin.marks(), 0, "a failed upload was marked uploaded");
+        assert.equal(
+          (run.error as { name?: unknown } | undefined)?.name,
+          "BackupUploadFailedError",
+          `${mode} did not reject with the upload-failed error: ${String(run.error)}`,
+        );
+        assert.equal(describeError(run.error), UPLOAD_FAILED_WORDS);
+        assert.equal(logged.length, 1, "want one courier log line");
+        assert.equal(logged[0][0], "[e2ee] backup courier failed:");
+        assert.equal(logged[0].length, 2, "the log carries more than a name");
+        assert.equal(typeof logged[0][1], "string");
+        assert.ok(
+          !JSON.stringify(logged).includes(SENTINEL),
+          `the log leaked the failure body: ${JSON.stringify(logged)}`,
+        );
+      });
+    }
+
+    test(`${shell} ${mode}: no outcome within the wait rejects with the generic words`, async () => {
+      fresh(shell);
+      const { bridge } = await claimedBridge();
+      const realSetTimeout = globalThis.setTimeout;
+      let expire: (() => void) | null = null;
+      globalThis.setTimeout = ((
+        fn: () => void,
+        ms?: number,
+        ...rest: unknown[]
+      ) => {
+        if (ms === RECOVERY_WAIT_MS) {
+          expire = fn;
+          return realSetTimeout(() => {}, 0);
+        }
+        return realSetTimeout(fn, ms, ...rest);
+      }) as typeof setTimeout;
+      try {
+        const run = startRecovery(bridge, mode);
+        await settle();
+        assert.ok(expire, "no recovery wait timer was armed");
+        assert.equal(run.done, false);
+        (expire as () => void)();
+        await settle();
+        assert.equal(
+          run.done,
+          true,
+          "the expired wait left the caller waiting",
+        );
+        assert.equal(
+          (run.error as { name?: unknown } | undefined)?.name,
+          "BackupUploadFailedError",
+          "the expired wait did not reject with the upload-failed error",
+        );
+        assert.equal(describeError(run.error), UPLOAD_FAILED_WORDS);
+        assert.equal(puts.length, 0);
+      } finally {
+        globalThis.setTimeout = realSetTimeout;
+      }
     });
   }
 
@@ -827,8 +1099,8 @@ test("tauri create: dispose ends the wait without an error", async () => {
   assert.equal(run.error, undefined);
 });
 
-test("tauri: a background refresh the server did not keep only logs its name", async () => {
-  fresh("tauri");
+test("electron: a background refresh the server did not keep only logs its name", async () => {
+  fresh("electron");
   storedGeneration = 9;
   plugin.due = [BUNDLE];
   const logged = await capturingErrors(async () => {
@@ -843,7 +1115,7 @@ test("tauri: a background refresh the server did not keep only logs its name", a
 
 // ---- refreshBackupIfDue() refuses by itself ---------------------------------
 
-for (const shell of ["android", "web"] as const) {
+for (const shell of ["tauri", "android", "web"] as const) {
   test(`${shell}: a direct refreshBackupIfDue() never asks native`, async () => {
     fresh(shell);
     const { bridge } = await claimedBridge();
@@ -869,8 +1141,8 @@ for (const shell of ["tauri", "electron"] as const) {
   });
 }
 
-test("control: a direct refreshBackupIfDue() in the tauri main window takes", async () => {
-  fresh("tauri");
+test("control: a direct refreshBackupIfDue() in the electron main window takes", async () => {
+  fresh("electron");
   const { bridge } = await claimedBridge();
   plugin.calls = [];
   plugin.due = [BUNDLE];

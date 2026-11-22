@@ -91,7 +91,16 @@ export function useError() {
     // (`BackupNotStoredError` in the encryption bridge, matched by name so
     // this file does not import the bridge). Its message is English for logs.
     if ((error as { name?: unknown } | null)?.name === "BackupNotStoredError") {
-      return t`Sloga's servers kept a different backup. Remove the backup in Settings > Encryption, then make a new recovery code.`;
+      return t`Sloga's servers kept a different backup. Delete the backup in Settings > Encryption, then make a new recovery code.`;
+    }
+
+    // A recovery code's backup upload failed for any other reason, or had
+    // no outcome in time (`BackupUploadFailedError` in the encryption
+    // bridge, matched by name likewise). Its message is English for logs.
+    if (
+      (error as { name?: unknown } | null)?.name === "BackupUploadFailedError"
+    ) {
+      return t`Your backup did not reach Sloga. Try again.`;
     }
 
     // handle Revolt API errors

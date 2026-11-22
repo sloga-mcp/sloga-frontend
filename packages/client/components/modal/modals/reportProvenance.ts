@@ -18,6 +18,11 @@ export type ReporterCopyLabel = {
   unverified: boolean;
   /** Unverified, and the reporter's app flagged the message as encrypted */
   markedEncrypted: boolean;
+  /**
+   * A server copy with the same id exists, and its author or content
+   * differs from the reporter's copy
+   */
+  mismatch: boolean;
 };
 
 /** `value` as a plain object, or `undefined`. */
@@ -53,11 +58,26 @@ function serverCopy(
 }
 
 /**
+ * Whether two fields of a message say the same: equal strings, where a
+ * missing value reads as empty (the server omits empty content). Anything
+ * else never matches.
+ */
+function sameField(a: unknown, b: unknown): boolean {
+  const left = a === undefined || a === null ? "" : a;
+  const right = b === undefined || b === null ? "" : b;
+  return (
+    typeof left === "string" && typeof right === "string" && left === right
+  );
+}
+
+/**
  * Labels for a reporter-supplied copy. A copy the server has no copy of is
- * unverified; so is one with no readable id, since nothing can match it.
+ * unverified; so is one with no readable id, since nothing can match it. A
+ * copy whose author or content differs from the server's copy with the same
+ * id does not match it.
  * @param reporterSnapshot The `ReporterMessage` snapshot
  * @param snapshots Every snapshot of the same report
- * @returns The labels; both false for any other kind of snapshot
+ * @returns The labels; all false for any other kind of snapshot
  */
 export function reporterCopyLabel(
   reporterSnapshot: SnapshotLike,
@@ -65,14 +85,19 @@ export function reporterCopyLabel(
 ): ReporterCopyLabel {
   const content = record(reporterSnapshot.content);
   if (content?._type !== "ReporterMessage") {
-    return { unverified: false, markedEncrypted: false };
+    return { unverified: false, markedEncrypted: false, mismatch: false };
   }
 
   const message = record(content.message);
-  const unverified = !serverCopy(snapshots, text(message?.id));
+  const stored = serverCopy(snapshots, text(message?.id));
+  const unverified = !stored;
   return {
     unverified,
     markedEncrypted: unverified && message?.encrypted === true,
+    mismatch:
+      !!stored &&
+      (!sameField(message?.author, stored.author) ||
+        !sameField(message?.content, stored.content)),
   };
 }
 
@@ -115,15 +140,4 @@ export function reportTargetOf(
     }
   }
   return claimed ? { id: claimed, claimedOnly: true } : undefined;
-}
-
-/**
- * The author a message report is about (`reportTargetOf`).
- * @param snapshots Every snapshot of the report
- * @returns The user id, or `undefined`
- */
-export function reportedAuthorOf(
-  snapshots: readonly SnapshotLike[],
-): string | undefined {
-  return reportTargetOf(undefined, snapshots)?.id;
 }
