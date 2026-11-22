@@ -368,8 +368,11 @@ export interface CallE2EELeftovers {
    */
   unbind: (() => void) | undefined;
   worker: { terminate(): void } | undefined;
-  /** The key provider: `resetForGroup` zeroes its raw key bytes (A-3). */
-  provider: { resetForGroup(): void } | undefined;
+  /**
+   * The key provider: `close` zeroes its raw key bytes (A-3) and refuses
+   * every install after it, including one whose import is still in flight.
+   */
+  provider: { close(): void } | undefined;
 }
 
 /**
@@ -418,7 +421,7 @@ export function releaseCallE2EE(leftovers: CallE2EELeftovers): unknown[] {
   run(leftovers.resetBackstop);
   run(leftovers.unbind);
   run(worker && (() => worker.terminate()));
-  run(provider && (() => provider.resetForGroup()));
+  run(provider && (() => provider.close()));
   return errors;
 }
 

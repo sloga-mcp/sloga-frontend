@@ -4101,8 +4101,9 @@ class Voice {
         this.#workerAcks = undefined;
         this.#e2eeWorker?.terminate();
         // A-3: zero any raw key bytes (iOS, D2) before the provider is
-        // dropped; nothing else will ever release them.
-        this.#mlsKeyProvider?.resetForGroup();
+        // dropped; nothing else will ever release them. `close`, not
+        // `resetForGroup`: it also refuses an install still importing.
+        this.#mlsKeyProvider?.close();
         this.#mlsKeyProvider = undefined;
         this.#e2eeWorker = undefined;
         // 🔴 Deliberately does NOT drop `e2eeCapable`. It used to, as a
@@ -6144,11 +6145,12 @@ class Voice {
       this.#e2eeWorker?.terminate();
       this.#e2eeWorker = undefined;
       // A-3: the provider's replay set holds the call's raw key bytes on iOS
-      // (D2); `resetForGroup` zeroes them before the provider is dropped.
+      // (D2); `close` zeroes them before the provider is dropped, and refuses
+      // an install whose import is still in flight, so none lands after.
       // Guarded like the unlisten above: a throw here must not skip
       // `room.disconnect()` below.
       try {
-        this.#mlsKeyProvider?.resetForGroup();
+        this.#mlsKeyProvider?.close();
       } catch {
         /* see above */
       }

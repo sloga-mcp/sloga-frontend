@@ -361,6 +361,9 @@ export class MlsKeyProvider extends BaseKeyProvider {
    */
   readonly #rawKeyBytes: boolean;
 
+  /** Set by `close()` and never cleared: every install is refused after it. */
+  #closed = false;
+
   /** The local key's ack wait; set exactly when `#rawKeyBytes` is. */
   readonly #awaitKeyAck:
     | ((identity: string, keyIndex: number) => Promise<boolean>)
@@ -568,6 +571,8 @@ export class MlsKeyProvider extends BaseKeyProvider {
    * restates the EPOCH invariant only.
    */
   #admits(groupId: string, epoch: number): boolean {
+    // Checked first: a closed provider must not reset for a "new" group.
+    if (this.#closed) return false;
     const fence = this.#fence;
     if (!fence) return true;
     if (fence.groupId !== groupId) {
@@ -603,6 +608,25 @@ export class MlsKeyProvider extends BaseKeyProvider {
     this.#pruneRetainedKeys();
     // Raw mode: nothing is served any more, so every dropped array is zeroed.
     scrubKeyBytes(dropped, this.getKeys());
+  }
+
+  /**
+   * End this provider for good — the call is over (both `state.tsx`
+   * teardowns and the WebKit sender hold's release, in place of
+   * `resetForGroup`).
+   *
+   * 🔴 `resetForGroup` alone is not enough there: it clears the fence, and an
+   * install whose `#import` was still awaiting `importKey` when the call ended
+   * then passed `#admits` on its re-check and `#publish`ed fresh raw key bytes
+   * (iOS, D2) into a provider nobody would zero again. The latch makes
+   * `#admits` refuse every install from now on, in flight or new, for any
+   * group and epoch; a refused install zeroes what it imported and returns,
+   * exactly like a superseded one. Nothing reopens it, a later
+   * `resetForGroup` included.
+   */
+  close(): void {
+    this.#closed = true;
+    this.resetForGroup();
   }
 
   /**

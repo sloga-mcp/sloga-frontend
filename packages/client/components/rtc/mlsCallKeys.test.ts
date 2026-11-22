@@ -1604,6 +1604,105 @@ test("raw mode zeroes on its own, not through the base class's private map", asy
   assert.ok(at5.every(isZero), "resetForGroup must zero what it drops");
 });
 
+// ---------------------------------------------------------------------------
+// The end of a call (close)
+//
+// `resetForGroup` clears the fence, so an install whose import was still in
+// flight when the call ended passed `#admits` on its re-check and posted fresh
+// raw key bytes into a provider nobody would zero again. `close()` is the
+// teardown's call: terminal, so every install still in flight, and every one
+// after it, is refused and holds nothing.
+// ---------------------------------------------------------------------------
+
+test("🔴 raw mode: an install still importing when the call ends installs nothing", async () => {
+  const asked: string[] = [];
+  const provider = rawProvider((identity, keyIndex) => {
+    asked.push(`${identity}-${keyIndex}`);
+    return Promise.resolve(true);
+  });
+  await rotateThrough(provider, 5, [LOCAL, BOB, LOCAL_LEG]);
+  const held = [...servedBytes(provider).values()];
+  const gate = importGate();
+  let remote: Promise<void>;
+  let local: Promise<void>;
+  try {
+    // Both halves of epoch 6 are admitted on entry, then park in `#import`.
+    gate.arm();
+    const at6 = frameKeys(6, [LOCAL, BOB, LOCAL_LEG]);
+    remote = provider.applyRemoteKeys(at6, LOCAL);
+    local = provider.applyLocalKey(at6, LOCAL);
+    await Promise.resolve();
+    gate.disarm();
+
+    provider.close();
+    assert.ok(held.every(isZero), "close must zero everything it held");
+
+    const log = new PostLog().attach(provider);
+    asked.length = 0;
+    await gate.release();
+    await remote;
+    await local;
+    await settle();
+
+    assert.deepEqual(log.posts, [], "nothing may reach the worker after close");
+    assert.deepEqual(asked, [], "no ack wait may start after close");
+  } finally {
+    gate.restore();
+  }
+  assert.deepEqual(provider.getKeys(), []);
+  assert.equal(provider.lastLocalScreenKey(), undefined);
+});
+
+test("close() is terminal: no later install lands, for any group or epoch", async () => {
+  const provider = rawProvider();
+  await rotateThrough(provider, 3);
+  provider.close();
+  const log = new PostLog().attach(provider);
+
+  await provider.applyKeys(frameKeys(4, [LOCAL, BOB]), LOCAL);
+  await provider.applyRemoteKeys(frameKeys(9, [LOCAL, BOB]), LOCAL);
+  await provider.applyLocalKey(frameKeys(9, [LOCAL, BOB]), LOCAL);
+  // A different group would RESET an open provider and be admitted.
+  await provider.applyKeys(
+    frameKeys(1, [LOCAL, BOB], [LOCAL, BOB], "group-2"),
+    LOCAL,
+  );
+  // Nor does a reset reopen it.
+  provider.resetForGroup();
+  await provider.applyKeys(frameKeys(10, [LOCAL, BOB]), LOCAL);
+
+  assert.deepEqual(log.posts, []);
+  assert.deepEqual(provider.getKeys(), []);
+  assert.deepEqual(log.replay(provider), []);
+});
+
+test("close() refuses a keyless epoch too, rather than failing loud on a call that ended", async () => {
+  const provider = new MlsKeyProvider();
+  await rotateThrough(provider, 2);
+  provider.close();
+  // An open provider throws MissingLocalFrameKeyError here; a closed one has
+  // no call left to fail.
+  await provider.applyLocalKey(frameKeys(3, [BOB]), LOCAL);
+  assert.deepEqual(provider.getKeys(), []);
+});
+
+test("close() is idempotent and resetForGroup alone is not terminal", async () => {
+  const open = new MlsKeyProvider();
+  await rotateThrough(open, 2);
+  open.resetForGroup();
+  await open.applyKeys(
+    frameKeys(1, [LOCAL, BOB], [LOCAL, BOB], "group-2"),
+    LOCAL,
+  );
+  assert.ok(open.getKeys().length > 0, "a reset provider takes the next group");
+
+  const closed = rawProvider();
+  await rotateThrough(closed, 2);
+  closed.close();
+  closed.close();
+  assert.deepEqual(closed.getKeys(), []);
+});
+
 test("raw mode keeps the main-thread import as validation: a refused entry posts nothing", async () => {
   // The worker imports the bytes itself, but the page still imports them
   // first, so an install the main thread cannot import is refused before ANY
