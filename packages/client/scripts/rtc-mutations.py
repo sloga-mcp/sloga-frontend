@@ -3228,11 +3228,13 @@ MUTATIONS += [
         # deepEqual (`origin: "control", mediaKeyed: false`) and the
         # `negotiating` fold.
         search="""    } catch (error) {
+      if (this.#replacedSince(generation, error)) return;
       this.#onRotationError(error);
     }
   }
 """,
         replace="""    } catch (error) {
+      if (this.#replacedSince(generation, error)) return;
       this.#onMediaError(error);
     }
   }
@@ -7563,6 +7565,7 @@ LEG_POLICY_SPEC = "components/rtc/androidLegStartPolicy.test.ts"
 ADMIT_GRACE_SPEC = "components/rtc/mlsAdmitGracePolicy.test.ts"
 LEGGRACE_SPEC = "components/rtc/mlsCallSession.leggrace.test.ts"
 CALL_KEYS_SPEC = "components/rtc/mlsCallKeys.test.ts"
+RESETRACE_SPEC = "components/rtc/mlsCallSession.resetrace.test.ts"
 
 MUTATIONS += [
     # ---- the leg lifecycle leaf ---------------------------------------------
@@ -13376,6 +13379,253 @@ MUTATIONS += [
     if (this.#closed) return false;
 """,
         specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-reset-gen-not-bumped',
+        what='reset race: resetForGroup never moves the generation, so an install still importing when its group is replaced lands the old group\'s keys',
+        file=CALL_KEYS,
+        search="""    this.#resetGeneration += 1;
+    const dropped = this.getKeys();
+""",
+        replace="""    const dropped = this.getKeys();
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-remote-ignores-reset-gen',
+        what='reset race: the remote half re-checks only the fence after its import, which a reset has cleared',
+        file=CALL_KEYS,
+        search="""    // (remote-half generation check).
+    if (
+      generation !== this.#resetGeneration ||
+      !this.#admits(frameKeys.group_id, epoch)
+    ) {
+""",
+        replace="""    // (remote-half generation check).
+    if (!this.#admits(frameKeys.group_id, epoch)) {
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-local-ignores-reset-gen',
+        what='reset race: the local half re-checks only the fence after its import, which a reset has cleared',
+        file=CALL_KEYS,
+        search="""    // Local-half generation check: a reset during the import refuses it.
+    if (
+      generation !== this.#resetGeneration ||
+      !this.#admits(frameKeys.group_id, epoch)
+    ) {
+""",
+        replace="""    // Local-half generation check: a reset during the import refuses it.
+    if (!this.#admits(frameKeys.group_id, epoch)) {
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-applykeys-local-ignores-remote-gen',
+        what='reset race: applyKeys starts its local half fresh after a reset refused the remote half, so it resets the next group away and publishes the old send key',
+        file=CALL_KEYS,
+        search="""    if (since !== undefined && since !== this.#resetGeneration) return;
+""",
+        replace="""""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-remote-gen-captured-before-admits',
+        what='reset race: the remote half takes the generation before its entry check, which moves it on a new group, so every first install of a new group refuses itself',
+        file=CALL_KEYS,
+        search="""    if (!this.#admits(frameKeys.group_id, epoch)) return this.#resetGeneration;
+    const generation = this.#resetGeneration;
+""",
+        replace="""    const generation = this.#resetGeneration;
+    if (!this.#admits(frameKeys.group_id, epoch)) return generation;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-local-gen-captured-before-admits',
+        what='reset race: the local half takes the generation before its entry check, which moves it on a new group, so a new group\'s local key refuses itself',
+        file=CALL_KEYS,
+        search="""    if (!this.#admits(frameKeys.group_id, epoch)) return;
+    const generation = this.#resetGeneration;
+    const entries = localInstallEntries(frameKeys, localIdentity);
+""",
+        replace="""    const generation = this.#resetGeneration;
+    if (!this.#admits(frameKeys.group_id, epoch)) return;
+    const entries = localInstallEntries(frameKeys, localIdentity);
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-remote-reset-gen-after-admits',
+        what='reset race: the remote half re-checks the fence before the generation, so a refused install resets the next group away first',
+        file=CALL_KEYS,
+        search="""      generation !== this.#resetGeneration ||
+      !this.#admits(frameKeys.group_id, epoch)
+    ) {
+      scrubKeyBytes(imported, []);
+      return generation;
+""",
+        replace="""      !this.#admits(frameKeys.group_id, epoch) ||
+      generation !== this.#resetGeneration
+    ) {
+      scrubKeyBytes(imported, []);
+      return generation;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-local-reset-gen-after-admits',
+        what='reset race: the local half re-checks the fence before the generation, so a refused install resets the next group away first',
+        file=CALL_KEYS,
+        search="""      generation !== this.#resetGeneration ||
+      !this.#admits(frameKeys.group_id, epoch)
+    ) {
+      scrubKeyBytes(imported, []);
+      return;
+""",
+        replace="""      !this.#admits(frameKeys.group_id, epoch) ||
+      generation !== this.#resetGeneration
+    ) {
+      scrubKeyBytes(imported, []);
+      return;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-remote-refused-not-scrubbed',
+        what='a refused remote install keeps its raw key bytes un-zeroed in the heap',
+        file=CALL_KEYS,
+        search="""      scrubKeyBytes(imported, []);
+      return generation;
+""",
+        replace="""      return generation;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-local-refused-not-scrubbed',
+        what='a refused local install keeps its raw key bytes un-zeroed in the heap',
+        file=CALL_KEYS,
+        search="""      !this.#admits(frameKeys.group_id, epoch)
+    ) {
+      scrubKeyBytes(imported, []);
+      return;
+""",
+        replace="""      !this.#admits(frameKeys.group_id, epoch)
+    ) {
+      return;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='session-gen-captured-after-fetch',
+        what='reset race: the session takes the generation after the frame-key fetch, so a reply the rejoin outlived installs the old group\'s keys',
+        file=SESSION,
+        search="""    const generation = this.#rotationResetGeneration;
+
+    let frameKeys: MlsFrameKeys;
+    try {
+      frameKeys = await this.#deps.bridge.callFrameKeys(groupId);
+""",
+        replace="""    let generation = this.#rotationResetGeneration;
+
+    let frameKeys: MlsFrameKeys;
+    try {
+      frameKeys = await this.#deps.bridge.callFrameKeys(groupId);
+      generation = this.#rotationResetGeneration;
+""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-fetch-ignores-reset',
+        what='reset race: a frame-key reply the rejoin outlived goes on to the installer',
+        file=SESSION,
+        search="""    if (this.#terminal() || groupId !== this.#groupId) return;
+    if (this.#replacedSince(generation)) return;
+""",
+        replace="""    if (this.#terminal() || groupId !== this.#groupId) return;
+""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-fetch-error-ignores-reset',
+        what='reset race: a frame-key fetch the rejoin outlived that fails late surfaces on the new group',
+        file=SESSION,
+        search="""    } catch (error) {
+      if (this.#replacedSince(generation, error)) return;
+      // Fail-closed (§4.2)""",
+        replace="""    } catch (error) {
+      // Fail-closed (§4.2)""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-reset-gen-not-bumped',
+        what='reset race: #resetRotationState never moves the generation, so an install that outlived its group claims the next group\'s send key',
+        file=SESSION,
+        search="""    this.#rotationResetGeneration += 1;
+""",
+        replace="""""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-install-ignores-reset',
+        what='reset race: the immediate install claims its send key after a reset, setting #hasLocalKey for a group that installed nothing',
+        file=SESSION,
+        search="""        await media.installer.applyKeys(frameKeys, identity);
+        if (this.#replacedSince(generation)) return;
+""",
+        replace="""        await media.installer.applyKeys(frameKeys, identity);
+""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-grace-remote-ignores-reset',
+        what='reset race: the Add-grace remote install schedules its deferred local install after a reset, into the group that replaced it',
+        file=SESSION,
+        search="""        await media.installer.applyRemoteKeys(frameKeys, identity);
+        if (this.#replacedSince(generation)) return;
+""",
+        replace="""        await media.installer.applyRemoteKeys(frameKeys, identity);
+""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-grace-ignores-reset',
+        what='reset race: the Add-grace local install claims its send key after a reset',
+        file=SESSION,
+        search="""        await this.#media?.installer.applyLocalKey(frameKeys, identity);
+        if (this.#replacedSince(generation)) return;
+""",
+        replace="""        await this.#media?.installer.applyLocalKey(frameKeys, identity);
+""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-install-error-ignores-reset',
+        what='reset race: a replaced group\'s immediate install that throws late latches the new group loud',
+        file=SESSION,
+        search="""    } catch (error) {
+      if (this.#replacedSince(generation, error)) return;
+      this.#onRotationError(error);
+""",
+        replace="""    } catch (error) {
+      this.#onRotationError(error);
+""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-grace-error-ignores-reset',
+        what='reset race: a replaced group\'s Add-grace install that throws late latches the new group loud',
+        file=SESSION,
+        search="""      } catch (error) {
+        if (this.#replacedSince(generation, error)) return;
+        this.#onRotationError(error);
+""",
+        replace="""      } catch (error) {
+        this.#onRotationError(error);
+""",
+        specs=[RESETRACE_SPEC],
     ),
     Mutation(
         id='keys-raw-zeroes-live-set',

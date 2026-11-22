@@ -101,7 +101,7 @@ EXPECTED=(
   # bytes, the ack-gated local install and its zeroing (L3n).
   # Re-measured (45 -> 49) by the import-race fix: close() is terminal, so an
   # install still importing when the call ends lands nothing.
-  "components/rtc/mlsCallKeys.test.ts 49 0"
+  "components/rtc/mlsCallKeys.test.ts 57 0"
   # Re-measured (117 -> 132) by wave J: the witness-only amber escalation,
   # the join-window ledger and readiness "paused" (WJ1); 132 -> 139 by Stage
   # 5 fix round F2 (the chip's pausedByServer, M1's unresolved identities,
@@ -139,6 +139,10 @@ EXPECTED=(
   "components/rtc/mlsCallSession.welcomedrop.test.ts 11 0"
   "components/rtc/mlsCallSession.iosconfirm.test.ts 9 0"
   "components/rtc/mlsCallSession.keyack.test.ts 3 0"
+  # A key install that outlives its group (#resetRotationState mid-await):
+  # the session claims nothing for the group that replaced it. First
+  # measured at 8.
+  "components/rtc/mlsCallSession.resetrace.test.ts 8 0"
   "components/rtc/mlsCallSession.locked.test.ts 5 0"
   # Fix round F3: noteFatalMediaError, the control-origin latch remote
   # evidence never heals. First measured at 6; 9 after the re-review's
@@ -787,6 +791,7 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/mlsCallSession.welcomedrop.test.ts
   components/rtc/mlsCallSession.iosconfirm.test.ts
   components/rtc/mlsCallSession.keyack.test.ts
+  components/rtc/mlsCallSession.resetrace.test.ts
   components/rtc/mlsCallSession.locked.test.ts
   components/rtc/mlsCallSession.fatal.test.ts
   components/client/e2eePlatform.ts components/client/e2eePlatform.test.ts
