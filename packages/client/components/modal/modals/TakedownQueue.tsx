@@ -46,7 +46,7 @@ import {
   removableTargets,
   sortQueue,
   splitDuration,
-} from "./takedownQueue";
+} from "./takedownQueuePolicy";
 
 /** A reviewer action; each posts to `/admin/takedown/requests/<id>/<path>` */
 type Action =

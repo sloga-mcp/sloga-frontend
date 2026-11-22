@@ -19,7 +19,7 @@ import {
   type TakedownSummary,
   queueCounts,
   tileGivesUp,
-} from "@revolt/modal/modals/takedownQueue";
+} from "@revolt/modal/modals/takedownQueuePolicy";
 import { useState } from "@revolt/state";
 import {
   CategoryButton,
