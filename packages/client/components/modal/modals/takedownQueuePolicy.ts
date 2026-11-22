@@ -2,7 +2,7 @@
  * Pure pieces of the Take It Down review queue (`TakedownQueue.tsx`) and its
  * Home tile: the shapes the staff routes return, deadline math, the copy
  * count a removal confirms, and how an error answer reads. No imports, so
- * `takedownQueue.test.ts` loads it under `node --test`.
+ * `takedownQueuePolicy.test.ts` loads it under `node --test`.
  */
 
 /** One queue row, `GET /admin/takedown/requests` */

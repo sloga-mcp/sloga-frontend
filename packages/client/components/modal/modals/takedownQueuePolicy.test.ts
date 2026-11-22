@@ -1,6 +1,6 @@
 // Unit spec for the Take It Down queue helpers; run with Node's built-in
 // runner:
-//   node --conditions=browser --test components/modal/modals/takedownQueue.test.ts
+//   node --conditions=browser --test components/modal/modals/takedownQueuePolicy.test.ts
 // Focus: the 12 hour urgency line, open-only counts, queue order, the copy
 // count a removal confirms (each file once, 0 without copies), the error
 // answers the reviewer sees, which files get a preview, and the headers and
@@ -24,7 +24,7 @@ import {
   sortQueue,
   splitDuration,
   tileGivesUp,
-} from "./takedownQueue.ts";
+} from "./takedownQueuePolicy.ts";
 
 const NOW = Date.parse("2026-11-19T12:00:00Z");
 
