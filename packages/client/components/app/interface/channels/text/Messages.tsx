@@ -33,11 +33,7 @@ import {
   dmPeerId,
   peerTurnedOff,
 } from "@revolt/client/encryptedOnlyGuard";
-import {
-  latchAccountId,
-  latchedAt,
-  latchedForClient,
-} from "@revolt/client/encryptedOnlyLatch";
+import { latchedForClient } from "@revolt/client/encryptedOnlyLatch";
 import { timelineCopy } from "@revolt/client/protectedCopy";
 import { protectedActionsBlocked } from "@revolt/client/protectedShield";
 import type { TimelineMarker } from "@revolt/client/protectedTextTypes";
@@ -303,32 +299,23 @@ export function Messages(props: Props) {
   const { t } = useLingui();
   const { openModal } = useModals();
 
-  /**
-   * When this device set the Encrypted-only latch, or `null` while it is
-   * off. A latch whose time is not known reads 0, so every unencrypted
-   * message counts as newer.
-   */
-  const latchTime = createMemo((): number | null => {
-    const readyId = client().user?.id;
-    if (!latchedForClient(readyId)) return null;
-    return latchedAt(latchAccountId(readyId)) ?? latchedAt(readyId) ?? 0;
-  });
+  /** Whether the Encrypted-only latch is on here */
+  const latched = createMemo(() => latchedForClient(client().user?.id));
 
   /**
    * Whether a message row carries the "Not encrypted" label: under the
-   * latch, an unencrypted message in a direct message or group sent after
-   * the latch was set. It is never shown as encrypted.
+   * latch, every unencrypted message in a direct message or group, however
+   * old. It is never shown as encrypted.
    * @param message Message
    * @returns Whether to label it
    */
   function notEncryptedLabel(message: MessageInterface): boolean {
     const kind = channelKindOf(props.channel);
     return notEncryptedRow({
-      latchedAt: latchTime(),
+      latched: latched(),
       conversation: kind === "dm" || kind === "group",
       encrypted: isTrustedMessage(message.id),
       system: !!message.systemMessage,
-      createdAtMs: +message.createdAt,
     });
   }
 

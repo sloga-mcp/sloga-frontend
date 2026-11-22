@@ -996,7 +996,7 @@ test("the English of each refusal is the translated copy in errors.ts", () => {
   }
   assert.equal(
     ENCRYPTED_ONLY_COPY["peer-changed"],
-    "This person may no longer use Encrypted-only chats. Confirm to send this message.",
+    "This person may no longer use Encrypted-only chats. If you send anyway, your message may not be encrypted.",
   );
   assert.equal(
     ENCRYPTED_ONLY_COPY.group,

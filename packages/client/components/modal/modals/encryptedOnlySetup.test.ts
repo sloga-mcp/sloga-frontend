@@ -1,7 +1,7 @@
 // Unit spec for the Encrypted-only card, setup and leave decisions. Run with
 // Node's built-in runner from packages/client:
 //   node --test --conditions=browser components/modal/modals/encryptedOnlySetup.test.ts
-// Declared test count: 18 (the runner also exits 0 when it finds no tests at
+// Declared test count: 19 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -318,8 +318,24 @@ test("classifyRouteFailure sorts the server's errors", () => {
     classifyRouteFailure({ type: "FeatureDisabled", feature: "e2ee_only" }),
     "unavailable",
   );
+  assert.equal(
+    classifyRouteFailure({ type: "EncryptionRequired", side: "sender" }),
+    "device",
+  );
+  assert.equal(classifyRouteFailure({ type: "EncryptionRequired" }), "device");
+  // Older servers
   assert.equal(classifyRouteFailure({ type: "NotAuthenticated" }), "device");
   assert.equal(classifyRouteFailure({ type: "InvalidToken" }), "ticket");
+});
+
+test("classifyRouteFailure: a refusal for another side is not the device", () => {
+  for (const side of ["recipient", "group", "member", 1]) {
+    assert.equal(
+      classifyRouteFailure({ type: "EncryptionRequired", side }),
+      "other",
+      String(side),
+    );
+  }
 });
 
 test("classifyRouteFailure: anything else is other", () => {

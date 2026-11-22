@@ -23,8 +23,8 @@
 // WHAT THIS SPEC CANNOT CATCH. It matches text; it never runs the app. A
 // screen that calls the policy and then ignores the answer, calls it on the
 // wrong branch, or calls it after the request has gone, passes here. The
-// policy specs, the e2ee.ts scan and the browser leg on the stub backend
-// (/home/mcp/slim-m3/m3_stub.js) cover the decisions and the wiring.
+// policy specs, the e2ee.ts scan and a browser run against a stub backend
+// cover the decisions and the wiring.
 //
 // Negative control: set `ENCRYPTED_ONLY_GATES_ROOT` to a directory laid out
 // like packages/client holding a copy of every scanned file (SITES and

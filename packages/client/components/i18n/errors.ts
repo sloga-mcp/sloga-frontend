@@ -71,7 +71,7 @@ export function useError() {
         case "setup":
           return t`Finish setting up encryption on this device to use your chats.`;
         case "peer-changed":
-          return t`This person may no longer use Encrypted-only chats. Confirm to send this message.`;
+          return t`This person may no longer use Encrypted-only chats. If you send anyway, your message may not be encrypted.`;
         default: {
           const exhaustive: never = encryptionSide;
           return exhaustive;

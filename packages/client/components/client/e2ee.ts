@@ -655,7 +655,7 @@ const ENCRYPTED_ONLY_COPY: Record<BlockReason, string> = {
   setup: "Finish setting up encryption on this device to use your chats.",
   "open-app": "Open the Sloga app to read and send encrypted chats.",
   "peer-changed":
-    "This person may no longer use Encrypted-only chats. Confirm to send this message.",
+    "This person may no longer use Encrypted-only chats. If you send anyway, your message may not be encrypted.",
 };
 
 /**

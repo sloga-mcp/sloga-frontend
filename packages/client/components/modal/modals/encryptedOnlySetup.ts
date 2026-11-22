@@ -187,6 +187,12 @@ export function classifyRouteFailure(error: unknown): RouteFailure {
   switch (type) {
     case "FeatureDisabled":
       return "unavailable";
+    case "EncryptionRequired": {
+      // This session has no published encryption device
+      const side = (error as { side?: unknown }).side;
+      return side === undefined || side === "sender" ? "device" : "other";
+    }
+    // Older servers answer a session without a device this way
     case "NotAuthenticated":
       return "device";
     case "InvalidToken":

@@ -171,7 +171,7 @@ test("the errors mapper words every side, ahead of its other branches", () => {
     // read by `sendRefusalSide`, which knows this side
     [
       ["peer-changed"],
-      "This person may no longer use Encrypted-only chats. Confirm to send this message.",
+      "This person may no longer use Encrypted-only chats. If you send anyway, your message may not be encrypted.",
     ],
   ];
 

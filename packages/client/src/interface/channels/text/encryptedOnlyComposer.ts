@@ -20,7 +20,8 @@
  * A send refused for a peer who may have left Encrypted-only stays in the
  * outbox as a failed entry with its marker. `failedRowSend` and
  * `peerChangedKeys` read those entries for the row menu and the composer's
- * "Send anyway", so the offer outlives a channel switch and a reload.
+ * "Send anyway", so the offer outlives a channel switch and a reload. The
+ * composer's one only confirms the peer; each entry is sent from its row.
  */
 import type { PlainWriteKind } from "stoat.js";
 
@@ -30,6 +31,7 @@ import {
   type DeviceState,
   type PlainWriteInput,
   decideForKind,
+  decidePlainWrite,
   reasonFor,
 } from "../../../../components/client/encryptedOnlyPolicy.ts";
 import {
@@ -326,9 +328,9 @@ export function failedRowSend(
 }
 
 /**
- * The failed entries the composer's "Send anyway" confirms and sends again:
- * those refused for a peer who may have left Encrypted-only. The composer
- * shows its notice while there are any.
+ * The failed entries refused for a peer who may have left Encrypted-only.
+ * The composer shows its "Send anyway" line while there are any and the
+ * peer is not confirmed yet (`peerAwaitsConfirm`).
  * @param rows The channel's outbox
  * @param latched The account's latch is on here
  * @returns Their keys, in outbox order
@@ -344,4 +346,18 @@ export function peerChangedKeys(
         failedRowSend(row.error, latched) === "send-anyway",
     )
     .map((row) => row.idempotencyKey);
+}
+
+/**
+ * Whether an unencrypted send here still waits for the user to confirm a
+ * peer who may have left Encrypted-only. The composer's "Send anyway" only
+ * confirms, so its line is offered while this holds; once confirmed, each
+ * failed message keeps its own "Send anyway".
+ * @param input The policy facts (`buildPlainWriteInput`)
+ * @returns Whether a confirmation is still owed
+ */
+export function peerAwaitsConfirm(input: PlainWriteInput): boolean {
+  return (
+    decidePlainWrite({ ...input, encrypted: false }) === "confirm-peer-changed"
+  );
 }

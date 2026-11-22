@@ -3,7 +3,7 @@
 // which cannot load under Node. Run from packages/client:
 //   node --test --conditions=browser \
 //     src/interface/channels/text/encryptedOnlyComposer.test.ts
-// Declared test count: 19 (the runner also exits 0 when it finds no tests at
+// Declared test count: 20 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 //
 // `ENCRYPTED_ONLY_COMPOSER_TS=<path>` loads another copy of the module, and
@@ -35,6 +35,7 @@ const mod: typeof Module = await import(
 );
 const { composerBlockFor, kindBlockFor, noticeFor, refusalBlock } = mod;
 const { sendMayEncrypt, composerViewFor, failedRowSend, peerChangedKeys } = mod;
+const { peerAwaitsConfirm } = mod;
 
 type View = Module.ComposerView;
 type Mode = View["mode"];
@@ -554,6 +555,27 @@ test("the composer's Send anyway line is built from the failed rows", () => {
   }
 });
 
+test("peerAwaitsConfirm: only a remembered peer whose flag is off, latch off", () => {
+  for (const [over] of everything()) {
+    const expected =
+      over.channel === "dm" &&
+      !over.latched &&
+      over.peerRemembered &&
+      over.peerFlag !== "on";
+    assert.equal(peerAwaitsConfirm(over), expected, JSON.stringify(over));
+  }
+  // An encrypted conversation still owes it: the confirmation is about a
+  // send that falls back to unencrypted
+  assert.equal(
+    peerAwaitsConfirm(
+      input({ peerRemembered: true, device: "ready", encrypted: true }),
+    ),
+    true,
+  );
+  // Once confirmed the peer is forgotten, and the line goes
+  assert.equal(peerAwaitsConfirm(input({ peerRemembered: false })), false);
+});
+
 test("composerViewFor: the cache the composer and the dialogs read", () => {
   const modes = new Map<string, Mode>([
     ["peer", "plaintext"],
@@ -706,9 +728,7 @@ test("Composition: /roll and slash commands check before any request", () => {
   assert.ok(guard > 0, "roll guard missing");
   assert.ok(guard < roll.indexOf("await fetch("), "roll guard after the fetch");
   assert.ok(
-    roll.includes(
-      "if (showEncryptedOnlyRefusal(data, channel, false)) return;",
-    ),
+    roll.includes("if (showEncryptedOnlyRefusal(data, channel)) return;"),
   );
 
   const command = code(
@@ -719,7 +739,7 @@ test("Composition: /roll and slash commands check before any request", () => {
   assert.ok(check < command.indexOf(".createInteraction("));
   assert.ok(
     command.includes(
-      "} catch (error) { if (showEncryptedOnlyRefusal(error, commandChannel, false)) return;",
+      "} catch (error) { if (showEncryptedOnlyRefusal(error, commandChannel)) return;",
     ),
   );
   // Not offered either
@@ -770,7 +790,7 @@ test("MessageBox: the blocked notice has an action slot, a native button", () =>
   );
 });
 
-test("Composition: the Send anyway line comes from the outbox; confirm, then retry", () => {
+test("Composition: the Send anyway line comes from the outbox; it only confirms", () => {
   const all = code(COMPOSITION);
   const rows = code(
     COMPOSITION.slice(
@@ -785,48 +805,49 @@ test("Composition: the Send anyway line comes from the outbox; confirm, then ret
     ),
     rows,
   );
-  // Shown from the rows unless the block already offers "Send anyway"
+  // Shown from the rows while the peer is not confirmed, unless the block
+  // already offers "Send anyway"
   const line = code(
     functionBody(COMPOSITION, "const encryptedOnlyLine = () => {"),
   );
   assert.ok(
     line.includes("if (notice?.channelId === props.channel.id) return notice;"),
   );
+  assert.ok(line.includes("!peerAwaitsConfirm(encryptedOnlyInput()) ||"));
   assert.ok(line.includes('encryptedOnlyBlock()?.action === "send-anyway"'));
   assert.ok(
     line.includes(
-      'text: encryptedOnlyText("peer-changed"), action: "send-anyway" as const, draftBack: false,',
+      'text: encryptedOnlyText("peer-changed"), action: "send-anyway" as const,',
     ),
   );
   assert.ok(all.includes("<Show when={encryptedOnlyLine()}>"));
   // The transient-only notice and its resend are gone
   assert.ok(!/\bresend\b/.test(all), "resend still referenced");
 
-  // "Send anyway": confirm the peer, then retry the marked rows
+  // "Send anyway" only confirms the peer: nothing is sent from the
+  // composer, not the failed rows and not the draft. Each row keeps its own.
   const run = code(
     functionBody(
       COMPOSITION,
-      "function runEncryptedOnlyAction(action: ComposerAction, draftBack: boolean) {",
+      "function runEncryptedOnlyAction(action: ComposerAction) {",
     ),
   );
-  const confirm = run.indexOf("confirmPeerChanged(peerId, client().user?.id);");
-  const keys = run.indexOf("for (const key of peerChangedKeys(");
-  const retry = run.indexOf(
-    "state.draft.retrySend(client(), channel, key, (error) => retryRefused(error, channel), );",
-  );
-  assert.ok(confirm > 0 && keys > confirm && retry > keys, run);
-  assert.ok(run.includes("if (draftBack) void sendReporting();"));
-  // A retry refused for the peer again is on its row, not a second line
-  const refused = code(
-    functionBody(
-      COMPOSITION,
-      "function retryRefused(error: unknown, channel: Channel) {",
+  const anyway = run.slice(run.indexOf('case "send-anyway": {'));
+  assert.ok(
+    anyway.startsWith(
+      'case "send-anyway": { const peerId = dmPeerId(client(), channel); if (!peerId) return; confirmPeerChanged(peerId, client().user?.id); setEncryptedOnlyNotice(null); return; }',
     ),
+    anyway,
   );
-  assert.equal(
-    refused,
-    "if (sendRefusalSide(error) === PEER_CHANGED_SIDE) return; void showEncryptedOnlyRefusal(error, channel, false);",
-  );
+  for (const sent of [
+    "retrySend",
+    "sendReporting",
+    "sendMessage",
+    "sendDraft",
+  ]) {
+    assert.ok(!run.includes(sent), `${sent} in runEncryptedOnlyAction`);
+  }
+  assert.ok(!all.includes("draftBack"), "draftBack still referenced");
 
   // A send refused for the peer that left a failed row returns before the
   // transient notice
@@ -842,7 +863,7 @@ test("Composition: the Send anyway line comes from the outbox; confirm, then ret
   const rowReturn = send.indexOf(
     "if ( sendRefusalSide(error) === PEER_CHANGED_SIDE && sendChannel.id === props.channel.id && peerChangedRows().some((key) => !peerChangedBefore.has(key)) ) { return; }",
   );
-  const shown = send.indexOf("showEncryptedOnlyRefusal( error, sendChannel,");
+  const shown = send.indexOf("showEncryptedOnlyRefusal(error, sendChannel)");
   assert.ok(rowReturn > 0 && shown > rowReturn, "row return missing or late");
 });
 

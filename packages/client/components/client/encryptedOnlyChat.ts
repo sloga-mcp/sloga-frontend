@@ -9,8 +9,8 @@
  *   on.
  * - `plainGroupUnderLatch`: a group that is not encrypted, for an account
  *   whose latch is on. It is read-only and labelled "Not encrypted".
- * - `notEncryptedRow`: an unencrypted message newer than the latch carries
- *   the "Not encrypted" label.
+ * - `notEncryptedRow`: under the latch, every unencrypted message in a
+ *   direct message or group carries the "Not encrypted" label.
  * - `refusalErrorOf` and `draftRowActions`: a failed outbox entry, read back
  *   for its words and its menu.
  */
@@ -72,30 +72,27 @@ export function plainGroupUnderLatch(input: PlainWriteInput): boolean {
 
 /** The facts about one message row. */
 export type RowFacts = {
-  /** When this device set the latch; `null` while the latch is off */
-  latchedAt: number | null;
+  /** The account's latch is on here */
+  latched: boolean;
   /** The message is in a direct message or a group */
   conversation: boolean;
   /** This device decrypted the message */
   encrypted: boolean;
   /** A line the server wrote ("X was added"), not message content */
   system: boolean;
-  /** When the message was sent, in milliseconds */
-  createdAtMs: number;
 };
 
 /**
  * Whether a message row carries the "Not encrypted" label: under the latch,
- * an unencrypted message in a direct message or group, sent after the latch
- * was set. A time that cannot be read counts as newer.
+ * every unencrypted message in a direct message or group. The send time is
+ * not compared with the latch time: the server sets that time and could
+ * date a message back.
  * @param row The facts
  * @returns Whether to label it
  */
 export function notEncryptedRow(row: RowFacts): boolean {
-  if (row.latchedAt === null || !row.conversation) return false;
-  if (row.encrypted || row.system) return false;
-  if (!Number.isFinite(row.createdAtMs)) return true;
-  return row.createdAtMs >= row.latchedAt;
+  if (!row.latched || !row.conversation) return false;
+  return !row.encrypted && !row.system;
 }
 
 /**

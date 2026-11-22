@@ -78,9 +78,8 @@ msgid "Finish setting up encryption on this device to use your chats."
 msgstr "Finish setting up encryption on this device to use your chats."
 
 #: components/i18n/errors.ts
-#: src/interface/channels/text/Composition.tsx
-msgid "This person may no longer use Encrypted-only chats. Confirm to send this message."
-msgstr "This person may no longer use Encrypted-only chats. Confirm to send this message."
+msgid "This person may no longer use Encrypted-only chats. If you send anyway, your message may not be encrypted."
+msgstr "This person may no longer use Encrypted-only chats. If you send anyway, your message may not be encrypted."
 
 #: components/i18n/errors.ts
 #: src/interface/channels/text/Composition.tsx
@@ -11482,8 +11481,16 @@ msgid "Groups you were already in stay unencrypted for other members until the g
 msgstr "Groups you were already in stay unencrypted for other members until the group is encrypted or you leave."
 
 #: components/modal/modals/EncryptedOnlyOnboarding.tsx
-msgid "Message content is encrypted. Names, group names and pictures, who is in a group and when messages are sent are not."
-msgstr "Message content is encrypted. Names, group names and pictures, who is in a group and when messages are sent are not."
+msgid "Older Sloga apps on your other devices are stopped by Sloga's servers, not by the app itself. Update them."
+msgstr "Older Sloga apps on your other devices are stopped by Sloga's servers, not by the app itself. Update them."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Calls in direct messages and groups are not covered by this setting."
+msgstr "Calls in direct messages and groups are not covered by this setting."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Message content is encrypted. Names, group names, descriptions and pictures, who is in a group and when messages are sent are not."
+msgstr "Message content is encrypted. Names, group names, descriptions and pictures, who is in a group and when messages are sent are not."
 
 #: components/modal/modals/EncryptedOnlyOnboarding.tsx
 msgid "Encrypted files can be up to 20 MB."

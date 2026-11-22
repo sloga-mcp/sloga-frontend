@@ -581,10 +581,25 @@ export function EncryptedOnlyOnboardingModal(
                   until the group is encrypted or you leave.
                 </Trans>
               </Text>
+              <Show when={enforced()}>
+                <Text>
+                  <Trans>
+                    Older Sloga apps on your other devices are stopped by
+                    Sloga's servers, not by the app itself. Update them.
+                  </Trans>
+                </Text>
+              </Show>
               <Text>
                 <Trans>
-                  Message content is encrypted. Names, group names and pictures,
-                  who is in a group and when messages are sent are not.
+                  Calls in direct messages and groups are not covered by this
+                  setting.
+                </Trans>
+              </Text>
+              <Text>
+                <Trans>
+                  Message content is encrypted. Names, group names, descriptions
+                  and pictures, who is in a group and when messages are sent are
+                  not.
                 </Trans>
               </Text>
               <Text>

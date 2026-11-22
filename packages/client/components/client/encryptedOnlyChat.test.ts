@@ -169,24 +169,30 @@ test("read-only group: latched, ready, a group nobody marked and that does not s
   assert.equal(plainGroupUnderLatch(base), false);
 });
 
-test("row label: an unencrypted message after the latch, and nothing else", () => {
-  const row = {
-    latchedAt: 1000,
+test("row label: every unencrypted message under the latch, and nothing else", () => {
+  let labelled = 0;
+  for (const latched of BOOLS)
+    for (const conversation of BOOLS)
+      for (const encrypted of BOOLS)
+        for (const system of BOOLS) {
+          const row = { latched, conversation, encrypted, system };
+          const expected = latched && conversation && !encrypted && !system;
+          assert.equal(notEncryptedRow(row), expected, JSON.stringify(row));
+          if (expected) labelled++;
+        }
+  assert.equal(labelled, 1);
+
+  // No send time is read: a message the server dates before the latch is
+  // labelled all the same
+  const old = {
+    latched: true,
     conversation: true,
     encrypted: false,
     system: false,
-    createdAtMs: 2000,
+    createdAtMs: 0,
+    latchedAt: Date.now(),
   };
-  assert.equal(notEncryptedRow(row), true);
-  assert.equal(notEncryptedRow({ ...row, createdAtMs: 1000 }), true);
-  assert.equal(notEncryptedRow({ ...row, createdAtMs: 999 }), false);
-  assert.equal(notEncryptedRow({ ...row, latchedAt: null }), false);
-  assert.equal(notEncryptedRow({ ...row, encrypted: true }), false);
-  assert.equal(notEncryptedRow({ ...row, system: true }), false);
-  assert.equal(notEncryptedRow({ ...row, conversation: false }), false);
-  // A latch time that is not known counts every message as newer
-  assert.equal(notEncryptedRow({ ...row, latchedAt: 0, createdAtMs: 1 }), true);
-  assert.equal(notEncryptedRow({ ...row, createdAtMs: Number.NaN }), true);
+  assert.equal(notEncryptedRow(old), true);
 });
 
 test("refusal: a stored marker reads back as the side the error words read", () => {

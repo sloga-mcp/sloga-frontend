@@ -115,6 +115,7 @@ import {
   composerBlockFor,
   composerViewFor,
   kindBlockFor,
+  peerAwaitsConfirm,
   peerChangedKeys,
   refusalBlock,
 } from "./encryptedOnlyComposer";
@@ -791,15 +792,12 @@ export function MessageComposition(props: Props) {
 
   /**
    * A refused write shown above the composer, until the draft or the
-   * channel changes. `draftBack`: the refused send was this channel's draft
-   * and nothing was queued (files refused before any upload), so the draft
-   * is back in the composer and "Send anyway" sends it.
+   * channel changes.
    */
   const [encryptedOnlyNotice, setEncryptedOnlyNotice] = createSignal<{
     channelId: string;
     text: string;
     action: ComposerAction | null;
-    draftBack: boolean;
   } | null>(null);
 
   /**
@@ -817,14 +815,15 @@ export function MessageComposition(props: Props) {
 
   /**
    * The line above the composer: a refused write, or else the failed
-   * messages waiting for "Send anyway" (unless the composer block already
-   * offers it)
+   * messages waiting for "Send anyway" while the peer is not confirmed yet
+   * (unless the composer block already offers it)
    */
   const encryptedOnlyLine = () => {
     const notice = encryptedOnlyNotice();
     if (notice?.channelId === props.channel.id) return notice;
     if (
       !peerChangedRows().length ||
+      !peerAwaitsConfirm(encryptedOnlyInput()) ||
       encryptedOnlyBlock()?.action === "send-anyway"
     ) {
       return undefined;
@@ -833,7 +832,6 @@ export function MessageComposition(props: Props) {
       channelId: props.channel.id,
       text: encryptedOnlyText("peer-changed"),
       action: "send-anyway" as const,
-      draftBack: false,
     };
   };
 
@@ -844,15 +842,9 @@ export function MessageComposition(props: Props) {
    * (`EncryptionRequired`). Never the bare reason.
    * @param error What the write threw
    * @param channel Where it went
-   * @param draftBack The refused write was the channel's draft, back in the
-   * composer with nothing queued
    * @returns Whether it was such a refusal
    */
-  function showEncryptedOnlyRefusal(
-    error: unknown,
-    channel: Channel,
-    draftBack: boolean,
-  ): boolean {
+  function showEncryptedOnlyRefusal(error: unknown, channel: Channel): boolean {
     const side = sendRefusalSide(error);
     if (!side) return false;
 
@@ -865,29 +857,15 @@ export function MessageComposition(props: Props) {
       channelId: channel.id,
       text: block ? encryptedOnlyText(block.notice) : describeError(error),
       action: block?.action ?? null,
-      draftBack: draftBack && block?.action === "send-anyway",
     });
     return true;
   }
 
   /**
-   * A retried message was refused again. A refusal for a changed peer is
-   * already on the message, and the line above the composer is built from
-   * those; anything else is shown there in words.
-   * @param error What the retry threw
-   * @param channel Where it went
-   */
-  function retryRefused(error: unknown, channel: Channel) {
-    if (sendRefusalSide(error) === PEER_CHANGED_SIDE) return;
-    void showEncryptedOnlyRefusal(error, channel, false);
-  }
-
-  /**
    * Run an Encrypted-only action for this channel
    * @param action Action
-   * @param draftBack Send the draft in the composer after "Send anyway"
    */
-  function runEncryptedOnlyAction(action: ComposerAction, draftBack: boolean) {
+  function runEncryptedOnlyAction(action: ComposerAction) {
     const channel = props.channel;
     switch (action) {
       case "enable-device":
@@ -905,21 +883,10 @@ export function MessageComposition(props: Props) {
       case "send-anyway": {
         const peerId = dmPeerId(client(), channel);
         if (!peerId) return;
+        // Only confirms: sending comes back on, and nothing is sent from
+        // here. Each failed message keeps its own "Send anyway".
         confirmPeerChanged(peerId, client().user?.id);
         setEncryptedOnlyNotice(null);
-
-        // Messages refused for this peer are sent now; every check runs
-        // again on the retry
-        for (const key of peerChangedKeys(
-          state.draft.getPendingMessages(channel.id),
-          latchedForClient(client().user?.id),
-        )) {
-          state.draft.retrySend(client(), channel, key, (error) =>
-            retryRefused(error, channel),
-          );
-        }
-
-        if (draftBack) void sendReporting();
         return;
       }
       default: {
@@ -937,7 +904,7 @@ export function MessageComposition(props: Props) {
     if (!action || protectedBlockedText()) return undefined;
     return {
       label: encryptedOnlyActionLabel(action),
-      onClick: () => runEncryptedOnlyAction(action, false),
+      onClick: () => runEncryptedOnlyAction(action),
     };
   };
 
@@ -1128,7 +1095,7 @@ export function MessageComposition(props: Props) {
     try {
       client().plainWriteGuard?.(channel, "roll");
     } catch (error) {
-      if (showEncryptedOnlyRefusal(error, channel, false)) return;
+      if (showEncryptedOnlyRefusal(error, channel)) return;
       openModal({ type: "error2", error });
       return;
     }
@@ -1153,7 +1120,7 @@ export function MessageComposition(props: Props) {
         try {
           const data = await response.json();
           // The server's refusal for not being encrypted, in words
-          if (showEncryptedOnlyRefusal(data, channel, false)) return;
+          if (showEncryptedOnlyRefusal(data, channel)) return;
           detail = data?.error ?? data?.type ?? "";
         } catch {
           /* no body */
@@ -1439,7 +1406,6 @@ export function MessageComposition(props: Props) {
         channelId: commandChannel.id,
         text: encryptedOnlyText(commandBlock.notice),
         action: commandBlock.action,
-        draftBack: false,
       });
       return;
     }
@@ -1466,7 +1432,7 @@ export function MessageComposition(props: Props) {
         });
       }, 15_000);
     } catch (error) {
-      if (showEncryptedOnlyRefusal(error, commandChannel, false)) return;
+      if (showEncryptedOnlyRefusal(error, commandChannel)) return;
       const type = (error as { type?: string })?.type;
       openModal({
         type: "error2",
@@ -1738,7 +1704,6 @@ export function MessageComposition(props: Props) {
           channelId: sendChannel.id,
           text: encryptedOnlyText("first-file"),
           action: null,
-          draftBack: false,
         });
         return;
       }
@@ -1757,14 +1722,9 @@ export function MessageComposition(props: Props) {
       // Any other refusal for not being encrypted, in words. Also before
       // the E2EESendError branch: the bridge's refusals are E2EESendErrors
       // too. A draft with files refused before any upload was never queued
-      // and is back in the composer: "Send anyway" sends it.
-      if (
-        showEncryptedOnlyRefusal(
-          error,
-          sendChannel,
-          typeof useContent !== "string",
-        )
-      ) {
+      // and is back in the composer: "Send anyway" confirms, then it can be
+      // sent again.
+      if (showEncryptedOnlyRefusal(error, sendChannel)) {
         return;
       }
 
@@ -2464,9 +2424,7 @@ export function MessageComposition(props: Props) {
               {(action) => (
                 <EncryptedOnlyNoticeAction
                   type="button"
-                  onClick={() =>
-                    runEncryptedOnlyAction(action(), notice().draftBack)
-                  }
+                  onClick={() => runEncryptedOnlyAction(action())}
                 >
                   {encryptedOnlyActionLabel(action())}
                 </EncryptedOnlyNoticeAction>
