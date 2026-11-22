@@ -272,7 +272,7 @@ test("A8 D43 copy through Plural; string-tag styled only", () => {
   );
   assert.match(
     CODE,
-    /import \{ Plural, Trans \} from "@lingui-solid\/solid\/macro";/,
+    /import \{ Plural, Trans, useLingui \} from "@lingui-solid\/solid\/macro";/,
   );
   assert.doesNotMatch(CODE, /styled\((?!"div")/);
   assert.match(CODE, /const ProtectedOwnedNote = styled\("div", \{/);
