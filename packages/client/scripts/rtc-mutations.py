@@ -3228,11 +3228,13 @@ MUTATIONS += [
         # deepEqual (`origin: "control", mediaKeyed: false`) and the
         # `negotiating` fold.
         search="""    } catch (error) {
+      if (this.#replacedSince(generation, error)) return;
       this.#onRotationError(error);
     }
   }
 """,
         replace="""    } catch (error) {
+      if (this.#replacedSince(generation, error)) return;
       this.#onMediaError(error);
     }
   }
@@ -7563,6 +7565,7 @@ LEG_POLICY_SPEC = "components/rtc/androidLegStartPolicy.test.ts"
 ADMIT_GRACE_SPEC = "components/rtc/mlsAdmitGracePolicy.test.ts"
 LEGGRACE_SPEC = "components/rtc/mlsCallSession.leggrace.test.ts"
 CALL_KEYS_SPEC = "components/rtc/mlsCallKeys.test.ts"
+RESETRACE_SPEC = "components/rtc/mlsCallSession.resetrace.test.ts"
 
 MUTATIONS += [
     # ---- the leg lifecycle leaf ---------------------------------------------
@@ -12420,6 +12423,3622 @@ MUTATIONS += [
 """,
         specs=[PTT_SPEC],
         must_red=[PTT_SPEC],
+    ),
+]
+
+
+# --- iOS call E2EE phase 2 (wave 3 + wave J) ---------------------------------
+#
+# The new pure modules and the wiring that uses them: the WebKit sender hold
+# (R1) and its worker acks (D2, R13, R17), the worker probe (D8), the
+# key-freshness tick (D9, R8), the server kill switch (D14, R9), the key-push
+# backstop (R4, R12), the iOS call audio bracket (R5), the iOS media-E2EE
+# predicates (D6), the `paused` readiness (R6, R11), the call-plane locked-phone
+# mapping (R16) and the drain's locked hold, the decode witness's dead path
+# (R7), the raw-key provider (D2, D15), the witness-only amber escalation and
+# the join-window ledger (wave J), the session's welcome window, iOS confirm
+# (R14), key-ack routing (R17) and locked store, and the state.tsx wiring that
+# `stateWiring.test.ts` pins.
+#
+# Ported from the lanes' own known-bad lists (each was KILLED in the lane's
+# scratch harness, against a scratch copy) and re-anchored here at the start
+# of their lines, per MFR-n3. Selected for direction: every way a module
+# could fail OPEN — release a hold, read a pause as ready, swallow a loss,
+# accept a stale ack, rescue a red — plus the ordering rules the rulings name.
+# Robustness-only mutants (timer binding, case folding, bound validation that
+# already fails closed) were left in the lanes' lists.
+#
+# 🔴 NOT here, and not claimable from this table:
+#  * the livekit patch hunks (D7.1 additional-codec refusal, D7.2 handleSender
+#    catch, the worker's tick drop, raw import, acks, D15 ratchet reply).
+#    They live in `patches/livekit-client@2.15.13.patch`, outside this client
+#    package, which `preflight` refuses as a target; `livekitPatchHunks.test.ts`
+#    pins the patch text and the installed dist instead.
+#  * the session's locked-store LATCH itself (WJ2's `no-latch` mutant made the
+#    file fail to load, `tests 1, fail 1`, which `judge` would rightly call a
+#    PROBLEM). Its backoff, reset, re-feed and control origin are below.
+#  * L3b's two NEVER-SETTLE shapes (`wait-never-times-out`: no timer;
+#    `reset-leaves-waits`: reset settles nothing). The spec does catch them,
+#    but only as a CANCELLED test (a wait that never resolves), `pass + fail
+#    != tests`, which `judge` rightly refuses to call a catch. Measured here
+#    as PROBLEM, then replaced by the fail-OPEN direction of the same lines
+#    (`sender-hold-wait-timeout-reads-acked`, `sender-hold-reset-settles-acked`).
+#    Making the never-settle shapes count needs a bounded ASSERTION in
+#    webkitSenderHold.test.ts, not a wider judge.
+#  * L3e's `f-nobound` (the switch fetch with no timer) for the same reason:
+#    measured `tests 16 of 20, cancelled 1`. Its bounded neighbours
+#    (`ios-switch-fetch-timeout-off`, `ios-switch-fetch-bad-bound`) are below.
+#    Also left in L3e's list: timer binding, never-cleared timer, the 30 s
+#    default, and the truthy helper (same effect as strict on a boolean).
+#  * prejoin (L3p, F5): that lane left no mutant list, and none is written
+#    here; e2eeIosGate.test.ts pins its source.
+#
+# Stage 5 fix round F (F1-F7) added the fetched switch and offer helper (F1),
+# the chip's pausedByServer and the escalation's M1/m1 rules (F2), the
+# session's fatal path (F3), the hold assembly and overdue clock (F4), the
+# Settings card (F6, through e2eeIosGate.test.ts) and the state.tsx wiring
+# (F7). The F7 entries were written here against stateWiring's F7 pins (the
+# lane left no list): each swaps a fatal producer for the healable surface,
+# drops a buffer, a zeroing, an early return or a clock condition, or forges
+# a binding.
+#  * the `state-ios-*` entries prove the pinned statements are PRESENT, never
+#    what they do at runtime (the header's file=STATE rule, and wave 3's own
+#    lesson: an inline backstop view THREW on construction with every text pin
+#    green). The behaviour is in the pure modules' entries above them.
+SENDER_HOLD = "webkitSenderHold.ts"
+PROBE = "workerProbe.ts"
+TICK = "keyFreshnessTick.ts"
+IOS_SWITCH = "iosCallSwitch.ts"
+BACKSTOP = "keyPushBackstop.ts"
+CALL_AUDIO = "iosCallAudio.ts"
+E2EE_PLATFORM = "../client/e2eePlatform.ts"
+READINESS = "e2eeDeviceReadiness.ts"
+CALL_PLANE_IOS = "../client/e2eeCallPlaneIos.ts"
+DRAIN_POLICY = "mlsDrainPolicy.ts"
+SENDER_HOLD_SPEC = "components/rtc/webkitSenderHold.test.ts"
+PROBE_SPEC = "components/rtc/workerProbe.test.ts"
+TICK_SPEC = "components/rtc/keyFreshnessTick.test.ts"
+IOS_SWITCH_SPEC = "components/rtc/iosCallSwitch.test.ts"
+BACKSTOP_SPEC = "components/rtc/keyPushBackstop.test.ts"
+CALL_AUDIO_SPEC = "components/rtc/iosCallAudio.test.ts"
+E2EE_PLATFORM_SPEC = "components/client/e2eePlatform.test.ts"
+READINESS_SPEC = "components/rtc/e2eeDeviceReadiness.test.ts"
+CALL_PLANE_IOS_SPEC = "components/client/e2eeCallPlaneIos.test.ts"
+DRAIN_POLICY_SPEC = "components/rtc/mlsDrainPolicy.test.ts"
+WELCOMEDROP_SPEC = "components/rtc/mlsCallSession.welcomedrop.test.ts"
+IOSCONFIRM_SPEC = "components/rtc/mlsCallSession.iosconfirm.test.ts"
+KEYACK_SPEC = "components/rtc/mlsCallSession.keyack.test.ts"
+LOCKED_SPEC = "components/rtc/mlsCallSession.locked.test.ts"
+ENCRYPTION_SETTINGS = "../app/interface/settings/user/Encryption.tsx"
+FATAL_SPEC = "components/rtc/mlsCallSession.fatal.test.ts"
+IOS_GATE_SPEC = "components/client/e2eeIosGate.test.ts"
+
+MUTATIONS += [
+    Mutation(
+        id='sender-hold-always-releases',
+        what='senderHoldVerdict releases on every engine, so an iOS publication resumes before its transform, enable and key acks',
+        file=SENDER_HOLD,
+        search="""  if (input.scriptTransformEngine === false) return { release: true };""",
+        replace="""  return { release: true };""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-engine-falsy',
+        what='a missing scriptTransformEngine reads as Chromium and releases (the strict `=== false` loosened)',
+        file=SENDER_HOLD,
+        search="""  if (input.scriptTransformEngine === false) return { release: true };""",
+        replace="""  if (!input.scriptTransformEngine) return { release: true };""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-no-senders-releases',
+        what='a publication with no sender ids releases instead of holding (no_senders)',
+        file=SENDER_HOLD,
+        search="""    return { release: false, reason: "no_senders" };""",
+        replace="""    return { release: true };""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-first-sender-only',
+        what='only the first sender is checked, so an unacked simulcastCodecs sender (an SFU h264 request) is released',
+        file=SENDER_HOLD,
+        search="""  for (const trackId of senderTrackIds) {""",
+        replace="""  for (const trackId of senderTrackIds.slice(0, 1)) {""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-enable-term-dropped',
+        what="the worker's enable reply for the local identity is not required (D7.3 / R2 enable ordering)",
+        file=SENDER_HOLD,
+        search="""  if (input.localIdentityEnabled !== true) {""",
+        replace="""  if (false) {""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-key-term-dropped',
+        what="the local send key's ack is not required, so frames go out before the worker holds the key",
+        file=SENDER_HOLD,
+        search="""  if (!key || !says(() => input.keyAcked(key.identity, key.keyIndex))) {""",
+        replace="""  if (false) {""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-throwing-predicate-releases',
+        what='a throwing attached/keyAcked predicate counts as acked',
+        file=SENDER_HOLD,
+        search="""  } catch {
+    return false;
+  }""",
+        replace="""  } catch {
+    return true;
+  }""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-decode-ack-attaches',
+        what='a DECODE transform ack satisfies the encode-side hold',
+        file=SENDER_HOLD,
+        search="""        if (ack.dir === "encode") encodeAttached.add(ack.trackId);""",
+        replace="""        encodeAttached.add(ack.trackId);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-ack-ok-false-counts',
+        what='a setKeyAck with ok:false is recorded as acked',
+        file=SENDER_HOLD,
+        search="""      setAck(ack.identity, ack.keyIndex, ack.ok);""",
+        replace="""      setAck(ack.identity, ack.keyIndex, true);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-wait-true-on-ok-false',
+        what='waitKeyAck resolves true on an ok:false ack, so LocalKeyAckError never fires',
+        file=SENDER_HOLD,
+        search="""          wait.settle(ack.ok);""",
+        replace="""          wait.settle(true);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-wait-timeout-reads-acked',
+        what='a waitKeyAck that times out resolves true, so a worker that never acks reads as holding the key',
+        file=SENDER_HOLD,
+        search="""        wait.handle = setTimer(() => wait.settle(false), timeoutMs);""",
+        replace="""        wait.handle = setTimer(() => wait.settle(true), timeoutMs);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-stale-ack-satisfies-wait',
+        what='an older ack at a reused key index satisfies a new wait (R13a: registration discards older acks)',
+        file=SENDER_HOLD,
+        search="""      acks.get(identity)?.delete(keyIndex);""",
+        replace="""      if (keyAcked(identity, keyIndex)) return Promise.resolve(true);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-reset-settles-acked',
+        what='reset() settles pending key waits true, so a wait outlives its worker as an ack',
+        file=SENDER_HOLD,
+        search="""      for (const wait of [...pending]) wait.settle(false);""",
+        replace="""      for (const wait of [...pending]) wait.settle(true);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-parse-ok-truthy',
+        what='parseSlogaWorkerAck accepts a non-boolean ok and coerces it',
+        file=SENDER_HOLD,
+        search="""    if (typeof ok !== "boolean") return undefined;
+    return { kind: "setKeyAck", identity, keyIndex, ok };""",
+        replace="""    return { kind: "setKeyAck", identity, keyIndex, ok: !!ok };""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-forget-track-no-op',
+        what='forgetTrack keeps the old transform ack, so a republish (same mediaStreamID) releases before its new transform attached (R18c)',
+        file=SENDER_HOLD,
+        search="""      encodeAttached.delete(trackId);""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='probe-pass-without-rte',
+        what='the probe passes on a heartbeat whose rte is not "function" (a worker without RTCTransformEvent)',
+        file=PROBE,
+        search="""          if (!isRecord(body) || body.rte !== "function") {""",
+        replace="""          if (!isRecord(body)) {""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-ignores-timeout',
+        what="the probe's timeout never fails it, so a silent worker leaves media E2EE pending forever",
+        file=PROBE,
+        search="""      timer = { handle: deps.setTimeout(() => finish("fail"), timeoutMs) };""",
+        replace="""      timer = { handle: deps.setTimeout(() => {}, timeoutMs) };""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-pending-reads-pass',
+        what='workerProbeResult reports pass before any probe settled',
+        file=PROBE,
+        search="""  return settled ?? "pending";""",
+        replace="""  return settled ?? "pass";""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-error-event-ignored',
+        what='a worker error event does not fail the probe',
+        file=PROBE,
+        search="""      worker.addEventListener("error", () => finish("fail"));
+""",
+        replace="""""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-livekit-error-ignored',
+        what="livekit's worker error reply does not fail the probe",
+        file=PROBE,
+        search="""        case WORKER_ERROR_KIND:
+          finish("fail");
+          return;
+""",
+        replace="""""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-makeworker-throw-uncaught',
+        what='a makeWorker throw escapes instead of failing the probe',
+        file=PROBE,
+        search="""    } catch {
+      finish("fail");
+    }
+  });""",
+        replace="""    } finally {
+    }
+  });""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-forgets-terminate',
+        what='the probe worker is never terminated',
+        file=PROBE,
+        search="""          worker.terminate();
+""",
+        replace="""          void 0;
+""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-posts-a-key',
+        what='the probe posts a setKey to its worker (it must never post key material)',
+        file=PROBE,
+        search="""        },
+      });
+    } catch {""",
+        replace="""        },
+      });
+      worker.postMessage({ kind: "setKey", data: {} });
+    } catch {""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-no-timeout-validation',
+        what='a non-finite or non-positive timeout is accepted instead of failing closed',
+        file=PROBE,
+        search="""    if (!(Number.isFinite(timeoutMs) && timeoutMs > 0)) {""",
+        replace="""    if (false) {""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='tick-throw-kills-timer',
+        what="one throwing post stops the tick for good, so the worker's dead-man mutes the caller 8 s later",
+        file=TICK,
+        search="""    } catch {
+""",
+        replace="""    } catch {
+      stopped = true;
+      clearInterval(handle);
+""",
+        specs=[TICK_SPEC],
+    ),
+    Mutation(
+        id='tick-no-immediate',
+        what='no tick at start, so the worker runs unarmed for the first interval',
+        file=TICK,
+        search="""  tick();
+
+  return""",
+        replace="""
+  return""",
+        specs=[TICK_SPEC],
+    ),
+    Mutation(
+        id='tick-posts-after-stop',
+        what='a tick already queued still posts after stop()',
+        file=TICK,
+        search="""    if (stopped) return;
+    try {""",
+        replace="""    try {""",
+        specs=[TICK_SPEC],
+    ),
+    Mutation(
+        id='tick-interval-beyond-stale',
+        what="the tick interval exceeds the worker's 8000 ms staleness bound",
+        file=TICK,
+        search="""  const handle = setInterval(tick, KEY_TICK_INTERVAL_MS);""",
+        replace="""  const handle = setInterval(tick, 10_000);""",
+        specs=[TICK_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-off-ignored',
+        what="the server's ios_call_e2ee=false is ignored, so iOS keeps attempting media E2EE under the kill switch",
+        file=IOS_SWITCH,
+        search="""  return input.serverValue === false ? "off" : "on";""",
+        replace="""  return "on";""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-absent-off',
+        what='an absent server value reads OFF (R9: absent must read ON)',
+        file=IOS_SWITCH,
+        search="""  return input.serverValue === false ? "off" : "on";""",
+        replace="""  return input.serverValue === true ? "on" : "off";""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-falsy-off',
+        what='a falsy non-false server value (absent, 0, "") reads OFF',
+        file=IOS_SWITCH,
+        search="""  return input.serverValue === false ? "off" : "on";""",
+        replace="""  return !input.serverValue ? "off" : "on";""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-consent-reuse',
+        what='an earlier plaintext consent turns the switch back on (the module must take no consent input)',
+        file=IOS_SWITCH,
+        search="""  if (input.platform !== "ios") return "on";""",
+        replace="""  if (input.platform !== "ios") return "on";
+  if ((input as { plaintextConsent?: unknown }).plaintextConsent) return "on";""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='backstop-never-pulls',
+        what='afterResolve never pulls, so an epoch whose push never arrived leaves the old key on the wire',
+        file=BACKSTOP,
+        search="""        pulled = deps.pull(groupId, epoch);""",
+        replace="""        pulled = undefined;""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-pulls-despite-push',
+        what='afterResolve pulls even when a push already reached the epoch (double pull)',
+        file=BACKSTOP,
+        search="""      if (known !== undefined && known >= epoch) return;
+""",
+        replace="""""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-cross-group',
+        what='a push for one group satisfies the backstop for every group',
+        file=BACKSTOP,
+        search="""      const known = reached.get(groupId);
+      if (known === undefined || epoch > known) reached.set(groupId, epoch);""",
+        replace="""      const known = reached.get("*");
+      if (known === undefined || epoch > known) reached.set("*", epoch);""",
+        also=[
+            (
+                """      const known = reached.get(groupId);
+      if (known !== undefined && known >= epoch) return;""",
+                """      const known = reached.get("*");
+      if (known !== undefined && known >= epoch) return;""",
+            ),
+        ],
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-missing-epoch-silent',
+        what='an outcome with no readable epoch is dropped silently instead of going loud (onLost)',
+        file=BACKSTOP,
+        search="""        deps.onLost(groupId, typeof epoch === "number" ? epoch : Number.NaN);""",
+        replace="""        void 0;""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-unreadable-outcome-null',
+        what='an epoch-advancing outcome with an unreadable epoch reads as not epoch-advancing (null), so nothing is checked',
+        file=BACKSTOP,
+        search="""  return isEpoch(outcome.epoch) ? outcome.epoch : undefined;""",
+        replace="""  return isEpoch(outcome.epoch) ? outcome.epoch : null;""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-unknown-kind-null',
+        what='an unknown process outcome kind reads as not epoch-advancing (null) instead of undefined (loud)',
+        file=BACKSTOP,
+        search="""      return undefined;
+""",
+        replace="""      return null;
+""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-infinite-push-counts',
+        what='a push carrying Infinity counts as reaching every future epoch',
+        file=BACKSTOP,
+        search="""      if (!isEpoch(epoch)) return;""",
+        replace="""      if (typeof epoch !== "number" || Number.isNaN(epoch)) return;""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-pull-throw-swallowed',
+        what='a throwing pull is swallowed instead of going loud',
+        file=BACKSTOP,
+        search="""        deps.onLost(groupId, epoch);
+        return;""",
+        replace="""        void 0;
+        return;""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-async-reject-swallowed',
+        what='a rejected pull promise is swallowed instead of going loud',
+        file=BACKSTOP,
+        search="""        pulled.then(undefined, () => deps.onLost(groupId, epoch));""",
+        replace="""        void 0;""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-epoch-any-finite',
+        what='isEpoch accepts negative and fractional numbers',
+        file=BACKSTOP,
+        search="""  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0""",
+        replace="""  return typeof value === "number" && Number.isFinite(value)""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-bridge-sync-after-resolve',
+        what='backstopBridge runs afterResolve synchronously, before the session recorded its own state (R12: a macrotask)',
+        file=BACKSTOP,
+        search="""    deps.defer(() => backstop.afterResolve(groupId, epoch));""",
+        replace="""    backstop.afterResolve(groupId, epoch);""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-bridge-unbound-methods',
+        what="the view hands out unbound methods, so E2EEBridge's #private fields throw at the first call",
+        file=BACKSTOP,
+        search="""          value: (d.value as AnyMethod).bind(bridge),""",
+        replace="""          value: d.value,""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-bridge-commitwon-group-from-outcome',
+        what="callCommitWon's group is read from the outcome instead of its argument",
+        file=BACKSTOP,
+        search="""      const groupId = typeof args[0] === "string" ? args[0] : "";""",
+        replace="""      const groupId = stringField(outcome, "group_id");""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-bridge-create-toplevel-group',
+        what="callCreate's group is read from the top level instead of payload.group_id",
+        file=BACKSTOP,
+        search="""      later(stringField(payload, "group_id"), outcomeEpoch""",
+        replace="""      later(stringField(created, "group_id"), outcomeEpoch""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-bridge-create-rejection-swallowed',
+        what='a rejected callCreate resolves undefined through the view instead of rejecting',
+        file=BACKSTOP,
+        search="""      const created = await callReal("callCreate", args);""",
+        replace="""      const created = await (callReal("callCreate", args) as Promise<unknown>).catch(() => undefined);""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-bridge-mutates-real-bridge',
+        what='the view is written onto the real bridge instead of a separate object',
+        file=BACKSTOP,
+        search="""    Object.defineProperty(view, name, {""",
+        replace="""    Object.defineProperty(bridge, name, {""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='call-audio-unserialised',
+        what='bracket ops are not serialised, so a stop can overtake the start it follows',
+        file=CALL_AUDIO,
+        search="""    tail = tail.then(step).then(noop, report);
+    return tail;""",
+        replace="""    return step().then(noop, report);""",
+        specs=[CALL_AUDIO_SPEC],
+    ),
+    Mutation(
+        id='call-audio-rejection-escapes',
+        what='a native start/stop rejection is thrown into call teardown instead of reported',
+        file=CALL_AUDIO,
+        search="""      report(reason);
+      return false;""",
+        replace="""      throw reason;""",
+        also=[
+            (
+                """    tail = tail.then(step).then(noop, report);""",
+                """    tail = tail.then(step);""",
+            ),
+        ],
+        specs=[CALL_AUDIO_SPEC],
+    ),
+    Mutation(
+        id='call-audio-interruption-bare-start',
+        what='an interruption end starts again without stopping first',
+        file=CALL_AUDIO,
+        search="""        if (!(await stopNow())) return;
+        await startNow();""",
+        replace="""        await startNow();""",
+        specs=[CALL_AUDIO_SPEC],
+    ),
+    Mutation(
+        id='call-audio-onfailure-throw-escapes',
+        what='a throwing onFailure handler escapes into teardown and stalls the queue',
+        file=CALL_AUDIO,
+        search="""    try {
+      deps.onFailure(callAudioFailure(reason));
+    } catch {
+      // The handler's own bug must not reach call teardown or stall the queue.
+    }""",
+        replace="""    deps.onFailure(callAudioFailure(reason));""",
+        specs=[CALL_AUDIO_SPEC],
+    ),
+    Mutation(
+        id='call-audio-failed-stop-clears-held',
+        what='a failed stop still clears held, so the session is never stopped again',
+        file=CALL_AUDIO,
+        search="""    if (!(await attempt(() => deps.stop()))) return false;""",
+        replace="""    await attempt(() => deps.stop());""",
+        specs=[CALL_AUDIO_SPEC],
+    ),
+    Mutation(
+        id='call-audio-failed-start-sets-held',
+        what='a failed start still sets held',
+        file=CALL_AUDIO,
+        search="""    if (await attempt(() => deps.start())) held = true;""",
+        replace="""    await attempt(() => deps.start());
+    held = true;""",
+        specs=[CALL_AUDIO_SPEC],
+    ),
+    Mutation(
+        id='platform-caps-flag-truthy',
+        what='the iOS caps flag is read truthy instead of strictly true',
+        file=E2EE_PLATFORM,
+        search="""    input.capsMediaE2EE === true &&""",
+        replace="""    !!input.capsMediaE2EE &&""",
+        specs=[E2EE_PLATFORM_SPEC],
+    ),
+    Mutation(
+        id='platform-plugin-dropped',
+        what='iOS media E2EE is ready without the E2ee plugin',
+        file=E2EE_PLATFORM,
+        search="""    input.pluginPresent === true &&
+""",
+        replace="""""",
+        specs=[E2EE_PLATFORM_SPEC],
+    ),
+    Mutation(
+        id='platform-script-transform-ignored',
+        what='iOS media E2EE is ready without RTCRtpScriptTransform',
+        file=E2EE_PLATFORM,
+        search="""    input.scriptTransform === true &&
+""",
+        replace="""""",
+        specs=[E2EE_PLATFORM_SPEC],
+    ),
+    Mutation(
+        id='platform-probe-pending-accepted',
+        what='a pending worker probe counts as ready',
+        file=E2EE_PLATFORM,
+        search='    input.probe === "pass"',
+        replace='    input.probe !== "fail"',
+        specs=[E2EE_PLATFORM_SPEC],
+    ),
+    Mutation(
+        id='platform-shell-drops-e2ee-supported',
+        what='shellMediaE2EESupported ignores isE2EESupported()',
+        file=E2EE_PLATFORM,
+        search="""    input.e2eeSupported === true &&
+""",
+        replace="""""",
+        specs=[E2EE_PLATFORM_SPEC],
+    ),
+    Mutation(
+        id='platform-shell-drops-bridge',
+        what="shellMediaE2EESupported ignores the bridge's platform answer",
+        file=E2EE_PLATFORM,
+        search="""    input.nativeE2EEAvailable === true &&
+    input.bridgePlatformSupported === true
+""",
+        replace="""    input.nativeE2EEAvailable === true
+""",
+        specs=[E2EE_PLATFORM_SPEC],
+    ),
+    Mutation(
+        id='platform-media-drops-platform',
+        what='mediaE2EEPlatformSupported ignores platformMediaE2EESupported()',
+        file=E2EE_PLATFORM,
+        search="""  return keyPushAvailable && platformMediaE2EESupported();""",
+        replace="""  return keyPushAvailable;""",
+        specs=[E2EE_PLATFORM_SPEC],
+    ),
+    Mutation(
+        id='readiness-paused-dropped',
+        what="the server's iOS pause never reaches readiness",
+        file=READINESS,
+        search="""  if (input.pausedByServer) return "paused";
+""",
+        replace="""""",
+        specs=[READINESS_SPEC],
+    ),
+    Mutation(
+        id='readiness-paused-outranks-unsupported',
+        what="paused outranks the shell's unsupported",
+        file=READINESS,
+        search="""  if (!input.shellSupported) return "unsupported";
+  if (input.pausedByServer) return "paused";
+""",
+        replace="""  if (input.pausedByServer) return "paused";
+  if (!input.shellSupported) return "unsupported";
+""",
+        specs=[READINESS_SPEC],
+    ),
+    Mutation(
+        id='readiness-device-terms-outrank-paused',
+        what='a device term (needs_setup) outranks the server pause',
+        file=READINESS,
+        search="""  if (input.pausedByServer) return "paused";
+""",
+        replace="""""",
+        also=[
+            (
+                """  if (e2eeProvenOff(input.status)) return "needs_setup";
+""",
+                """  if (e2eeProvenOff(input.status)) return "needs_setup";
+  if (input.pausedByServer) return "paused";
+""",
+            ),
+        ],
+        specs=[READINESS_SPEC],
+    ),
+    Mutation(
+        id='readiness-paused-capable',
+        what='callEncryptionCapable is true for paused',
+        file=READINESS,
+        search="""  return readiness === "ready" || readiness === "owned_elsewhere";""",
+        replace="""  return readiness === "ready" || readiness === "owned_elsewhere" || readiness === "paused";""",
+        specs=[READINESS_SPEC],
+    ),
+    Mutation(
+        id='readiness-setup-for-paused',
+        what='encryptionSetupAvailable offers a setup remedy for paused',
+        file=READINESS,
+        search="""  return readiness === "needs_setup" || readiness === "owned_elsewhere";""",
+        replace="""  return readiness === "needs_setup" || readiness === "owned_elsewhere" || readiness === "paused";""",
+        specs=[READINESS_SPEC],
+    ),
+    Mutation(
+        id='call-plane-ios-map-everywhere',
+        what='protector_locked is mapped on every command, not only the call plane',
+        file=CALL_PLANE_IOS,
+        search="""  if (command === undefined || !isCallPlaneCommand(command)) return parsed;
+""",
+        replace="""""",
+        specs=[CALL_PLANE_IOS_SPEC],
+    ),
+    Mutation(
+        id='call-plane-ios-no-mapping',
+        what='a call-plane protector_locked stays a plain object (no CallProtectorLockedError, so not loud)',
+        file=CALL_PLANE_IOS,
+        search="""  return copy === null ? parsed : new CallProtectorLockedError(copy);""",
+        replace="""  return parsed;""",
+        specs=[CALL_PLANE_IOS_SPEC],
+    ),
+    Mutation(
+        id='call-plane-ios-type-lost',
+        what='the parsed typed reject is replaced by the raw error',
+        file=CALL_PLANE_IOS,
+        search="""    ? parsed
+    : error;""",
+        replace="""    ? error
+    : error;""",
+        specs=[CALL_PLANE_IOS_SPEC],
+    ),
+    Mutation(
+        id='call-plane-ios-plain-protector-mapped',
+        what='plain `protector` is mapped as a locked phone too',
+        file=CALL_PLANE_IOS,
+        search='    (parsed as { type?: unknown }).type !== "protector_locked"',
+        replace="""    !String((parsed as { type?: unknown }).type).startsWith("protector")""",
+        specs=[CALL_PLANE_IOS_SPEC],
+    ),
+    Mutation(
+        id='call-plane-ios-set-short',
+        what='a call-plane command is missing from the call-plane set',
+        file=CALL_PLANE_IOS,
+        search="""  "e2ee_pin_call_identities",
+""",
+        replace="""""",
+        specs=[CALL_PLANE_IOS_SPEC],
+    ),
+    Mutation(
+        id='drain-locked-acked-and-dropped',
+        what='a locked-store envelope is acked and dropped after its retries (desync) instead of held',
+        file=DRAIN_POLICY,
+        search="""      if (errorType !== undefined) return { do: "hold_locked", errorType };
+""",
+        replace="""""",
+        specs=[DRAIN_POLICY_SPEC],
+    ),
+    Mutation(
+        id='drain-locked-hold-widened',
+        what='every drain error is held as locked, so a poison envelope is never dropped',
+        file=DRAIN_POLICY,
+        search="""      if (errorType !== undefined) return { do: "hold_locked", errorType };""",
+        replace="""      return { do: "hold_locked", errorType: errorType ?? "protector" };""",
+        specs=[DRAIN_POLICY_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-single-stale-tick',
+        what="one stale tick declares the worker dead (a resumed main thread's queued burst reads dead)",
+        file=WITNESS,
+        search="""    return previous !== undefined && at - previous >= checkMs / 2;""",
+        replace="""    return true;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-no-prior-baseline',
+        what='the first stale tick pairs with time zero',
+        file=WITNESS,
+        search="""    return previous !== undefined && at - previous >= checkMs / 2;""",
+        replace="""    return at - (previous ?? 0) >= checkMs / 2;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-burst-counted',
+        what='two ticks inside the same drained burst count as the pair',
+        file=WITNESS,
+        search="""    return previous !== undefined && at - previous >= checkMs / 2;""",
+        replace="""    return previous !== undefined;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-rte-ignored',
+        what='a heartbeat whose rte is not "function" is never judged dead',
+        file=WITNESS,
+        search="""        parseDecodeWitnessRte(data) !== TRANSFORM_EVENT_TYPE""",
+        replace="""        false""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-bad-rte-still-promotes',
+        what='a heartbeat without RTCTransformEvent still promotes the witness after declaring dead',
+        file=WITNESS,
+        search="""        fireDead("running without RTCTransformEvent");
+        return;""",
+        replace="""        fireDead("running without RTCTransformEvent");""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-credit-keeps-pair',
+        what='a fresh heartbeat does not clear a half-made dead pair',
+        file=WITNESS,
+        search="""      deadSeenAt = undefined;
+      if (warned || skewWarned) {""",
+        replace="""      if (warned || skewWarned) {""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-behind-chip-write',
+        what='a throwing chip write skips the dead verdict',
+        file=WITNESS,
+        search="""      try {
+        onWitness(DECODE_WITNESS_UNAVAILABLE);
+      } finally {
+        if (dead) fireDead("silent during the call");
+      }""",
+        replace="""      onWitness(DECODE_WITNESS_UNAVAILABLE);
+      if (dead) fireDead("silent during the call");""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-session-guard-dropped',
+        what="an old call's listener fires onDead into the new call",
+        file=WITNESS,
+        search="""    // direction — the same guard that keeps its posts off the new call's chip.
+    if (!isCurrentSession()) return;""",
+        replace="""    // direction — the same guard that keeps its posts off the new call's chip.""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-validation-allows-infinity',
+        what='an infinite deadAfterMs is accepted (the dead path can never fire)',
+        file=WITNESS,
+        search="""    !(Number.isFinite(deadAfterMs) && deadAfterMs > staleMs)""",
+        replace="""    !(deadAfterMs > staleMs)""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-threshold-widened',
+        what='DECODE_WITNESS_DEAD_MS is widened tenfold',
+        file=WITNESS,
+        search="""export const DECODE_WITNESS_DEAD_MS = 6 * DECODE_WITNESS_CHECK_MS;""",
+        replace="""export const DECODE_WITNESS_DEAD_MS = 60 * DECODE_WITNESS_CHECK_MS;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-rte-non-string',
+        what='a non-string rte is passed through as if it were the event type',
+        file=WITNESS,
+        search="""  return typeof body.rte === "string" ? body.rte : undefined;""",
+        replace="""  return body.rte as string | undefined;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-ack-registered-after-post',
+        what="the local key's ack wait is registered after the post (R13a: an early ack is discarded)",
+        file=CALL_KEYS,
+        search="""    const acks = this.#registerKeyAcks(imported);
+""",
+        replace="""""",
+        also=[
+            (
+                """    this.#stamp(frameKeys.group_id, epoch);
+    await this.#applyLocalScreenKey""",
+                """    const acks = this.#registerKeyAcks(imported);
+    this.#stamp(frameKeys.group_id, epoch);
+    await this.#applyLocalScreenKey""",
+            ),
+        ],
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-ack-false-ignored',
+        what='an ack wait that resolves false does not throw LocalKeyAckError',
+        file=CALL_KEYS,
+        search="""      if (!(await acked)) throw new LocalKeyAckError(groupId, epoch, keyIndex);
+""",
+        replace="""      await acked;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-ack-never-awaited',
+        what='applyLocalKey claims the key installed without waiting for its ack',
+        file=CALL_KEYS,
+        search="""    await this.#confirmKeyAcks(acks, frameKeys.group_id, epoch);
+""",
+        replace="""    void this.#confirmKeyAcks(acks, frameKeys.group_id, epoch).catch(() => {});
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-replaced-not-zeroed',
+        what='replaced key bytes are not zeroed',
+        file=CALL_KEYS,
+        search="""    scrubKeyBytes(outgoing, this.getKeys());
+""",
+        replace="""""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-reset-not-zeroed',
+        what="resetForGroup's dropped key bytes are not zeroed",
+        file=CALL_KEYS,
+        search="""    scrubKeyBytes(dropped, this.getKeys());
+""",
+        replace="""""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-close-not-latched',
+        what='import race: close only resets, so an install still importing passes the cleared fence and posts fresh key bytes',
+        file=CALL_KEYS,
+        search="""    this.#closed = true;
+    this.resetForGroup();
+""",
+        replace="""    this.resetForGroup();
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-close-not-zeroed',
+        what='import race: close latches but keeps (and never zeroes) the keys it held',
+        file=CALL_KEYS,
+        search="""    this.#closed = true;
+    this.resetForGroup();
+""",
+        replace="""    this.#closed = true;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-admits-ignores-closed',
+        what='import race: the fence never reads the latch',
+        file=CALL_KEYS,
+        search="""    if (this.#closed) return false;
+""",
+        replace="""""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-admits-closed-after-fence',
+        what='import race: the latch is read only once a fence exists, which close() has just cleared',
+        file=CALL_KEYS,
+        search="""    if (this.#closed) return false;
+    const fence = this.#fence;
+    if (!fence) return true;
+""",
+        replace="""    const fence = this.#fence;
+    if (!fence) return true;
+    if (this.#closed) return false;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-reset-gen-not-bumped',
+        what='reset race: resetForGroup never moves the generation, so an install still importing when its group is replaced lands the old group\'s keys',
+        file=CALL_KEYS,
+        search="""    this.#resetGeneration += 1;
+    const dropped = this.getKeys();
+""",
+        replace="""    const dropped = this.getKeys();
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-remote-ignores-reset-gen',
+        what='reset race: the remote half re-checks only the fence after its import, which a reset has cleared',
+        file=CALL_KEYS,
+        search="""    // (remote-half generation check).
+    if (
+      generation !== this.#resetGeneration ||
+      !this.#admits(frameKeys.group_id, epoch)
+    ) {
+""",
+        replace="""    // (remote-half generation check).
+    if (!this.#admits(frameKeys.group_id, epoch)) {
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-local-ignores-reset-gen',
+        what='reset race: the local half re-checks only the fence after its import, which a reset has cleared',
+        file=CALL_KEYS,
+        search="""    // Local-half generation check: a reset during the import refuses it.
+    if (
+      generation !== this.#resetGeneration ||
+      !this.#admits(frameKeys.group_id, epoch)
+    ) {
+""",
+        replace="""    // Local-half generation check: a reset during the import refuses it.
+    if (!this.#admits(frameKeys.group_id, epoch)) {
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-applykeys-local-ignores-remote-gen',
+        what='reset race: applyKeys starts its local half fresh after a reset refused the remote half, so it resets the next group away and publishes the old send key',
+        file=CALL_KEYS,
+        search="""    if (since !== undefined && since !== this.#resetGeneration) return;
+""",
+        replace="""""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-remote-gen-captured-before-admits',
+        what='reset race: the remote half takes the generation before its entry check, which moves it on a new group, so every first install of a new group refuses itself',
+        file=CALL_KEYS,
+        search="""    if (!this.#admits(frameKeys.group_id, epoch)) return this.#resetGeneration;
+    const generation = this.#resetGeneration;
+""",
+        replace="""    const generation = this.#resetGeneration;
+    if (!this.#admits(frameKeys.group_id, epoch)) return generation;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-local-gen-captured-before-admits',
+        what='reset race: the local half takes the generation before its entry check, which moves it on a new group, so a new group\'s local key refuses itself',
+        file=CALL_KEYS,
+        search="""    if (!this.#admits(frameKeys.group_id, epoch)) return;
+    const generation = this.#resetGeneration;
+    const entries = localInstallEntries(frameKeys, localIdentity);
+""",
+        replace="""    const generation = this.#resetGeneration;
+    if (!this.#admits(frameKeys.group_id, epoch)) return;
+    const entries = localInstallEntries(frameKeys, localIdentity);
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-remote-reset-gen-after-admits',
+        what='reset race: the remote half re-checks the fence before the generation, so a refused install resets the next group away first',
+        file=CALL_KEYS,
+        search="""      generation !== this.#resetGeneration ||
+      !this.#admits(frameKeys.group_id, epoch)
+    ) {
+      scrubKeyBytes(imported, []);
+      return generation;
+""",
+        replace="""      !this.#admits(frameKeys.group_id, epoch) ||
+      generation !== this.#resetGeneration
+    ) {
+      scrubKeyBytes(imported, []);
+      return generation;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-local-reset-gen-after-admits',
+        what='reset race: the local half re-checks the fence before the generation, so a refused install resets the next group away first',
+        file=CALL_KEYS,
+        search="""      generation !== this.#resetGeneration ||
+      !this.#admits(frameKeys.group_id, epoch)
+    ) {
+      scrubKeyBytes(imported, []);
+      return;
+""",
+        replace="""      !this.#admits(frameKeys.group_id, epoch) ||
+      generation !== this.#resetGeneration
+    ) {
+      scrubKeyBytes(imported, []);
+      return;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-remote-refused-not-scrubbed',
+        what='a refused remote install keeps its raw key bytes un-zeroed in the heap',
+        file=CALL_KEYS,
+        search="""      scrubKeyBytes(imported, []);
+      return generation;
+""",
+        replace="""      return generation;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-local-refused-not-scrubbed',
+        what='a refused local install keeps its raw key bytes un-zeroed in the heap',
+        file=CALL_KEYS,
+        search="""      !this.#admits(frameKeys.group_id, epoch)
+    ) {
+      scrubKeyBytes(imported, []);
+      return;
+""",
+        replace="""      !this.#admits(frameKeys.group_id, epoch)
+    ) {
+      return;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='session-gen-captured-after-fetch',
+        what='reset race: the session takes the generation after the frame-key fetch, so a reply the rejoin outlived installs the old group\'s keys',
+        file=SESSION,
+        search="""    const generation = this.#rotationResetGeneration;
+
+    let frameKeys: MlsFrameKeys;
+    try {
+      frameKeys = await this.#deps.bridge.callFrameKeys(groupId);
+""",
+        replace="""    let generation = this.#rotationResetGeneration;
+
+    let frameKeys: MlsFrameKeys;
+    try {
+      frameKeys = await this.#deps.bridge.callFrameKeys(groupId);
+      generation = this.#rotationResetGeneration;
+""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-fetch-ignores-reset',
+        what='reset race: a frame-key reply the rejoin outlived goes on to the installer',
+        file=SESSION,
+        search="""    if (this.#terminal() || groupId !== this.#groupId) return;
+    if (this.#replacedSince(generation)) return;
+""",
+        replace="""    if (this.#terminal() || groupId !== this.#groupId) return;
+""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-fetch-error-ignores-reset',
+        what='reset race: a frame-key fetch the rejoin outlived that fails late surfaces on the new group',
+        file=SESSION,
+        search="""    } catch (error) {
+      if (this.#replacedSince(generation, error)) return;
+      // Fail-closed (§4.2)""",
+        replace="""    } catch (error) {
+      // Fail-closed (§4.2)""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-reset-gen-not-bumped',
+        what='reset race: #resetRotationState never moves the generation, so an install that outlived its group claims the next group\'s send key',
+        file=SESSION,
+        search="""    this.#rotationResetGeneration += 1;
+""",
+        replace="""""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-install-ignores-reset',
+        what='reset race: the immediate install claims its send key after a reset, setting #hasLocalKey for a group that installed nothing',
+        file=SESSION,
+        search="""        await media.installer.applyKeys(frameKeys, identity);
+        if (this.#replacedSince(generation)) return;
+""",
+        replace="""        await media.installer.applyKeys(frameKeys, identity);
+""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-grace-remote-ignores-reset',
+        what='reset race: the Add-grace remote install schedules its deferred local install after a reset, into the group that replaced it',
+        file=SESSION,
+        search="""        await media.installer.applyRemoteKeys(frameKeys, identity);
+        if (this.#replacedSince(generation)) return;
+""",
+        replace="""        await media.installer.applyRemoteKeys(frameKeys, identity);
+""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-grace-ignores-reset',
+        what='reset race: the Add-grace local install claims its send key after a reset',
+        file=SESSION,
+        search="""        await this.#media?.installer.applyLocalKey(frameKeys, identity);
+        if (this.#replacedSince(generation)) return;
+""",
+        replace="""        await this.#media?.installer.applyLocalKey(frameKeys, identity);
+""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-install-error-ignores-reset',
+        what='reset race: a replaced group\'s immediate install that throws late latches the new group loud',
+        file=SESSION,
+        search="""    } catch (error) {
+      if (this.#replacedSince(generation, error)) return;
+      this.#onRotationError(error);
+""",
+        replace="""    } catch (error) {
+      this.#onRotationError(error);
+""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='session-grace-error-ignores-reset',
+        what='reset race: a replaced group\'s Add-grace install that throws late latches the new group loud',
+        file=SESSION,
+        search="""      } catch (error) {
+        if (this.#replacedSince(generation, error)) return;
+        this.#onRotationError(error);
+""",
+        replace="""      } catch (error) {
+        this.#onRotationError(error);
+""",
+        specs=[RESETRACE_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-zeroes-live-set',
+        what='the scrub zeroes the keys still in use',
+        file=CALL_KEYS,
+        search="""    scrubKeyBytes(outgoing, this.getKeys());
+""",
+        replace="""    scrubKeyBytes(outgoing, []);
+    scrubKeyBytes(infos, []);
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-posts-cryptokey-only',
+        what='raw mode posts without keyBytes (iOS gets a CryptoKey it cannot use)',
+        file=CALL_KEYS,
+        search="""          info.keyIndex,
+          info.keyBytes,
+        );
+""",
+        replace="""          info.keyIndex,
+        );
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-default-carries-bytes',
+        what='Chromium (no rawKeyBytes) also carries raw key bytes to the worker (C5)',
+        file=CALL_KEYS,
+        search="""        const keyBytes = this.#rawKeyBytes ? new Uint8Array(raw) : undefined;""",
+        replace="""        const keyBytes = new Uint8Array(raw);""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-default-ack-gated',
+        what="Chromium's local key install is ack-gated too (R3: no behaviour change off iOS)",
+        file=CALL_KEYS,
+        search="""    this.#awaitKeyAck = rawKeyBytes ? awaitKeyAck : undefined;
+""",
+        replace="""    this.#awaitKeyAck = awaitKeyAck;
+""",
+        also=[
+            (
+                """    if (!this.#rawKeyBytes || awaitKeyAck === undefined) return [];
+""",
+                """    if (awaitKeyAck === undefined) return [];
+""",
+            ),
+        ],
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-constructor-not-fail-closed',
+        what='rawKeyBytes without an awaitKeyAck is accepted instead of throwing',
+        file=CALL_KEYS,
+        search="""    if (rawKeyBytes && typeof awaitKeyAck !== "function") {
+""",
+        replace="""    if (false) {
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-ack-truthy',
+        what='a truthy non-true ack value counts as ok',
+        file=CALL_KEYS,
+        search="""          (ok) => ok === true,
+""",
+        replace="""          (ok) => Boolean(ok),
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='amber-no-clock',
+        what="the witness-only amber never escalates (amber forever: WJ1's defect)",
+        file=POLICY,
+        search="""  judge(inputs: ChipInputs, now: number): ChipState {
+    const chip = chipState(inputs);
+""",
+        replace="""  judge(inputs: ChipInputs, now: number): ChipState {
+    const chip = chipState(inputs);
+    if (now >= 0) return chip;
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-evidence-does-not-reset',
+        what='real encryption evidence only interrupts the amber clock instead of resetting it',
+        file=POLICY,
+        search="""    if (chip === "e2ee" || chip === "e2ee_unverified") {
+      this.reset();
+""",
+        replace="""    if (chip === "e2ee" || chip === "e2ee_unverified") {
+      this.#interrupt();
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-other-amber-accrues',
+        what='another amber reading lets wall-clock time accrue toward the witness bound',
+        file=POLICY,
+        search="""  #interrupt(): void {
+    this.#lastWitnessOnlyAt = undefined;
+""",
+        replace="""  #interrupt(): void {
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-other-amber-resets-clock',
+        what='another amber reading resets the accrued witness time, so an interleaved amber never escalates',
+        file=POLICY,
+        search="""  #interrupt(): void {
+    this.#lastWitnessOnlyAt = undefined;
+""",
+        replace="""  #interrupt(): void {
+    this.#amberMs = 0;
+    this.#lastWitnessOnlyAt = undefined;
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-no-confirm-reading',
+        what='the escalation fires on the first reading past the bound, with no confirming reading',
+        file=POLICY,
+        search="""    if (now - this.#pastBoundAt < WITNESS_AMBER_CONFIRM_MS) return chip;
+""",
+        replace="""""",
+        also=[
+            (
+                """    if (this.#pastBoundAt === undefined) {
+      this.#pastBoundAt = now;
+      return chip;
+    }
+""",
+                """""",
+            ),
+        ],
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-witness-rescues-red',
+        what='a later green reading rescues an escalated red (locked decision 6: the witness never rescues a red)',
+        file=POLICY,
+        search="""    if (this.#fired) return "not_encrypted";
+    if (chip === "e2ee" || chip === "e2ee_unverified") {
+      this.reset();
+      return chip;
+    }
+""",
+        replace="""    if (chip === "e2ee" || chip === "e2ee_unverified") {
+      this.reset();
+      return chip;
+    }
+    if (this.#fired) return "not_encrypted";
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-backwards-step-readds',
+        what='a backwards clock step re-adds the same span',
+        file=POLICY,
+        search="""    this.#lastWitnessOnlyAt = last === undefined ? now : Math.max(last, now);
+""",
+        replace="""    this.#lastWitnessOnlyAt = now;
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-paused-case-dropped',
+        what='readiness paused gets no banner kind',
+        file=POLICY,
+        search="""    case "paused":
+      return "ios_paused";
+""",
+        replace="""""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-paused-reuses-device-unsupported',
+        what='readiness paused reuses the device_unsupported banner (wrong copy)',
+        file=POLICY,
+        search="""    case "paused":
+      return "ios_paused";
+""",
+        replace="""    case "paused":
+      return "device_unsupported";
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-ios-paused-held',
+        what='the ios_paused banner reads as a held (amber) state instead of a red one',
+        file=POLICY,
+        search="""    case "device_unsupported":
+    case "ios_paused":
+    case "unencrypted_notice":
+      return "none";
+""",
+        replace="""    case "ios_paused":
+      return "held";
+    case "device_unsupported":
+    case "unencrypted_notice":
+      return "none";
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='ledger-blanket-join-exemption',
+        what='every miss before the first key is exempt, not only one that predates the held epoch',
+        file=POLICY,
+        search="""        beforeFirstKey &&
+          held !== undefined &&
+          joinWindowMissPredatesEpoch(keyPairIndex(pair), held),
+""",
+        replace="""        beforeFirstKey,
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='ledger-latest-held-epoch-wins',
+        what='the first held epoch is overwritten by every later one',
+        file=POLICY,
+        search="""    if (this.#firstHeldEpoch === undefined) this.#firstHeldEpoch = epoch;
+""",
+        replace="""    this.#firstHeldEpoch = epoch;
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='ledger-unknown-epoch-exempts',
+        what='a miss with no held epoch is exempt',
+        file=POLICY,
+        search="""          held !== undefined &&
+          joinWindowMissPredatesEpoch(keyPairIndex(pair), held),
+""",
+        replace="""          (held === undefined ||
+            joinWindowMissPredatesEpoch(keyPairIndex(pair), held)),
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='ledger-reset-keeps-held-epoch',
+        what="reset keeps the previous call's first held epoch",
+        file=POLICY,
+        search="""    this.#everMissing.clear();
+    this.#firstHeldEpoch = undefined;
+""",
+        replace="""    this.#everMissing.clear();
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='ledger-predicate-no-zero-clamp',
+        what='joinWindowMissPredatesEpoch accepts a negative epoch',
+        file=POLICY,
+        search="""    if (epoch < 0) return false;
+    if (epoch % WORKER_KEYRING_SIZE === keyIndex) return true;
+""",
+        replace="""    if (
+      (((epoch % WORKER_KEYRING_SIZE) + WORKER_KEYRING_SIZE) %
+        WORKER_KEYRING_SIZE) ===
+      keyIndex
+    )
+      return true;
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='ledger-exempt-whole-keyring',
+        what='the join-window exemption reaches back the whole keyring instead of half',
+        file=POLICY,
+        search="""export const JOIN_WINDOW_PREDATES_DEPTH = WORKER_KEYRING_SIZE / 2;""",
+        replace="""export const JOIN_WINDOW_PREDATES_DEPTH = WORKER_KEYRING_SIZE;""",
+        specs=[WELCOMEDROP_SPEC],
+    ),
+    Mutation(
+        id='ledger-predicate-no-index-guard',
+        what='joinWindowMissPredatesEpoch never refuses a malformed key index or epoch',
+        file=POLICY,
+        search="""  if (
+    !Number.isInteger(keyIndex) ||""",
+        replace="""  if (
+    true ||
+    !Number.isInteger(keyIndex) ||""",
+        specs=[WELCOMEDROP_SPEC],
+    ),
+    Mutation(
+        id='session-welcome-review-log-only',
+        what='the welcome-window review counts nothing (log only)',
+        file=SESSION,
+        search="""    for (const [pair, { identity, error }] of counted) {
+      if (!this.#holdJoinRace(pair, identity, error)) {""",
+        replace="""    for (const [pair, { identity, error }] of []) {
+      if (!this.#holdJoinRace(pair, identity, error)) {""",
+        specs=[WELCOMEDROP_SPEC],
+    ),
+    Mutation(
+        id='session-welcome-review-after-clear',
+        what='the welcome-window review runs after the window is cleared, so it sees nothing',
+        file=SESSION,
+        search="""    this.#reviewJoinerWindowMisses(heldEpoch);
+    // 6.7b MEDIUM-1""",
+        replace="""    // 6.7b MEDIUM-1""",
+        also=[
+            (
+                """    // (That review ran above, before this clear: see its comment.)
+""",
+                """    this.#reviewJoinerWindowMisses(heldEpoch);
+""",
+            ),
+        ],
+        specs=[WELCOMEDROP_SPEC],
+    ),
+    Mutation(
+        id='session-welcome-nohold-silent',
+        what='a counted welcome-window miss with no hold available returns without latching loud',
+        file=SESSION,
+        search="""        this.#latchLoud(error, "media");
+        return;
+      }
+    }
+    // A sender already gone""",
+        replace="""        return;
+      }
+    }
+    // A sender already gone""",
+        specs=[WELCOMEDROP_SPEC],
+    ),
+    Mutation(
+        id='session-first-held-epoch-unrecorded',
+        what='the first held epoch is never told to the ledger',
+        file=SESSION,
+        search="""    this.#mediaErrors.noteFirstHeldEpoch(heldEpoch);
+""",
+        replace="""""",
+        specs=[HEAL_SPEC],
+    ),
+    Mutation(
+        id='session-ios-confirm-catch-falls-through',
+        what='R14: a callConfirmDowngrade rejection on iOS falls through to confirmLocalPlaintext',
+        file=SESSION,
+        search="""      if (!fallbackAllowed) {
+        // Every rejection keeps the pause;""",
+        replace="""      if (false) {
+        // Every rejection keeps the pause;""",
+        specs=[IOSCONFIRM_SPEC],
+    ),
+    Mutation(
+        id='session-ios-confirm-nogroup-falls-through',
+        what='R14: the no-group branch on iOS falls through to confirmLocalPlaintext',
+        file=SESSION,
+        search="""    if (!fallbackAllowed && (groupId === null || !this.hasUsableGroup())) {""",
+        replace="""    if (false && (groupId === null || !this.hasUsableGroup())) {""",
+        specs=[IOSCONFIRM_SPEC],
+    ),
+    Mutation(
+        id='session-ios-confirm-refusal-silent',
+        what='R14: a refused confirm keeps the pause but latches nothing loud',
+        file=SESSION,
+        search="""    if (this.#terminal() || this.#loudLatched) return;
+    this.#latchLoud(new Error(ENCRYPTION_UNCONFIRMED), "control");""",
+        replace="""    return;""",
+        specs=[IOSCONFIRM_SPEC],
+    ),
+    Mutation(
+        id='session-witness-escalation-noop',
+        what='noteWitnessEscalated latches nothing',
+        file=SESSION,
+        search="""    this.#latchLoud(new Error(ENCRYPTION_UNCONFIRMED), "media");
+  }""",
+        replace="""  }""",
+        specs=[IOSCONFIRM_SPEC],
+    ),
+    Mutation(
+        id='session-key-ack-error-not-routed',
+        what='R17: LocalKeyAckError does not route like MissingLocalFrameKeyError',
+        file=SESSION,
+        search="""      !(error instanceof MissingLocalFrameKeyError) &&
+      !(error instanceof LocalKeyAckError)
+""",
+        replace="""      !(error instanceof MissingLocalFrameKeyError)
+""",
+        specs=[KEYACK_SPEC],
+    ),
+    Mutation(
+        id='session-key-ack-error-keyed-drop',
+        what='R17: a LocalKeyAckError is dropped while E2EE is enabled',
+        file=SESSION,
+        search="""      !(error instanceof LocalKeyAckError) &&
+      this.#e2eeEnabled &&""",
+        replace="""      this.#e2eeEnabled &&""",
+        specs=[KEYACK_SPEC],
+    ),
+    Mutation(
+        id='session-locked-no-backoff',
+        what='a locked-store retry never backs off',
+        file=SESSION,
+        search="""        this.#lockedRetryDelayMs = Math.min(delayMs * 2, LOCKED_RETRY_MAX_MS);
+""",
+        replace="""""",
+        specs=[LOCKED_SPEC],
+    ),
+    Mutation(
+        id='session-locked-no-reset',
+        what='a processed envelope does not reset the locked backoff',
+        file=SESSION,
+        search="""    if (disp.kind === "processed") this.#lockedRetryDelayMs = RETRY_DELAY_MS;
+""",
+        replace="""""",
+        specs=[LOCKED_SPEC],
+    ),
+    Mutation(
+        id='session-locked-no-refeed',
+        what='a held locked envelope is never fed back',
+        file=SESSION,
+        search="""          this.#scheduleLockedRetry(envelope, delayMs);""",
+        replace="""          void delayMs;""",
+        specs=[LOCKED_SPEC],
+    ),
+    Mutation(
+        id='session-locked-media-origin',
+        what='the locked-store latch is a media-origin latch instead of control',
+        file=SESSION,
+        search="""            : new Error(ENCRYPTION_UNCONFIRMED),
+          "control",""",
+        replace="""            : new Error(ENCRYPTION_UNCONFIRMED),
+          "media",""",
+        specs=[LOCKED_SPEC],
+    ),
+    Mutation(
+        id='state-ios-switch-coerced',
+        what="R9/B1: the fetched kill switch is coerced (`|| undefined`), so the server's strict false reads ON",
+        file=STATE,
+        search="""          serverValue: iosSwitchValue,""",
+        replace="""          serverValue: iosSwitchValue || undefined,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-confirm-fallback-allowed',
+        what='R14: the session is told iOS has an in-app plaintext fallback',
+        file=STATE,
+        search="""          confirmFallbackAllowed: !IOS_WEBKIT,""",
+        replace="""          confirmFallbackAllowed: true,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-hold-release-unconditional',
+        what='R1: the webkit hold is released whatever the pure hold verdict says',
+        file=STATE,
+        search="""    if (webkitHoldReleased(inputs)) void this.#resumeGate(room, "webkit-hold");""",
+        replace="""    void this.#resumeGate(room, "webkit-hold");""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-hold-release-mid-publish',
+        what='R1: the webkit hold is released while a wrapped publish is still in flight',
+        file=STATE,
+        search="""    if (!this.#publishGate.has("webkit-hold") || hold.publishes > 0) return;""",
+        replace="""    if (!this.#publishGate.has("webkit-hold")) return;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-hold-never-asserted',
+        what='R1: the webkit hold is never asserted at Room construction',
+        file=STATE,
+        search="""      this.#publishGate.add("webkit-hold");
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-hold-enable-term-forged',
+        what="R2: the hold's enable term is forged true instead of the worker's enable reply",
+        file=STATE,
+        search="""      workerEnabled: this.#workerEnabled?.enabled ?? NO_WORKER_ENABLED,""",
+        replace="""      workerEnabled: new Map([[room.localParticipant.identity, true]]),""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-hold-born-senders-dropped',
+        what='R1: senders born since the last listing are left out of the verdict',
+        file=STATE,
+        search="""      born: [...born].map(webkitHoldTrack),""",
+        replace="""      born: [],""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-hold-trackid-mediastreamtrack',
+        what="R15: the hold's trackId is the MediaStreamTrack id instead of mediaStreamID",
+        file=STATE,
+        search="""    mediaStreamID: track.mediaStreamID,""",
+        replace="""    mediaStreamID: track.mediaStreamTrack.id,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-hold-at-birth-dropped',
+        what='R1: a new sender does not re-assert the hold at its birth',
+        file=STATE,
+        search="""        this.#webkitHoldAtBirth(room, track);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-forget-track-dropped',
+        what="R18c: a new sender keeps its track's old transform ack",
+        file=STATE,
+        search="""        this.#workerAcks?.forgetTrack(track.mediaStreamID);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-raw-keys-off',
+        what='D2: the provider is built without raw key bytes on iOS',
+        file=STATE,
+        search="""          rawKeyBytes: IOS_WEBKIT,""",
+        replace="""          rawKeyBytes: false,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-tick-off',
+        what='R8: the key-freshness tick never starts',
+        file=STATE,
+        search="""    const stopTick = keyTickEnabled(IOS_WEBKIT)""",
+        replace="""    const stopTick = keyTickEnabled(false)""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-reset-before-detach',
+        what='R13c: the tracker resets before its worker listener is detached',
+        file=STATE,
+        search="""      worker.removeEventListener("message", onMessage);
+      tracker.reset();
+""",
+        replace="""      tracker.reset();
+      worker.removeEventListener("message", onMessage);
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # Stage 6 MINOR 1: one enable ledger per worker. A stale `local → true`
+    # left by a teardown that never reached the unbind (or written by an old
+    # worker's listener) released the next call's WebKit senders before the
+    # new worker had processed `enable`: plaintext frames. The ledger's own
+    # behaviour is held by the `sender-hold-enable-ledger-*` entries.
+    Mutation(
+        id='state-ios-enable-ledger-reused',
+        what='MINOR 1: the bind reuses a ledger a skipped unbind left behind instead of a fresh one',
+        file=STATE,
+        search="""    const ledger = createWorkerEnableLedger();
+    this.#workerEnabled = ledger;
+""",
+        replace="""    const ledger = (this.#workerEnabled ??= createWorkerEnableLedger());
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-enable-ledger-listener-writes-field',
+        what="MINOR 1: the listener records into whatever ledger the field holds now, so an old worker's late reply lands in the new call's ledger",
+        file=STATE,
+        search="""      ledger.record(ev.data);""",
+        replace="""      this.#workerEnabled?.record(ev.data);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-enable-ledger-unbind-clears-any',
+        what="MINOR 1: an unbind clears the field whatever ledger it holds, including a newer worker's",
+        file=STATE,
+        search="""      if (this.#workerEnabled === ledger) this.#workerEnabled = undefined;""",
+        replace="""      this.#workerEnabled = undefined;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # Stage 6 MINOR 1 review NIT: the unbind closes ITS ledger, after the
+    # tracker reset (R13c keeps detach before reset; the ledger goes last).
+    Mutation(
+        id='state-ios-enable-ledger-close-dropped',
+        what="MINOR 1 NIT: the unbind never closes its worker's enable ledger, so a dead worker's local → true stays readable",
+        file=STATE,
+        search="""      ledger.close();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-enable-ledger-close-before-reset',
+        what="MINOR 1 NIT: the unbind closes the ledger before it resets the tracker",
+        file=STATE,
+        search="""      tracker.reset();
+      ledger.close();
+""",
+        replace="""      ledger.close();
+      tracker.reset();
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # Stage 6 MINOR 2: a call attempt releases whatever media E2EE a teardown
+    # that threw left alive (session, key pushes, worker, keys), before it
+    # builds anything. The release's own behaviour is held by the
+    # `sender-hold-release-*` entries.
+    Mutation(
+        id='state-ios-release-e2ee-skipped',
+        what="MINOR 2: a new call never releases what a failed teardown left: the old worker keeps running, ticking and holding keys",
+        file=STATE,
+        search="""    this.#releaseCallE2EE();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-capable-only',
+        what="MINOR 2: only an E2EE-capable call releases the leftovers, so a paused or plain next call leaves them alive",
+        file=STATE,
+        search="""    this.#releaseCallE2EE();
+    if (e2eeCapable) {
+      try {
+""",
+        replace="""    if (e2eeCapable) {
+      this.#releaseCallE2EE();
+      try {
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-silent',
+        what="MINOR 2: a release step that threw is swallowed instead of reported",
+        file=STATE,
+        search="""    for (const error of errors) this.onErr(error);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-keeps-session',
+        what="MINOR 2 (review MAJOR): the leftover session is never disposed, so it keeps applying keys into a provider after the zeroing",
+        file=STATE,
+        search="""      disposeSession: session && (() => session.dispose({ discard: false })),
+""",
+        replace="""      disposeSession: undefined,
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-keeps-key-pushes',
+        what="MINOR 2 (review MAJOR): the leftover native key-push listener is never removed",
+        file=STATE,
+        search="""      unlistenKeys: this.#unlistenCallKeys,
+""",
+        replace="""      unlistenKeys: undefined,
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-keeps-provider',
+        what="MINOR 2: the release never hands over the key provider, so the old call's raw key bytes are dropped unzeroed",
+        file=STATE,
+        search="""      provider: this.#mlsKeyProvider,
+""",
+        replace="""      provider: undefined,
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-session-field-kept',
+        what="MINOR 2 NIT: the release leaves #mlsSession naming the old session, so its late state still reaches the chip",
+        file=STATE,
+        search="""    };
+    this.#mlsSession = undefined;
+""",
+        replace="""    };
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-unlisten-field-kept',
+        what="MINOR 2 NIT: the release leaves #unlistenCallKeys set, so the old unlisten runs again later",
+        file=STATE,
+        search="""    this.#mlsSession = undefined;
+    this.#unlistenCallKeys = undefined;
+""",
+        replace="""    this.#mlsSession = undefined;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-ledger-field-kept',
+        what="MINOR 2 (review MINOR 2): an unbind that threw midway leaves the old enable ledger in #workerEnabled",
+        file=STATE,
+        search="""    this.#workerAcks = undefined;
+    this.#workerEnabled = undefined;
+""",
+        replace="""    this.#workerAcks = undefined;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-worker-field-kept',
+        what="MINOR 2 NIT: the release leaves #e2eeWorker naming the terminated worker",
+        file=STATE,
+        search="""    this.#workerEnabled = undefined;
+    this.#e2eeWorker = undefined;
+""",
+        replace="""    this.#workerEnabled = undefined;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-provider-field-kept',
+        what="MINOR 2 NIT: the release leaves #mlsKeyProvider naming the zeroed provider",
+        file=STATE,
+        search="""    this.#mlsKeyProvider = undefined;
+    const errors = releaseCallE2EE(leftovers);
+""",
+        replace="""    const errors = releaseCallE2EE(leftovers);
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-dead-worker-unrouted',
+        what='R7: a dead worker on iOS reaches no loud path',
+        file=STATE,
+        search="""              session.noteFatalMediaError(new Error(E2EE_WORKER_DEAD));""",
+        replace="""              void session;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-probe-not-awaited',
+        what='D8: connect does not wait for a pending worker probe',
+        file=STATE,
+        search="""      await probeE2EEWorker();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-push-not-counted',
+        what='R12: the key push is routed without being counted by the backstop',
+        file=STATE,
+        search="""            backstop?.notePush(event.group_id, event.epoch);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-backstop-sync',
+        what="R12: the backstop's afterResolve is deferred synchronously instead of a macrotask",
+        file=STATE,
+        search="""                defer: (f) => setTimeout(f, 0),""",
+        replace="""                defer: (f) => f(),""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-coerced',
+        what='F1: the fetched root value is coerced to a boolean, so an absent field reads OFF',
+        file=IOS_SWITCH,
+        search="""      (body) => finish(switchValueFromRoot(body)),""",
+        replace="""      (body) => finish(Boolean(switchValueFromRoot(body))),""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-reject-off',
+        what='F1: a rejected root fetch reads OFF instead of absent (ON)',
+        file=IOS_SWITCH,
+        search="""      () => finish(undefined),
+    );""",
+        replace="""      () => finish(false),
+    );""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-reject-throws',
+        what='F1: a rejected root fetch rejects the switch read (it must never reject)',
+        file=IOS_SWITCH,
+        search="""      () => finish(undefined),
+    );""",
+        replace="""      (error) => {
+        throw error;
+      },
+    );""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-timeout-off',
+        what='F1: a fetch that times out reads OFF instead of absent (ON)',
+        file=IOS_SWITCH,
+        search="""      timer = { handle: setTimer(() => finish(undefined), timeoutMs)""",
+        replace="""      timer = { handle: setTimer(() => finish(false), timeoutMs)""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-sync-throw',
+        what='F1: a synchronous fetchRoot throw escapes the switch read',
+        file=IOS_SWITCH,
+        search="""    try {
+      request = Promise.resolve(deps.fetchRoot());
+    } catch {
+      finish(undefined);
+      return;
+    }""",
+        replace="""    request = Promise.resolve(deps.fetchRoot());""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-getter-escapes',
+        what='F1: a throwing getter on the root body escapes instead of reading unreachable',
+        file=IOS_SWITCH,
+        search="""  } catch {
+    // A throwing getter on a hostile or broken body is "unreachable".
+    return undefined;
+  }""",
+        replace="""  } catch (error) {
+    throw error;
+  }""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-bad-bound',
+        what='F1: an invalid timeout falls through to an unbounded fetch',
+        file=IOS_SWITCH,
+        search="""  if (!(timeoutMs > 0 && timeoutMs <= MAX_TIMER_MS)) {
+    return Promise.resolve(undefined);
+  }""",
+        replace="""""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-wrong-path',
+        what="F1: the flag is read at the root body's top level instead of under features",
+        file=IOS_SWITCH,
+        search="""    return features.ios_call_e2ee;""",
+        replace="""    return body.ios_call_e2ee;""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-offered-or',
+        what='F1: callMediaE2EEOffered offers when EITHER the shell or the switch says so',
+        file=IOS_SWITCH,
+        search="""  return shellSupported === true && sw === "on";""",
+        replace="""  return shellSupported === true || sw === "on";""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-offered-not-off',
+        what='F1: callMediaE2EEOffered offers on any switch value but off',
+        file=IOS_SWITCH,
+        search="""  return shellSupported === true && sw === "on";""",
+        replace="""  return shellSupported === true && sw !== "off";""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-offered-ignores-switch',
+        what='F1: callMediaE2EEOffered ignores the switch',
+        file=IOS_SWITCH,
+        search="""  return shellSupported === true && sw === "on";""",
+        replace="""  return shellSupported === true;""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='amber-b2-paused-row-removed',
+        what='B2: a paused device in a call no longer reads not_encrypted on the chip',
+        file=POLICY,
+        search="""  if (inputs.pausedByServer) return "not_encrypted";
+""",
+        replace="""""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-m1-any-green-resets',
+        what='M1: any green resets the escalation clock, even while a dropping identity is unresolved',
+        file=POLICY,
+        search="""    if (
+      !this.#fired &&
+      (chip === "e2ee" || chip === "e2ee_unverified") &&
+      this.#unresolvedPresent(inputs.presentIdentities)
+    ) {
+""",
+        replace="""    if (
+      !this.#fired &&
+      (chip === "e2ee" || chip === "e2ee_unverified") &&
+      false
+    ) {
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-m1-departure-ignored',
+        what='M1: an identity that left still counts as unresolved',
+        file=POLICY,
+        search="""      if (present.includes(identity)) return true;
+""",
+        replace="""      return true;
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-m1-live-resolves-while-dropping',
+        what='M1: an identity is resolved while it is still dropping',
+        file=POLICY,
+        search="""      if (!witness.dropping.includes(identity)) {
+        this.#unresolved.delete(identity);
+      }
+""",
+        replace="""      this.#unresolved.delete(identity);
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-m1-live-never-resolves',
+        what='M1: a decoding identity is never resolved',
+        file=POLICY,
+        search="""      if (!witness.dropping.includes(identity)) {
+        this.#unresolved.delete(identity);
+      }
+""",
+        replace="""""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-m1-prekey-drops-recorded',
+        what='M1: drops seen before the amber run are recorded as unresolved',
+        file=POLICY,
+        search="""    this.#resolveDecoding(inputs.decodeWitness);
+""",
+        replace="""    for (const identity of inputs.decodeWitness.dropping) this.#unresolved.add(identity);
+    this.#resolveDecoding(inputs.decodeWitness);
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-m1-rearm-keeps-time',
+        what='m1: rearm keeps the accrued amber time',
+        file=POLICY,
+        search="""  rearm(): void {
+    this.#amberMs = 0;
+""",
+        replace="""  rearm(): void {
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-m1-rearm-keeps-fired',
+        what='m1: rearm leaves the escalation fired, so a healed latch never re-escalates',
+        file=POLICY,
+        search="""    this.#interrupt();
+    this.#fired = false;
+  }
+
+  /** A reading that is not witness-only""",
+        replace="""    this.#interrupt();
+  }
+
+  /** A reading that is not witness-only""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='chip-paused-constant-false',
+        what='B2: the chip input pausedByServer is a constant false',
+        file=CHIP,
+        search="""    pausedByServer: sources.pausedByServer(),
+""",
+        replace="""    pausedByServer: false,
+""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id='chip-present-from-publishers',
+        what='M1: present identities are read from publishers only, so a silent member reads as departed',
+        file=CHIP,
+        search="""    presentIdentities: (room?.participants ?? []).map(
+      (participant) => participant.identity,
+    ),
+""",
+        replace="""    presentIdentities: publishing,
+""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id='session-fatal-not-keyed',
+        what='F3: a fatal media error is not recorded as fatal',
+        file=SESSION,
+        search="""    this.#fatalMediaErrors.add(error);
+""",
+        replace="""""",
+        specs=[FATAL_SPEC],
+    ),
+    Mutation(
+        id='session-fatal-no-mode-drop',
+        what='F3: a fatal media error leaves the mode up (the gate is not held)',
+        file=SESSION,
+        search="""    this.#lastError = error;
+    this.#dropModeToNegotiating();
+    this.#latchLoud(error, "control");
+  }
+
+  /**
+   * The decode witness""",
+        replace="""    this.#lastError = error;
+    this.#latchLoud(error, "control");
+  }
+
+  /**
+   * The decode witness""",
+        specs=[FATAL_SPEC],
+    ),
+    Mutation(
+        id='session-fatal-media-origin',
+        what='F3: a fatal media error latches media-origin, so remote evidence heals it',
+        file=SESSION,
+        search="""    this.#dropModeToNegotiating();
+    this.#latchLoud(error, "control");
+  }
+
+  /**
+   * The decode witness""",
+        replace="""    this.#dropModeToNegotiating();
+    this.#latchLoud(error, "media");
+  }
+
+  /**
+   * The decode witness""",
+        specs=[FATAL_SPEC],
+    ),
+    Mutation(
+        id='session-fatal-via-surface',
+        what='F3: noteFatalMediaError routes through the healable noteEncryptionError surface',
+        file=SESSION,
+        search="""    if (this.#loudLatched && this.#loudOrigin === "control") return;
+    console.error("[mls] fatal media-plane error""",
+        replace="""    if (this.#loudLatched && this.#loudOrigin === "control") return;
+    this.noteEncryptionError(error);
+    return;
+    console.error("[mls] fatal media-plane error""",
+        specs=[FATAL_SPEC],
+    ),
+    Mutation(
+        id='session-fatal-survival-removed',
+        what="MAJOR-2: #resetRotationState clears a fatal latch, so a fatal error replayed at start() is wiped by the join route's reset",
+        file=SESSION,
+        search="""    if (!(this.#loudLatched && this.#fatalNoted)) {""",
+        replace="""    if (true) {""",
+        specs=[FATAL_SPEC],
+    ),
+    Mutation(
+        id='session-fatal-noted-only-when-latching',
+        what='MAJOR-2: #fatalNoted is set only when this call latches, so a fatal error over an existing control latch is forgotten at the next reset',
+        file=SESSION,
+        search="""    this.#fatalNoted = true;
+    if (this.#loudLatched && this.#loudOrigin === "control") return;""",
+        replace="""    if (this.#loudLatched && this.#loudOrigin === "control") return;
+    this.#fatalNoted = true;""",
+        specs=[FATAL_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-born-not-judged',
+        what='F4: a live born track is never judged, so a sender born mid-hold is released unacked',
+        file=SENDER_HOLD,
+        search="""    else judged.push(track);""",
+        replace="""    else void track;""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-ended-born-judged',
+        what='F4: an ended born track is still judged',
+        file=SENDER_HOLD,
+        search="""    if (track.ended) endedBorn.push(track.ref);
+    else judged.push(track);""",
+        replace="""    if (track.ended) endedBorn.push(track.ref);
+    judged.push(track);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-ended-born-unreported',
+        what='F4: an ended born track is never reported for pruning',
+        file=SENDER_HOLD,
+        search="""    if (track.ended) endedBorn.push(track.ref);""",
+        replace="""    if (track.ended) void 0;""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-trackless-publication-skipped',
+        what='F4: a publication with no track is skipped instead of holding (no_senders)',
+        file=SENDER_HOLD,
+        search="""  const judged: (WebkitHoldTrack<T> | undefined)[] = [...state.publications];""",
+        replace="""  const judged: (WebkitHoldTrack<T> | undefined)[] = state.publications.filter(Boolean);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-local-key-first',
+        what='F4: the FIRST local key is taken, not the current (last) one',
+        file=SENDER_HOLD,
+        search="""    if (key.participantIdentity === local) {""",
+        replace="""    if (key.participantIdentity === local && localKey === undefined) {""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-local-key-prefix',
+        what='F4: any identity starting with the local identity counts as local',
+        file=SENDER_HOLD,
+        search="""    if (key.participantIdentity === local) {""",
+        replace="""    if (key.participantIdentity.startsWith(local)) {""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-codec-sender-trusts-ack',
+        what='F4: a codec sender (never given a transform) is trusted on an attached ack',
+        file=SENDER_HOLD,
+        search="""    !trackId.includes(CODEC_SENDER_MARK) && state.attached(trackId);""",
+        replace="""    state.attached(trackId);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-codec-senders-dropped',
+        what="F4: codec senders are left out of a track's sender ids",
+        file=SENDER_HOLD,
+        search="""    ...track.codecSenders.map(""",
+        replace="""    ...[].map(""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-enabled-any-identity',
+        what="F4: any identity's enable reply counts as the local one's",
+        file=SENDER_HOLD,
+        search="""  const localIdentityEnabled = state.workerEnabled.get(local) === true;""",
+        replace="""  const localIdentityEnabled = [...state.workerEnabled.values()].includes(true);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-released-any',
+        what="F4: the hold releases when ANY publication's verdict releases",
+        file=SENDER_HOLD,
+        search="""  return inputs.every((input) => senderHoldVerdict(input).release);""",
+        replace="""  return inputs.some((input) => senderHoldVerdict(input).release);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-overdue-while-disconnected',
+        what='F4: the hold reads overdue while the room is disconnected',
+        file=SENDER_HOLD,
+        search="""  if (input.roomConnected !== true) return false;""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-overdue-strict',
+        what='F4: the overdue bound is exclusive (one tick late)',
+        file=SENDER_HOLD,
+        search="""  return nowMs - heldSinceMs >= WEBKIT_HOLD_BOUND_MS;""",
+        replace="""  return nowMs - heldSinceMs > WEBKIT_HOLD_BOUND_MS;""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-overdue-nan-exempt',
+        what='F4: a non-finite clock is never overdue',
+        file=SENDER_HOLD,
+        search="""  if (!Number.isFinite(heldSinceMs) || !Number.isFinite(nowMs)) return true;""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-bound-doubled',
+        what='F4: WEBKIT_HOLD_BOUND_MS is doubled',
+        file=SENDER_HOLD,
+        search="""export const WEBKIT_HOLD_BOUND_MS = KEY_ACK_TIMEOUT_MS;""",
+        replace="""export const WEBKIT_HOLD_BOUND_MS = 2 * KEY_ACK_TIMEOUT_MS;""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    # Stage 6 MINOR 1: the per-worker enable ledger (the `state-ios-enable-
+    # ledger-*` entries hold state.tsx to using one per worker).
+    Mutation(
+        id='sender-hold-enable-ledger-records-after-close',
+        what="MINOR 1: a closed ledger still records, so a dead worker's late enable reply repopulates it",
+        file=SENDER_HOLD,
+        search="""      if (closed) return;
+""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-enable-ledger-close-keeps-entries',
+        what="MINOR 1: close does not empty the ledger, so a closed worker's local → true survives",
+        file=SENDER_HOLD,
+        search="""      replies.clear();
+""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    # Stage 6 MINOR 1 review NIT: the no-worker map is unwritable.
+    Mutation(
+        id='sender-hold-no-worker-enabled-writable',
+        what="MINOR 1 NIT: the shared no-worker map is a plain Map, so a cast can write local → true into every unbound read",
+        file=SENDER_HOLD,
+        search="""export const NO_WORKER_ENABLED: ReadonlyMap<string, boolean> = Object.freeze({
+  size: 0,
+  get: () => undefined,
+  has: () => false,
+  forEach: () => undefined,
+  entries: () => new Map<string, boolean>().entries(),
+  keys: () => new Map<string, boolean>().keys(),
+  values: () => new Map<string, boolean>().values(),
+  [Symbol.iterator]: () => new Map<string, boolean>().entries(),
+});""",
+        replace="""export const NO_WORKER_ENABLED: ReadonlyMap<string, boolean> = new Map();""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    # Stage 6 MINOR 2: releasing what a failed teardown left.
+    Mutation(
+        id='sender-hold-release-unguarded',
+        what="MINOR 2: a release step that throws skips the rest, so a session whose dispose throws leaves its worker alive and its keys unzeroed",
+        file=SENDER_HOLD,
+        search="""    try {
+      step();
+    } catch (error) {
+      errors.push(error);
+    }
+""",
+        replace="""    step();
+""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-swallows',
+        what="MINOR 2: a release step's throw is swallowed, so the caller cannot report it",
+        file=SENDER_HOLD,
+        search="""      errors.push(error);
+""",
+        replace="""      void error;
+""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-no-dispose',
+        what="MINOR 2 (review MAJOR): the release never disposes the leftover session",
+        file=SENDER_HOLD,
+        search="""  run(leftovers.disposeSession);
+""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-no-unlisten',
+        what="MINOR 2 (review MAJOR): the release never stops the native key pushes",
+        file=SENDER_HOLD,
+        search="""        const pending = unlistenKeys();
+""",
+        replace="""        const pending = undefined;
+""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-unlisten-unhandled',
+        what="MINOR 2: a rejecting Tauri unlisten is left unhandled",
+        file=SENDER_HOLD,
+        search="""        if (pending instanceof Promise) pending.catch(() => undefined);
+""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-no-unbind',
+        what="MINOR 2: the release never runs the unbind, so the old worker's tick, listener, acks and ledger survive",
+        file=SENDER_HOLD,
+        search="""  run(leftovers.unbind);
+""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-no-terminate',
+        what="MINOR 2: the release never terminates the old worker, so its per-participant key sets outlive the call",
+        file=SENDER_HOLD,
+        search="""  run(worker && (() => worker.terminate()));
+""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-no-key-reset',
+        what="MINOR 2: the release never zeroes the provider's raw key bytes (A-3)",
+        file=SENDER_HOLD,
+        search="""  run(provider && (() => provider.close()));
+""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-terminates-first',
+        what="MINOR 2: the release terminates the worker before its unbind, so the tick outlives its worker (R8)",
+        file=SENDER_HOLD,
+        search="""  run(leftovers.unbind);
+  run(worker && (() => worker.terminate()));
+""",
+        replace="""  run(worker && (() => worker.terminate()));
+  run(leftovers.unbind);
+""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-resets-not-closes',
+        what='import race: the release only resets the provider, leaving it open to an install still importing',
+        file=SENDER_HOLD,
+        search="""  run(provider && (() => provider.close()));
+""",
+        replace="""  run(provider && (() => (provider as unknown as { resetForGroup(): void }).resetForGroup()));
+""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-zeroes-before-session',
+        what="MINOR 2 (review MAJOR): the keys are zeroed before the session is disposed, so the dying session can refill them",
+        file=SENDER_HOLD,
+        search="""  run(leftovers.disposeSession);
+""",
+        replace="""  run(provider && (() => provider.close()));
+  run(leftovers.disposeSession);
+""",
+        specs=[SENDER_HOLD_SPEC],
+        also=[("""  run(worker && (() => worker.terminate()));
+  run(provider && (() => provider.close()));
+""", """  run(worker && (() => worker.terminate()));
+""")],
+    ),
+    Mutation(
+        id='settings-switch-not-pending',
+        what='F6: Settings claims a state before the bounded switch answer arrives',
+        file=ENCRYPTION_SETTINGS,
+        search="""  const switchKnown = () => platform !== "ios" || switchRead() !== undefined;""",
+        replace="""  const switchKnown = () => true;""",
+        specs=[IOS_GATE_SPEC],
+    ),
+    Mutation(
+        id='settings-desc-on-capable',
+        what='F6: Settings says calls are encrypted whenever the device is capable, paused or not',
+        file=ENCRYPTION_SETTINGS,
+        search="""              when={offered()}""",
+        replace="""              when={mediaCapable()}""",
+        specs=[IOS_GATE_SPEC],
+    ),
+    Mutation(
+        id='settings-switch-coerced',
+        what='F6: Settings coerces the fetched switch, so an absent field reads OFF',
+        file=ENCRYPTION_SETTINGS,
+        search="""      iosCallSwitch({ platform, serverValue: switchRead()?.serverValue }),""",
+        replace="""      iosCallSwitch({ platform, serverValue: !!switchRead()?.serverValue }),""",
+        specs=[IOS_GATE_SPEC],
+    ),
+    Mutation(
+        id='settings-switch-ignored',
+        what='F6: Settings ignores the switch',
+        file=ENCRYPTION_SETTINGS,
+        search="""      iosCallSwitch({ platform, serverValue: switchRead()?.serverValue }),""",
+        replace="""      "on",""",
+        specs=[IOS_GATE_SPEC],
+    ),
+    Mutation(
+        id='state-ios-chip-paused-unbound',
+        what="B2: the chip's pausedByServer source is a constant false",
+        file=STATE,
+        search="""      pausedByServer: () => this.callEncryptionReadiness() === "paused",""",
+        replace="""      pausedByServer: () => false,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-r21-readiness-gets-offer',
+        what='R21: readiness gets the combined offer as its shell term, so a paused iPhone reads unsupported',
+        file=STATE,
+        search="""    const readiness = callEncryptionReadiness({
+      shellSupported,
+""",
+        replace="""    const readiness = callEncryptionReadiness({
+      shellSupported: callMediaE2EEOffered(
+        shellSupported,
+        iosCallSwitch({ platform: Capacitor.getPlatform(), serverValue: iosSwitchValue }),
+      ),
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-push-lost-healable',
+        what='A-M1: a lost key push goes to the healable error surface instead of the fatal one',
+        file=STATE,
+        search="""                    this.#mlsSession?.noteFatalMediaError(
+                      new Error(KEY_PUSH_LOST),""",
+        replace="""                    this.#mlsSession?.noteEncryptionError(
+                      new Error(KEY_PUSH_LOST),""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-overdue-healable',
+        what='A-M1: an overdue hold goes to the healable error surface instead of the fatal one',
+        file=STATE,
+        search="""      session.noteFatalMediaError(new Error(WEBKIT_HOLD_OVERDUE));""",
+        replace="""      session.noteEncryptionError(new Error(WEBKIT_HOLD_OVERDUE));""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-overdue-clock-restarts-every-tick',
+        what='R20: the overdue clock restarts on every tick, so a held hold is never overdue',
+        file=STATE,
+        search="""    hold.heldSince ??= now;""",
+        replace="""    hold.heldSince = now;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-overdue-clock-before-key-ack',
+        what='R20: the overdue clock starts before the local key is acked',
+        file=STATE,
+        search="""    if (!this.#publishGate.has("webkit-hold") || !connected || !keyAcked) {""",
+        replace="""    if (!this.#publishGate.has("webkit-hold") || !connected) {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-presession-error-dropped',
+        what='B-m4: a handleSender failure before the session is dropped, not buffered',
+        file=STATE,
+        search="""            this.#preSessionMediaErrors.push(error);
+""",
+        replace="""            void error;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-presession-replay-healable',
+        what='B-m4: a buffered pre-session failure is replayed as healable, not fatal',
+        file=STATE,
+        search="""        for (const error of early) session.noteFatalMediaError(error);""",
+        replace="""        for (const error of early) session.noteEncryptionError(error);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-audio-stop-without-interruption',
+        what='C-M1: the audio bracket stops and starts without a seen mic interruption (visibility alone)',
+        file=STATE,
+        search="""    if (!audio || !this.#micInterruptedSinceStart) return;""",
+        replace="""    if (!audio) return;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-audio-interruption-never-flagged',
+        what='MUST 2: a raw mic mute never flags the interruption, so the audio session is never restarted',
+        file=STATE,
+        search="""          this.#micInterruptedSinceStart = true;
+""",
+        replace="""          void 0;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-construct-catch-no-zeroing',
+        what='A-3: the construct-catch drops the provider without zeroing its raw key bytes',
+        file=STATE,
+        search="""        this.#mlsKeyProvider?.close();
+        this.#mlsKeyProvider = undefined;
+""",
+        replace="""        this.#mlsKeyProvider = undefined;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-teardown-no-zeroing',
+        what='A-3: teardown drops the provider without zeroing its raw key bytes',
+        file=STATE,
+        search="""        this.#mlsKeyProvider?.close();
+      } catch {""",
+        replace="""        void 0;
+      } catch {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-teardown-resets-not-closes',
+        what='import race: teardown only resets the provider, so an install still importing lands after the call',
+        file=STATE,
+        search="""        this.#mlsKeyProvider?.close();
+      } catch {""",
+        replace="""        this.#mlsKeyProvider?.resetForGroup();
+      } catch {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-construct-catch-resets-not-closes',
+        what='import race: the construct-catch only resets the provider it drops',
+        file=STATE,
+        search="""        this.#mlsKeyProvider?.close();
+        this.#mlsKeyProvider = undefined;
+""",
+        replace="""        this.#mlsKeyProvider?.resetForGroup();
+        this.#mlsKeyProvider = undefined;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-no-session-press-not-inert',
+        what='B-m2/R19: on iOS the no-session in-app press flips to plaintext while a webkit hold exists',
+        file=STATE,
+        search="""    if (IOS_WEBKIT && this.#webkitHold !== undefined) return;""",
+        replace="""    if (false) return;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-overdue-inflight-branch-dropped',
+        what='NEW-1: a wrapped publish in flight no longer stops the overdue clock, so a camera prompt runs the bound out on a healthy call',
+        file=STATE,
+        search="""    if (hold.publishes > 0) {
+      hold.heldSince = undefined;
+      hold.overdueReported = false;
+      return;
+    }
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-overdue-inflight-keeps-clock',
+        what='NEW-1: a wrapped publish in flight pauses the judge but keeps the clock running',
+        file=STATE,
+        search="""    if (hold.publishes > 0) {
+      hold.heldSince = undefined;
+      hold.overdueReported = false;
+      return;
+    }
+""",
+        replace="""    if (hold.publishes > 0) {
+      return;
+    }
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-escalation-never-rearmed',
+        what="B-m1: the escalation is never re-armed when the session's latch heals",
+        file=STATE,
+        search="""          if (gen === this.#connectGen) this.#witnessAmber.rearm();""",
+        replace="""          if (gen === this.#connectGen) void 0;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+]
+
+# --- Calls that ring: Answer, the key-status wait, the lock check, the timers -
+#
+# All `state-*`, so all of them reach only what `stateWiring.test.ts` pins as
+# TEXT (see the file=STATE rule in the header): each proves its statement is
+# present and in its place, never what it does at runtime. The decisions
+# themselves (`answerDecision`, `driveAnswer`, `callerRingOutcome`,
+# `answererAloneOutcome`) live in `answerPolicy.ts` and `outgoingRingPolicy.ts`
+# and are held by those modules' own specs, which this table does not mutate.
+MUTATIONS += [
+    # ---- who may send `answer` ----------------------------------------------
+    Mutation(
+        id='state-ring-answer-on-auto-rejoin',
+        what='the auto-rejoin loop joins as an Answer, so a dropped call that comes back empty is refused as "Call ended"',
+        file=STATE,
+        search="""        await this.connect(channel, undefined, { rejoinAttempt: true });""",
+        replace="""        await this.connect(channel, undefined, {
+          rejoinAttempt: true,
+          answer: true,
+        });""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-on-move-token-arm',
+        what="a server-ordered move's token arm passes answer: true",
+        file=STATE,
+        search="""            moveLatchBypass: true,
+""",
+        replace="""            moveLatchBypass: true,
+            answer: true,
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-on-move-tokenless-arm',
+        what="a server-ordered move's tokenless arm joins as an Answer",
+        file=STATE,
+        search="""        attempt = this.connect(destination);""",
+        replace="""        attempt = this.connect(destination, undefined, { answer: true });""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-sent-on-rejoin-attempt',
+        what='the joinCall argument no longer drops answer on a rejoin attempt',
+        file=STATE,
+        search="""              answer: opts?.answer === true && !opts?.rejoinAttempt && !hadAuth,""",
+        replace="""              answer: opts?.answer === true && !hadAuth,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-with-ready-made-token',
+        what='answer is sent by an attempt that was handed a ready-made token',
+        file=STATE,
+        search="""              answer: opts?.answer === true && !opts?.rejoinAttempt && !hadAuth,""",
+        replace="""              answer: opts?.answer === true && !opts?.rejoinAttempt,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-reads-live-auth',
+        what='answer is dropped on the token as it stands at the joinCall (always unset there), so a move whose token M3 dropped can send it',
+        file=STATE,
+        search="""              answer: opts?.answer === true && !opts?.rejoinAttempt && !hadAuth,""",
+        replace="""              answer: opts?.answer === true && !opts?.rejoinAttempt && !auth,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-had-auth-read-after-m3',
+        what='the ready-made token is noted after M3 has had its chance to drop it',
+        file=STATE,
+        search="""    const hadAuth = auth !== undefined;
+""",
+        replace="""""",
+        also=[
+            (
+                """    const preMintedAuth = auth !== undefined;
+""",
+                """    const preMintedAuth = auth !== undefined;
+    const hadAuth = auth !== undefined;
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-from-remembered-field',
+        what='the joinCall argument is built from the remembered joined-as-answer field, not from this attempt',
+        file=STATE,
+        search="""              answer: opts?.answer === true && !opts?.rejoinAttempt && !hadAuth,""",
+        replace="""              answer: this.joinedAsAnswer(),""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-second-joincall',
+        what='answerCall mints its own join beside the one in #connectAttempt (a second .joinCall( in the store)',
+        file=STATE,
+        search="""          return await this.connect(channel, undefined, { answer: true });""",
+        replace="""          await channel.joinCall(undefined, true, undefined, undefined, false, {
+            answer: true,
+          });
+          return await this.connect(channel, undefined, { answer: true });""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-accept-keybind-joins-directly',
+        what='the accept-call keybind joins through connect() itself and skips answerCall (no lock check, no answer flag)',
+        file=STATE,
+        search="""    if ((await this.answerCall(call.channel)) !== "joined") return;""",
+        replace="""    if (!(await this.connect(call.channel))) return;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- what `answer` may not steer ----------------------------------------
+    Mutation(
+        id='state-ring-answer-skips-refusal-latch',
+        what='an Answer steps past a latched join refusal',
+        file=STATE,
+        search="""      latchedReason !== undefined &&
+      !(""",
+        replace="""      latchedReason !== undefined &&
+      opts?.answer !== true &&
+      !(""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-skips-e2ee-release',
+        what='an Answer skips #releaseCallE2EE(), so what a failed teardown left alive rides into the answered call',
+        file=STATE,
+        search="""    this.#releaseCallE2EE();""",
+        replace="""    if (opts?.answer !== true) this.#releaseCallE2EE();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-answer-skips-readiness',
+        what='an Answer is never E2EE-capable whatever the readiness says: no gate, no session, a plain join',
+        file=STATE,
+        search="""    const e2eeCapable = callEncryptionCapable(readiness);""",
+        replace="""    const e2eeCapable =
+      opts?.answer !== true && callEncryptionCapable(readiness);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the key-status wait ------------------------------------------------
+    Mutation(
+        id='state-ring-keystatus-wait-removed',
+        what='the key-status wait is gone: a join made before the status loads reads no status',
+        file=STATE,
+        search="""    if (shellSupported && bridge && bridge.status.get("state") === undefined) {
+      await this.#waitForKeyStatus(bridge, gen, preConnectBudgetLeft());
+      // Superseded while it waited: nothing constructed yet, just yield.
+      if (gen !== this.#connectGen) return false;
+    }
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-keystatus-wait-after-readiness',
+        what='the key-status wait runs after the readiness was already read',
+        file=STATE,
+        search="""    if (shellSupported && bridge && bridge.status.get("state") === undefined) {
+      await this.#waitForKeyStatus(bridge, gen, preConnectBudgetLeft());
+      // Superseded while it waited: nothing constructed yet, just yield.
+      if (gen !== this.#connectGen) return false;
+    }
+""",
+        replace="""""",
+        also=[
+            (
+                """    const e2eeCapable = callEncryptionCapable(readiness);
+""",
+                """    const e2eeCapable = callEncryptionCapable(readiness);
+    if (shellSupported && bridge && bridge.status.get("state") === undefined) {
+      await this.#waitForKeyStatus(bridge, gen, preConnectBudgetLeft());
+      if (gen !== this.#connectGen) return false;
+    }
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-keystatus-wait-no-generation-check',
+        what='the attempt carries on after the key-status wait without re-checking that it still owns the call',
+        file=STATE,
+        search="""      await this.#waitForKeyStatus(bridge, gen, preConnectBudgetLeft());
+      // Superseded while it waited: nothing constructed yet, just yield.
+      if (gen !== this.#connectGen) return false;
+""",
+        replace="""      await this.#waitForKeyStatus(bridge, gen, preConnectBudgetLeft());
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-keystatus-timeout-coerced-off',
+        what='a status that never loaded is read as "encryption is off": needs_setup, no gate, a plain join',
+        file=STATE,
+        search="""      status: bridge?.status.get("state"),""",
+        replace="""      status: bridge?.status.get("state") ?? { enabled: false },""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-keystatus-wait-ignores-move-budget',
+        what="the key-status wait runs its full bound on a move, half the life of the move's token",
+        file=STATE,
+        search="""        : Math.min(KEY_STATUS_WAIT_MS, budgetLeftMs);""",
+        replace="""        : KEY_STATUS_WAIT_MS;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-keystatus-wait-outlives-its-attempt',
+        what='the key-status wait keeps polling after a newer join or a hang-up superseded it',
+        file=STATE,
+        search="""        gen === this.#connectGen &&
+        bridge.status.get("state") === undefined &&""",
+        replace="""        bridge.status.get("state") === undefined &&""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- `CallEnded` --------------------------------------------------------
+    Mutation(
+        id='state-ring-callended-latched',
+        what='a ring that was already over latches the channel as refused, so "Call back" is dead for 30 s',
+        file=STATE,
+        search="""        if (error === joinCallError && isCallEnded(error)) throw error;""",
+        replace="""        if (error === joinCallError && isCallEnded(error)) {
+          this.#recordJoinRefusal(channel, "NotAVoiceChannel");
+          throw error;
+        }""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-callended-before-teardown',
+        what='CallEnded is rethrown before the failed attempt is torn down, leaving its gate and half-built call standing',
+        file=STATE,
+        search="""        if (error === joinCallError && isCallEnded(error)) throw error;
+""",
+        replace="""""",
+        also=[
+            (
+                """      if (owned) {
+        // We still own the call: tear the half-built call down FULLY.""",
+                """      if (owned) {
+        if (error === joinCallError && isCallEnded(error)) throw error;
+        // We still own the call: tear the half-built call down FULLY.""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-callended-any-error',
+        what="CallEnded is read off any error of the attempt, not only join_call's own answer",
+        file=STATE,
+        search="""        if (error === joinCallError && isCallEnded(error)) throw error;""",
+        replace="""        if (isCallEnded(error)) throw error;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the lock check on "Stay unencrypted" -------------------------------
+    Mutation(
+        id='state-ring-confirm-lock-check-removed',
+        what='confirmCallPlaintext no longer refuses while the lock screen is up',
+        file=STATE,
+        search="""    if (locked) return;
+    const session = this.#mlsSession;""",
+        replace="""    const session = this.#mlsSession;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-confirm-lock-check-below-split',
+        what='the lock check sits below the session split, so a call with no session can be released from the lock screen',
+        file=STATE,
+        search="""    if (locked) return;
+    const session = this.#mlsSession;
+    if (!session) {
+      await this.#confirmNoSessionPlaintext();
+      return;
+    }
+""",
+        replace="""    const session = this.#mlsSession;
+    if (!session) {
+      await this.#confirmNoSessionPlaintext();
+      return;
+    }
+    if (locked) return;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-confirm-lock-failure-reads-unlocked',
+        what='a lock query that throws reads as unlocked',
+        file=STATE,
+        search="""    let locked = true;""",
+        replace="""    let locked = false;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-confirm-session-read-before-lock',
+        what='the session is read before the lock answers, so the press acts on a session that may be gone',
+        file=STATE,
+        search="""    let locked = true;
+""",
+        replace="""    const session = this.#mlsSession;
+    let locked = true;
+""",
+        also=[
+            (
+                """    if (locked) return;
+    const session = this.#mlsSession;
+""",
+                """    if (locked) return;
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the hang-up timers -------------------------------------------------
+    Mutation(
+        id='state-ring-hangup-discards-mls',
+        what="the caller timer's hang-up is not the Hang up button's: it discards kept MLS state like a sign-out",
+        file=STATE,
+        search="""          this.disconnect();
+          this.#setCallerRingNotice({""",
+        replace="""          this.disconnect({ discardMls: true });
+          this.#setCallerRingNotice({""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-timer-acts-while-not-connected',
+        what='a hang-up timer acts while the call is not connected',
+        file=STATE,
+        search="""      this.room() !== room ||
+      this.state() !== "CONNECTED"
+    )""",
+        replace="""      this.room() !== room
+    )""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-timer-ignores-generation',
+        what='a hang-up timer no longer checks the connect generation it was started under',
+        file=STATE,
+        search="""      ring.gen !== this.#connectGen ||
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-latch-counts-own-device',
+        what='our own second device counts as somebody answering',
+        file=STATE,
+        search="""    if (userId === this.getClient()?.user?.id) return;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-latch-before-connect',
+        what='someone who left before we arrived counts as having answered, so an Answer into a dead call is never hung up',
+        file=STATE,
+        search="""    if (ring.connectedAt === undefined) return;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-watch-survives-disconnect',
+        what="disconnect() leaves the call's hang-up timer and ring facts standing",
+        file=STATE,
+        search="""      clearTimeout(this.#callRing?.timer);
+      this.#callRing = undefined;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-joined-as-answer-not-cleared',
+        what='disconnect() no longer clears the joined-as-answer field',
+        file=STATE,
+        search="""      this.#setAnswerGen(undefined);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-opened-call-ignores-who-is-there',
+        what='a join into a call somebody is already in counts as opening it, so the caller timer can hang up an answered call',
+        file=STATE,
+        search="""    ring.openedCall = ring.startedByUser && !ring.remoteEverJoined;""",
+        replace="""    ring.openedCall = ring.startedByUser;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-started-by-user-on-rejoin',
+        what="an automatic rejoin counts as the user starting a call, so the caller timer runs on a rejoined call",
+        file=STATE,
+        search="""        opts?.answer !== true &&
+        !opts?.rejoinAttempt,""",
+        replace="""        opts?.answer !== true,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- the decline --------------------------------------------------------
+    Mutation(
+        id='state-ring-declined-without-live-timer',
+        what='a decline is acted on for a call this device did not open, or whose ring timer is no longer running',
+        file=STATE,
+        search="""    if (!ring || !ring.openedCall || ring.timer === undefined) return;""",
+        replace="""    if (!ring) return;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ring-decline-without-reason',
+        what='declineCall takes the ring down without a reason, so the phone cannot tell a decline from a miss',
+        file=STATE,
+        search="""      dismissIncomingCall(channel.id, "declined");""",
+        replace="""      dismissIncomingCall(channel.id);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+]
+
+
+# --- The ringing fix round: our own Decline over our own Answer, the camera --
+# flip through the store, the timers' re-ask while the Room reconnects, and
+# the server's ring length. All `state-*`, so the same limit as the block
+# above: each proves its statement is PRESENT and in its place in the text
+# `stateWiring.test.ts` pins, never what it does at runtime.
+MUTATIONS += [
+    # ---- S1: a Decline on this device cancels its own pending Answer -------
+    Mutation(
+        id='state-ringfix-decline-ignored-before-join',
+        what='an Answer whose ring the user declined meanwhile still sends its join',
+        file=STATE,
+        search="""          if (ownAnswer.declined) {
+            if (gen === this.#connectGen) this.disconnect();
+            return false;
+          }
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-decline-check-before-last-await',
+        what='the Decline check runs before the voice-node await, so a Decline pressed during it still joins',
+        file=STATE,
+        search="""        const node = await voiceNodeForChannel(this.getClient(), channel);
+""",
+        replace="""""",
+        also=[
+            (
+                """          ownAnswer.joinGen = gen;
+        }
+""",
+                """          ownAnswer.joinGen = gen;
+        }
+        const node = await voiceNodeForChannel(this.getClient(), channel);
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-unlock-decline-ignored',
+        what='a Decline pressed while the phone was being unlocked lets connect() start, tearing down the call the user is in',
+        file=STATE,
+        search="""        if (attempt.declined) return false;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-decline-keeps-sent-join',
+        what='a Decline after the Answer sent its join leaves our own leg in the call',
+        file=STATE,
+        search="""        if (
+          ownAnswer.joinGen !== undefined &&
+          ownAnswer.joinGen === this.#connectGen
+        )
+          this.disconnect();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-decline-hangs-up-any-call',
+        what='a Decline hangs up whatever call is current, not only the leg its own Answer started',
+        file=STATE,
+        search="""        if (
+          ownAnswer.joinGen !== undefined &&
+          ownAnswer.joinGen === this.#connectGen
+        )
+          this.disconnect();
+""",
+        replace="""        if (ownAnswer.joinGen !== undefined) this.disconnect();
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-decline-discards-mls',
+        what="the Decline's hang-up is not the Hang up button's: it discards kept MLS state",
+        file=STATE,
+        search="""          ownAnswer.joinGen === this.#connectGen
+        )
+          this.disconnect();""",
+        replace="""          ownAnswer.joinGen === this.#connectGen
+        )
+          this.disconnect({ discardMls: true });""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-other-decline-cancels-answer',
+        what="somebody else's decline (or another of our devices') cancels this device's Answer",
+        file=STATE,
+        search="""  noteCallDeclined(channelId: string): void {
+    const ring = this.#callRing;
+""",
+        replace="""  noteCallDeclined(channelId: string): void {
+    const own = this.#answerAttempts.get(channelId)?.attempt;
+    if (own) own.declined = true;
+    const ring = this.#callRing;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- S2: answeringChannelId ---------------------------------------------
+    Mutation(
+        id='state-ringfix-answering-cleared-by-disconnect',
+        what="disconnect() clears the Answer record, so connect()'s own leading disconnect() erases the Answer it belongs to",
+        file=STATE,
+        search="""      this.#setAnswerGen(undefined);
+      // The caller hanging up""",
+        replace="""      this.#setAnswerGen(undefined);
+      this.#answerAttempts.clear();
+      this.#setAnsweringChannelId(undefined);
+      // The caller hanging up""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-answering-cleared-by-stale-answer',
+        what='an older Answer settling clears the record and the accessor of the newer one still running',
+        file=STATE,
+        search="""      if (this.#answerAttempts.get(channel.id)?.attempt !== attempt) return;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-second-answer-starts-another',
+        what='a second Answer of a ring already being answered starts its own attempt, whose record shadows the first, so a Decline can miss the first',
+        file=STATE,
+        search="""    if (running) return running.result;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-decline-reads-latest-answer',
+        what="a Decline cancels whichever Answer started last, not its own chat's, so declining one chat misses that chat's Answer",
+        file=STATE,
+        search="""      const ownAnswer = this.#answerAttempts.get(channel.id)?.attempt;
+      if (ownAnswer !== undefined) {
+        ownAnswer.declined = true;""",
+        replace="""      const ownAnswer = [...this.#answerAttempts.values()].at(-1)?.attempt;
+      if (ownAnswer !== undefined) {
+        ownAnswer.declined = true;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-decline-stops-outgoing-ring',
+        what="a Decline stops whatever ringtone plays, our own outgoing ring for another chat included",
+        file=STATE,
+        search="""        untrack(incomingCall)?.channel.id === channel.id &&
+        this.sound.ringtoneKind() === "incoming"
+      )""",
+        replace="""        untrack(incomingCall)?.channel.id === channel.id
+      )""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-answering-never-set',
+        what='answeringChannelId is never set, so the popup cannot see a keybind or notification Answer in flight',
+        file=STATE,
+        search="""    this.#setAnsweringChannelId(channel.id);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- S3: flipCamera -----------------------------------------------------
+    Mutation(
+        id='state-ringfix-flip-ignores-gate',
+        what='flipCamera starts while the publish gate holds a reason',
+        file=STATE,
+        search="""    if (!room || this.state() !== "CONNECTED" || this.#gateHeld()) return false;""",
+        replace="""    if (!room || this.state() !== "CONNECTED") return false;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-flip-gate-not-reread',
+        what='the gate is not read again at the moment of the switch, so a gate that filled during the device list read is overridden',
+        file=STATE,
+        search="""          this.state() === "CONNECTED" &&
+          !this.#gateHeld(),""",
+        replace="""          this.state() === "CONNECTED",""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-flip-no-reassert',
+        what="a gate that filled while the switch ran is not put back over the restarted camera track",
+        file=STATE,
+        search="""      if (this.#gateHeld() && this.room() === room)
+        void this.#applyPublishGate(room);
+""",
+        replace="""      void 0;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-flip-restore-unguarded',
+        what="the camera effects' restore after a failed flip can reject unhandled",
+        file=STATE,
+        search="""        void this.reapplyCameraEffects().catch((error) =>
+          console.warn("[rtc] camera effects not restored", error),
+        );""",
+        replace="""        void this.reapplyCameraEffects();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-flip-error-swallowed',
+        what="a failed flip is swallowed instead of shown through the store's error path",
+        file=STATE,
+        search="""      this.onErr(result.error);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- S4: the timers while the Room reconnects ---------------------------
+    Mutation(
+        id='state-ringfix-timer-dropped-while-reconnecting',
+        what='a hang-up timer that fires while the Room reconnects is dropped for good instead of asking again',
+        file=STATE,
+        search="""      this.#armCallRing(ring, CALL_RING_RETRY_MS);
+      return;
+""",
+        replace="""      return;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-rearm-ignores-generation',
+        what="the re-ask does not check the connect generation, so a superseded call's timer keeps re-arming",
+        file=STATE,
+        search="""      ring.gen === this.#connectGen &&
+      room !== undefined &&""",
+        replace="""      room !== undefined &&""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ringfix-timer-ignores-room-connection',
+        what="a hang-up timer acts without the Room's own connection being CONNECTED",
+        file=STATE,
+        search="""      room.state !== ConnectionState.Connected ||
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # ---- S5: the ring length ------------------------------------------------
+    Mutation(
+        id='state-ringfix-ring-length-from-config',
+        what="the caller timer reads the stand-in configuration's ring length (always unset), not the server's",
+        file=STATE,
+        search="""        untrack(() => ringDurationMs(serverCallRingSecs())) +""",
+        replace="""        untrack(() =>
+          ringDurationMs(
+            this.getClient()?.configuration?.features.livekit
+              .call_ring_duration,
+          ),
+        ) +""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+]
+
+
+# ---- M2 final audit, finding M2: the locked cold start ----------------------
+# A phone answering from its lock screen starts the page while locked, the
+# bridge's `#onReady` cannot open the key store, and the socket's `ready` does
+# not fire again. The key-status wait asks `retryStartupIfUnset()` once. The
+# `state-lockstart-*` entries reach the wait's TEXT (the header's file=STATE
+# rule); the `e2ee-lockstart-*` entries reach the retry's members, which
+# `stateWiring.test.ts` cuts out of the real `e2ee.ts` and RUNS in a stand-in
+# class, so those are behaviour, not text, apart from the ready-handler and
+# `#onReady` catch pins. Not here, and why: `#runStartup` never clearing
+# `#startupRun` makes the retry's `while (this.#startupRun) await ...` spin on
+# microtasks forever, which would hang the spec rather than fail it.
+E2EE_BRIDGE = "../client/e2ee.ts"
+
+MUTATIONS += [
+    Mutation(
+        id='state-lockstart-retry-removed',
+        what='the key-status wait no longer asks the bridge to retry its startup: a locked cold start polls a status nothing will load',
+        file=STATE,
+        search="""      void bridge.retryStartupIfUnset();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-lockstart-retry-awaited',
+        what='the wait awaits the retry, an unbounded native round trip outside its own bound and the move budget',
+        file=STATE,
+        search="""      void bridge.retryStartupIfUnset();""",
+        replace="""      await bridge.retryStartupIfUnset();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-lockstart-retry-after-poll',
+        what='the retry is asked only after the poll gave up, so its status can never reach this join',
+        file=STATE,
+        search="""      void bridge.retryStartupIfUnset();
+""",
+        replace="""""",
+        also=[
+            (
+                """          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+""",
+                """          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+      void bridge.retryStartupIfUnset();
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-lockstart-retry-before-deadline',
+        what='the retry is awaited before the deadline is fixed, so the bound starts only after it',
+        file=STATE,
+        search="""    const deadline = performance.now() + boundMs;
+""",
+        replace="""    await bridge.retryStartupIfUnset();
+    const deadline = performance.now() + boundMs;
+""",
+        also=[
+            (
+                """      void bridge.retryStartupIfUnset();
+""",
+                """""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-lockstart-retry-failure-coerced-off',
+        what='a retry that loaded nothing is turned into "encryption is off" (needs_setup: no gate, a plain join)',
+        file=STATE,
+        search="""          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+""",
+        replace="""          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+      if (bridge.status.get("state") === undefined)
+        bridge.status.set("state", {
+          enabled: false,
+          published: false,
+          device_id: null,
+          protocol_version: 1,
+          claimed: false,
+        });
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-ignores-loaded-status',
+        what='retryStartupIfUnset re-runs the startup although the status is loaded (a second claim, owner read and seed per join)',
+        file=E2EE_BRIDGE,
+        search="""      this.status.get("state") === undefined &&
+      !this.#disposed &&
+      !this.#ptSignedOut &&
+""",
+        replace="""      !this.#disposed &&
+      !this.#ptSignedOut &&
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-after-dispose',
+        what='a bridge whose client was replaced (account switch, logout) still runs a startup and claims under it',
+        file=E2EE_BRIDGE,
+        search="""      this.status.get("state") === undefined &&
+      !this.#disposed &&
+      !this.#ptSignedOut &&
+""",
+        replace="""      this.status.get("state") === undefined &&
+      !this.#ptSignedOut &&
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-after-signout',
+        what='a signed-out bridge still runs a startup',
+        file=E2EE_BRIDGE,
+        search="""      !this.#disposed &&
+      !this.#ptSignedOut &&
+      !!this.#client.user
+""",
+        replace="""      !this.#disposed &&
+      !!this.#client.user
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-without-user',
+        what='a bridge with no signed-in user still runs a startup',
+        file=E2EE_BRIDGE,
+        search="""      !this.#ptSignedOut &&
+      !!this.#client.user
+    );""",
+        replace="""      !this.#ptSignedOut
+    );""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-not-single-flight',
+        what='concurrent retries each start their own run instead of sharing one',
+        file=E2EE_BRIDGE,
+        search="""    this.#startupRetry ??= (async () => {""",
+        replace="""    this.#startupRetry = (async () => {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-ignores-run-in-flight',
+        what="the retry starts a second startup beside a ready's run still in flight",
+        file=E2EE_BRIDGE,
+        search="""        while (this.#startupRun) await this.#startupRun;
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-no-recheck-after-wait',
+        what='after waiting for the run in flight the retry runs again without asking whether the status loaded or the bridge was signed out',
+        file=E2EE_BRIDGE,
+        search="""        if (this.#startupStillOwed()) await this.#runStartup();""",
+        replace="""        await this.#runStartup();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-rejects',
+        what='a failed startup rejects out of the retry',
+        file=E2EE_BRIDGE,
+        search="""        console.error("[e2ee] startup retry failed", error);""",
+        replace="""        throw error;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-retry-sticks',
+        what='a settled retry is never forgotten, so the next join (after the unlock) gets the old failed retry back',
+        file=E2EE_BRIDGE,
+        search="""    })().finally(() => {
+      this.#startupRetry = null;
+    });""",
+        replace="""    })();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-ready-bypasses-run-record',
+        what="the socket's ready runs #onReady directly, so a retry cannot see it in flight and runs a second startup beside it",
+        file=E2EE_BRIDGE,
+        search="""      this.#invalidateProof();
+      void this.#runStartup();""",
+        replace="""      this.#invalidateProof();
+      void this.#onReady();""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='e2ee-lockstart-startup-failure-coerced-off',
+        what='a startup that failed (a locked key store) records "encryption is off", which a join reads as needs_setup and joins in plain',
+        file=E2EE_BRIDGE,
+        search="""      console.error("[e2ee] startup failed", error);""",
+        replace="""      console.error("[e2ee] startup failed", error);
+      this.#setDisabledStatus();""",
+        specs=[STATE_WIRING_SPEC],
     ),
 ]
 

@@ -56,12 +56,106 @@ interface MicPipelineWants {
   pitchSemitones: number;
 }
 
-/** Native Android foreground service keeping calls alive in the background */
-const VoiceCallServiceNative = Capacitor.isNativePlatform()
+/**
+ * iOS WKWebView: the one engine whose WebRTC sends PLAINTEXT from a sender
+ * with no transform (`isScriptTransformEngine` is exactly Capacitor platform
+ * `"ios"`; web Safari never reaches media E2EE, R13d). Read once: the
+ * platform is constant for the page. Every iOS-only wiring below keys on it:
+ * the born-paused `"webkit-hold"` (R1), raw key bytes (D2), the key-freshness
+ * tick (R8), the dead-worker hook (R7), the no-fallback confirm (R14) and the
+ * call audio session (R5).
+ */
+const IOS_WEBKIT = isScriptTransformEngine(Capacitor.getPlatform());
+
+/**
+ * Native Android foreground service keeping calls alive in the background.
+ * Android ONLY: iOS keeps a call alive through `SlogaCallAudio` below
+ * (UIBackgroundModes audio), and has no VoiceCallService to call.
+ */
+const VoiceCallServiceNative =
+  Capacitor.getPlatform() === "android"
+    ? registerPlugin<{ start(): Promise<void>; stop(): Promise<void> }>(
+        "VoiceCallService",
+      )
+    : undefined;
+
+/**
+ * The iOS call audio session (`CallAudioSession.swift`, R5): held active as a
+ * voice call between `start` and `stop`. Driven only through the
+ * `createCallAudioBracket` the Voice instance builds, never called directly.
+ */
+const SlogaCallAudioNative = IOS_WEBKIT
   ? registerPlugin<{ start(): Promise<void>; stop(): Promise<void> }>(
-      "VoiceCallService",
+      "SlogaCallAudio",
     )
   : undefined;
+
+/**
+ * The D8 worker probe: the SHIPPED e2ee worker, constructed once, asked for
+ * `initAck` and an `rte === "function"` heartbeat. Cached for the app's life
+ * by `workerProbe.ts`; a second call joins the one in flight or returns the
+ * settled answer, so this is safe to call from every reader.
+ */
+function probeE2EEWorker(): Promise<"pass" | "fail"> {
+  return runWorkerProbe({
+    makeWorker: () => new E2EEWorker(),
+    setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
+    clearTimeout: (handle: ReturnType<typeof setTimeout>) =>
+      clearTimeout(handle),
+  });
+}
+
+// D8, at app start: module evaluation of this file is the earliest point the
+// client reaches that can construct the shipped worker (the `?worker` import
+// is here), and it runs before any Voice exists, so before any Room is built
+// and before the bridge's KeyPackage pre-publish can read the predicate
+// (`iosMediaE2EEReady` reads `workerProbeResult()`). Fire-and-forget: a probe
+// still pending reads "not ready" (fail-closed), and `#connectAttempt` waits
+// for this same probe before it decides capability. iOS only; nothing is
+// constructed anywhere else.
+if (IOS_WEBKIT) void probeE2EEWorker();
+
+/**
+ * One local track as the R1 hold reads it (`WebkitHoldTrack`, the pure
+ * assembly in `webkitSenderHold.ts`): R15's `mediaStreamID`, whether its
+ * capture ended, and the codecs of any additional-codec sender (made OUTSIDE
+ * `LocalSenderCreated`, so never given a transform; the module never treats
+ * one as attached). Reads only.
+ */
+function webkitHoldTrack(track: LocalTrack): WebkitHoldTrack<LocalTrack> {
+  return {
+    ref: track,
+    mediaStreamID: track.mediaStreamID,
+    ended: track.mediaStreamTrack?.readyState === "ended",
+    codecSenders:
+      track instanceof LocalVideoTrack
+        ? [...track.simulcastCodecs]
+            .filter(([, info]) => !!info.sender)
+            .map(([codec]) => codec)
+        : [],
+  };
+}
+
+/**
+ * The longest an iOS call's audio session waits for its Room's disconnect to
+ * settle before it is released anyway (R18e). livekit's disconnect is a
+ * leave + engine close, normally well under a second.
+ */
+const CALL_AUDIO_TEARDOWN_BOUND_MS = 5_000;
+
+/** Error text for the session's fatal media path (fixed strings only). */
+const E2EE_WORKER_DEAD = "sloga: the call's encryption worker stopped";
+const KEY_PUSH_LOST = "sloga: a call key change was not delivered";
+const WEBKIT_HOLD_OVERDUE =
+  "sloga: a new sender's encryption was never confirmed";
+/**
+ * The prefix of the D7.2 patch hunk's error for a throwing `handleSender`
+ * (a sender livekit could not give a transform), which the Room re-emits as
+ * `encryptionError`.
+ */
+const HANDLE_SENDER_FAILED = "sloga: handleSender failed";
+/** The R1 shell-only reason, beside the session's own (`mlsCallSession.ts`). */
+type ShellGateReason = PublishGateReason | "webkit-hold";
 
 function nativeCallServiceStart() {
   VoiceCallServiceNative?.start().catch(() => {});
@@ -151,8 +245,19 @@ import {
   nativeScreenShareAudioOffered,
   nativeScreenShareAvailable,
 } from "./androidScreenShare";
+import {
+  type AnswerResult,
+  answerDecision,
+  driveAnswer,
+  isCallEnded,
+} from "./answerPolicy";
 import { Attenuation } from "./attenuation";
+import {
+  type CameraFlipResult,
+  flipCamera as flipRoomCamera,
+} from "./cameraFlip";
 import { CaptureClaim } from "./captureClaim";
+import { deviceLocked, ensureDeviceUnlocked } from "./deviceLock";
 import { entranceSoundFor } from "./entranceSound";
 import {
   type IdleWorld,
@@ -162,7 +267,11 @@ import {
   idleForSeconds,
   idleStep,
 } from "./idlePolicy";
-import { dismissIncomingCall, incomingCall } from "./incomingCall";
+import {
+  dismissIncomingCall,
+  incomingCall,
+  ringDurationMs,
+} from "./incomingCall";
 import {
   type JoinBlockedReason,
   type JoinRefusalLatch,
@@ -182,6 +291,12 @@ import {
   MOVE_PRECONNECT_BUDGET_MS,
   moveDecision,
 } from "./movePolicy";
+import {
+  ANSWER_ALONE_GRACE_MS,
+  answererAloneOutcome,
+  CALLER_HANGUP_GRACE_MS,
+  callerRingOutcome,
+} from "./outgoingRingPolicy";
 import { RemoteControl } from "./remoteControl";
 import {
   type RemoteControlQueue,
@@ -205,6 +320,7 @@ import {
   watchedAfterStop,
   watchedAfterWatch,
 } from "./screenShareWatchPolicy";
+import { serverCallRingSecs } from "./serverRingLength";
 import { CallTranscriber } from "./transcription/callTranscriber";
 import {
   type TranscriptFormat,
@@ -258,6 +374,7 @@ import { WatchTogether } from "./watchTogether";
 // By file: a leaf that imports only two zero-import leaves of its own, so it
 // adds no cycle to this file's init path. The same check the sidebar uses.
 import { isChannelGatedForMember } from "../../src/interface/channels/memberGate";
+import { shellMediaE2EESupported } from "../client/e2eePlatform";
 import {
   fetchWithRatelimitPolicy,
   isRateLimited,
@@ -265,6 +382,11 @@ import {
   RATELIMIT_MAX_RETRIES,
   requestDeadlineSignal,
 } from "../client/e2eeRatelimitPolicy";
+import {
+  resolveSlim,
+  SLIM_DEV_STORAGE_KEY,
+  slimDevOverrideFrom,
+} from "../client/slimMode";
 import { LiveAnnotations } from "./annotations/liveAnnotations";
 import {
   type RecordingTarget,
@@ -283,7 +405,11 @@ import {
 } from "./cameraEffects";
 import { createCaptionEngine } from "./captions/captionEngine";
 import { LiveCaptions } from "./captions/liveCaptions";
-import { chipPublicationsOf, chipStateFrom } from "./chipInputs.ts";
+import {
+  type ChipSources,
+  chipInputsFrom,
+  chipPublicationsOf,
+} from "./chipInputs.ts";
 import { CaptionPublisher } from "./components/CaptionPublisher";
 import { CaptionSpeaker } from "./components/CaptionSpeaker";
 import { InRoom } from "./components/InRoom";
@@ -301,6 +427,15 @@ import {
   encryptionSetupAvailable,
 } from "./e2eeDeviceReadiness";
 import { faceSettingsActive } from "./faceFilterCatalog";
+import { type CallAudioBracket, createCallAudioBracket } from "./iosCallAudio";
+import { fetchIosCallSwitchValue, iosCallSwitch } from "./iosCallSwitch";
+import { keyTickEnabled, startKeyFreshnessTick } from "./keyFreshnessTick";
+import {
+  type KeyPushBackstop,
+  backstopBridge,
+  createKeyPushBackstop,
+  keyPushArrivesBeforeResolve,
+} from "./keyPushBackstop";
 import { micPipelineAction } from "./micPipelinePolicy";
 import { MlsKeyProvider } from "./mlsCallKeys";
 import {
@@ -312,6 +447,7 @@ import {
   type LoudLatchOrigin,
   callBanner,
   plaintextReleaseAvailable,
+  WitnessAmberEscalation,
 } from "./mlsCallModePolicy";
 import {
   type MlsCallSessionDeps,
@@ -388,7 +524,22 @@ import {
 import { isScreenShareCancel } from "./screenShareCancel";
 import { ScreenShieldProcessor } from "./screenShieldProcessor";
 import { SoundboardPlayback } from "./soundboardPlayback";
+import {
+  type WebkitHoldState,
+  type WebkitHoldTrack,
+  type WorkerAckTracker,
+  type WorkerEnableLedger,
+  createWorkerAckTracker,
+  createWorkerEnableLedger,
+  isScriptTransformEngine,
+  NO_WORKER_ENABLED,
+  releaseCallE2EE,
+  webkitHoldInputs,
+  webkitHoldOverdue,
+  webkitHoldReleased,
+} from "./webkitSenderHold";
 import { WhisperController } from "./whisper";
+import { runWorkerProbe, workerProbeResult } from "./workerProbe";
 
 /**
  * A dice-roll result shown briefly over the call's video (e.g. "Jeff rolled
@@ -581,6 +732,99 @@ const NO_LEG_NOTICE = Symbol("no-leg-notice");
  */
 const VOICE_MOVE_REQUESTED = "voiceMoveRequested" satisfies keyof Events;
 
+/**
+ * The longest a join waits for the device's key status when it has not
+ * loaded yet (`#waitForKeyStatus`). The status loads once, shortly after the
+ * app starts, so only a join made in the first moments of a cold start (an
+ * Answer from a notification is the usual one) ever waits. Long enough for a
+ * phone that has just been unlocked to open its key store, short enough that
+ * a device whose status never loads still reaches its call.
+ */
+const KEY_STATUS_WAIT_MS = 5_000;
+
+/** How often that wait looks at the status again. */
+const KEY_STATUS_POLL_MS = 50;
+
+/**
+ * Whether the development stand-in for the Android and iOS apps is on, read
+ * with the same pure rule `useSlimMode` uses and from the same two places
+ * (the URL and the latch that hook keeps in `sessionStorage`). Nothing is
+ * written here. Always false outside a development build.
+ */
+function slimDevOverride(): boolean {
+  if (!import.meta.env.DEV) return false;
+  let stored: string | null = null;
+  try {
+    stored = sessionStorage.getItem(SLIM_DEV_STORAGE_KEY);
+  } catch {
+    // Storage is blocked: the URL still decides.
+  }
+  return slimDevOverrideFrom(true, location.search, stored);
+}
+
+/**
+ * What one call knows about its own ring, for the two timers that can hang
+ * it up: the caller's (nobody answered a direct-message call, or the other
+ * person declined it) and the answerer's (the caller had already left). Made
+ * new for every join and dropped by `disconnect()`, so nothing in it is ever
+ * carried from one call into the next.
+ */
+type CallRingWatch = {
+  /** The connect generation of the join this belongs to. */
+  gen: number;
+  channel: Channel;
+  /** The call's Room, from the moment it connects. */
+  room: Room | undefined;
+  /**
+   * Whether this join could be the start of a call that rings somebody: the
+   * user started it in a direct message, and it is not an Answer, an
+   * automatic rejoin, a server-ordered move or a join on a ready-made token.
+   */
+  startedByUser: boolean;
+  /**
+   * Whether this device opened the call: `startedByUser`, and nobody else
+   * was in the call when it connected. Decided once, at connect.
+   */
+  openedCall: boolean;
+  /**
+   * Whether any other user has been in this call at any point. Only ever set,
+   * never cleared: a reconnect that empties the participant list does not
+   * make the call unanswered again. Our own other devices do not count.
+   */
+  remoteEverJoined: boolean;
+  /** Whether the other person declined this call. */
+  declined: boolean;
+  /** `performance.now()` when the call connected. */
+  connectedAt: number | undefined;
+  /** How long the caller waits for an answer, grace included. */
+  ringMs: number;
+  /** The one pending timer, the caller's or the answerer's. */
+  timer: ReturnType<typeof setTimeout> | undefined;
+};
+
+/**
+ * How soon a hang-up timer asks again when it fires while the call's Room is
+ * reconnecting. Who is in the call cannot be read then, so nothing is
+ * decided; the question is put off rather than dropped.
+ */
+const CALL_RING_RETRY_MS = 2_000;
+
+/**
+ * One `answerCall` on this device, from the press until it settles. There is
+ * at most one per channel: a second Answer of a ring already being answered
+ * (the popup's Accept and the notification's Answer) is the same Answer. A
+ * Decline of that channel pressed meanwhile is recorded here, so the Answer
+ * sends no join after it, or, when its join has already been sent, our own
+ * leg is hung up.
+ */
+type AnswerAttempt = {
+  channelId: string;
+  /** The user declined this channel's ring while this Answer was running. */
+  declined: boolean;
+  /** The connect generation whose join this Answer sent, once sent. */
+  joinGen: number | undefined;
+};
+
 type State =
   | "READY"
   | "DISCONNECTED"
@@ -746,6 +990,72 @@ class Voice {
   joinPending: Accessor<string | undefined>;
   #setJoinPending: Setter<string | undefined>;
   #joinPendingSeq = 0;
+
+  /**
+   * Whether the call we are in (or joining) was joined by `answerCall`. False
+   * when not in a call. Read by the outgoing-ring decision, which must never
+   * ring out for someone who answered, and by the two hang-up timers.
+   *
+   * Held as the connect generation of that join, so it can only ever speak
+   * for the join that set it: `#connectAttempt` writes it in the same turn
+   * that takes the generation, before anything is sent (our own join can be
+   * echoed back over the websocket before `connect()` returns), and
+   * `disconnect()` clears it.
+   */
+  joinedAsAnswer: Accessor<boolean>;
+  #answerGen: Accessor<number | undefined>;
+  #setAnswerGen: Setter<number | undefined>;
+
+  /**
+   * Set when an Answer found the ring already over, or when the caller had
+   * left by the time our Answer connected. The ring popup shows "Call ended"
+   * with "Call back" for it. It holds the channel so that "Call back" can
+   * start an ordinary call there. Cleared by `dismissCallEndedNotice` and by
+   * the next join.
+   */
+  callEndedNotice: Accessor<{ channel: Channel } | undefined>;
+  #setCallEndedNotice: Setter<{ channel: Channel } | undefined>;
+
+  /**
+   * Set when our own direct-message call was hung up for us, because nobody
+   * answered or because the other person declined. Shown once. Cleared by
+   * `dismissCallerRingNotice` and by the next join.
+   */
+  callerRingNotice: Accessor<
+    { channelId: string; outcome: "no_answer" | "declined" } | undefined
+  >;
+  #setCallerRingNotice: Setter<
+    { channelId: string; outcome: "no_answer" | "declined" } | undefined
+  >;
+
+  /** The ring facts of the current join (see `CallRingWatch`). */
+  #callRing: CallRingWatch | undefined;
+
+  /**
+   * The channel an `answerCall` is running for: set in the same turn as the
+   * press, cleared when that Answer settles, whatever its result (to the
+   * channel of an Answer still running, if any). The ring popup reads it to
+   * hold its timer and its Accept button while a keybind or a notification
+   * Answer is in flight.
+   */
+  answeringChannelId: Accessor<string | undefined>;
+  #setAnsweringChannelId: Setter<string | undefined>;
+  /**
+   * The Answers in flight, by channel (see `AnswerAttempt`), each with the
+   * promise of its result. One per channel, so a Decline of one chat always
+   * finds that chat's Answer, whatever else is being answered.
+   */
+  #answerAttempts = new Map<
+    string,
+    { attempt: AnswerAttempt; result: Promise<AnswerResult> }
+  >();
+
+  /**
+   * The stored Slim view setting. Handed in through `setSlimSetting` by
+   * `VoiceContext`, because the settings store is app state this class
+   * cannot reach. Reads off until then.
+   */
+  #slimSetting: () => boolean = () => false;
 
   /**
    * Terminal `join_call` refusals by channel id (joinRefusalPolicy).
@@ -1046,8 +1356,115 @@ class Voice {
   // undefined on unsupported/web shells (treated as non-enrolled).
   #mlsKeyProvider: MlsKeyProvider | undefined;
   #e2eeWorker: Worker | undefined;
+  /**
+   * The call worker's ack tracker (C7): ONE per Room worker, built in the
+   * same try as the provider, BEFORE it (R17), and fed every message the
+   * worker posts. Undefined whenever `#e2eeWorker` is.
+   */
+  #workerAcks: WorkerAckTracker | undefined;
+  /**
+   * The bound worker's own `enable` replies, by identity: the hold verdict's
+   * `localIdentityEnabled` term (R2, D7.3). ONE ledger per worker (Stage 6
+   * MINOR 1): `#bindE2EEWorker` replaces it with a fresh one, only that
+   * worker's listener writes it, and its unbind closes it. A teardown that
+   * never reached the unbind, or a late message from an old worker, cannot
+   * carry the last call's `local → true` into the next call's hold.
+   * Undefined before the first bind and once its worker's unbind has run. A
+   * teardown that threw before the unbind leaves the old ledger here until
+   * the next `connect()` releases it (`#releaseCallE2EE`), and a bind always
+   * replaces it.
+   */
+  #workerEnabled: WorkerEnableLedger | undefined;
+  /**
+   * Undo `#bindE2EEWorker`: stop the key-freshness tick, detach the ack
+   * listener, THEN reset the tracker (R13c: a message delivered between a
+   * reset and a detach would repopulate a tracker for a dead worker).
+   */
+  #unbindE2EEWorker: (() => void) | undefined;
+  /**
+   * The R1 born-paused hold for THIS Room: set at Room construction on an
+   * iOS E2EE Room only. `publishes` counts the wrapped Sloga-initiated
+   * publishes in flight under it (`#webkitHoldForNewSender`). `born` holds
+   * every local track whose sender was created (`LocalSenderCreated`) and
+   * has not landed in `trackPublications` yet: the review judges those
+   * senders as well, so a sender that exists but is not listed can never be
+   * released by a verdict that did not look at it.
+   *
+   * `sendIntended` (R18a): the hold governs only while this Room's E2EE
+   * send is INTENDED on. It starts true (an E2EE Room's send is meant to be
+   * encrypted from its first frame), goes false when the session flips E2EE
+   * off after consent (`setEncryptionEnabled(false)`, emitted only by a
+   * `local_confirm`), and true again before any re-enable.
+   */
+  #webkitHold:
+    | {
+        room: Room;
+        publishes: number;
+        born: Set<LocalTrack>;
+        sendIntended: boolean;
+        /**
+         * R20: when the overdue clock started (`performance.now()`), or
+         * `undefined` while it is not running. It runs only while the hold
+         * is held on a connected Room AND the worker has acked the local key
+         * for the current index (what is left is only transform / enable
+         * acks, which arrive in milliseconds); every reconnect and every
+         * re-assert restarts it.
+         */
+        heldSince: number | undefined;
+        /** The overdue verdict was reported for the current clock run. */
+        overdueReported: boolean;
+      }
+    | undefined;
+  /**
+   * A `handleSender` failure (D7.2) that arrived BEFORE this call's session
+   * existed (B-m4): the first publish runs inside `connected`, ahead of the
+   * session's construction, and its error used to fall on the floor through
+   * `this.#mlsSession?.`. Buffered here and replayed into the session the
+   * moment it is built; dropped with the call.
+   */
+  #preSessionMediaErrors: Error[] = [];
+  /**
+   * iOS (C-M1): a raw microphone capture track reported a UA `mute` since
+   * the audio session was last (re)started. Only then is an `unmute`, or a
+   * return to the foreground, an interruption ending.
+   */
+  #micInterruptedSinceStart = false;
+  /** The post-resolve key-push backstop for this connect (R12, iOS only). */
+  #keyPushBackstop: KeyPushBackstop | undefined;
+  /**
+   * Gate (d)'s time bound (`WitnessAmberEscalation`): one per call, reset when
+   * a session's witness is armed and at teardown, judged by every chip read
+   * and at least once a second by the witness's own timer.
+   */
+  #witnessAmber = new WitnessAmberEscalation();
   /** Tear down the decode-witness listener + staleness timer (gate d). */
   #decodeWitnessStop: (() => void) | undefined;
+  /**
+   * The iOS call audio session bracket (R5, W3 MUST 2), on EVERY iOS call,
+   * plaintext ones included. Undefined off iOS (Android keeps
+   * VoiceCallService).
+   */
+  #callAudio: CallAudioBracket | undefined = SlogaCallAudioNative
+    ? createCallAudioBracket({
+        start: () => SlogaCallAudioNative.start(),
+        stop: () => SlogaCallAudioNative.stop(),
+        // A fixed failure name, never the native error.
+        onFailure: (failure) =>
+          console.warn("[rtc] call audio session failed:", failure),
+      })
+    : undefined;
+  /**
+   * The ISSUE order of bracket ops. `callEnded` must wait for its Room to
+   * finish disconnecting (tracks stopped), and the next call's `callLive`
+   * can be issued before that settles; chaining both here keeps them in the
+   * order they were issued, so a slow teardown can never stop the NEXT
+   * call's session. Never rejects (the bracket never does).
+   */
+  #callAudioTail: Promise<void> = Promise.resolve();
+  /** Raw mic tracks already watched for an interruption (`#watchMicInterruption`). */
+  #micInterruptionWatched = new WeakSet<MediaStreamTrack>();
+  /** Per local mic track: re-bind the interruption watch after a restart. */
+  #micInterruptionRebind = new WeakMap<LocalTrack, () => void>();
   #setCallDecodeWitness!: Setter<DecodeWitness>;
   /**
    * The shared web-audio context handed to livekit via
@@ -1865,7 +2282,7 @@ class Voice {
    * the gate so a late publication or livekit's unconditional resumes can
    * never bypass it.
    */
-  #publishGate = new Set<PublishGateReason>();
+  #publishGate = new Set<ShellGateReason>();
   /**
    * Serializes gate sweeps and collapses the re-entrant triggers a sweep's own
    * livekit ops produce (`coalescingSweeper` explains why nesting there is a
@@ -2185,6 +2602,33 @@ class Voice {
     const [joinPending, setJoinPending] = createSignal<string>();
     this.joinPending = joinPending;
     this.#setJoinPending = setJoinPending;
+
+    const [answerGen, setAnswerGen] = createSignal<number>();
+    this.#answerGen = answerGen;
+    this.#setAnswerGen = setAnswerGen;
+    // The generation itself is not a signal. Every change to it (a join or a
+    // `disconnect()`) also writes `answerGen`, so readers still re-run.
+    this.joinedAsAnswer = () => {
+      const gen = this.#answerGen();
+      return gen !== undefined && gen === this.#connectGen;
+    };
+
+    const [answeringChannelId, setAnsweringChannelId] = createSignal<string>();
+    this.answeringChannelId = answeringChannelId;
+    this.#setAnsweringChannelId = setAnsweringChannelId;
+
+    const [callEndedNotice, setCallEndedNotice] = createSignal<{
+      channel: Channel;
+    }>();
+    this.callEndedNotice = callEndedNotice;
+    this.#setCallEndedNotice = setCallEndedNotice;
+
+    const [callerRingNotice, setCallerRingNotice] = createSignal<{
+      channelId: string;
+      outcome: "no_answer" | "declined";
+    }>();
+    this.callerRingNotice = callerRingNotice;
+    this.#setCallerRingNotice = setCallerRingNotice;
 
     const [joinRefusals, setJoinRefusals] = createSignal<
       ReadonlyMap<string, JoinRefusalLatch>
@@ -2522,8 +2966,9 @@ class Voice {
       window.addEventListener("beforeunload", () => {
         const room = this.room();
         if (!room) return;
+        let roomGone: Promise<unknown> = Promise.resolve();
         try {
-          room.disconnect();
+          roomGone = room.disconnect();
         } catch {
           /* best-effort */
         }
@@ -2532,7 +2977,21 @@ class Voice {
         } catch {
           /* best-effort */
         }
+        // iOS: release the audio session once the room is down (best-effort;
+        // the page may be gone first).
+        this.#callAudioEnded(roomGone);
       });
+
+      // iOS (W3 MUST 2, C-M1): coming back to the foreground can be the end
+      // of an interruption (a phone call, an alarm) whose raw-mic `unmute`
+      // was missed while hidden. It acts ONLY if a raw mic `mute` was seen
+      // since the session last started (`#callAudioInterruptionEnded`): a
+      // plain return to the foreground never stops the session.
+      if (this.#callAudio)
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState === "visible")
+            this.#callAudioInterruptionEnded();
+        });
 
       // One of `#pttHeld`'s mandatory clears (see the field): a DOM `keyup`
       // only reaches the FOCUSED window, so alt-tabbing while holding the
@@ -3102,6 +3561,16 @@ class Voice {
    * `channel`, only for the reasons `moveBypassesRefusalLatch` allows
    * (a moderator may move someone where they could not join themselves);
    * the latch itself stays.
+   *
+   * `opts.answer` says this join answers a ringing call, so the server
+   * refuses it with `CallEnded` when the ring is already over instead of
+   * starting a new call. Only `answerCall` sets it. It is sent only on a
+   * join the user made that mints its own token: never on an automatic
+   * rejoin and never on an attempt that was handed a token.
+   *
+   * `opts.video` says the caller pressed the video button, so the ring on
+   * the other side can say so. It changes nothing on this side: it never
+   * turns a camera on.
    */
   async connect(
     channel: Channel,
@@ -3110,6 +3579,8 @@ class Voice {
       movePreConnectBudgetMs?: number;
       rejoinAttempt?: boolean;
       moveLatchBypass?: boolean;
+      answer?: boolean;
+      video?: boolean;
     },
   ): Promise<boolean> {
     // A terminal refusal the server already gave for this channel and that
@@ -3188,6 +3659,11 @@ class Voice {
     // re-records it in its own `connected` listener if it reconnects.
     this.#replacedConnNonce = undefined;
     this.#replacedLeftAt = undefined;
+    // A notice about the last call is stale once a new join starts. Below the
+    // refusal latch for the same reason as the nonce clear above: that early
+    // return starts nothing.
+    this.#setCallEndedNotice(undefined);
+    this.#setCallerRingNotice(undefined);
     this.disconnect();
     const pendingToken = ++this.#joinPendingSeq;
     this.#setJoinPending(channel.id);
@@ -3215,6 +3691,8 @@ class Voice {
       movePreConnectBudgetMs?: number;
       rejoinAttempt?: boolean;
       moveLatchBypass?: boolean;
+      answer?: boolean;
+      video?: boolean;
     },
     bypassedRefusal?: JoinRefusalReason,
   ): Promise<boolean> {
@@ -3222,6 +3700,19 @@ class Voice {
     // this, so a stale invocation resuming after an await can detect it lost
     // and bail (gate HIGH — async-registration race).
     const gen = ++this.#connectGen;
+    // Whether this attempt was handed a ready-made token. Taken here, before
+    // the token check further down can drop it: an attempt that started with
+    // one is a server-ordered move even when it ends up minting its own.
+    const hadAuth = auth !== undefined;
+    // Remember, for this generation only, whether this join is an Answer. In
+    // the same turn as the generation above and before anything is awaited or
+    // sent, because our own join can be echoed back over the websocket before
+    // `connect()` returns and the outgoing-ring decision reads this then.
+    this.#setAnswerGen(
+      opts?.answer === true && !opts?.rejoinAttempt && !hadAuth
+        ? gen
+        : undefined,
+    );
 
     // 🔴 A server-ordered move is handed a token that is ALREADY TICKING: the
     // backend mints it with a ten-second TTL and the user is out of the old
@@ -3260,6 +3751,34 @@ class Voice {
      * dropped is still a move, and still enters without the chime.
      */
     const isMove = preConnectDeadlineAt !== undefined;
+
+    // This join's ring facts, for the two hang-up timers (`CallRingWatch`).
+    // New for every attempt, so a decline or an answer seen by an earlier
+    // call can never count for this one. The ring length is read once here
+    // (untracked: a `connect()` started inside an effect must not re-run
+    // when it changes): the server's value when it gave one, plus the grace
+    // an Answer pressed in the ring's last second needs to unlock the phone
+    // and join.
+    const ring: CallRingWatch = {
+      gen,
+      channel,
+      room: undefined,
+      startedByUser:
+        channel.type === "DirectMessage" &&
+        !hadAuth &&
+        !isMove &&
+        opts?.answer !== true &&
+        !opts?.rejoinAttempt,
+      openedCall: false,
+      remoteEverJoined: false,
+      declined: false,
+      connectedAt: undefined,
+      ringMs:
+        untrack(() => ringDurationMs(serverCallRingSecs())) +
+        CALLER_HANGUP_GRACE_MS,
+      timer: undefined,
+    };
+    this.#callRing = ring;
 
     // Pin the saved microphone with an EXACT constraint when it is currently
     // present. `audioCaptureDefaults` hands getUserMedia a bare string, which
@@ -3333,8 +3852,9 @@ class Voice {
     //
     // Fail-CLOSED on a no-key-push shell (slice 6.4 step 7, audit H3/NEW-4):
     // `nativeE2EEAvailable()` is TRUE on a Capacitor shell that does not
-    // RECEIVE `e2ee:call-keys-changed` (Android before 6.7a; iOS, which
-    // answers false on purpose, plan D7), so an E2EE-capable Room there would
+    // RECEIVE `e2ee:call-keys-changed` (Android before 6.7a; an iOS build
+    // without the call surface, or one whose worker probe has not passed —
+    // `iosMediaE2EEReady`, plan D6/D8), so an E2EE-capable Room there would
     // never install a first local key — the pause-publish window would stay
     // open forever and publish plaintext under an "encrypted" Room (invariant
     // 1). `nativeKeyPushAvailable()` (inside `mediaE2EEPlatformSupported()`
@@ -3343,6 +3863,42 @@ class Voice {
     // shell without the key-push channel is built as a non-E2EE shell (the
     // loud non-enrolled path). The bridge is sourced once here and reused
     // below.
+    //
+    // D8: on iOS that answer includes the app-start worker probe. A call
+    // started inside the probe's first few seconds (a cold start into a
+    // call) would read "pending" — an honest "not available on this device"
+    // for a device that can encrypt — so wait for the SAME probe here, before
+    // anything is constructed. Bounded by `WORKER_PROBE_TIMEOUT_MS`, settled
+    // once per app life (every later call skips this), and a "fail" still
+    // reads unsupported: the wait can only turn "pending" into a real answer.
+    //
+    // D14 (B1): the iOS kill switch is read HERE, once per call, from the
+    // server's root route. `client.configuration` is a stub the client never
+    // fills (`Controller.ts`), so reading it made the switch ON forever.
+    // Started before the probe wait so the two overlap; bounded (3 s), never
+    // rejects, and any failure is `undefined`, which reads ON (the build and
+    // device checks still decide whether the call can encrypt). The value is
+    // passed RAW. iOS only: off iOS the switch does not exist and no request
+    // is made.
+    const iosSwitchFetch = IOS_WEBKIT
+      ? fetchIosCallSwitchValue({
+          fetchRoot: () => this.getClient().api.get("/"),
+          setTimeout: (callback: () => void, ms: number) =>
+            setTimeout(callback, ms),
+          clearTimeout: (handle: ReturnType<typeof setTimeout>) =>
+            clearTimeout(handle),
+        })
+      : undefined;
+    if (IOS_WEBKIT && workerProbeResult() === "pending") {
+      await probeE2EEWorker();
+      // Superseded while it ran: nothing constructed yet, just yield.
+      if (gen !== this.#connectGen) return false;
+    }
+    let iosSwitchValue: unknown;
+    if (iosSwitchFetch) {
+      iosSwitchValue = await iosSwitchFetch;
+      if (gen !== this.#connectGen) return false;
+    }
     const bridge = this.getClient()?.e2ee as E2EEBridge | undefined;
     // Wire the "Encrypt my calls" accessor into the bridge (§0.2 #9) so the
     // media-E2EE KeyPackage pre-publish is gated on the local toggle (ME-14).
@@ -3355,17 +3911,26 @@ class Voice {
     // from "encryption is not set up on this desktop": the same red chip,
     // two different remedies (`e2eeDeviceReadiness`).
     const shellSupported =
-      isE2EESupported() &&
-      nativeE2EEAvailable() &&
-      // ONE predicate (plan D7), shared with the bridge's KeyPackage
-      // pre-publish: the shell can receive native call-key pushes AND its
-      // media path is audited. Media E2EE arms on Electron only for an
-      // audited shell build that advertises the nonce-gated capability flag
-      // (EL4 mechanism A); every other slogaShell stays fail-closed even
-      // though insertable streams + the key-push channel both probe TRUE
-      // there (EL1 audit S7, hard exit criterion). iOS reads false: its key
-      // push answers false on purpose (D7 media gate pin).
-      !!bridge?.mediaE2EEPlatformSupported() &&
+      // THE one shell predicate (plan D6, `e2eePlatform.ts`), called with the
+      // same inputs as the prejoin copy (`useCallPrejoinMode.ts`), so the
+      // copy can never disagree with the Room it describes: insertable
+      // streams or script transforms, a native E2EE layer, and the bridge's
+      // `mediaE2EEPlatformSupported()` — the ONE predicate (plan D7) it
+      // shares with its own KeyPackage pre-publish: the shell can receive
+      // native call-key pushes AND its media path is audited. Media E2EE arms
+      // on Electron only for an audited shell build that advertises the
+      // nonce-gated capability flag (EL4 mechanism A); every other slogaShell
+      // stays fail-closed even though insertable streams + the key-push
+      // channel both probe TRUE there (EL1 audit S7, hard exit criterion). On
+      // iOS the key push is `iosMediaE2EEReady`: a build that carries the
+      // call surface (`__slogaIosCaps`), the plugin, `RTCRtpScriptTransform`
+      // and a passed worker probe (D6/D8, W3 MUST 1); any term missing reads
+      // false and the call is honestly unsupported.
+      shellMediaE2EESupported({
+        e2eeSupported: isE2EESupported(),
+        nativeE2EEAvailable: nativeE2EEAvailable(),
+        bridgePlatformSupported: !!bridge?.mediaE2EEPlatformSupported(),
+      }) &&
       // "Encrypt my calls" (§0.2 #9): with it OFF we negotiate plaintext —
       // no session, no E2EE Room — and appear non-enrolled to E2EE peers
       // (their loud downgrade attributes it to us). LOCAL per-device toggle.
@@ -3375,6 +3940,25 @@ class Voice {
       // (media E2EE is mandatory); whoever makes that toggle real must give it
       // its own readiness reason first.
       this.#settings.e2eeCallsEnabled;
+    // The device's key status loads a moment after the app starts. A join
+    // made before that (an Answer from a notification on a phone that was
+    // just unlocked) used to read no status at all, which the readiness
+    // below takes for a device that may be enrolled: the join went out
+    // without this device's identity and the call sat behind the Leave /
+    // Stay banner although the keys were about to load. So wait for the
+    // status first, for a bounded time, asking the bridge once to retry its
+    // startup (a phone answered from its lock screen could not load it while
+    // locked). The wait writes nothing: a status that is still missing
+    // afterwards is read as missing, exactly as before, and the call is held.
+    // It is never taken to mean that encryption is off, which would let the
+    // call go out unencrypted with nothing held. Only
+    // where the status can decide anything: a shell that cannot encrypt
+    // reads `unsupported` whatever the status says.
+    if (shellSupported && bridge && bridge.status.get("state") === undefined) {
+      await this.#waitForKeyStatus(bridge, gen, preConnectBudgetLeft());
+      // Superseded while it waited: nothing constructed yet, just yield.
+      if (gen !== this.#connectGen) return false;
+    }
     // The DEVICE terms. E2EE proven OFF here is the same class as the
     // toggle: no identity, no session, not an E2EE call — a plain voice call
     // the peers attribute to us. Only a PROVEN off counts (`e2eeProvenOff`:
@@ -3401,11 +3985,48 @@ class Voice {
       deviceOwnedElsewhere:
         bridge?.deviceOwnedElsewhere.has("state") === true ||
         bridge?.storeOwnedByAnotherAccount.has("state") === true,
+      // The server's iOS kill switch (plan D14), fetched above at call start
+      // and snapshotted for the life of this call: a config change mid-call
+      // takes effect on the next one. The RAW value: absent or unreachable
+      // reads ON, so only the server's explicit `false` can pause it, and
+      // "off" only ever yields the loud `paused` readiness (non-capable: no
+      // session, no device-qualified identity; red chip and its own banner).
+      // Off iOS the switch always answers "on". It reads no consent: a call
+      // paused by it never reuses an earlier per-channel plaintext choice.
+      // 🔴 R21: a SEPARATE input from `shellSupported`, never folded into it
+      // (`callMediaE2EEOffered` is for the prejoin/Settings copy only):
+      // folded, a paused iPhone would read `unsupported` and be told
+      // "encrypted calls aren't available on this device".
+      pausedByServer:
+        iosCallSwitch({
+          platform: Capacitor.getPlatform(),
+          serverValue: iosSwitchValue,
+        }) === "off",
     });
     const e2eeCapable = callEncryptionCapable(readiness);
+    // Stage 6 MINOR 2: whatever media E2EE a teardown that threw left alive
+    // (session, key pushes, worker, keys) goes now, before anything new is
+    // built, capable call or not.
+    this.#releaseCallE2EE();
     if (e2eeCapable) {
       try {
-        this.#mlsKeyProvider = new MlsKeyProvider();
+        // R17: the worker's ack tracker FIRST, so the provider can be handed
+        // its wait. One per Room worker (R13c), built for every shell: on
+        // Chromium the acks are additive and nothing waits on them (R3);
+        // on iOS the provider claims the local key installed only once the
+        // worker acked it (D2) and the R1 hold reads it.
+        const ackTracker = createWorkerAckTracker({
+          setTimeout: (fn, ms) => setTimeout(fn, ms),
+          clearTimeout: (handle) =>
+            clearTimeout(handle as ReturnType<typeof setTimeout>),
+        });
+        this.#workerAcks = ackTracker;
+        // D2: raw key bytes into the worker on iOS only; Chromium keeps the
+        // `CryptoKey` path (the wait is ignored without `rawKeyBytes`).
+        this.#mlsKeyProvider = new MlsKeyProvider({
+          rawKeyBytes: IOS_WEBKIT,
+          awaitKeyAck: ackTracker.waitKeyAck,
+        });
         // Rotation push to the native Android leg (§5.2): awaited by
         // `applyLocalKey`, so a Remove-driven rotation does not report the
         // local key installed until the phone has taken the new one. The
@@ -3470,8 +4091,19 @@ class Voice {
           }
         };
         this.#e2eeWorker = new E2EEWorker();
+        // The ack listener (and, on iOS, the key-freshness tick) go on the
+        // worker the moment it exists: before the Room is built, so before
+        // livekit can post a single key to it (R17).
+        this.#bindE2EEWorker(this.#e2eeWorker, ackTracker);
       } catch (error) {
+        this.#unbindE2EEWorker?.();
+        this.#unbindE2EEWorker = undefined;
+        this.#workerAcks = undefined;
         this.#e2eeWorker?.terminate();
+        // A-3: zero any raw key bytes (iOS, D2) before the provider is
+        // dropped; nothing else will ever release them. `close`, not
+        // `resetForGroup`: it also refuses an install still importing.
+        this.#mlsKeyProvider?.close();
         this.#mlsKeyProvider = undefined;
         this.#e2eeWorker = undefined;
         // 🔴 Deliberately does NOT drop `e2eeCapable`. It used to, as a
@@ -3716,6 +4348,51 @@ class Voice {
       },
     });
 
+    // R1 / D7: on WebKit a sender with no transform sends PLAINTEXT, so on an
+    // iOS E2EE Room every local publication is born paused under the shell's
+    // own `"webkit-hold"` reason, asserted HERE, at construction and before
+    // connect (no publication exists yet, and `#setRoom` has not run, so the
+    // reason is added directly, as `negotiating` is below), again before the
+    // Sloga-initiated publishes that can be wrapped
+    // (`#webkitHoldForNewSender`), and at the birth of EVERY new sender
+    // (`#webkitHoldAtBirth`, in the `LocalSenderCreated` listener, before
+    // `pauseAtBirth`): the microphone paths, livekit's own reconnect
+    // republish, anything else. The existing machinery does the pausing:
+    // `pauseAtBirth`, the sweeper, the 1->0 resume. It is released only when
+    // `senderHoldVerdict` releases EVERY current local publication and every
+    // born-but-unlisted sender (`#reviewWebkitHold`).
+    // A plaintext Room (unsupported, paused by the server) has no worker and
+    // no transform to wait for, and gets no hold: what it sends is the
+    // plaintext its loud chip already declares.
+    this.#webkitHold =
+      IOS_WEBKIT && e2eeRoom
+        ? {
+            room,
+            publishes: 0,
+            born: new Set<LocalTrack>(),
+            sendIntended: true,
+            heldSince: undefined,
+            overdueReported: false,
+          }
+        : undefined;
+    if (this.#webkitHold) {
+      const born = this.#webkitHold.born;
+      this.#publishGate.add("webkit-hold");
+      room.on(RoomEvent.LocalTrackPublished, (pub) => {
+        // Listed now: the review reads it as a publication from here on.
+        if (isLocalTrack(pub.track)) born.delete(pub.track);
+        this.#reviewWebkitHold(room);
+      });
+    }
+    // iOS: an interruption (a phone call, an alarm) mutes the raw capture
+    // track and deactivates the audio session the plugin still believes is
+    // active; its `unmute` is when the session has to be re-activated.
+    if (this.#callAudio)
+      room.on(RoomEvent.LocalTrackPublished, (pub) => {
+        if (pub.source === Track.Source.Microphone && isLocalTrack(pub.track))
+          this.#watchMicInterruption(pub.track);
+      });
+
     // A Muted event on OUR OWN screenshare video can only be the server: no
     // client path calls mute() on it (the quality dialog and the E2EE
     // publish gate pause upstream, a different event, and a browser capture
@@ -3848,6 +4525,17 @@ class Voice {
         const want = this.#micPipelineWants();
         untrack(() => this.#syncMicPipeline(room, want));
       });
+      // The websocket's view of who joins this call, for the hang-up timers:
+      // once the call has connected, anyone but us in the channel's
+      // participant list means the call was answered. The Room's own
+      // participant events feed the same latch (`#noteCallRingUser`, which
+      // also says why nothing counts before the call has connected).
+      createEffect(() => {
+        const present = [...channel.voiceParticipants.keys()];
+        untrack(() => {
+          for (const userId of present) this.#noteCallRingUser(ring, userId);
+        });
+      });
       return dispose;
     });
 
@@ -3924,6 +4612,10 @@ class Voice {
       // chip `none` with no banner (media-e2ee-reviewer round 4, HIGH).
       this.#setCallParticipantsVersion((v) => v + 1);
       nativeCallServiceStart();
+      // iOS: the call is live, so hold the audio session as a voice call
+      // (every iOS call, plaintext ones too: R5). Only while this Room's
+      // generation owns the call.
+      if (gen === this.#connectGen) this.#callAudioLive();
       // Captions relay through the SERVER, not a LiveKit data channel: the
       // voice token is minted `can_publish_data: false`, so the SFU silently
       // drops anything published and no remote participant ever sees a line.
@@ -4055,6 +4747,10 @@ class Voice {
       // end chime but no start chime.
       this.#seedLiveRemoteShares(room);
       this.sound.playSound("userJoinVoice");
+      // The call is up: decide whether this device opened it, and start the
+      // timer that hangs up a call nobody answered or one the caller had
+      // already left. Only while this Room's generation owns the call.
+      if (gen === this.#connectGen) this.#startCallRing(ring, room);
     });
 
     room.addListener("disconnected", (reason) => {
@@ -4111,6 +4807,13 @@ class Voice {
         // does not run `disconnect()`. Same generation guard: a superseded
         // room's late event must not clear the NEW call's watches.
         this.#clearWatchedShares();
+        // iOS: livekit emits `disconnected` at the END of `handleDisconnect`,
+        // after it unpublished and stopped every local track, so the room is
+        // down and nothing captures: the audio session can go. An auto-rejoin
+        // takes it again at its own `connected`. Generation-guarded like the
+        // disarm above: a superseded room's late event must not stop the
+        // NEW call's session (its own `disconnect()` already queued one).
+        this.#callAudioEnded(Promise.resolve());
       }
       nativeCallServiceStop();
       // Kick / `force_disconnect`: the server will remove the leg anyway
@@ -4148,6 +4851,9 @@ class Voice {
       // The chip's participant/track domain changed (R2-3/FE-8): bump the
       // version so the derived chip re-runs (remoteParticipants is not reactive).
       this.#setCallParticipantsVersion((v) => v + 1);
+      // Somebody else is in the call now, so it was answered (our own other
+      // devices and their screen legs are not somebody else).
+      this.#noteCallRingUser(ring, participantUserId(participant.identity));
     });
 
     room.addListener("participantDisconnected", (participant) => {
@@ -4584,6 +5290,22 @@ class Voice {
         // `unproven` is the report key, not an empty `proven`: `runOne`
         // returns null when the gate empties mid-op, which is not a failure.
         if (this.room() !== room || !isLocalTrack(track)) return;
+        // R18c: a republish lands the SAME track (same `mediaStreamID`) on a
+        // NEW sender, so the previous sender's encode-transform ack must not
+        // count for this one. Withdrawn here, synchronously, for every new
+        // sender. livekit's own E2EEManager listener ran BEFORE this one (it
+        // subscribed at Room construction, `setupE2EE`) and has already
+        // attached the transform (`setupE2EESender` runs synchronously inside
+        // the emit; its `__awaiter` body never yields). That is still safe:
+        // the worker's `slogaTransformAttached` answer is a separate message
+        // event, delivered after this emit returns, so the fresh ack always
+        // lands AFTER this forget. (An older ack already queued from a
+        // previous sender of the same track can still arrive after it; the
+        // tracker documents that limit.)
+        this.#workerAcks?.forgetTrack(track.mediaStreamID);
+        // R1 (iOS E2EE Room): this NEW sender re-asserts the webkit hold,
+        // synchronously, so the op below sees the gate held. No-op elsewhere.
+        this.#webkitHoldAtBirth(room, track);
         const sweep = pauseAtBirth(
           gatedPublicationFromSender({
             source: track.source,
@@ -4686,7 +5408,36 @@ class Voice {
               "E2EE call setup timed out: the native key-change listener did not register",
             ),
           );
+          // R4/R12, iOS only: the push lands BEFORE the call command that
+          // caused it resolves, so a lost one is invisible unless each
+          // epoch-advancing command's outcome is checked against the pushes
+          // seen (`backstopBridge`, at session construction). Android's
+          // push follows the resolve: a backstop there would pull a second
+          // time and move the Add-grace timing. One per connect: a fresh
+          // backstop is this generation's `reset()`.
+          const backstop = keyPushArrivesBeforeResolve(Capacitor.getPlatform())
+            ? createKeyPushBackstop({
+                // The SAME handler a push drives; its promise is returned so
+                // a rejection reaches `onLost`.
+                pull: (groupId, epoch) =>
+                  this.#mlsSession?.onLocalKeysChanged(groupId, epoch),
+                // FATAL (A-M1): this device may still be sending under the
+                // previous epoch's key, and no remote's encrypted echo says
+                // otherwise, so it is a control latch that holds the gate,
+                // never the re-securing debounce a remote status cancels.
+                // Only for THIS connect's backstop.
+                onLost: () => {
+                  if (this.#keyPushBackstop === backstop)
+                    this.#mlsSession?.noteFatalMediaError(
+                      new Error(KEY_PUSH_LOST),
+                    );
+                },
+              })
+            : undefined;
           const registration = bridge.onCallKeysChanged((event) => {
+            // Recorded BEFORE it is routed (R12), so a command resolving
+            // right behind it finds the push already counted.
+            backstop?.notePush(event.group_id, event.epoch);
             void this.#mlsSession?.onLocalKeysChanged(
               event.group_id,
               event.epoch,
@@ -4731,6 +5482,7 @@ class Voice {
             return false;
           }
           this.#unlistenCallKeys = unlisten;
+          this.#keyPushBackstop = backstop;
         }
 
         // LiveKit's observed per-participant encryption status — a REQUIRED
@@ -4759,13 +5511,30 @@ class Voice {
         // never constructed, where the ME-7 no-session policy arm already keeps
         // an E2EE-known call loud (chipState `channelHasOpenGroup` branch).
         room.addListener("encryptionError", (error) => {
-          this.#mlsSession?.noteEncryptionError(error);
+          const session = this.#mlsSession;
+          if (session) {
+            session.noteEncryptionError(error);
+            return;
+          }
+          // B-m4: no session yet. The first publish runs in `connected`,
+          // before the session is built, so a sender livekit could not give
+          // a transform (D7.2) reports here, and used to be dropped. Kept for
+          // THIS Room only and replayed as fatal once the session exists.
+          if (
+            this.room() === room &&
+            error instanceof Error &&
+            error.message.startsWith(HANDLE_SENDER_FAILED)
+          )
+            this.#preSessionMediaErrors.push(error);
         });
         // A full reconnect empties the remote set until the new join
         // response; a heal probe that fired inside that window could not
         // judge, so give it a fresh settle once the Room is back.
         room.addListener("reconnected", () => {
           this.#mlsSession?.noteSfuReconnected();
+          // R20: a reconnect restarts the webkit hold's overdue clock (the
+          // worker re-acks what the reconnect rebuilt).
+          this.#restartWebkitHoldClock(room);
           // And re-assert the gate. NOT because a closed transport reopens —
           // `closed` is terminal in `RTCDtlsTransportState`. The two real
           // cases: a FULL reconnect whose `republishAllTracks` threw (livekit
@@ -4785,6 +5554,19 @@ class Voice {
         // decisive for the room's first joiner — the server pins a channel
         // to the node that opened it.
         const node = await voiceNodeForChannel(this.getClient(), channel);
+        // The user pressed Decline for this ring while this Answer was on
+        // its way here: no join is sent, and the half-built call goes, as
+        // after any other failed attempt. Otherwise the Answer notes that its
+        // join is out, so a Decline from now on hangs up our own leg instead.
+        // Nothing is awaited between this and the join.
+        const ownAnswer = this.#answerAttempts.get(channel.id)?.attempt;
+        if (opts?.answer === true && ownAnswer !== undefined) {
+          if (ownAnswer.declined) {
+            if (gen === this.#connectGen) this.disconnect();
+            return false;
+          }
+          ownAnswer.joinGen = gen;
+        }
         try {
           auth = await channel.joinCall(
             node,
@@ -4799,6 +5581,17 @@ class Voice {
             // move carried there while this session was deaf to the event.
             // `#autoRejoin` ends quietly on that answer.
             opts?.rejoinAttempt,
+            // The ring options. `answer` is worked out here, from this
+            // attempt's own options and nothing remembered: it is sent only
+            // on a join the user made by pressing Answer, never on an
+            // automatic rejoin and never on an attempt that started with a
+            // ready-made token (a move whose token was dropped above lands
+            // here too). `video` only tells the ring on the other side which
+            // button the caller pressed.
+            {
+              answer: opts?.answer === true && !opts?.rejoinAttempt && !hadAuth,
+              video: opts?.video === true,
+            },
           );
         } catch (error) {
           // 🔴 Deliberately NOT recovered here. delta refuses a device-qualified
@@ -5074,8 +5867,25 @@ class Voice {
         // join path it takes, so an abandoned prefetch never cleans up the
         // fallback's group.
         const prefetchAbort = resumePrefetchAbort;
+        // This attempt's backstop (set after the registration's generation
+        // check; no await since): the session talks through the wrapped
+        // view, every other caller keeps the bridge itself.
+        const backstop = this.#keyPushBackstop;
         const session = new MlsCallSession({
-          bridge,
+          // R12 via the pure `backstopBridge` (keyPushBackstop.ts, spec'd
+          // there): every bridge member forwarded to the real instance, the
+          // three epoch-advancing commands checked once they resolve, the
+          // check deferred to a macrotask so the session records first.
+          bridge: backstop
+            ? backstopBridge(bridge, backstop, {
+                defer: (f) => setTimeout(f, 0),
+              })
+            : bridge,
+          // W3 MUST 3 / R14: on iOS nothing can arm the native announce gate
+          // without the native confirm dialog, and its `declined` also covers
+          // a dialog that could not be shown. So no in-app plaintext fallback
+          // there: a refused confirm keeps the gate paused.
+          confirmFallbackAllowed: !IOS_WEBKIT,
           userId: selfUserId,
           deviceId: e2eeDeviceId,
           channelId: channel.id,
@@ -5100,6 +5910,13 @@ class Voice {
         this.#setCallSessionState(session.state());
         this.#armDecodeWitness(session);
         void session.start();
+        // B-m4: a handleSender failure from before this session existed is
+        // a sender with no transform. Replayed as FATAL (control latch, gate
+        // held, no remote evidence clears it), never through the re-securing
+        // debounce. `start()` clears no latch.
+        const early = this.#preSessionMediaErrors;
+        this.#preSessionMediaErrors = [];
+        for (const error of early) session.noteFatalMediaError(error);
       } else if (e2eeCapable) {
         // Capable shell, no session — R2-4, withdrawn 2026-09-06 under the
         // T0d rule: the gate is never released without a DS verdict, and
@@ -5136,6 +5953,13 @@ class Voice {
         // resources (session, native listener, worker — gate MEDIUM), which
         // an inline cleanup here used to do by hand.
         this.disconnect();
+        // The ring this join answered was already over. That is the ring
+        // ending, not a refused call: nothing is latched and nothing is
+        // shown from here, so the same channel can be called back at once.
+        // The teardown above has already run, and the error goes back to
+        // `answerCall`, which shows "Call ended". Only `join_call`'s own
+        // answer is read, as below.
+        if (error === joinCallError && isCallEnded(error)) throw error;
         // The server refused THIS join with an answer a retry cannot change
         // (joinRefusalPolicy): no voice on the channel (a group whose owner
         // has not turned calling on — owner opt-in server-side), no Connect
@@ -5197,6 +6021,10 @@ class Voice {
         connectGenPhase: "pre-bump",
         passes: this.#gateSweeper?.passes() ?? null,
       });
+    // iOS (R18e): what the audio session's release waits for, set where the
+    // Room is (or is already) gone. Left unset, a teardown that threw before
+    // reaching the Room still releases it, after the bound, in the `finally`.
+    let roomGone: Promise<unknown> | undefined;
     try {
       // Doom any in-flight connect() FIRST: every await in connect() re-checks
       // this token and bails with its own room teardown. Without the bump a
@@ -5215,6 +6043,11 @@ class Voice {
       // Whatever attempt was pending is over (doomed by the bump above): the
       // join affordances must come back, even after an attempt that hung.
       this.#setJoinPending();
+      // The call's ring facts end with it: its hang-up timer, whether it
+      // was declined, and whether it was joined as an Answer.
+      clearTimeout(this.#callRing?.timer);
+      this.#callRing = undefined;
+      this.#setAnswerGen(undefined);
       // The caller hanging up before anyone answered must silence the
       // outgoing ring NOW — the VoiceChannelLeave echo also stops it, but
       // that round-trips the websocket (and never arrives if the socket is
@@ -5298,8 +6131,29 @@ class Voice {
       } catch {
         /* see above */
       }
+      this.#witnessAmber.reset();
+      // Before the terminate: the tick stops with its worker (R8), and the
+      // ack listener is detached BEFORE the tracker resets (R13c); a key wait
+      // still pending resolves false.
+      this.#unbindE2EEWorker?.();
+      this.#unbindE2EEWorker = undefined;
+      this.#workerAcks = undefined;
+      this.#keyPushBackstop?.reset();
+      this.#keyPushBackstop = undefined;
+      this.#webkitHold = undefined;
+      this.#preSessionMediaErrors = [];
       this.#e2eeWorker?.terminate();
       this.#e2eeWorker = undefined;
+      // A-3: the provider's replay set holds the call's raw key bytes on iOS
+      // (D2); `close` zeroes them before the provider is dropped, and refuses
+      // an install whose import is still in flight, so none lands after.
+      // Guarded like the unlisten above: a throw here must not skip
+      // `room.disconnect()` below.
+      try {
+        this.#mlsKeyProvider?.close();
+      } catch {
+        /* see above */
+      }
       this.#mlsKeyProvider = undefined;
       this.captions.detach();
       this.annotations.detach();
@@ -5405,6 +6259,10 @@ class Voice {
           this.#setChannel();
           this.#setFocus(undefined);
         });
+        // iOS: no Room is left to wait for (the dropped one already
+        // disconnected, and stopped its tracks, before its `disconnected`
+        // event). A no-op unless the bracket still holds the session.
+        roomGone = Promise.resolve();
         return;
       }
 
@@ -5444,7 +6302,12 @@ class Voice {
       this.#setRecordingError(undefined);
 
       room.removeAllListeners();
-      room.disconnect();
+      // iOS: the audio session is released once this resolves (or at the
+      // R18e bound, in the `finally`, if it never does): livekit
+      // runs `handleDisconnect` (every local track unpublished and stopped)
+      // before its `disconnect()` settles. A stop while WebKit still
+      // captures could take the session away from that capture.
+      roomGone = room.disconnect();
 
       batch(() => {
         this.#setState("READY");
@@ -5491,6 +6354,380 @@ class Voice {
         this.sound.playSound("userLeaveVoice");
     } catch (e) {
       this.onErr(e);
+    } finally {
+      // iOS: on EVERY way out of the teardown, the throw included. Unset
+      // means the Room was never reached; a promise that never settles makes
+      // the release wait out the bound rather than run while it may capture.
+      this.#callAudioEnded(roomGone ?? new Promise<never>(() => undefined));
+    }
+  }
+
+  /**
+   * Wait, for a bounded time, until the bridge has loaded the device's key
+   * status. Resolves when the status is there, when the bound runs out, or
+   * when a newer join or a hang-up has superseded generation `gen`. The
+   * bound is `KEY_STATUS_WAIT_MS`, or what is left of a move's budget when
+   * that is less. It first asks the bridge, once and without awaiting it, to
+   * retry its startup work if the status is still unset
+   * (`retryStartupIfUnset`), then polls within that same bound.
+   *
+   * It returns nothing on purpose. The caller reads the status again itself,
+   * so a wait that timed out or threw leaves the status exactly as it was,
+   * not loaded, and the readiness check holds the call. Nothing here may
+   * stand in a value for a status that did not load.
+   */
+  async #waitForKeyStatus(
+    bridge: E2EEBridge,
+    gen: number,
+    budgetLeftMs: number | undefined,
+  ): Promise<void> {
+    const boundMs =
+      budgetLeftMs === undefined
+        ? KEY_STATUS_WAIT_MS
+        : Math.min(KEY_STATUS_WAIT_MS, budgetLeftMs);
+    const deadline = performance.now() + boundMs;
+    try {
+      // A phone that rang on its lock screen started this page while locked,
+      // when the key store cannot open, and nothing loads the status again
+      // while the socket stays up. Ask the bridge to run its startup once
+      // more (on an Answer this is after the unlock); the loop below watches
+      // for it within the same bound. Not awaited: only the loop decides how
+      // long this is.
+      void bridge.retryStartupIfUnset();
+      while (
+        gen === this.#connectGen &&
+        bridge.status.get("state") === undefined &&
+        performance.now() < deadline
+      ) {
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+    } catch {
+      // The status could not be read. It stays not loaded.
+    }
+  }
+
+  /**
+   * The one Answer path: the in-app popup, the keybind and the Android
+   * notification all end up here. `driveAnswer` owns the order (ask the lock,
+   * decide, unlock, ask and decide again, join, then take the ring down);
+   * this only supplies its six effects.
+   *
+   * This is the only caller that passes `answer: true` to `connect()`. The
+   * ring is taken down only once the join has connected, or once the server
+   * has said the ring was already over.
+   *
+   * While it runs, `answeringChannelId` names the channel, and a Decline of
+   * that channel on this device cancels it (`AnswerAttempt`): pressed before
+   * the join is sent, nothing joins and the result is "failed". A second
+   * Answer of a channel already being answered starts nothing: it gets the
+   * running Answer's result.
+   */
+  answerCall(channel: Channel): Promise<AnswerResult> {
+    const running = this.#answerAttempts.get(channel.id);
+    if (running) return running.result;
+    const attempt: AnswerAttempt = {
+      channelId: channel.id,
+      declined: false,
+      joinGen: undefined,
+    };
+    const result = driveAnswer({
+      isLocked: () => deviceLocked(),
+      decide: (locked) =>
+        answerDecision({
+          channelType: channel.type,
+          serverId: channel.serverId,
+          slim: this.#slimActive(),
+          locked,
+        }),
+      ensureUnlocked: () => ensureDeviceUnlocked(),
+      connect: async () => {
+        // Declined while the phone was being unlocked: `connect()` is not
+        // even started, so the call the user is in now stays up.
+        if (attempt.declined) return false;
+        try {
+          return await this.connect(channel, undefined, { answer: true });
+        } catch (error) {
+          // `driveAnswer` reports every other failure as "failed" and keeps
+          // nothing of it, so it is logged here. A ring that was already
+          // over is not a failure.
+          if (!isCallEnded(error))
+            console.error("[rtc] answering the call failed", error);
+          throw error;
+        }
+      },
+      onEnded: () => this.#setCallEndedNotice({ channel }),
+      dismiss: (reason) => dismissIncomingCall(channel.id, reason),
+    }).finally(() => {
+      if (this.#answerAttempts.get(channel.id)?.attempt !== attempt) return;
+      this.#answerAttempts.delete(channel.id);
+      // Another chat's Answer may still be running: it is named instead.
+      let still: string | undefined;
+      for (const channelId of this.#answerAttempts.keys()) still = channelId;
+      this.#setAnsweringChannelId(still);
+    });
+    this.#answerAttempts.set(channel.id, { attempt, result });
+    this.#setAnsweringChannelId(channel.id);
+    return result;
+  }
+
+  /**
+   * Decline the call ringing in `channel`: take the ring down on this device
+   * and tell the server, which stops our other devices ringing and, in a
+   * direct message, tells the caller. Never throws: the server answers
+   * `NoEffect` when there was nothing left to decline, and that or any other
+   * failure leaves nothing to do here, because the ring is already down.
+   *
+   * An Answer of the same channel still running on this device is the user's
+   * own earlier press, and this press overrides it: it is marked declined, so
+   * it sends no join, and when its join has already gone out our own leg is
+   * hung up with the Hang up button's `this.disconnect()`. Only this method
+   * does that. A decline made by somebody else, or by another of our devices,
+   * reaches `noteCallDeclined` and never cancels an Answer.
+   */
+  async declineCall(channel: Channel): Promise<void> {
+    try {
+      const ownAnswer = this.#answerAttempts.get(channel.id)?.attempt;
+      if (ownAnswer !== undefined) {
+        ownAnswer.declined = true;
+        if (
+          ownAnswer.joinGen !== undefined &&
+          ownAnswer.joinGen === this.#connectGen
+        )
+          this.disconnect();
+      }
+    } catch {
+      /* the ring still comes down and the decline still goes out */
+    }
+    try {
+      // The ringtone belongs to whichever call the popup shows, so it is
+      // stopped only when that is this call, and only while what plays is
+      // that incoming ring (never our own outgoing ring for another chat).
+      if (
+        untrack(incomingCall)?.channel.id === channel.id &&
+        this.sound.ringtoneKind() === "incoming"
+      )
+        this.sound.stopRingtone();
+      dismissIncomingCall(channel.id, "declined");
+    } catch {
+      /* the decline below still goes out */
+    }
+    try {
+      await channel.declineCall();
+    } catch {
+      /* the ring is over, or the request failed: nothing more to do */
+    }
+  }
+
+  /** Take down the "Call ended" notice. */
+  dismissCallEndedNotice(): void {
+    this.#setCallEndedNotice(undefined);
+  }
+
+  /** Take down the "No answer" / "Declined" notice. */
+  dismissCallerRingNotice(): void {
+    this.#setCallerRingNotice(undefined);
+  }
+
+  /**
+   * The other person in a direct message declined the call in `channelId`.
+   * The caller passes only declines made by somebody else, never our own.
+   *
+   * Counted only for the call this device is connected to right now, in that
+   * channel, while its own ring timer is still running: a decline for a call
+   * that somebody has answered, for another channel, or for an earlier call
+   * is dropped. The flag lives on this call's ring facts and goes with them.
+   */
+  noteCallDeclined(channelId: string): void {
+    const ring = this.#callRing;
+    if (!ring || !ring.openedCall || ring.timer === undefined) return;
+    if (ring.channel.id !== channelId) return;
+    if (this.state() !== "CONNECTED" || this.channel()?.id !== channelId)
+      return;
+    ring.declined = true;
+    this.#askCallRing(ring);
+  }
+
+  /**
+   * Give this instance the stored Slim view setting (see `#slimSetting`). A
+   * setter and not a hook for the same reason as `setMemberGate`.
+   */
+  setSlimSetting(setting: () => boolean): void {
+    this.#slimSetting = setting;
+  }
+
+  /**
+   * Whether Slim view is active, for the Answer decision. The same pure rule
+   * and the same facts as `useSlimMode`, read at the moment of the press:
+   * the stored setting, whether this is the Android or iOS app, and whether
+   * the signed-in account is staff (`user.privileged`).
+   */
+  #slimActive(): boolean {
+    return resolveSlim({
+      setting: this.#slimSetting(),
+      nativeShell: Capacitor.isNativePlatform(),
+      // No build ships with Slim view locked on yet, as in `useSlimMode`.
+      locked: false,
+      staff: !!this.getClient()?.user?.privileged,
+      devOverride: slimDevOverride(),
+    });
+  }
+
+  /**
+   * Record that `userId` is or was in the call `ring` belongs to. Anyone but
+   * us answers the call for good: the latch is set and the pending hang-up
+   * timer is cancelled, never to be armed again for this call.
+   *
+   * Nothing counts before the call has connected. While we are still joining
+   * the participant list shows who was there before us, and someone who left
+   * before we arrived has not answered anything: for an Answer that is the
+   * caller who gave up, and counting them would leave us alone in a dead
+   * call. Who is there at connect is read then, by `#startCallRing`.
+   */
+  #noteCallRingUser(ring: CallRingWatch, userId: string): void {
+    if (ring.connectedAt === undefined) return;
+    if (userId === this.getClient()?.user?.id) return;
+    ring.remoteEverJoined = true;
+    clearTimeout(ring.timer);
+    ring.timer = undefined;
+  }
+
+  /**
+   * Read who is in the call right now, from the Room and from the channel's
+   * own participant list, into the latch. The events can miss someone (the
+   * Room reports nobody who was already there when we joined), so this runs
+   * when the call connects and again before every decision.
+   */
+  #sweepCallRing(ring: CallRingWatch, room: Room): void {
+    for (const participant of room.remoteParticipants.values())
+      this.#noteCallRingUser(ring, participantUserId(participant.identity));
+    for (const userId of ring.channel.voiceParticipants.keys())
+      this.#noteCallRingUser(ring, userId);
+  }
+
+  /**
+   * The call connected. Decide, once, whether this device opened it, and
+   * start the timer that fits: the caller's for a direct-message call we
+   * opened, the answerer's for a call we joined by pressing Answer. A call
+   * somebody else is already in gets neither.
+   */
+  #startCallRing(ring: CallRingWatch, room: Room): void {
+    ring.room = room;
+    ring.connectedAt = performance.now();
+    this.#sweepCallRing(ring, room);
+    ring.openedCall = ring.startedByUser && !ring.remoteEverJoined;
+    if (ring.remoteEverJoined) return;
+    if (ring.openedCall) this.#armCallRing(ring, ring.ringMs);
+    else if (this.joinedAsAnswer())
+      this.#armCallRing(ring, ANSWER_ALONE_GRACE_MS);
+  }
+
+  /** (Re)start `ring`'s one timer, to ask again in `delayMs`. */
+  #armCallRing(ring: CallRingWatch, delayMs: number): void {
+    clearTimeout(ring.timer);
+    ring.timer = setTimeout(() => {
+      ring.timer = undefined;
+      this.#askCallRing(ring);
+    }, delayMs);
+  }
+
+  /**
+   * Ask whether the call `ring` belongs to should be hung up, and do it. Run
+   * by the ring timer and by a decline. Everything from the first check to
+   * the hang-up happens in one synchronous turn, so nothing it read can
+   * change before it acts.
+   *
+   * It acts only for the call that is current and connected: the ring facts
+   * must still be this call's, the generation and the Room must match, and
+   * both the state and the Room's own connection must be CONNECTED.
+   * Otherwise it does nothing, with one exception: while that same call's
+   * Room is reconnecting it cannot see who is in the call, so it asks again
+   * in `CALL_RING_RETRY_MS` instead of dropping the question.
+   *
+   * Hanging up is `this.disconnect()` and nothing else, the same call the
+   * Hang up button makes. Then the notice that says why.
+   */
+  #askCallRing(ring: CallRingWatch): void {
+    const room = ring.room;
+    if (
+      this.#callRing === ring &&
+      ring.gen === this.#connectGen &&
+      room !== undefined &&
+      this.room() === room &&
+      (this.state() === "RECONNECTING" ||
+        room.state === ConnectionState.Reconnecting ||
+        room.state === ConnectionState.SignalReconnecting)
+    ) {
+      this.#armCallRing(ring, CALL_RING_RETRY_MS);
+      return;
+    }
+    if (
+      this.#callRing !== ring ||
+      ring.gen !== this.#connectGen ||
+      room === undefined ||
+      room.state !== ConnectionState.Connected ||
+      this.room() !== room ||
+      this.state() !== "CONNECTED"
+    )
+      return;
+    this.#sweepCallRing(ring, room);
+    const elapsedMs =
+      ring.connectedAt === undefined
+        ? 0
+        : Math.max(0, performance.now() - ring.connectedAt);
+
+    if (ring.openedCall) {
+      const outcome = callerRingOutcome({
+        channelType: ring.channel.type,
+        openedCall: ring.openedCall,
+        joinedAsAnswer: this.joinedAsAnswer(),
+        remoteEverJoined: ring.remoteEverJoined,
+        rejoining: this.#rejoinConnectInFlight,
+        elapsedMs,
+        ringMs: ring.ringMs,
+        declined: ring.declined,
+      });
+      switch (outcome) {
+        case "none":
+          return;
+        case "wait":
+          this.#armCallRing(ring, Math.max(0, ring.ringMs - elapsedMs));
+          return;
+        case "hangup_no_answer":
+        case "hangup_declined":
+          this.disconnect();
+          this.#setCallerRingNotice({
+            channelId: ring.channel.id,
+            outcome: outcome === "hangup_declined" ? "declined" : "no_answer",
+          });
+          return;
+        default: {
+          const exhaustive: never = outcome;
+          return exhaustive;
+        }
+      }
+    }
+
+    const outcome = answererAloneOutcome({
+      joinedAsAnswer: this.joinedAsAnswer(),
+      remoteEverJoined: ring.remoteEverJoined,
+      elapsedMs,
+    });
+    switch (outcome) {
+      case "none":
+        return;
+      case "wait":
+        this.#armCallRing(ring, Math.max(0, ANSWER_ALONE_GRACE_MS - elapsedMs));
+        return;
+      case "hangup_ended":
+        this.disconnect();
+        this.#setCallEndedNotice({ channel: ring.channel });
+        return;
+      default: {
+        const exhaustive: never = outcome;
+        return exhaustive;
+      }
     }
   }
 
@@ -6204,6 +7441,12 @@ class Voice {
           this.#setCallEncryptionLatch((prev) =>
             prev?.error === error ? undefined : prev,
           );
+          // B-m1: the latch the amber escalation fed has healed (or the group
+          // was replaced), so the escalation may run again: `rearm` clears
+          // its fired state, and the witness timer's rising-edge reporter
+          // reports a NEW escalation to the session if the amber returns.
+          // Only for the current call's binding.
+          if (gen === this.#connectGen) this.#witnessAmber.rearm();
         }
       },
       // A deferred missing-key verdict is open (or has just closed): the chip
@@ -6242,7 +7485,23 @@ class Voice {
           this.openModal({ type: "error2", error: reason });
         });
       },
-      setEncryptionEnabled: (enabled) => room.setE2EEEnabled(enabled),
+      // livekit's `setE2EEEnabled` IS a republish (`republishAllTracks`):
+      // every local track lands on a NEW sender. R18a, on iOS (a no-op
+      // elsewhere): OFF is the session running plaintext after consent (the
+      // only `set_e2ee(false)` is `local_confirm`'s, emitted before its
+      // resumes), so the hold stops governing and is cleared BEFORE the
+      // republish, and the existing gate reasons decide; ON (`#enable`, a T6
+      // re-upgrade) makes the send intended again and re-asserts the hold
+      // around the republish, released only by the verdict.
+      setEncryptionEnabled: (enabled) => {
+        if (!enabled) {
+          this.#webkitSendIntended(room, false);
+          return room.setE2EEEnabled(false);
+        }
+        this.#webkitSendIntended(room, true);
+        const endHold = this.#webkitHoldForNewSender(room);
+        return room.setE2EEEnabled(true).finally(endHold);
+      },
       // What the SFU has on record for OUR publications — the declaration
       // receivers arm their cryptors from, and the one gate (b) of the chip
       // reads for the local identity. `trackInfo` on a local publication is
@@ -6262,13 +7521,19 @@ class Voice {
       // new publication. Stale-room guarded like the gate itself.
       republishLocalPublications: async (trackSids) => {
         if (this.room() !== room) return;
-        for (const sid of trackSids) {
-          const pub = room.localParticipant.trackPublications.get(sid);
-          const track = pub?.track;
-          if (!pub || !track) continue;
-          await room.localParticipant.unpublishTrack(track, false);
-          if (this.room() !== room) return;
-          await room.localParticipant.publishTrack(track, pub.options);
+        // A republish is a NEW sender: the R1 hold covers it (iOS).
+        const endHold = this.#webkitHoldForNewSender(room);
+        try {
+          for (const sid of trackSids) {
+            const pub = room.localParticipant.trackPublications.get(sid);
+            const track = pub?.track;
+            if (!pub || !track) continue;
+            await room.localParticipant.unpublishTrack(track, false);
+            if (this.room() !== room) return;
+            await room.localParticipant.publishTrack(track, pub.options);
+          }
+        } finally {
+          endHold();
         }
       },
       pausePublishing: (reason) => this.#pauseGate(room, reason),
@@ -6285,7 +7550,7 @@ class Voice {
    * the gate, so a device switch, unmute-restart, or processor attach can never
    * bypass it while a reason is held.
    */
-  async #pauseGate(room: Room, reason: PublishGateReason): Promise<void> {
+  async #pauseGate(room: Room, reason: ShellGateReason): Promise<void> {
     // Stale-writer guard: a binding built for a PREVIOUS call must not add
     // reasons to the gate it shares with the current one — its session is
     // disposed, so nothing would ever release them and every new publication
@@ -6350,7 +7615,7 @@ class Voice {
       });
   }
 
-  async #resumeGate(room: Room, reason: PublishGateReason): Promise<void> {
+  async #resumeGate(room: Room, reason: ShellGateReason): Promise<void> {
     // [gate-trace] `resumeGate` (see `#gateTrace`): a resume the stale-writer
     // guard below drops is recorded under the SAME `at`, `staleRoom: true`
     // and never `emptied`. Reads only; built only when the instrument is on.
@@ -7329,7 +8594,9 @@ class Voice {
       this.#whisperPriorMic = room.localParticipant.isMicrophoneEnabled;
       if (this.#whisperPriorMic) await this.#setMicEnabled(room, false);
 
-      await this.whisper.start(room, targetUserId);
+      // The whisper track is a NEW sender (R1 hold on iOS).
+      const endHold = this.#webkitHoldForNewSender(room);
+      await this.whisper.start(room, targetUserId).finally(endHold);
 
       // Aborted mid-start (a stop landed during setup) — undo the mute.
       if (!this.whisper.target()) await this.#restoreWhisperMic(room);
@@ -7423,11 +8690,11 @@ class Voice {
 
       if (enabling) {
         const { capture, publish } = this.#cameraCaptureOptions();
-        const pub = await room.localParticipant.setCameraEnabled(
-          true,
-          capture,
-          publish,
-        );
+        // A first camera publish is a NEW sender (R1 hold on iOS).
+        const endHold = this.#webkitHoldForNewSender(room, Track.Source.Camera);
+        const pub = await room.localParticipant
+          .setCameraEnabled(true, capture, publish)
+          .finally(endHold);
         if (pub?.videoTrack) {
           const mode = this.#settings.cameraBackgroundMode ?? "none";
           this.#setCameraBackgroundStatus(
@@ -8539,6 +9806,47 @@ class Voice {
     }
   }
 
+  /**
+   * Flip the local camera to the other side of the phone (`cameraFlip.ts`).
+   * Resolves true only when the camera actually switched.
+   *
+   * Refused while the publish gate holds any reason: the switch restarts the
+   * camera track, and livekit resumes the sender of a restarted track
+   * whatever paused it. The gate is read again at the moment the switch is
+   * made (`stillCurrent`, asked with nothing awaited before the switch), and
+   * if it filled while the switch ran it is put back over the new track once
+   * the switch has settled.
+   *
+   * A failure is shown through the store's own error path. When the camera
+   * that was on before came back, its effects are put back too, since nothing
+   * announces a restart onto the same device.
+   */
+  async flipCamera(): Promise<boolean> {
+    const room = this.room();
+    if (!room || this.state() !== "CONNECTED" || this.#gateHeld()) return false;
+    let result: CameraFlipResult;
+    try {
+      result = await flipRoomCamera(
+        room,
+        () =>
+          this.room() === room &&
+          this.state() === "CONNECTED" &&
+          !this.#gateHeld(),
+      );
+    } finally {
+      if (this.#gateHeld() && this.room() === room)
+        void this.#applyPublishGate(room);
+    }
+    if (result.outcome === "failed") {
+      if (result.restored)
+        void this.reapplyCameraEffects().catch((error) =>
+          console.warn("[rtc] camera effects not restored", error),
+        );
+      this.onErr(result.error);
+    }
+    return result.outcome === "flipped";
+  }
+
   /** Live-update camera brightness. Persists to the store and reapplies. */
   async setCameraBrightness(brightness: number) {
     this.#settings.cameraBrightness = brightness;
@@ -9040,7 +10348,10 @@ class Voice {
         // and the two answers cannot disagree within a share.
         const suppressPickerAudio = winScreenAudioPickerSuppressed();
 
-        const localTrack = await room.localParticipant.setScreenShareEnabled(
+        // A share is always NEW senders (R1 hold on iOS), released (or
+        // reviewed) once the publish settles either way.
+        const endShareHold = this.#webkitHoldForNewSender(room);
+        const sharing = room.localParticipant.setScreenShareEnabled(
           true,
           {
             resolution: initialQuality.resolution,
@@ -9087,6 +10398,7 @@ class Voice {
             degradationPreference: initialQuality.degradationPreference,
           },
         );
+        const localTrack = await sharing.finally(endShareHold);
 
         let screenAudioTrack = room.localParticipant.getTrackPublication(
           Track.Source.ScreenShareAudio,
@@ -11709,6 +13021,9 @@ class Voice {
   #armDecodeWitness(session: MlsCallSession): void {
     this.#disarmDecodeWitness();
     const worker = this.#e2eeWorker;
+    // A new call's witness starts a new amber clock (one escalation per
+    // call), whatever the previous call's left behind.
+    this.#witnessAmber.reset();
     if (!worker) return;
     const listener = createDecodeWitnessListener({
       now: () => performance.now(),
@@ -11716,13 +13031,52 @@ class Voice {
       // Guarded by session identity so a disposed session's queued post can
       // never clobber a newer call's witness.
       isCurrentSession: () => this.#mlsSession === session,
+      // R7, iOS only: a worker gone mid-call (spike S3) stops sending and
+      // decoding SILENTLY, and amber reads as "probably fine". Dead is FATAL
+      // for THIS session (A-M1: a control latch, gate held, healed by no
+      // remote evidence), never another call's. Chromium keeps today's amber
+      // (no hook, unchanged listener).
+      onDead: IOS_WEBKIT
+        ? () => {
+            if (this.#mlsSession === session)
+              session.noteFatalMediaError(new Error(E2EE_WORKER_DEAD));
+          }
+        : undefined,
     });
     const onMessage = (ev: MessageEvent) => listener.onMessage(ev.data);
     worker.addEventListener("message", onMessage);
     const stale = setInterval(() => listener.tick(), listener.checkMs);
+    // Gate (d)'s time bound needs a reading at least once per witness check
+    // interval while the session is live (`WitnessAmberEscalation`): a chip
+    // re-read only when an input changes never reaches it. So the chip is
+    // read on the witness's own interval, and the escalation's rising edge is
+    // reported to THIS session, whose loud MEDIA latch is what actually holds
+    // the publish gate (the escalation itself is a chip rule and holds none).
+    // The chip-only version bump re-derives every reader at once, so the chip
+    // shows the escalation even if the session cannot latch it.
+    let escalated = false;
+    const amber = setInterval(() => {
+      if (this.#mlsSession !== session) return;
+      // R1's bound (A-M1), judged on this same once-a-second timer: a hold
+      // that never releases on a connected Room is a failure, never a
+      // silence. Fatal for THIS session.
+      this.#judgeWebkitHoldOverdue(session);
+      try {
+        this.callEncryptionChip();
+      } catch {
+        /* the chip's own readers surface a derivation throw */
+      }
+      const was = escalated;
+      escalated = this.#witnessAmber.escalated;
+      if (escalated && !was) {
+        this.#setChipPublicationsVersion((v) => v + 1);
+        session.noteWitnessEscalated();
+      }
+    }, listener.checkMs);
     this.#decodeWitnessStop = () => {
       worker.removeEventListener("message", onMessage);
       clearInterval(stale);
+      clearInterval(amber);
       listener.stop();
     };
   }
@@ -11731,6 +13085,357 @@ class Voice {
     const stop = this.#decodeWitnessStop;
     this.#decodeWitnessStop = undefined;
     stop?.();
+  }
+
+  /**
+   * Wire a freshly built call worker: its ack tracker hears every message it
+   * posts (livekit owns `onmessage`, so this is an added listener, R15), the
+   * worker's `enable` replies are recorded for the hold, and every message
+   * re-asks the R1 hold (an ack, an enable reply and the once-a-second
+   * heartbeat are the hold's only inputs that are not a publication change).
+   *
+   * On iOS the key-freshness tick (D9) starts here too and runs for the
+   * WHOLE life of this worker (R8), never per session: a tick stopped while
+   * the worker lives would arm its dead-man switch and mute the caller 8 s
+   * later. Chromium never ticks, so its switch stays unarmed.
+   */
+  #bindE2EEWorker(worker: Worker, tracker: WorkerAckTracker): void {
+    const ledger = createWorkerEnableLedger();
+    this.#workerEnabled = ledger;
+    const onMessage = (ev: MessageEvent) => {
+      tracker.onMessage(ev.data);
+      ledger.record(ev.data);
+      const room = this.room();
+      if (room) this.#reviewWebkitHold(room);
+    };
+    worker.addEventListener("message", onMessage);
+    const stopTick = keyTickEnabled(IOS_WEBKIT)
+      ? startKeyFreshnessTick({
+          post: (message) => worker.postMessage(message),
+          now: () => performance.now(),
+          setInterval: (callback: () => void, ms: number) =>
+            setInterval(callback, ms),
+          clearInterval: (handle: ReturnType<typeof setInterval>) =>
+            clearInterval(handle),
+        })
+      : undefined;
+    this.#unbindE2EEWorker = () => {
+      stopTick?.();
+      worker.removeEventListener("message", onMessage);
+      tracker.reset();
+      ledger.close();
+      if (this.#workerEnabled === ledger) this.#workerEnabled = undefined;
+    };
+  }
+
+  /**
+   * Stage 6 MINOR 2: let go of whatever media E2EE a previous call still
+   * holds, and clear every field that names it. `disconnect()` does this
+   * inside its single try, so a throw earlier in that teardown skipped it: the
+   * next bind overwrote `#unbindE2EEWorker` without running it, the old worker
+   * was never terminated, its key tick kept running (R8), its keys and the
+   * provider's raw key bytes survived (§7.2, A-3), and the old session, still
+   * fed native key pushes, could refill the provider and write its state into
+   * the next call's chip.
+   *
+   * The leftovers are read, then every field is cleared, then they are
+   * released: a session disposing (or a late key push) finds no current
+   * session and no provider to write to. The order and the run-every-step
+   * rule are `releaseCallE2EE`'s (`webkitSenderHold.ts`); a step that threw is
+   * reported, never swallowed.
+   */
+  #releaseCallE2EE(): void {
+    const session = this.#mlsSession;
+    const backstop = this.#keyPushBackstop;
+    const leftovers = {
+      disposeSession: session && (() => session.dispose({ discard: false })),
+      forgetSessionState:
+        session && (() => this.#setCallSessionState(undefined)),
+      unlistenKeys: this.#unlistenCallKeys,
+      disarmWitness: () => this.#disarmDecodeWitness(),
+      resetBackstop: backstop && (() => backstop.reset()),
+      unbind: this.#unbindE2EEWorker,
+      worker: this.#e2eeWorker,
+      provider: this.#mlsKeyProvider,
+    };
+    this.#mlsSession = undefined;
+    this.#unlistenCallKeys = undefined;
+    this.#keyPushBackstop = undefined;
+    this.#webkitHold = undefined;
+    this.#preSessionMediaErrors = [];
+    this.#unbindE2EEWorker = undefined;
+    this.#workerAcks = undefined;
+    this.#workerEnabled = undefined;
+    this.#e2eeWorker = undefined;
+    this.#mlsKeyProvider = undefined;
+    const errors = releaseCallE2EE(leftovers);
+    for (const error of errors) this.onErr(error);
+  }
+
+  /**
+   * Release the R1 `"webkit-hold"` once `senderHoldVerdict` releases EVERY
+   * current local publication: each of its senders' encode transforms acked
+   * (`trackId` = `publication.track.mediaStreamID`, R15), the worker's
+   * `enable` reply for the local identity, and the worker's ack for the
+   * current local send key. A sender created but not yet listed (`born`) is
+   * judged the same way, so its publish landing or failing changes nothing
+   * the verdict relies on. Never while a wrapped Sloga-initiated publish is
+   * in flight, never before the Room is connected (no identity to judge),
+   * never for another call's Room. The assembly and the verdict are the
+   * pure `webkitHoldInputs` / `webkitHoldReleased` (`webkitSenderHold.ts`);
+   * this is only the reads (`#webkitHoldState`) and the gate call.
+   */
+  #reviewWebkitHold(room: Room): void {
+    const hold = this.#webkitHold;
+    const tracker = this.#workerAcks;
+    if (!hold || hold.room !== room || this.room() !== room) return;
+    if (!this.#publishGate.has("webkit-hold") || hold.publishes > 0) return;
+    if (!tracker || room.state !== ConnectionState.Connected) return;
+    const { inputs, endedBorn } = webkitHoldInputs(
+      this.#webkitHoldState(room, hold.born, tracker),
+    );
+    // A stopped born track sends nothing whatever its sender says.
+    for (const track of endedBorn) hold.born.delete(track);
+    if (webkitHoldReleased(inputs)) void this.#resumeGate(room, "webkit-hold");
+  }
+
+  /** The plain data the pure hold assembly reads, off livekit and the worker. */
+  #webkitHoldState(
+    room: Room,
+    born: ReadonlySet<LocalTrack>,
+    tracker: WorkerAckTracker,
+  ): WebkitHoldState<LocalTrack> {
+    return {
+      scriptTransformEngine: IOS_WEBKIT,
+      localIdentity: room.localParticipant.identity,
+      publications: [...room.localParticipant.trackPublications.values()].map(
+        (pub) => (pub.track ? webkitHoldTrack(pub.track) : undefined),
+      ),
+      born: [...born].map(webkitHoldTrack),
+      providerKeys: this.#mlsKeyProvider?.getKeys(),
+      workerEnabled: this.#workerEnabled?.enabled ?? NO_WORKER_ENABLED,
+      attached: tracker.attached,
+      keyAcked: tracker.keyAcked,
+    };
+  }
+
+  /**
+   * R1's bound (A-M1, R20), judged once a second while `session` is live:
+   * a hold still standing `WEBKIT_HOLD_BOUND_MS` after it was left waiting
+   * only on transform / enable acks is a failure. The clock (`heldSince`)
+   * runs only while the hold is held, the Room is connected and the local
+   * key for the current index is acked; any of those failing stops it, and
+   * `#restartWebkitHoldClock` (every reconnect and re-assert) restarts it.
+   * The verdict is `webkitHoldOverdue`; reported ONCE per clock run, to the
+   * session's FATAL path (control latch: the gate stays held, and no remote
+   * evidence clears it). Nothing here releases the hold.
+   */
+  #judgeWebkitHoldOverdue(session: MlsCallSession): void {
+    const room = this.room();
+    const hold = this.#webkitHold;
+    const tracker = this.#workerAcks;
+    if (!room || !hold || hold.room !== room || !tracker) return;
+    const connected = room.state === ConnectionState.Connected;
+    const key = webkitHoldInputs(
+      this.#webkitHoldState(room, hold.born, tracker),
+    ).inputs[0]?.localKey;
+    const keyAcked =
+      key !== undefined && tracker.keyAcked(key.identity, key.keyIndex);
+    // NEW-1: a wrapped publish in flight stops the clock like a reconnect.
+    // `#webkitHoldForNewSender` asserts the hold BEFORE capture, so a camera
+    // permission prompt or a slow multi-track republish would otherwise run
+    // the bound out on a healthy call. The clock starts once it settles.
+    if (hold.publishes > 0) {
+      hold.heldSince = undefined;
+      hold.overdueReported = false;
+      return;
+    }
+    if (!this.#publishGate.has("webkit-hold") || !connected || !keyAcked) {
+      hold.heldSince = undefined;
+      hold.overdueReported = false;
+      return;
+    }
+    const now = performance.now();
+    hold.heldSince ??= now;
+    if (hold.overdueReported) return;
+    if (
+      webkitHoldOverdue({
+        heldSinceMs: hold.heldSince,
+        nowMs: now,
+        roomConnected: connected,
+      })
+    ) {
+      hold.overdueReported = true;
+      session.noteFatalMediaError(new Error(WEBKIT_HOLD_OVERDUE));
+    }
+  }
+
+  /** R20: a reconnect or a re-assert restarts the hold's overdue clock. */
+  #restartWebkitHoldClock(room: Room): void {
+    const hold = this.#webkitHold;
+    if (!hold || hold.room !== room) return;
+    hold.heldSince = undefined;
+    hold.overdueReported = false;
+  }
+
+  /**
+   * R18a: whether this Room's E2EE send is intended on. OFF (consented
+   * plaintext) clears the hold and its bookkeeping, so the gate's other
+   * reasons govern and nothing waits on a worker `enable` that will never
+   * say yes. ON marks it intended again; the caller then re-asserts the hold
+   * around the re-enabling republish (`#webkitHoldForNewSender`).
+   */
+  #webkitSendIntended(room: Room, intended: boolean): void {
+    const hold = this.#webkitHold;
+    if (!hold || hold.room !== room || this.room() !== room) return;
+    hold.sendIntended = intended;
+    if (intended) return;
+    hold.born.clear();
+    if (this.#publishGate.has("webkit-hold"))
+      void this.#resumeGate(room, "webkit-hold");
+  }
+
+  /**
+   * R1 at sender birth (iOS E2EE Room): called from the `LocalSenderCreated`
+   * listener BEFORE `pauseAtBirth`, so the reason is in the gate (added
+   * synchronously inside `#pauseGate`, before its first await) when the
+   * born-paused op reads it, and this sender is paused like any other under
+   * a held gate. Covers every new sender, whoever asked for it; the sender
+   * stays in `born` until it is listed, and the review judges it there.
+   */
+  #webkitHoldAtBirth(room: Room, track: LocalTrack): void {
+    const hold = this.#webkitHold;
+    if (!hold || hold.room !== room || this.room() !== room) return;
+    // R18a: a consented plaintext send is governed by the other reasons.
+    if (!hold.sendIntended) return;
+    hold.born.add(track);
+    this.#restartWebkitHoldClock(room);
+    if (!this.#publishGate.has("webkit-hold"))
+      void this.#pauseGate(room, "webkit-hold");
+  }
+
+  /**
+   * Re-assert the R1 hold before a Sloga-initiated publish or republish that
+   * makes a NEW sender, and return the call that ends it (once the publish
+   * settled, either way; idempotent). With `source`, a publication that
+   * already exists for it keeps its sender (an unmute), so nothing is held.
+   * A no-op returning a no-op off an iOS E2EE Room. A key rotation does not
+   * come through here (R13b): its safety is the ack-gated install.
+   */
+  #webkitHoldForNewSender(room: Room, source?: Track.Source): () => void {
+    const hold = this.#webkitHold;
+    if (
+      !hold ||
+      hold.room !== room ||
+      this.room() !== room ||
+      !hold.sendIntended
+    )
+      return () => undefined;
+    if (
+      source !== undefined &&
+      room.localParticipant.getTrackPublication(source)?.track
+    )
+      return () => undefined;
+    hold.publishes++;
+    this.#restartWebkitHoldClock(room);
+    // The reason is added synchronously inside `#pauseGate`, before its first
+    // await, so the sender this publish creates is born paused.
+    void this.#pauseGate(room, "webkit-hold");
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      hold.publishes--;
+      this.#reviewWebkitHold(room);
+    };
+  }
+
+  /** iOS: a call went live (R5). Queued in issue order (`#callAudioTail`). */
+  #callAudioLive(): void {
+    const audio = this.#callAudio;
+    if (!audio) return;
+    // A fresh session start: no interruption has been seen against it yet.
+    this.#micInterruptedSinceStart = false;
+    this.#callAudioTail = this.#callAudioTail.then(() => audio.callLive());
+  }
+
+  /**
+   * iOS: a call ended. `roomGone` settles once its Room disconnected and
+   * stopped its tracks; the session is released then (W3 MUST 2), or after
+   * `CALL_AUDIO_TEARDOWN_BOUND_MS` if it never settles (R18e): a disconnect
+   * that hangs must not hold the audio session, and the app with it, alive
+   * in the background for good, nor stall every later call's `callLive`
+   * behind it in the queue.
+   */
+  #callAudioEnded(roomGone: Promise<unknown>): void {
+    const audio = this.#callAudio;
+    if (!audio) return;
+    this.#callAudioTail = this.#callAudioTail
+      .then(() => {
+        let bound: ReturnType<typeof setTimeout> | undefined;
+        return Promise.race([
+          roomGone.then(
+            () => undefined,
+            () => undefined,
+          ),
+          new Promise<void>((resolve) => {
+            bound = setTimeout(resolve, CALL_AUDIO_TEARDOWN_BOUND_MS);
+          }),
+        ]).finally(() => clearTimeout(bound));
+      })
+      .then(() => audio.callEnded());
+  }
+
+  /**
+   * iOS: an interruption ended; re-activate the session (stop, then start)
+   * while live. C-M1: ONLY after a real interruption, i.e. a raw mic `mute`
+   * seen since the session was last (re)started. Anything else (an `unmute`
+   * with no `mute` before it, a return to the foreground on its own) never
+   * stops the session.
+   */
+  #callAudioInterruptionEnded(): void {
+    const audio = this.#callAudio;
+    if (!audio || !this.#micInterruptedSinceStart) return;
+    this.#micInterruptedSinceStart = false;
+    this.#callAudioTail = this.#callAudioTail.then(() =>
+      audio.interruptionEnded(),
+    );
+  }
+
+  /**
+   * iOS: watch the RAW capture track of a local microphone (`mediaStream`,
+   * never `mediaStreamTrack`, which is the processor's output while one is
+   * attached) for an interruption: the UA fires `mute` on it (Sloga's own
+   * mute only disables it and fires nothing), and the `unmute` after such a
+   * `mute` is when the audio session must be re-activated.
+   *
+   * Re-bound whenever the raw track may have been replaced. livekit swaps it
+   * only in `setMediaStreamTrack`, reached from a restart (device switch,
+   * unmute after a stop, the iOS foreground reacquire; `Restarted`) and from
+   * `replaceTrack` (`UpstreamResumed` when upstream was paused; Sloga never
+   * calls it), and every swap ends in an unmute-equivalent resume. The
+   * rebind is idempotent per raw track, so it runs on each of those edges.
+   */
+  #watchMicInterruption(track: LocalTrack): void {
+    let rebind = this.#micInterruptionRebind.get(track);
+    if (!rebind) {
+      rebind = () => {
+        const source = track.mediaStream?.getAudioTracks()[0];
+        if (!source || this.#micInterruptionWatched.has(source)) return;
+        this.#micInterruptionWatched.add(source);
+        source.addEventListener("mute", () => {
+          this.#micInterruptedSinceStart = true;
+        });
+        source.addEventListener("unmute", () =>
+          this.#callAudioInterruptionEnded(),
+        );
+      };
+      this.#micInterruptionRebind.set(track, rebind);
+      track.on(TrackEvent.Restarted, rebind);
+      track.on(TrackEvent.UpstreamResumed, rebind);
+      track.on(TrackEvent.Unmuted, rebind);
+    }
+    rebind();
   }
 
   /**
@@ -11758,11 +13463,15 @@ class Voice {
     //
     // Accessors rather than values so every signal read still happens inside
     // this memo's tracking scope, exactly where it did when this was inline.
-    // 🔴 ONE call, no intermediate value. `chipStateFrom` assembles AND
-    // judges, because a `chipInputsFrom(...)` result held here could be spread
-    // into a literal that overrides any field — which passed every assertion
-    // and every mutation for exactly one commit.
-    return chipStateFrom({
+    // 🔴 No intermediate INPUTS. `chipInputsFrom` assembles straight into
+    // `WitnessAmberEscalation.judge`, which runs `chipState` itself and
+    // applies gate (d)'s time bound, because a `chipInputsFrom(...)` result
+    // held here could be spread into a literal that overrides any field —
+    // which passed every assertion and every mutation for exactly one commit.
+    // Only the accessor bag is named (it is the literal, nothing derived).
+    // Every read is a judged reading (the witness timer adds one a second;
+    // `#armDecodeWitness`).
+    const sources: ChipSources = {
       hasSession: () => !!session,
       // Rejoin plan §4.5: the session state via its SIGNAL (driven by
       // `onStateChange`), so a resecuring/failed flip re-runs this — a bare
@@ -11811,6 +13520,10 @@ class Voice {
             )
           : false,
       decodeWitness: () => this.callDecodeWitness(),
+      // B2: THIS call's readiness snapshot (taken at call start, cleared at
+      // teardown) says the server paused it. Keyed on `paused` alone, so an
+      // unsupported device stays as quiet as it always was.
+      pausedByServer: () => this.callEncryptionReadiness() === "paused",
       observedEncryption: (identity) => this.callEncryption.get(identity),
       // Re-read on every participants-version bump above: a republish
       // registers a new publication, and `trackInfo.encryption` is the
@@ -11846,7 +13559,8 @@ class Voice {
               })),
             }
           : undefined,
-    });
+    };
+    return this.#witnessAmber.judge(chipInputsFrom(sources), performance.now());
   }
 
   /**
@@ -11856,8 +13570,22 @@ class Voice {
    * group / a non-declined dialog failure, the in-app `confirmLocalPlaintext()`
    * — then transitions to a confirmed interlude. `displayNames` labels the
    * natively-selected ids only.
+   *
+   * Refused while the phone's lock screen is up. The lock is asked first, at
+   * the moment of the press, and above the split below, so the press is
+   * refused the same way whether or not the call has a session. A lock state
+   * that cannot be read counts as locked. A refused press changes nothing:
+   * no mode, no resume. The session is read only after the lock has
+   * answered, so it is the session of the call as it is then.
    */
   async confirmCallPlaintext(): Promise<void> {
+    let locked = true;
+    try {
+      locked = (await deviceLocked()) !== false;
+    } catch {
+      /* a lock state that cannot be read counts as locked */
+    }
+    if (locked) return;
     const session = this.#mlsSession;
     if (!session) {
       await this.#confirmNoSessionPlaintext();
@@ -11890,6 +13618,12 @@ class Voice {
    */
   async #confirmNoSessionPlaintext(): Promise<void> {
     const room = this.room();
+    // B-m2 / R19: on iOS an E2EE Room's in-app press can release nothing.
+    // The webkit hold stands (no session will ever enable the send, so its
+    // verdict never releases), and flipping the mode to a confirmed
+    // interlude anyway would show "sending unencrypted" over a paused mic.
+    // No mode change, no resume: the banner keeps its Leave.
+    if (IOS_WEBKIT && this.#webkitHold !== undefined) return;
     if (
       !room ||
       !canConfirmNoSessionPlaintext({
@@ -12634,42 +14368,40 @@ class Voice {
   }
 
   /**
-   * The `accept-call` keybind's target: exactly the `IncomingCallOverlay`
-   * Accept body (stop the ringtone, dismiss the popup, navigate to the
-   * conversation, join), reachable from here because `incomingCall` is a
-   * module-level signal singleton rather than component state.
+   * The `accept-call` keybind's target: the same `answerCall` the
+   * `IncomingCallOverlay` Accept button runs, reachable from here because
+   * `incomingCall` is a module-level signal singleton rather than component
+   * state. The conversation is opened only once the join has connected, so a
+   * press on a locked phone or on a ring that is already over shows nothing
+   * of the chat.
    */
   async #acceptRingingCall(): Promise<void> {
     const call = untrack(incomingCall);
     // Re-read after the guard: `dispatchKeybind` checked a ring existed, and
     // nothing has awaited since, but the ring is the one piece of state a
-    // timeout can clear on its own (`INCOMING_CALL_TIMEOUT_MS`).
+    // timeout can clear on its own (the ring timer).
     if (!call) return;
-    this.sound.stopRingtone();
-    dismissIncomingCall();
+    if ((await this.answerCall(call.channel)) !== "joined") return;
     try {
       this.#navigate?.(call.channel.path);
     } catch {
-      /* no router — join anyway rather than losing the call to a nav error */
+      /* no router: the call is joined either way */
     }
-    await this.connect(call.channel);
   }
 
   /**
-   * The `dismiss-call` keybind's target: silence the ring and take the popup
-   * down.
+   * The `dismiss-call` keybind's target: decline the ringing call, exactly
+   * as the overlay's Decline button does (`declineCall`).
    *
-   * 🔴 This signals NOTHING to the caller. `dismissIncomingCall` is local
-   * only — it clears a module signal, cancels the taskbar attention flash
-   * and cancels the Android notification. There is no REST call and no
-   * websocket event, so the caller keeps ringing until they give up or the
-   * server times the call out. The overlay button labelled "Decline" does
-   * exactly this and no more. 🔴 Any UI for this keybind must therefore call
-   * it "Dismiss"/"Ignore" and never "Decline" or "Reject".
+   * A decline is sent to the server. It stops the ring on this account's
+   * other devices, and in a direct message the caller is told and their call
+   * ends while it is still ringing. In a group nobody else is told: the call
+   * goes on for the others.
    */
   #dismissRingingCall(): void {
-    this.sound.stopRingtone();
-    dismissIncomingCall();
+    const call = untrack(incomingCall);
+    if (!call) return;
+    void this.declineCall(call.channel);
   }
 
   /**
@@ -13023,6 +14755,11 @@ export function VoiceContext(props: {
       (key) => state.layout.getSectionState(key, false),
       LAYOUT_SECTIONS.MATURE,
     ),
+  );
+  // The stored Slim view setting, read inside the closure at the moment an
+  // Answer is pressed, so a change made mid-session counts.
+  voice.setSlimSetting(
+    () => state.settings.getValue("appearance:slim_view") === true,
   );
   // A render effect runs synchronously, here, before any child mounts, so the
   // controller is in place before anything can raise a notice, and it still

@@ -274,10 +274,10 @@ function KeybindRow(props: {
    * compile error here; a `Record` literal cannot be used because `t` must be
    * called inside a component, under the i18n provider.
    *
-   * 🔴 `dismiss-call` is "Dismiss", never "Decline" or "Reject". It sends the
-   * caller nothing at all — it stops the local ringtone and clears the local
-   * toast — and either of those words would promise the person calling was
-   * told something.
+   * `dismiss-call` is "Decline": it runs the store's `declineCall`, the same
+   * decline the ring popup's button sends, so in a one-to-one call the
+   * caller is told. The action id keeps its old name so saved bindings
+   * still apply.
    */
   const label = (action: GlobalKeybindAction): string => {
     switch (action) {
@@ -296,7 +296,7 @@ function KeybindRow(props: {
       case "accept-call":
         return t`Answer incoming call`;
       case "dismiss-call":
-        return t`Dismiss incoming call`;
+        return t`Decline incoming call`;
       case "toggle-window":
         return t`Show and hide Sloga`;
       case "toggle-overlay":
@@ -384,8 +384,8 @@ function KeybindRow(props: {
             <Match when={props.action === "dismiss-call"}>
               <Text class="label">
                 <Trans>
-                  Stops the ringtone and clears the notification on this device.
-                  The person calling is not told anything.
+                  Declines the incoming call. In a one-to-one call, the caller
+                  sees that you declined.
                 </Trans>
               </Text>
             </Match>

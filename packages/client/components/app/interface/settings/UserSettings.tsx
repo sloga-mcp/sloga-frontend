@@ -10,11 +10,14 @@ import {
   useClient,
 } from "@revolt/client";
 import { fetchStreamingFlags } from "@revolt/client/streamConnections";
+import { useSlimMode } from "@revolt/client/useSlimMode";
 import { CONFIGURATION, tauriInvoke } from "@revolt/common";
 import { useUser } from "@revolt/markdown/users";
 import { useModals } from "@revolt/modal";
 import { fetchAllChangelogs } from "@revolt/modal/modals/Changelog";
 import { overlayShellAvailable } from "@revolt/rtc/overlay/shell";
+import { useState } from "@revolt/state";
+import { streamerModeActive } from "@revolt/state/streamer";
 import {
   ColouredText,
   Column,
@@ -27,6 +30,7 @@ import { Symbol } from "@revolt/ui/components/utils/Symbol";
 import MdAccountCircle from "@material-design-icons/svg/outlined/account_circle.svg?component-solid";
 import MdCampaign from "@material-design-icons/svg/outlined/campaign.svg?component-solid";
 import MdGavel from "@material-design-icons/svg/outlined/gavel.svg?component-solid";
+import MdHideImage from "@material-design-icons/svg/outlined/hide_image.svg?component-solid";
 import MdLanguage from "@material-design-icons/svg/outlined/language.svg?component-solid";
 import MdLogout from "@material-design-icons/svg/outlined/logout.svg?component-solid";
 import MdMic from "@material-design-icons/svg/outlined/mic.svg?component-solid";
@@ -174,6 +178,14 @@ const Config: SettingsConfiguration<{ server: Server }> = {
   list(_, onClose) {
     const { pop, openModal } = useModals();
     const client = useClient();
+    const state = useState();
+
+    // Slim view (beta) shows chats only, so some rows below hide while it is
+    // on. Called once here, where the other hooks are: the settings shell
+    // builds this list inside a memo of its own component. Only ever read
+    // inside a `hidden` getter, so the sidebar's <Show> follows the
+    // Appearance toggle while settings is open and the list is not rebuilt.
+    const slim = useSlimMode();
 
     // Which streaming platforms this server can link. Connections is a dead
     // page ("not enabled on this server yet") wherever all are off, so the
@@ -250,6 +262,9 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               id: "referrals",
               icon: <Symbol size={20}>group_add</Symbol>,
               title: <Trans>Referrals</Trans>,
+              get hidden() {
+                return slim();
+              },
             },
             {
               id: "supporter",
@@ -270,7 +285,7 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               icon: <Symbol size={20}>encrypted</Symbol>,
               title: <Trans>Cipher</Trans>,
               get hidden() {
-                return !allowsDonationLinks();
+                return slim() || !allowsDonationLinks();
               },
             },
             {
@@ -282,13 +297,16 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               icon: <Symbol size={20}>toll</Symbol>,
               title: <Trans>Prot</Trans>,
               get hidden() {
-                return !parseProtFeature(
-                  (
-                    client().configuration?.features as
-                      | { prot?: unknown }
-                      | undefined
-                  )?.prot,
-                ).enabled;
+                return (
+                  slim() ||
+                  !parseProtFeature(
+                    (
+                      client().configuration?.features as
+                        | { prot?: unknown }
+                        | undefined
+                    )?.prot,
+                  ).enabled
+                );
               },
             },
             {
@@ -303,7 +321,7 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               // A getter, so the sidebar's <Show> tracks the flag fetch and
               // the row appears once the server says linking is on.
               get hidden() {
-                return connectionsUnavailable();
+                return slim() || connectionsUnavailable();
               },
             },
           ],
@@ -349,6 +367,12 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               id: "streamer",
               icon: <Symbol size={20}>videocam</Symbol>,
               title: <Trans>Streamer Mode</Trans>,
+              // Kept in Slim view while Streamer Mode is on (set by hand or
+              // by a detected streaming app), so there is still a way to its
+              // page to turn it off.
+              get hidden() {
+                return slim() && !streamerModeActive(state.settings);
+              },
             },
           ],
         },
@@ -417,7 +441,9 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               id: "overlay",
               icon: <Symbol size={20}>picture_in_picture</Symbol>,
               title: <Trans>Game Overlay</Trans>,
-              hidden: !overlayShellAvailable(),
+              get hidden() {
+                return slim() || !overlayShellAvailable();
+              },
             },
             // Not hidden on any platform, unlike Overlay above: the in-app
             // binds work everywhere, and the page reports what the native
@@ -426,6 +452,9 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               id: "keybinds",
               icon: <Symbol size={20}>keyboard</Symbol>,
               title: <Trans>Keybinds</Trans>,
+              get hidden() {
+                return slim();
+              },
             },
             {
               id: "language",
@@ -457,6 +486,9 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               id: "bots",
               icon: <MdSmartToy {...iconSize(20)} />,
               title: <Trans>My Bots</Trans>,
+              get hidden() {
+                return slim();
+              },
             },
             // Copy-ID and admin-panel context-menu shortcuts: developer /
             // staff tooling, not app preferences.
@@ -512,6 +544,10 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               id: "feedback",
               icon: <MdRateReview {...iconSize(20)} />,
               title: <Trans>Feedback</Trans>,
+              // The page's one action opens the Lounge server
+              get hidden() {
+                return slim();
+              },
             },
             // Reachable copies of the policies a user accepted at registration.
             // Play expects them findable in-app, not only on the website.
@@ -528,6 +564,14 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               icon: <MdPolicy {...iconSize(20)} />,
               title: <Trans>Privacy Policy</Trans>,
               href: "https://sloga.gg/legal/privacy.html",
+            },
+            {
+              // Take It Down Act requests: how to ask for an intimate image
+              // to be removed, with or without an account
+              id: "take_it_down",
+              icon: <MdHideImage {...iconSize(20)} />,
+              title: <Trans>Remove intimate images</Trans>,
+              href: "https://sloga.gg/legal/take-it-down.html",
             },
           ],
         },

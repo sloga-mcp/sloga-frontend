@@ -13,7 +13,13 @@ import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
 import { allowsDonationLinks, useClient } from "@revolt/client";
+import { useSlimMode } from "@revolt/client/useSlimMode";
 import { useModals } from "@revolt/modal";
+import {
+  type TakedownSummary,
+  queueCounts,
+  tileGivesUp,
+} from "@revolt/modal/modals/takedownQueue";
 import { useState } from "@revolt/state";
 import {
   CategoryButton,
@@ -23,6 +29,7 @@ import {
   slogaBurstKeyframes,
 } from "@revolt/ui";
 
+import MdGppMaybe from "@material-design-icons/svg/filled/gpp_maybe.svg?component-solid";
 import MdHome from "@material-design-icons/svg/filled/home.svg?component-solid";
 import MdReport from "@material-design-icons/svg/filled/report.svg?component-solid";
 import MdTravelExplore from "@material-design-icons/svg/filled/travel_explore.svg?component-solid";
@@ -80,6 +87,14 @@ const O = { cx: 115, cy: 55, ring: 29, core: 10 };
  * closes, so this is just the backstop for items filed by someone else.
  */
 const QUEUE_POLL_INTERVAL = 60_000;
+
+/**
+ * Users the Take It Down list answered `NotPrivileged` (privileged, but not
+ * on the server's reviewer list or without MFA) or 404 (an older server
+ * without the route) for. Their tile stays hidden and the list is not asked
+ * again until the app reloads.
+ */
+const takedownDeniedFor = new Set<string>();
 
 /** Length of one click-burst; long enough to read the spiral, short enough to feel like a flourish. */
 const BURST_DURATION = "2400ms";
@@ -231,6 +246,40 @@ const QueueBadge = styled("div", {
 });
 
 /**
+ * Count badge on the Take It Down tile: open requests. Error-colored only
+ * when one has under 12 hours left or is overdue.
+ */
+const TakedownBadge = styled("div", {
+  base: {
+    minWidth: "20px",
+    height: "20px",
+    padding: "0 6px",
+    flexShrink: 0,
+
+    display: "grid",
+    placeItems: "center",
+
+    borderRadius: "var(--borderRadius-full)",
+
+    fontSize: "12px",
+    fontWeight: 600,
+    lineHeight: 1,
+  },
+  variants: {
+    urgent: {
+      true: {
+        background: "var(--md-sys-color-error)",
+        color: "var(--md-sys-color-on-error)",
+      },
+      false: {
+        background: "var(--md-sys-color-secondary)",
+        color: "var(--md-sys-color-on-secondary)",
+      },
+    },
+  },
+});
+
+/**
  * Base layout of the home page (i.e. the header/background)
  */
 const Base = styled("div", {
@@ -338,14 +387,59 @@ const StaffGrid = styled("div", {
 });
 
 /**
- * Home page: cards the viewer arranges in two columns and switches on and
+ * Slim view: the quiet surface the root shows in place of the hub
+ */
+const slimEmpty = cva({
+  base: {
+    ...main.raw(),
+
+    alignItems: "center",
+    justifyContent: "center",
+
+    textAlign: "center",
+    fontSize: "14px",
+    color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+/**
+ * Root page. Slim view has no Home hub: it shows a plain "Select a chat"
+ * state, and the hub is not created at all, so none of its cards fetch or
+ * poll. Switching Slim view off builds the hub; switching it on disposes of
+ * the hub, which runs its cleanups.
+ */
+export function HomePage() {
+  const slim = useSlimMode();
+
+  return (
+    <Show when={slim()} fallback={<HomeHub />}>
+      <Base>
+        {/* Kept for the sidebar toggle (the drawer's back arrow on a phone),
+            which would otherwise be out of reach with the sidebar closed */}
+        <Header placement="primary">
+          <HeaderIcon>
+            <Symbol>chat</Symbol>
+          </HeaderIcon>
+        </Header>
+        <main class={slimEmpty()}>
+          <span role="status">
+            <Trans>Select a chat</Trans>
+          </span>
+        </main>
+      </Base>
+    </Show>
+  );
+}
+
+/**
+ * Home hub: cards the viewer arranges in two columns and switches on and
  * off (welcome tiles for new accounts, the Cipher banner, this release's
  * highlights, what is happening in voice, unreads, mentions, upcoming events,
  * suggested servers, friends online, Founding Streamers, importing, and the
  * moderation queues for staff). The arrangement is the synced `home-layout`
  * store; each card decides for itself whether it has anything to show.
  */
-export function HomePage() {
+function HomeHub() {
   const { openModal, isOpen } = useModals();
   const { t } = useLingui();
   const client = useClient();
@@ -407,10 +501,64 @@ export function HomePage() {
     },
   );
 
+  /** The Take It Down list answered `NotPrivileged` or 404 for this user */
+  const [takedownDenied, setTakedownDenied] = createSignal(
+    takedownDeniedFor.has(client()!.user?.id ?? ""),
+  );
+
+  /**
+   * Take It Down tile: open requests, and whether one has under 12 hours
+   * left or is overdue. Its own resource on the same cadence as the queues
+   * above. The tile shows only once the list answered; a `NotPrivileged`
+   * answer (privileged, but not a reviewer or no MFA) or a 404 (an older
+   * server) hides it and stops asking for the rest of the session. Any
+   * other failure keeps the last answer.
+   */
+  const [takedown, { refetch: refetchTakedown }] = createResource<
+    ReturnType<typeof queueCounts> | undefined,
+    NonNullable<ReturnType<typeof client>>
+  >(
+    () =>
+      isPrivileged() && staffOn() && !takedownDenied() ? client()! : undefined,
+    async (c, info) => {
+      const api = c.api as unknown as {
+        baseURL: string;
+        auth: Record<string, string>;
+      };
+
+      try {
+        const response = await fetch(api.baseURL + "/admin/takedown/requests", {
+          headers: { ...api.auth },
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          const body: unknown = await response.json().catch(() => undefined);
+          if (tileGivesUp(response.status, body)) {
+            if (c.user?.id) takedownDeniedFor.add(c.user.id);
+            setTakedownDenied(true);
+            return undefined;
+          }
+          return info.value;
+        }
+
+        return queueCounts(
+          (await response.json()) as TakedownSummary[],
+          Date.now(),
+        );
+      } catch {
+        return info.value;
+      }
+    },
+  );
+
   onMount(() => {
     const timer = setInterval(() => {
       // Don't poll a screen nobody is looking at.
-      if (isPrivileged() && staffOn() && !document.hidden) refetchQueues();
+      if (isPrivileged() && staffOn() && !document.hidden) {
+        refetchQueues();
+        if (!takedownDenied()) refetchTakedown();
+      }
     }, QUEUE_POLL_INTERVAL);
 
     onCleanup(() => clearInterval(timer));
@@ -420,8 +568,14 @@ export function HomePage() {
   // the badge right away instead of waiting out the poll.
   let queueModalWasOpen = false;
   createEffect(() => {
-    const open = isOpen("report_queue") || isOpen("discovery_queue");
-    if (queueModalWasOpen && !open) refetchQueues();
+    const open =
+      isOpen("report_queue") ||
+      isOpen("discovery_queue") ||
+      isOpen("takedown_queue");
+    if (queueModalWasOpen && !open) {
+      refetchQueues();
+      if (!takedownDenied()) refetchTakedown();
+    }
     queueModalWasOpen = open;
   });
 
@@ -585,6 +739,43 @@ export function HomePage() {
           >
             <Trans>Report queue</Trans>
           </CategoryButton>
+          <Show when={!takedownDenied() && takedown()}>
+            {(tile) => (
+              <CategoryButton
+                onClick={() =>
+                  openModal({ type: "takedown_queue", client: client()! })
+                }
+                description={
+                  tile().urgent ? (
+                    <Trans>A request is due within 12 hours or overdue.</Trans>
+                  ) : (
+                    <Trans>
+                      Requests to remove intimate images shared without consent.
+                    </Trans>
+                  )
+                }
+                icon={<MdGppMaybe />}
+                action={
+                  <Show when={tile().open}>
+                    {(count) => (
+                      <TakedownBadge
+                        urgent={tile().urgent}
+                        aria-label={
+                          tile().urgent
+                            ? t`${count()} open Take It Down requests, at least one due within 12 hours`
+                            : t`${count()} open Take It Down requests`
+                        }
+                      >
+                        {count()}
+                      </TakedownBadge>
+                    )}
+                  </Show>
+                }
+              >
+                <Trans>Take It Down</Trans>
+              </CategoryButton>
+            )}
+          </Show>
           <CategoryButton
             onClick={() =>
               openModal({ type: "discovery_queue", client: client()! })

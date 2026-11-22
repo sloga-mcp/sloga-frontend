@@ -134,6 +134,14 @@ interface SettingsDefinition {
   "notifications:dm_preview_overrides": Record<string, DmPreviewMode>;
 
   /**
+   * Ring for calls on this device. When off, this device does not ring for
+   * incoming calls; the user's other devices still do. Per-device on purpose
+   * (this store does not sync), so silencing one device never silences
+   * another.
+   */
+  "notifications:ring_calls": boolean;
+
+  /**
    * Selected unicode emoji
    */
   "appearance:unicode_emoji": UnicodeEmojiPacks;
@@ -230,6 +238,13 @@ interface SettingsDefinition {
    * store does not sync): only a desktop shell can honour it.
    */
   "appearance:dm_windows": DmWindowsMode;
+
+  /**
+   * Slim view: a layout that shows chats and calls only. Android and iOS
+   * apps only. Per-device on purpose (this store does not sync), so turning
+   * it on here never changes another device's layout.
+   */
+  "appearance:slim_view": boolean;
 
   /**
    * Indicate new users to Stoat
@@ -386,6 +401,7 @@ const EXPECTED_TYPES: { [K in keyof SettingsDefinition]: ValueType<K> } = {
     }
     return out;
   },
+  "notifications:ring_calls": "boolean",
   "appearance:unicode_emoji": "string",
   "appearance:show_send_button": "boolean",
   "appearance:expand_emoticons": "boolean",
@@ -399,6 +415,7 @@ const EXPECTED_TYPES: { [K in keyof SettingsDefinition]: ValueType<K> } = {
   "appearance:layout_members_side": "string",
   "appearance:name_effects": "boolean",
   "appearance:dm_windows": "string",
+  "appearance:slim_view": "boolean",
   "advanced:copy_id": "boolean",
   "sounds:message_variant": "number",
   "sounds:ringtone_variant": "number",
@@ -447,6 +464,8 @@ const DEFAULT_VALUES: TypeSettings = {
   // has never heard of — which is every existing user, for a new key.
   "notifications:dm_preview": DM_PREVIEW_DEFAULT,
   "notifications:dm_preview_overrides": {},
+  // On, so shipping the switch stops nobody's device from ringing.
+  "notifications:ring_calls": true,
   "appearance:expand_emoticons": true,
   "appearance:show_timestamps": true,
   "appearance:show_usernames": true,
@@ -462,6 +481,8 @@ const DEFAULT_VALUES: TypeSettings = {
   "appearance:name_effects": true,
   // Today's behaviour, so shipping chat windows moves nobody's conversations.
   "appearance:dm_windows": "main",
+  // Off, so shipping Slim view changes nobody's layout.
+  "appearance:slim_view": false,
   "sounds:message_variant": 4,
   "sounds:ringtone_variant": 8,
   "sounds:disconnect_variant": 3,
@@ -514,6 +535,10 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
       // Mirrored in DEFAULT_VALUES — see the note there.
       "notifications:dm_preview": DM_PREVIEW_DEFAULT,
       "notifications:dm_preview_overrides": {},
+      // On: every device rang before the switch existed, and a stored value
+      // that is not a boolean falls back to this. Mirrored in DEFAULT_VALUES;
+      // see the note there.
+      "notifications:ring_calls": true,
       "appearance:unicode_emoji": "fluent-3d",
       "appearance:show_send_button": true,
       // On: the expansion shipped before the toggle did, so off would be a
@@ -537,6 +562,8 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
       "appearance:name_effects": true,
       // Mirrored in DEFAULT_VALUES — see the note there.
       "appearance:dm_windows": "main",
+      // Mirrored in DEFAULT_VALUES — see the note there.
+      "appearance:slim_view": false,
       "advanced:copy_id": false,
       "sounds:message_variant": 4,
       "sounds:ringtone_variant": 8,

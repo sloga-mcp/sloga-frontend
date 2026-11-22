@@ -97,8 +97,16 @@ run() { # run <label> <tail-lines> <cmd...>
 EXPECTED=(
   "components/rtc/mlsAdmitGracePolicy.test.ts 36 0"
   "components/rtc/mlsAdmitPolicy.test.ts 15 0"
-  "components/rtc/mlsCallKeys.test.ts 32 0"
-  "components/rtc/mlsCallModePolicy.test.ts 117 0"
+  # Re-measured (32 -> 45) by iOS call E2EE phase 2 wave 3: the raw key
+  # bytes, the ack-gated local install and its zeroing (L3n).
+  # Re-measured (45 -> 49) by the import-race fix: close() is terminal, so an
+  # install still importing when the call ends lands nothing.
+  "components/rtc/mlsCallKeys.test.ts 57 0"
+  # Re-measured (117 -> 132) by wave J: the witness-only amber escalation,
+  # the join-window ledger and readiness "paused" (WJ1); 132 -> 139 by Stage
+  # 5 fix round F2 (the chip's pausedByServer, M1's unresolved identities,
+  # m1's re-arm).
+  "components/rtc/mlsCallModePolicy.test.ts 139 0"
   "components/rtc/mlsCallSession.drainfail.test.ts 33 0"
   # Out of alphabetical order on purpose: its sorted slot abuts the
   # `mlsRejoinPolicy` row the rejoin-resume branch bumps, and adjacent edits
@@ -124,7 +132,25 @@ EXPECTED=(
   "components/rtc/mlsCallSession.serveguard.test.ts 7 0"
   "components/rtc/mlsCallSession.sibling.test.ts 5 0"
   "components/rtc/mlsCallSession.timeline.test.ts 4 0"
-  "components/rtc/mlsDrainPolicy.test.ts 14 0"
+  # iOS call E2EE phase 2 (wave J + wave 3): the welcome window's drop
+  # count, the iOS confirm with no in-app plaintext fallback (R14), the
+  # LocalKeyAckError route (R17) and the locked store's hold. All four are
+  # matched by the mls*.test.ts glob; first measured at 11, 9, 3 and 5.
+  "components/rtc/mlsCallSession.welcomedrop.test.ts 11 0"
+  "components/rtc/mlsCallSession.iosconfirm.test.ts 9 0"
+  "components/rtc/mlsCallSession.keyack.test.ts 3 0"
+  # A key install that outlives its group (#resetRotationState mid-await):
+  # the session claims nothing for the group that replaced it. First
+  # measured at 8.
+  "components/rtc/mlsCallSession.resetrace.test.ts 8 0"
+  "components/rtc/mlsCallSession.locked.test.ts 5 0"
+  # Fix round F3: noteFatalMediaError, the control-origin latch remote
+  # evidence never heals. First measured at 6; 9 after the re-review's
+  # MAJOR-2 (the fatal latch survives #resetRotationState).
+  "components/rtc/mlsCallSession.fatal.test.ts 9 0"
+  # Re-measured (14 -> 16) by wave 3: a locked-store envelope is held, not
+  # acked and dropped (L3v).
+  "components/rtc/mlsDrainPolicy.test.ts 16 0"
   "components/rtc/mlsJoinRequestPolicy.test.ts 4 0"
   "components/rtc/mlsJoinTimeline.test.ts 10 0"
   # Which refused roster leaves a session may remove or re-pin. First
@@ -147,8 +173,12 @@ EXPECTED=(
   # talk key and the blur release (fix/ptt-followups, after its review).
   "components/rtc/pttMicPolicy.test.ts 41 0"
   "components/rtc/publishKickPolicy.test.ts 4 0"
-  "components/rtc/decodeWitnessListener.test.ts 42 0"
-  "components/rtc/chipInputs.test.ts 50 0"
+  # Re-measured (42 -> 63) by wave 3: the heartbeat's rte and the dead
+  # worker path, onDead (L3j).
+  "components/rtc/decodeWitnessListener.test.ts 63 0"
+  # Re-measured (50 -> 52) by fix round F2: pausedByServer and the present
+  # identities.
+  "components/rtc/chipInputs.test.ts 52 0"
   "components/rtc/screenAudioWire.test.ts 17 0"
   "components/rtc/screenAudioNativeWin.test.ts 51 0"
   "components/rtc/pauseClauseHold.test.ts 7 0"
@@ -178,18 +208,57 @@ EXPECTED=(
   # Where the call card docks (the Android stuck-card fix and its follow-ups):
   # usable rects, the memo comparators, the docking decision, and the source
   # pins over VoiceCallCard.tsx. First measured at 24.
-  "components/ui/components/features/voice/callCard/callCardDock.test.ts 24 0"
+  "components/ui/components/features/voice/callCard/callCardDock.test.ts 25 0"
   # Source pins over the state.tsx wiring of member moves and the chip's
   # publication read (wave 7): no spec can load state.tsx itself. Re-measured
   # (44 -> 48) by slice 4 wave 3a: the leg connect tail now carries `audio`,
   # and the share sheet's audio offer, request and notices are pinned.
-  "components/rtc/stateWiring.test.ts 48 0"
+  # Re-measured (48 -> 65) by iOS call E2EE phase 2 wave 3: the probe, the
+  # kill switch, the webkit hold, the worker binding and tick, the dead
+  # worker, the amber escalation, the backstop and the call audio (L3t).
+  # 65 -> 72 by fix round F7: the fetched switch, the chip's pause, the
+  # overdue hold, the fatal producers, the pre-session replay, the re-arm,
+  # the zeroing and the no-session press; 73 after the re-review's NEW-1 (a
+  # wrapped publish in flight stops the overdue clock). 74 with Stage 6
+  # MINOR 1 (one enable ledger per worker); 75 with MINOR 2 (a call attempt
+  # releases any worker a failed teardown left bound). 82 with the ringing
+  # pins: the key-status wait, where `answer` is worked out and who sets it,
+  # `CallEnded`, the lock check on "Stay unencrypted", the hang-up timers and
+  # the decline. 85 with the ringing fix round: our own Decline cancels our
+  # own pending Answer, the camera flip through the store under the publish
+  # gate, the hang-up timers' re-ask while the Room reconnects and the
+  # server's ring length. 90 with the locked cold start (M2 final audit): the
+  # wait's one unawaited startup retry, the e2ee.ts run record and its catch,
+  # and three behaviour tests running the retry's own members.
+  "components/rtc/stateWiring.test.ts 90 0"
   # The AFK channel and its merge with member moves (FE-2). Before it this
   # gate ran NO AFK spec, and none of the ladder that decides whether a
   # client follows a move. memberGate's opt-in skip is not in its row: see
   # OPT_IN_SKIPS.
   "components/rtc/movePolicy.test.ts 108 0"
   "components/rtc/voiceRejoinPolicy.test.ts 32 0"
+  # Ringing: what Answer may do, when the caller's side rings or hangs up,
+  # that an ended ring never latches a channel, the ring length, the Slim
+  # call screen's visibility, the per-device push preferences and the
+  # contact list the phone keeps for the ring. None ran in any gate before.
+  "components/rtc/answerPolicy.test.ts 26 0"
+  "components/rtc/outgoingRingPolicy.test.ts 37 0"
+  "components/rtc/joinRefusalPolicy.test.ts 18 0"
+  "components/rtc/ringDuration.test.ts 11 0"
+  # The Slim call screen's camera flip (the choice of the next camera) and
+  # the phone's lock-screen reads the Answer path asks.
+  "components/rtc/cameraFlip.test.ts 24 0"
+  "components/rtc/deviceLock.test.ts 27 0"
+  # The server's ring length, read from the root fetch.
+  "components/rtc/serverRingLength.test.ts 17 0"
+  "components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts 27 0"
+  "components/client/pushPolicy.test.ts 29 0"
+  # Every push subscribe goes through one site and carries the preferences.
+  "components/client/pushSubscribeSites.scan.test.ts 7 0"
+  # The Slim view's gates and the call screen's security components. 24 with
+  # the M2 final-audit fix (G23: the cover over a ring the phone opened).
+  "src/interface/slimGates.scan.test.ts 24 0"
+  "components/client/callContacts.test.ts 33 0"
   "components/rtc/moveSurfacePins.test.ts 10 0"
   "components/rtc/idlePolicy.test.ts 54 0"
   "components/rtc/afkPolicy.test.ts 20 0"
@@ -214,6 +283,34 @@ EXPECTED=(
   # Mid-call microphone-mode switch (push to talk -> voice activity left the
   # mic muted for the rest of the call). First measured at 18.
   "components/rtc/micModePolicy.test.ts 18 0"
+  # iOS call E2EE phase 2, wave 3: the new pure modules (the WebKit sender
+  # hold and its worker acks, the worker probe, the key-freshness tick, the
+  # kill switch, the key-push backstop, the iOS call audio bracket), the
+  # livekit patch's hunks, the device readiness's "paused", and the iOS
+  # media-E2EE predicates, call-plane locked mapping and gate pins in
+  # components/client. None of these ran in this gate before; each row is
+  # its first measurement.
+  # webkitSenderHold 39 -> 57 (F4: the hold assembly and overdue clock) and
+  # iosCallSwitch 7 -> 20 (F1: the fetched switch and the offer helper) in
+  # Stage 5 fix round F.
+  # 64 -> 70 with Stage 6 MINOR 2: the release of what a failed teardown
+  # left (order, every step, the Tauri unlisten, the session refill) and the
+  # unwritable no-worker map.
+  "components/rtc/webkitSenderHold.test.ts 70 0"
+  "components/rtc/workerProbe.test.ts 16 0"
+  "components/rtc/keyFreshnessTick.test.ts 10 0"
+  "components/rtc/iosCallSwitch.test.ts 20 0"
+  "components/rtc/keyPushBackstop.test.ts 35 0"
+  "components/rtc/iosCallAudio.test.ts 20 0"
+  "components/rtc/livekitPatchHunks.test.ts 23 0"
+  "components/rtc/e2eeDeviceReadiness.test.ts 13 0"
+  "components/client/e2eePlatform.test.ts 12 0"
+  "components/client/e2eeCallPlaneIos.test.ts 8 0"
+  # 181 -> 218 by fix round F (L3q: the fetched switch, the offer helper,
+  # the prejoin and Settings readers); 218 -> 220 for the Settings card's
+  # behaviour (no Always-on before the switch answers; the paused copy),
+  # which two `settings-*` mutations survived until then.
+  "components/client/e2eeIosGate.test.ts 220 0"
 )
 
 # --- skips -------------------------------------------------------------------
@@ -425,6 +522,18 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   # the member surfaces a move starts from; the idle beacon and AFK policies.
   components/rtc/movePolicy.test.ts
   components/rtc/voiceRejoinPolicy.test.ts
+  components/rtc/answerPolicy.test.ts
+  components/rtc/outgoingRingPolicy.test.ts
+  components/rtc/joinRefusalPolicy.test.ts
+  components/rtc/ringDuration.test.ts
+  components/rtc/cameraFlip.test.ts
+  components/rtc/deviceLock.test.ts
+  components/rtc/serverRingLength.test.ts
+  components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts
+  components/client/pushPolicy.test.ts
+  components/client/pushSubscribeSites.scan.test.ts
+  src/interface/slimGates.scan.test.ts
+  components/client/callContacts.test.ts
   components/rtc/moveSurfacePins.test.ts
   components/rtc/idlePolicy.test.ts
   components/rtc/afkPolicy.test.ts
@@ -444,7 +553,33 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   components/rtc/shareAudioBadge.test.ts
   # NOT matched by any glob: the mid-call microphone-mode switch and its pins
   # over the state.tsx effect that runs it.
-  components/rtc/micModePolicy.test.ts)
+  components/rtc/micModePolicy.test.ts
+  # 🔴 NOT matched by the mls*.test.ts glob: iOS call E2EE phase 2's pure
+  # modules. `mlsCallKeys.test.ts` and `keyFreshnessTick.test.ts` both leave
+  # the worker's side of their contract to `livekitPatchHunks.test.ts`, so
+  # without these literals that half runs nowhere.
+  #
+  # 🔴 livekitPatchHunks.test.ts reads ENVIRONMENT state as well as tree
+  # state: besides the committed patch text it drives the INSTALLED livekit
+  # dist under ../../node_modules. In a worktree whose node_modules resolves
+  # an unpatched livekit-client (a symlink into a shared tree that predates
+  # the patch) its dist half goes red, and that red is TRUE for any build made
+  # from that tree: re-install, do not read past it. Here it runs because no
+  # other spec reaches those hunks; see also scripts/rtc-build-preflight.sh.
+  components/rtc/webkitSenderHold.test.ts
+  components/rtc/workerProbe.test.ts
+  components/rtc/keyFreshnessTick.test.ts
+  components/rtc/iosCallSwitch.test.ts
+  components/rtc/keyPushBackstop.test.ts
+  components/rtc/iosCallAudio.test.ts
+  components/rtc/livekitPatchHunks.test.ts
+  components/rtc/e2eeDeviceReadiness.test.ts
+  # 🔴 Outside components/rtc: the iOS media-E2EE predicates, the call-plane
+  # locked-phone mapping, and the iOS gate pins over e2ee.ts, the prejoin
+  # and the probe.
+  components/client/e2eePlatform.test.ts
+  components/client/e2eeCallPlaneIos.test.ts
+  components/client/e2eeIosGate.test.ts)
 # 🔴 Arguments ADD to that set; they do not replace it. They used to replace
 # it, so the natural invocation for this branch —
 #   rtc-gate.sh components/rtc/mls*.test.ts
@@ -584,6 +719,24 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   # file at a time (measured in FE-2 wave C).
   components/rtc/movePolicy.ts components/rtc/movePolicy.test.ts
   components/rtc/voiceRejoinPolicy.test.ts
+  components/rtc/answerPolicy.ts components/rtc/answerPolicy.test.ts
+  components/rtc/outgoingRingPolicy.ts
+  components/rtc/outgoingRingPolicy.test.ts
+  components/rtc/joinRefusalPolicy.ts
+  components/rtc/joinRefusalPolicy.test.ts
+  components/rtc/incomingCall.ts components/rtc/ringDuration.test.ts
+  # The Slim call screen and the modules it and the Answer path added (FW2).
+  components/rtc/callAudioRoute.ts components/rtc/serverRingLength.ts
+  components/rtc/serverRingLength.test.ts
+  components/rtc/cameraFlip.ts components/rtc/cameraFlip.test.ts
+  components/rtc/deviceLock.ts components/rtc/deviceLock.test.ts
+  components/ui/components/features/voice/slimCall/SlimCallScreen.tsx
+  components/ui/components/features/voice/slimCall/slimCallPolicy.ts
+  components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts
+  components/ui/components/features/voice/slimCall/slimCallView.ts
+  components/client/pushPolicy.ts components/client/pushPolicy.test.ts
+  components/client/pushSubscribeSites.scan.test.ts
+  components/client/callContacts.ts components/client/callContacts.test.ts
   components/rtc/idlePolicy.ts components/rtc/idlePolicy.test.ts
   components/rtc/moveSurfacePins.test.ts
   src/interface/channels/memberGate.ts
@@ -618,7 +771,46 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/modal/types.ts components/common/lib/env.ts
   components/rtc/shareAudioBadge.ts components/rtc/shareAudioBadge.test.ts
   # Mid-call microphone-mode switch: the pure plan and its spec.
-  components/rtc/micModePolicy.ts components/rtc/micModePolicy.test.ts)
+  components/rtc/micModePolicy.ts components/rtc/micModePolicy.test.ts
+  # iOS call E2EE phase 2 (wave 3 + wave J): every new or changed call-plane
+  # .ts file not already enrolled above. Enrolled because each is clean:
+  # `prettier --check` and `eslint --max-warnings 0` both exit 0 on it, one
+  # file at a time (measured in wave 3c, L3u). mlsCallSession.ts, its
+  # harness, mlsCallModePolicy.ts, mlsCallKeys.ts, decodeWitnessListener.ts,
+  # state.tsx, e2ee.ts, the banner and their specs were already enrolled.
+  components/rtc/webkitSenderHold.ts components/rtc/webkitSenderHold.test.ts
+  components/rtc/workerProbe.ts components/rtc/workerProbe.test.ts
+  components/rtc/keyFreshnessTick.ts components/rtc/keyFreshnessTick.test.ts
+  components/rtc/iosCallSwitch.ts components/rtc/iosCallSwitch.test.ts
+  components/rtc/keyPushBackstop.ts components/rtc/keyPushBackstop.test.ts
+  components/rtc/iosCallAudio.ts components/rtc/iosCallAudio.test.ts
+  components/rtc/livekitPatchHunks.test.ts
+  components/rtc/e2eeDeviceReadiness.ts
+  components/rtc/e2eeDeviceReadiness.test.ts
+  components/rtc/mlsDrainPolicy.ts
+  components/rtc/mlsCallSession.welcomedrop.test.ts
+  components/rtc/mlsCallSession.iosconfirm.test.ts
+  components/rtc/mlsCallSession.keyack.test.ts
+  components/rtc/mlsCallSession.resetrace.test.ts
+  components/rtc/mlsCallSession.locked.test.ts
+  components/rtc/mlsCallSession.fatal.test.ts
+  components/client/e2eePlatform.ts components/client/e2eePlatform.test.ts
+  components/client/e2eeCallPlaneIos.ts
+  components/client/e2eeCallPlaneIos.test.ts
+  components/client/e2eeIosGate.test.ts
+  components/ui/components/features/voice/useCallPrejoinMode.ts)
+# 🔴 NOT in FILES: components/rtc/mlsDrainPolicy.test.ts. Wave 3 edits it
+# (L3v), but it fails `prettier --check` at base 7de02a68 (18 prettier/prettier
+# warnings, in lines that wave did not touch), so enrolling it would either
+# turn this gate permanently red or force a whole-file reformat. Its policy,
+# mlsDrainPolicy.ts, is clean and enrolled; tsc still type-checks the spec,
+# and its EXPECTED row above still runs and counts it.
+# 🔴 NOT in FILES: components/app/interface/settings/user/Encryption.tsx. Fix
+# round F6 (L3w) edits it, but eslint reports four solid/components-return-once
+# warnings on it, the same four present at base 7de02a68 in lines that round
+# did not touch. `prettier --check` is clean on it, tsc type-checks it, and
+# e2eeIosGate.test.ts pins its switch reading (and rtc-mutations.py's
+# `settings-*` entries break it).
 # 🔴 NOT in FILES: components/app/interface/settings/channel/Overview.tsx.
 # FE-2 edits it (the AFK channel's check rules), but eslint reports two
 # pre-existing solid/reactivity warnings on it, present before that edit in
@@ -809,10 +1001,24 @@ check_witness_call_site() {
   # 🔴 The composition, not just the call. Asserting `chipInputsFrom({` left
   # the returned object unwatched, and spreading it into a literal that
   # overrode `decodeWitness` and `rosterVerified` passed every assertion here.
-  # `chipStateFrom` assembles and judges in one call, so this one literal
-  # covers both halves and there is no value in `state.tsx` to intercept.
-  require_count "the chip is assembled AND judged by the spec'd module" \
-    'return chipStateFrom({' 1
+  # `chipStateFrom` assembled and judged in one call, so one literal covered
+  # both halves and there was no value in `state.tsx` to intercept.
+  #
+  # Wave J (iOS call E2EE phase 2) put gate (d)'s time bound on top: the chip
+  # is now `WitnessAmberEscalation.judge(chipInputsFrom(sources), now)`, over
+  # an accessor bag NAMED `sources` (the literal, nothing derived). So the
+  # pins are the bag's declaration, the one return that judges it, and ONE
+  # live `chipInputsFrom(` call: a second call elsewhere, or a spread at this
+  # one, is a second chip nobody judged.
+  #
+  # 🔴 NOT closed: `ChipSources` is not readonly, so a property write
+  # (`sources.decodeWitness = …`) between the two pinned lines passes all
+  # three. Same last-mile class as the lying binding above.
+  require_count "the accessor bag is declared once, as a literal" \
+    'const sources: ChipSources = {' 1
+  require_count "the chip is assembled AND judged by the spec'd modules" \
+    'return this.#witnessAmber.judge(chipInputsFrom(sources), performance.now());' 1
+  require_count "nothing else assembles chip inputs" 'chipInputsFrom(' 1
   require 'decodeWitness: () => this.callDecodeWitness(),' \
     "gate (d)'s input is bound to the witness signal, not to a literal"
   require 'const stale = setInterval(() => listener.tick(), listener.checkMs);' \
@@ -899,7 +1105,8 @@ run "prettier --check" 12 "$ROOT/node_modules/.bin/prettier" --check "${FILES[@]
 # `catch (error)` binding in the encrypted-send path, pre-existing at base
 # c219c107 and in no line that wave touched. The call-view suggestions files
 # enrolled in FILES add none: each was measured at `--max-warnings 0`. Nor do
-# the FE-2 files, measured the same way.
+# the FE-2 files, measured the same way, nor the iOS call E2EE phase 2 files
+# (still four at wave 3c: the three above and e2ee.ts's, at moved lines).
 #
 # 🔴 This gate reads eslint's EXIT STATUS and eslint exits 0 on warnings, so
 # this step is WARNING-BLIND by construction. Do not read the count above as

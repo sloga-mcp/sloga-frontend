@@ -224,7 +224,8 @@ function ChatWindowHeader(props: { channel: Channel; windowId: string }) {
         await voice.connect(channel);
         return;
       case "video":
-        if (await voice.connect(channel)) await voice.toggleCamera();
+        if (await voice.connect(channel, undefined, { video: true }))
+          await voice.toggleCamera();
         return;
       case "screenshare":
         if (await voice.connect(channel)) await voice.toggleScreenshare();

@@ -1,6 +1,6 @@
-desktop_sha: aaea5dad6d5843f9db19cccb62453eef3dfd4e84
-desktop_branch: feat/e2ee-add-device
-built_utc: 2026-11-02T17:17:24Z
+desktop_sha: 38426086eff668f4e4155ec79f0fa78085a19c09
+desktop_branch: HEAD
+built_utc: 2026-11-11T18:29:37Z
 rustc: rustc 1.98.1 (48a229cea 2026-09-01)
 rustc_host: aarch64-apple-darwin
 cargo: cargo 1.98.1 (797e8a9bc 2026-08-05)
@@ -9,13 +9,13 @@ xcode: Xcode 26.6 / Build version 17F113
 iphoneos_deployment_target: 15.0
 lto: fat (cargo rustc --crate-type staticlib)
 slice.aarch64-apple-ios.path: AcutestE2ee.xcframework/ios-arm64/libacutest_e2ee_ios.a
-slice.aarch64-apple-ios.sha256: bedb794e840013444b2c6c46e9b4dad6a2353ca3478a86368ef642d6ef378066
-slice.aarch64-apple-ios.bytes: 6655312
+slice.aarch64-apple-ios.sha256: 97af7a09ff06f6899f2fcb3388064b8c114039f646440f055f15a5c34421bc8b
+slice.aarch64-apple-ios.bytes: 8479128
 slice.aarch64-apple-ios-sim.path: AcutestE2ee.xcframework/ios-arm64-simulator/libacutest_e2ee_ios.a
-slice.aarch64-apple-ios-sim.sha256: 396f4b1608bce1439a7cb6ee6a6d68e2d26b4d8c1f54bd653a152ba6635e0214
-slice.aarch64-apple-ios-sim.bytes: 6681152
-bindings.swift.sha256: ea173dcf598d42686aee848b23c4e06b94d4f7b58e36fc64d28a247d0f8ce2f8
-bindings.header.sha256: 0a3ca1df934a8b091fcf21b647fdfbb2992a79fa2773531e759a9826d0982be8
+slice.aarch64-apple-ios-sim.sha256: 9bdcc78061e9251eef5320505a6d26b9ff1c29f3e67dbae6c4b04b45955ddbf1
+slice.aarch64-apple-ios-sim.bytes: 8503144
+bindings.swift.sha256: 481db03d4e66906a2281b7a42b2186de11a3bf6bdaf6ab86e52fe08906d0c12b
+bindings.header.sha256: fc79c213dc557f59c6e323e38d52a9ca6045f0f11af7e5b0eba7e51c5686bc1b
 bindings.modulemap.sha256: 235a03a92c3a35b97da1197a87e91dcdfda1fe34a6c1aee8983443254ecdaa85
 xcframework.info_plist.sha256: d2194137377b02a359ab88bb5a4a2c13ffc4a4b79399592abf8e5beff33bdf6e
 regen_rule: bindings and binary are regenerated together from desktop_sha; never hand-edit
