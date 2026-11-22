@@ -50,6 +50,11 @@
             android:name=".NotificationDismissReceiver"
             android:exported="false" />
 
+        <!-- Fired by the app's own alarm when a ring went unanswered. -->
+        <receiver
+            android:name=".MissedCallAlarmReceiver"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

@@ -8,18 +8,38 @@ export type { DiceRollToast } from "./state";
 
 export {
   INCOMING_CALL_TIMEOUT_MS,
+  RING_FALLBACK_MS,
   dismissIncomingCall,
   incomingCall,
   presentIncomingCall,
+  ringDurationMs,
 } from "./incomingCall";
-export type { IncomingCall } from "./incomingCall";
+export type { IncomingCall, IncomingCallDismissReason } from "./incomingCall";
+
+export { answerDecision, driveAnswer, isCallEnded } from "./answerPolicy";
+export type { AnswerDecision, AnswerResult } from "./answerPolicy";
 
 export {
+  deviceLocked,
+  ensureDeviceUnlocked,
+  lockedFrom,
+  unlockedFrom,
+} from "./deviceLock";
+
+export {
+  ANSWER_ALONE_GRACE_MS,
+  CALLER_HANGUP_GRACE_MS,
+  answererAloneOutcome,
+  callerRingOutcome,
   isRingableChannelType,
   outgoingRingOnVoiceJoin,
   outgoingRingOnVoiceLeave,
 } from "./outgoingRingPolicy";
-export type { OutgoingRingAction } from "./outgoingRingPolicy";
+export type {
+  AnswererAloneOutcome,
+  CallerRingOutcome,
+  OutgoingRingAction,
+} from "./outgoingRingPolicy";
 
 export {
   callModerationActions,

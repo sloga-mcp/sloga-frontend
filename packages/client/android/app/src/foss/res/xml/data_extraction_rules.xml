@@ -15,6 +15,7 @@
         <exclude domain="file" path="e2ee" />
         <exclude domain="root" path="app_webview" />
         <exclude domain="sharedpref" path="sloga_push.xml" />
+        <exclude domain="sharedpref" path="call_contacts.xml" />
         <exclude domain="sharedpref" path="sloga_ipc.xml" />
         <exclude domain="sharedpref" path="unifiedpush.connector.xml" />
         <exclude domain="database" path="unifiedpush-connector" />
@@ -24,6 +25,7 @@
         <exclude domain="file" path="e2ee" />
         <exclude domain="root" path="app_webview" />
         <exclude domain="sharedpref" path="sloga_push.xml" />
+        <exclude domain="sharedpref" path="call_contacts.xml" />
         <exclude domain="sharedpref" path="sloga_ipc.xml" />
         <exclude domain="sharedpref" path="unifiedpush.connector.xml" />
         <exclude domain="database" path="unifiedpush-connector" />

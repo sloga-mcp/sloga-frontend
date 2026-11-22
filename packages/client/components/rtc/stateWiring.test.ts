@@ -25,6 +25,7 @@
 // inside a pinned span does.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
 
 import {
@@ -119,6 +120,8 @@ function connectBody(): string {
         movePreConnectBudgetMs?: number;
         rejoinAttempt?: boolean;
         moveLatchBypass?: boolean;
+        answer?: boolean;
+        video?: boolean;
       },
     ): Promise<boolean> {`,
   );
@@ -135,6 +138,8 @@ function connectAttempt(): string {
         movePreConnectBudgetMs?: number;
         rejoinAttempt?: boolean;
         moveLatchBypass?: boolean;
+        answer?: boolean;
+        video?: boolean;
       },
       bypassedRefusal?: JoinRefusalReason,
     ): Promise<boolean> {`,
@@ -477,11 +482,18 @@ test("source pin (F2): a subscription change and a reconnect both bump the chip'
   assert.equal(countWired(reconnected[0], bump), 1, "its bump");
 });
 
+// Wave 3 (L3t): the derivation now ends in gate (d)'s time bound
+// (`WitnessAmberEscalation.judge`) rather than a bare `chipStateFrom`, so the
+// "deriving" anchor moved from `return chipStateFrom({` to the accessor bag
+// that `chipInputsFrom` reads. Same rule: the version is read first.
 test("source pin (F2): callEncryptionChip() reads the publication version before deriving", () => {
   const chip = bodyAfter(STATE_CODE, `callEncryptionChip(): ChipState {`);
   const [at] = wiredAt(chip, `this.#chipPublicationsVersion();`);
   assert.ok(at !== undefined, "the version read");
-  assert.ok(at < chip.indexOf(codeOf(`return chipStateFrom({`)), "its order");
+  assert.ok(
+    at < chip.indexOf(codeOf(`const sources: ChipSources = {`)),
+    "its order",
+  );
 });
 
 test("source pin: the move event's name is checked against the SDK's events, and its one listener calls the one handler", () => {
@@ -817,10 +829,12 @@ test("source pin (C9): every trackPublished kicks a roster reconcile", () => {
 // resolved stop moves it, so read after one the check could never fire), and
 // the report is chained on THAT stop's promise, after the gate-share toast,
 // so the false "stopped" is never the last word over a live share.
+// (Wave 3, R1: the reason type widened to the shell's `ShellGateReason` so
+// `"webkit-hold"` can be held; only the head changed.)
 test("source pin (C9): #pauseGate samples gateStopNotice before it stops the leg, toasts from it, and reports a gate-share stop that did not take", () => {
   const gate = bodyAfter(
     STATE_CODE,
-    `async #pauseGate(room: Room, reason: PublishGateReason): Promise<void> {`,
+    `async #pauseGate(room: Room, reason: ShellGateReason): Promise<void> {`,
   );
   const sample = `const notice = gateStopNotice({
     startingFor: this.#androidLegStartingFor,
@@ -1634,25 +1648,51 @@ test("source pin (C9): the leg start reads the mode three times, and the tap-tim
 // Since wave 4h the accessor is synchronous and constant for the session; the
 // wiring stays unconditional on purpose all the same. The try that builds it
 // is pinned at both ends (the listener's body is pinned whole above).
+// Wave 3 (L3t, R17): the try now opens with the worker's ack tracker, built
+// BEFORE the provider so the provider can be handed its wait; the provider
+// takes `{ rawKeyBytes: IOS_WEBKIT, awaitKeyAck: ackTracker.waitKeyAck }`
+// (D2), and the worker is bound to the tracker the moment it exists. The
+// rule this pin holds is unchanged: one provider, wired at once, never
+// rebuilt after its listener.
+const ACK_TRACKER_BUILD = `const ackTracker = createWorkerAckTracker({
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (handle) =>
+      clearTimeout(handle as ReturnType<typeof setTimeout>),
+  });
+  this.#workerAcks = ackTracker;`;
+const PROVIDER_BUILD = `this.#mlsKeyProvider = new MlsKeyProvider({
+    rawKeyBytes: IOS_WEBKIT,
+    awaitKeyAck: ackTracker.waitKeyAck,
+  });
+  const provider = this.#mlsKeyProvider;
+  provider.onLocalScreenKey = async (key) => {`;
+
 test("source pin (C9): the call's key provider is built once and wired at once, unconditionally", () => {
-  const wiring = `this.#mlsKeyProvider = new MlsKeyProvider();
-    const provider = this.#mlsKeyProvider;
-    provider.onLocalScreenKey = async (key) => {`;
-  assertWired("the provider and its listener", wiring);
+  const wiring = `${ACK_TRACKER_BUILD} ${PROVIDER_BUILD}`;
+  assertWired("the tracker, the provider and its listener", wiring);
   const tryBody = bodyAfter(STATE_CODE, `if (e2eeCapable) { try {`);
   assert.ok(
     tryBody.startsWith(codeOf(wiring)),
-    "the e2eeCapable try opens with the wiring, at its top level",
+    "the e2eeCapable try opens with the tracker, then the provider wiring, at its top level",
   );
   const listenerEnd = closerOf(tryBody, codeOf(wiring).length - 1);
   assert.equal(
     tryBody.slice(listenerEnd + 1),
-    codeOf(`; this.#e2eeWorker = new E2EEWorker();`).replace(/;$/, ""),
-    "after the listener, only the worker",
+    codeOf(
+      `; this.#e2eeWorker = new E2EEWorker();
+      this.#bindE2EEWorker(this.#e2eeWorker, ackTracker);`,
+    ).replace(/;$/, ""),
+    "after the listener, only the worker and its binding",
   );
   assert.equal(countWired(STATE_CODE, `new MlsKeyProvider(`), 1, "one build");
+  assert.equal(
+    countWired(STATE_CODE, `createWorkerAckTracker(`),
+    1,
+    "one tracker build",
+  );
   // Every write of the field, in file order: the build, then the two
-  // teardowns (the build's own catch and the call's teardown).
+  // teardowns (the build's own catch and the call's teardown), then the
+  // release a new call runs first (Stage 6 MINOR 2).
   assert.deepEqual(
     [
       ...STATE_CODE.matchAll(
@@ -1660,7 +1700,8 @@ test("source pin (C9): the call's key provider is built once and wired at once, 
       ),
     ].map((m) => m[0]),
     [
-      `this.#mlsKeyProvider=newMlsKeyProvider()`,
+      `this.#mlsKeyProvider=newMlsKeyProvider({rawKeyBytes:IOS_WEBKIT,awaitKeyAck:ackTracker.waitKeyAck`,
+      `this.#mlsKeyProvider=undefined`,
       `this.#mlsKeyProvider=undefined`,
       `this.#mlsKeyProvider=undefined`,
     ],
@@ -2054,4 +2095,2133 @@ test("source pin (C9): the leg notice constants hold the plan's copy", () => {
     ],
   ])
     assertWired(what, decl);
+});
+
+// ---- iOS call E2EE phase 2, Wave 3 (L3t): the state.tsx wiring ------------
+//
+// Each pin below holds `state.tsx` to CALLING a pure module the way the
+// rulings say (p2-w3-contracts R1-R17); the decisions live in those modules
+// and their own specs. Every pin fails on the pre-wave state.tsx, which has
+// none of these calls.
+
+/** `#armDecodeWitness`'s body. */
+function armDecodeWitness(): string {
+  return bodyOf(`#armDecodeWitness(session: MlsCallSession): void {`);
+}
+
+/** `disconnect()`'s body. */
+function disconnectBody(): string {
+  return bodyOf(`disconnect(opts?: { discardMls?: boolean }) {`);
+}
+
+test("source pin (W3 platform): ONE iOS constant, from isScriptTransformEngine, at module scope", () => {
+  const decl = `const IOS_WEBKIT = isScriptTransformEngine(Capacitor.getPlatform());`;
+  assertWired("the platform constant", decl);
+  assert.equal(braceDepthAt(STATE_CODE, firstAt("decl", STATE_CODE, decl)), 0);
+  assert.equal(countWired(STATE_CODE, `isScriptTransformEngine(`), 1);
+});
+
+test("source pin (W3 D8): the worker probe runs at module load on iOS, with the shipped worker, and connect waits for it", () => {
+  assertWired(
+    "the probe, over the shipped E2EEWorker",
+    `return runWorkerProbe({
+      makeWorker: () => new E2EEWorker(),
+      setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
+      clearTimeout: (handle: ReturnType<typeof setTimeout>) =>
+        clearTimeout(handle),
+    });`,
+  );
+  const atBoot = `if (IOS_WEBKIT) void probeE2EEWorker();`;
+  assertWired("the app-start probe", atBoot);
+  assert.equal(
+    braceDepthAt(STATE_CODE, firstAt("boot", STATE_CODE, atBoot)),
+    0,
+    "at module scope, not inside a function",
+  );
+  const attempt = connectAttempt();
+  const wait = `if (IOS_WEBKIT && workerProbeResult() === "pending") {
+    await probeE2EEWorker();
+    if (gen !== this.#connectGen) return false;
+  }`;
+  assert.equal(countWired(attempt, wait), 1, "the connect-time wait");
+  const at = (s: string) => firstAt("#connectAttempt", attempt, s);
+  assert.ok(
+    at(wait) <
+      at(`const bridge = this.getClient()?.e2ee as E2EEBridge | undefined;`),
+    "the wait precedes the capability read",
+  );
+  assert.ok(at(wait) < at(`const room = new Room({`), "and the Room");
+});
+
+test("source pin (W3 D6): shellSupported is the one shell predicate, then the toggle", () => {
+  assertWired(
+    "shellSupported",
+    `const shellSupported =
+      shellMediaE2EESupported({
+        e2eeSupported: isE2EESupported(),
+        nativeE2EEAvailable: nativeE2EEAvailable(),
+        bridgePlatformSupported: !!bridge?.mediaE2EEPlatformSupported(),
+      }) &&
+      this.#settings.e2eeCallsEnabled;`,
+  );
+  assert.equal(countWired(STATE_CODE, `shellMediaE2EESupported(`), 1);
+});
+
+// Stage 5 F7 (B1): R9's `client.configuration` read was dead (a stub the
+// client never fills), so the switch read ON forever. These pins replace R9:
+// the value is FETCHED at call start (iOS only, bounded by the module), held
+// raw, and fed to the readiness as its own term (R21).
+test("source pin (W3 D14, B1/R21): the kill switch is fetched at call start on iOS and read raw, beside the shell term", () => {
+  const attempt = connectAttempt();
+  const fetch = `const iosSwitchFetch = IOS_WEBKIT
+    ? fetchIosCallSwitchValue({
+        fetchRoot: () => this.getClient().api.get("/"),
+        setTimeout: (callback: () => void, ms: number) =>
+          setTimeout(callback, ms),
+        clearTimeout: (handle: ReturnType<typeof setTimeout>) =>
+          clearTimeout(handle),
+      })
+    : undefined;`;
+  const await_ = `let iosSwitchValue: unknown;
+    if (iosSwitchFetch) {
+      iosSwitchValue = await iosSwitchFetch;
+      if (gen !== this.#connectGen) return false;
+    }`;
+  assert.equal(countWired(attempt, fetch), 1, "the fetch, iOS only");
+  assert.equal(countWired(attempt, await_), 1, "awaited, generation-checked");
+  const readiness = bodyAfter(
+    attempt,
+    `const readiness = callEncryptionReadiness(`,
+  );
+  assert.equal(
+    countWired(
+      readiness,
+      `pausedByServer:
+        iosCallSwitch({
+          platform: Capacitor.getPlatform(),
+          serverValue: iosSwitchValue,
+        }) === "off",`,
+    ),
+    1,
+    "the raw fetched value, in the one readiness read",
+  );
+  // R21: the readiness gets the SHELL term, never the combined helper.
+  assert.equal(countWired(readiness, `shellSupported,`), 1, "the shell term");
+  assert.equal(countWired(STATE_CODE, `callMediaE2EEOffered(`), 0);
+  const at = (s: string) => firstAt("#connectAttempt", attempt, s);
+  assert.ok(at(fetch) < at(await_) && at(await_) < at(`const readiness =`));
+  // The dead read is gone and nothing coerces the value.
+  assert.equal(countWired(STATE_CODE, `ios_call_e2ee`), 0, "no config read");
+  assert.equal(countWired(STATE_CODE, `iosSwitchValue`), 3, "decl, set, read");
+  assert.equal(countWired(STATE_CODE, `iosCallSwitch(`), 1, "one snapshot");
+});
+
+test("source pin (W3 B2): the chip's pausedByServer is this call's readiness snapshot", () => {
+  const chip = bodyAfter(STATE_CODE, `callEncryptionChip(): ChipState {`);
+  assert.equal(
+    countWired(
+      chip,
+      `pausedByServer: () => this.callEncryptionReadiness() === "paused",`,
+    ),
+    1,
+  );
+});
+
+test("source pin (W3 R14): the session is told iOS has no in-app plaintext fallback", () => {
+  const args = bodyAfter(
+    connectAttempt(),
+    `const session = new MlsCallSession(`,
+  );
+  assert.equal(countWired(args, `confirmFallbackAllowed: !IOS_WEBKIT,`), 1);
+});
+
+test("source pin (W3 R1): the webkit hold is a shell reason, asserted at Room construction on an iOS E2EE Room", () => {
+  assertWired(
+    "the reason type",
+    `type ShellGateReason = PublishGateReason | "webkit-hold";`,
+  );
+  assertWired("the gate set", `#publishGate = new Set<ShellGateReason>();`);
+  const attempt = connectAttempt();
+  const assertAt = `this.#webkitHold =
+      IOS_WEBKIT && e2eeRoom
+        ? {
+            room,
+            publishes: 0,
+            born: new Set<LocalTrack>(),
+            sendIntended: true,
+            heldSince: undefined,
+            overdueReported: false,
+          }
+        : undefined;
+    if (this.#webkitHold) {
+      const born = this.#webkitHold.born;
+      this.#publishGate.add("webkit-hold");`;
+  assert.equal(countWired(attempt, assertAt), 1, "the construction assert");
+  const at = (s: string) => firstAt("#connectAttempt", attempt, s);
+  assert.ok(at(`const room = new Room({`) < at(assertAt), "after the Room");
+  assert.ok(
+    at(assertAt) < at(`await room.connect(auth.url, auth.token, {`),
+    "before connect",
+  );
+  // Two releases, no more: the verdict's (`#reviewWebkitHold`) and the
+  // consented-plaintext edge (`#webkitSendIntended`, R18a).
+  const release = `void this.#resumeGate(room, "webkit-hold");`;
+  assert.equal(countWired(STATE_CODE, release), 2, "two releases");
+  assert.equal(
+    countWired(bodyOf(`#reviewWebkitHold(room: Room): void {`), release),
+    1,
+    "the verdict's",
+  );
+  assert.equal(
+    countWired(
+      bodyOf(`#webkitSendIntended(room: Room, intended: boolean): void {`),
+      release,
+    ),
+    1,
+    "the consent edge's",
+  );
+});
+
+test("source pin (W3 R18a): the hold governs only while E2EE send is intended: cleared on the consented OFF, re-asserted before ON", () => {
+  // Both edges, in the one binding the session flips E2EE through. OFF:
+  // intent cleared BEFORE the republish, which then runs unheld. ON: intent
+  // set, THEN the hold re-asserted around the republish.
+  assertWired(
+    "the flip",
+    `setEncryptionEnabled: (enabled) => {
+      if (!enabled) {
+        this.#webkitSendIntended(room, false);
+        return room.setE2EEEnabled(false);
+      }
+      this.#webkitSendIntended(room, true);
+      const endHold = this.#webkitHoldForNewSender(room);
+      return room.setE2EEEnabled(true).finally(endHold);
+    },`,
+  );
+  assert.equal(
+    countWired(STATE_CODE, `room.setE2EEEnabled(`),
+    2,
+    "no other flip",
+  );
+  assert.equal(
+    bodyOf(`#webkitSendIntended(room: Room, intended: boolean): void {`),
+    codeOf(`const hold = this.#webkitHold;
+      if (!hold || hold.room !== room || this.room() !== room) return;
+      hold.sendIntended = intended;
+      if (intended) return;
+      hold.born.clear();
+      if (this.#publishGate.has("webkit-hold"))
+        void this.#resumeGate(room, "webkit-hold")`),
+  );
+  // While not intended, nothing re-asserts it.
+  assert.equal(
+    countWired(
+      bodyOf(`#webkitHoldAtBirth(room: Room, track: LocalTrack): void {`),
+      `if (!hold.sendIntended) return;`,
+    ),
+    1,
+    "births",
+  );
+  assert.equal(
+    countWired(
+      bodyOf(
+        `#webkitHoldForNewSender(room: Room, source?: Track.Source): () => void {`,
+      ),
+      `if (
+        !hold ||
+        hold.room !== room ||
+        this.room() !== room ||
+        !hold.sendIntended
+      )
+        return () => undefined;`,
+    ),
+    1,
+    "wrapped publishes",
+  );
+});
+
+test("source pin (W3 R18c): every new sender withdraws its track's old transform ack, before the hold and pauseAtBirth", () => {
+  const listener = bodyAfter(
+    connectAttempt(),
+    `room.localParticipant.on(
+      ParticipantEvent.LocalSenderCreated,
+      (sender, track) => {`,
+  );
+  const forget = `this.#workerAcks?.forgetTrack(track.mediaStreamID);`;
+  const at = (s: string) => firstAt("LocalSenderCreated", listener, s);
+  assert.ok(
+    at(`if (this.room() !== room || !isLocalTrack(track)) return;`) <
+      at(forget),
+  );
+  assert.ok(at(forget) < at(`this.#webkitHoldAtBirth(room, track);`));
+  assert.ok(at(forget) < at(`const sweep = pauseAtBirth(`));
+  assert.equal(countWired(STATE_CODE, `.forgetTrack(`), 1);
+});
+
+test("source pin (W3 R1): every new sender re-asserts the hold at its birth, before pauseAtBirth", () => {
+  const listener = bodyAfter(
+    connectAttempt(),
+    `room.localParticipant.on(
+      ParticipantEvent.LocalSenderCreated,
+      (sender, track) => {`,
+  );
+  const birth = `this.#webkitHoldAtBirth(room, track);`;
+  const at = (s: string) => firstAt("LocalSenderCreated", listener, s);
+  assert.ok(
+    at(`if (this.room() !== room || !isLocalTrack(track)) return;`) < at(birth),
+  );
+  assert.ok(at(birth) < at(`const sweep = pauseAtBirth(`), "before the op");
+  assert.equal(
+    bodyOf(`#webkitHoldAtBirth(room: Room, track: LocalTrack): void {`),
+    codeOf(`const hold = this.#webkitHold;
+      if (!hold || hold.room !== room || this.room() !== room) return;
+      if (!hold.sendIntended) return;
+      hold.born.add(track);
+      this.#restartWebkitHoldClock(room);
+      if (!this.#publishGate.has("webkit-hold"))
+        void this.#pauseGate(room, "webkit-hold")`),
+  );
+});
+
+test("source pin (W3 R1): the wrapped Sloga publishes re-assert the hold and end it once settled", () => {
+  // (The E2EE flip's own wrap is pinned with its R18a edges, below.)
+  for (const [what, site] of [
+    [
+      "the declaration republish",
+      `const endHold = this.#webkitHoldForNewSender(room);
+      try {
+        for (const sid of trackSids) {`,
+    ],
+    [
+      "the camera",
+      `const endHold = this.#webkitHoldForNewSender(room, Track.Source.Camera);
+      const pub = await room.localParticipant
+        .setCameraEnabled(true, capture, publish)
+        .finally(endHold);`,
+    ],
+    [
+      "the screen share",
+      `const endShareHold = this.#webkitHoldForNewSender(room);
+      const sharing = room.localParticipant.setScreenShareEnabled(`,
+    ],
+    [
+      "the screen share's end",
+      `const localTrack = await sharing.finally(endShareHold);`,
+    ],
+    [
+      "the whisper",
+      `const endHold = this.#webkitHoldForNewSender(room);
+      await this.whisper.start(room, targetUserId).finally(endHold);`,
+    ],
+  ])
+    assertWired(what, site);
+  assert.equal(countWired(STATE_CODE, `this.#webkitHoldForNewSender(`), 5);
+});
+
+// Stage 5 F7 (A-minor 5): the assembly moved to the pure, spec'd
+// `webkitHoldInputs` / `webkitHoldReleased` (`webkitSenderHold.ts`); what
+// state.tsx keeps is the reads and the gate call, pinned here whole.
+test("source pin (W3 R1, R15): the release is the pure hold verdict over every listed and born sender, by mediaStreamID", () => {
+  assert.equal(
+    bodyOf(`#reviewWebkitHold(room: Room): void {`),
+    codeOf(`const hold = this.#webkitHold;
+      const tracker = this.#workerAcks;
+      if (!hold || hold.room !== room || this.room() !== room) return;
+      if (!this.#publishGate.has("webkit-hold") || hold.publishes > 0) return;
+      if (!tracker || room.state !== ConnectionState.Connected) return;
+      const { inputs, endedBorn } = webkitHoldInputs(
+        this.#webkitHoldState(room, hold.born, tracker),
+      );
+      for (const track of endedBorn) hold.born.delete(track);
+      if (webkitHoldReleased(inputs)) void this.#resumeGate(room, "webkit-hold")`),
+    "the review, whole",
+  );
+  const state = bodyOf(`#webkitHoldState(
+    room: Room,
+    born: ReadonlySet<LocalTrack>,
+    tracker: WorkerAckTracker,
+  ): WebkitHoldState<LocalTrack> {`);
+  for (const s of [
+    `scriptTransformEngine: IOS_WEBKIT,`,
+    `localIdentity: room.localParticipant.identity,`,
+    `publications: [...room.localParticipant.trackPublications.values()].map(
+      (pub) => (pub.track ? webkitHoldTrack(pub.track) : undefined),
+    ),`,
+    `born: [...born].map(webkitHoldTrack),`,
+    `providerKeys: this.#mlsKeyProvider?.getKeys(),`,
+    `workerEnabled: this.#workerEnabled?.enabled ?? NO_WORKER_ENABLED,`,
+    `attached: tracker.attached,`,
+    `keyAcked: tracker.keyAcked,`,
+  ])
+    assert.equal(countWired(state, s), 1, s);
+  const track = bodyOf(
+    `function webkitHoldTrack(track: LocalTrack): WebkitHoldTrack<LocalTrack> {`,
+  );
+  for (const s of [
+    `mediaStreamID: track.mediaStreamID,`,
+    `ended: track.mediaStreamTrack?.readyState === "ended",`,
+    `.filter(([, info]) => !!info.sender)`,
+  ])
+    assert.equal(countWired(track, s), 1, s);
+  // L3b's sender ids, not a copy of our own.
+  assert.equal(countWired(STATE_CODE, `function webkitSenderTrackIds(`), 0);
+  assert.equal(countWired(STATE_CODE, `senderHoldVerdict(`), 0);
+  assert.equal(
+    countWired(STATE_CODE, `mediaStreamTrack.id`),
+    0,
+    "never the MediaStreamTrack id",
+  );
+});
+
+test("source pin (W3 A-M1, R20): an overdue hold is fatal; its clock runs only once the local key is acked and restarts on reconnect and re-assert", () => {
+  const judge = bodyOf(
+    `#judgeWebkitHoldOverdue(session: MlsCallSession): void {`,
+  );
+  for (const s of [
+    `const keyAcked =
+      key !== undefined && tracker.keyAcked(key.identity, key.keyIndex);`,
+    `if (!this.#publishGate.has("webkit-hold") || !connected || !keyAcked) {
+      hold.heldSince = undefined;
+      hold.overdueReported = false;
+      return;
+    }`,
+    `hold.heldSince ??= now;`,
+    `if (hold.overdueReported) return;`,
+    `webkitHoldOverdue({
+      heldSinceMs: hold.heldSince,
+      nowMs: now,
+      roomConnected: connected,
+    })`,
+    `session.noteFatalMediaError(new Error(WEBKIT_HOLD_OVERDUE));`,
+  ])
+    assert.equal(countWired(judge, s), 1, s);
+  // Judged on the witness's existing once-a-second timer, for THAT session.
+  const amber = bodyAfter(
+    armDecodeWitness(),
+    `const amber = setInterval(() => {`,
+  );
+  assert.equal(countWired(amber, `this.#judgeWebkitHoldOverdue(session);`), 1);
+  assert.equal(countWired(STATE_CODE, `this.#judgeWebkitHoldOverdue(`), 1);
+  // Restarted on every reconnect and every re-assert.
+  const reconnected = bodiesAfter(
+    connectAttempt(),
+    `room.addListener("reconnected", () => {`,
+  ).filter(
+    (body) => countWired(body, `this.#mlsSession?.noteSfuReconnected();`) === 1,
+  );
+  assert.equal(reconnected.length, 1);
+  assert.equal(
+    countWired(reconnected[0], `this.#restartWebkitHoldClock(room);`),
+    1,
+    "on reconnect",
+  );
+  assert.equal(
+    countWired(
+      bodyOf(
+        `#webkitHoldForNewSender(room: Room, source?: Track.Source): () => void {`,
+      ),
+      `this.#restartWebkitHoldClock(room);`,
+    ),
+    1,
+    "on a wrapped re-assert",
+  );
+  assert.equal(countWired(STATE_CODE, `this.#restartWebkitHoldClock(`), 3);
+});
+
+test("source pin (W3 NEW-1): the overdue clock never runs while a wrapped publish is in flight", () => {
+  // The hold is asserted BEFORE capture (`#webkitHoldForNewSender`): a
+  // camera permission prompt, or a slow republish, must not run the bound
+  // out and latch a healthy call red. In flight = the clock reset and not
+  // started; it starts when the publish settles.
+  const judge = bodyOf(
+    `#judgeWebkitHoldOverdue(session: MlsCallSession): void {`,
+  );
+  const stop = `if (hold.publishes > 0) {
+    hold.heldSince = undefined;
+    hold.overdueReported = false;
+    return;
+  }`;
+  assert.equal(countWired(judge, stop), 1, "in flight resets the clock");
+  const fire = `session.noteFatalMediaError(new Error(WEBKIT_HOLD_OVERDUE));`;
+  const at = (s: string) => firstAt("#judgeWebkitHoldOverdue", judge, s);
+  assert.ok(at(stop) < at(`hold.heldSince ??= now;`), "before it can start");
+  assert.ok(at(stop) < at(fire), "before it can fire");
+});
+
+test("source pin (W3 R13c/R17/R8): the worker is bound once, the tick runs for its life, and the tracker resets after the detach", () => {
+  const bind = bodyOf(
+    `#bindE2EEWorker(worker: Worker, tracker: WorkerAckTracker): void {`,
+  );
+  assert.equal(countWired(bind, `tracker.onMessage(ev.data);`), 1);
+  assert.equal(
+    countWired(bind, `worker.addEventListener("message", onMessage);`),
+    1,
+  );
+  assert.equal(
+    countWired(
+      bind,
+      `const stopTick = keyTickEnabled(IOS_WEBKIT)
+        ? startKeyFreshnessTick({
+            post: (message) => worker.postMessage(message),`,
+    ),
+    1,
+    "the tick, posting to THIS worker",
+  );
+  assert.equal(
+    countWired(
+      bind,
+      `this.#unbindE2EEWorker = () => {
+        stopTick?.();
+        worker.removeEventListener("message", onMessage);
+        tracker.reset();
+        ledger.close();
+        if (this.#workerEnabled === ledger) this.#workerEnabled = undefined;
+      };`,
+    ),
+    1,
+    "detach BEFORE reset (R13c), then close THIS worker's enable ledger",
+  );
+  // R8: the tick starts with the worker, nowhere per session.
+  assert.equal(countWired(STATE_CODE, `startKeyFreshnessTick(`), 1);
+  assert.equal(countWired(STATE_CODE, `this.#bindE2EEWorker(`), 1);
+  const teardown = disconnectBody();
+  const at = (s: string) => firstAt("disconnect()", teardown, s);
+  assert.ok(
+    at(`this.#unbindE2EEWorker?.();`) < at(`this.#e2eeWorker?.terminate();`),
+    "the tick stops and the tracker resets with its worker",
+  );
+});
+
+// Stage 6 MINOR 1: the enable replies used to be ONE Map on the Voice object,
+// emptied only by the unbind. A teardown that threw before the unbind left
+// the last call's `local → true` in it, and the next call (same identity)
+// released its WebKit senders before the new worker had processed `enable`:
+// plaintext frames. The behaviour of the ledger is `webkitSenderHold.test.ts`'s;
+// these pins hold state.tsx to one ledger per worker.
+test("source pin (Stage 6 MINOR 1): one enable ledger per worker, written only by its own listener and closed with it", () => {
+  const bind = bodyOf(
+    `#bindE2EEWorker(worker: Worker, tracker: WorkerAckTracker): void {`,
+  );
+  const fresh = `const ledger = createWorkerEnableLedger();
+    this.#workerEnabled = ledger;`;
+  assert.ok(
+    bind.startsWith(codeOf(fresh)),
+    "the bind OPENS with a fresh ledger, assigned unconditionally",
+  );
+  const at = (s: string) => firstAt("#bindE2EEWorker", bind, s);
+  assert.ok(
+    at(fresh) < at(`worker.addEventListener("message", onMessage);`),
+    "the ledger exists before the worker can deliver a message",
+  );
+  const listener = bodyAfter(bind, `const onMessage = (ev: MessageEvent) => {`);
+  assert.equal(countWired(listener, `ledger.record(ev.data);`), 1);
+  assert.equal(
+    countWired(listener, `#workerEnabled`),
+    0,
+    "the listener writes its OWN ledger, never whatever the field holds now",
+  );
+  const unbind = bodyAfter(bind, `this.#unbindE2EEWorker = () => {`);
+  const ua = (s: string) => firstAt("the unbind", unbind, s);
+  assert.equal(countWired(unbind, `ledger.close();`), 1);
+  const clear = `if (this.#workerEnabled === ledger) this.#workerEnabled = undefined;`;
+  assert.equal(countWired(unbind, clear), 1, "cleared only if still ours");
+  assert.ok(ua(`tracker.reset();`) < ua(`ledger.close();`));
+  assert.ok(ua(`ledger.close();`) < ua(clear));
+  assert.equal(countWired(STATE_CODE, `createWorkerEnableLedger(`), 1);
+  // The field: a slot for the bound worker's ledger, no Map of its own.
+  assert.equal(
+    countWired(STATE_CODE, `#workerEnabled: WorkerEnableLedger | undefined;`),
+    1,
+  );
+  assert.equal(countWired(STATE_CODE, `#workerEnabled = new Map`), 0);
+  // Every write of the field, in file order: the bind, then its unbind,
+  // then the release a new call runs first (Stage 6 MINOR 2).
+  assert.deepEqual(
+    [
+      ...STATE_CODE.matchAll(
+        /(?:[\w$]+\.)?#workerEnabled(?:\?\?|\|\||&&)?=(?![=>])[^;}]*/g,
+      ),
+    ].map((m) => m[0]),
+    [
+      `this.#workerEnabled=ledger`,
+      `this.#workerEnabled=undefined`,
+      `this.#workerEnabled=undefined`,
+    ],
+  );
+  // The hold reads the bound worker's ledger, or the empty map: never a
+  // ledger the listener does not write.
+  assert.equal(
+    countWired(
+      bodyOf(`#webkitHoldState(
+    room: Room,
+    born: ReadonlySet<LocalTrack>,
+    tracker: WorkerAckTracker,
+  ): WebkitHoldState<LocalTrack> {`),
+      `workerEnabled: this.#workerEnabled?.enabled ?? NO_WORKER_ENABLED,`,
+    ),
+    1,
+  );
+  assert.equal(countWired(STATE_CODE, `this.#workerEnabled?.enabled`), 1);
+  // field, bind write, unbind compare and clear, hold read, the release's
+  // clear (Stage 6 MINOR 2): nothing else.
+  assert.equal(countWired(STATE_CODE, `#workerEnabled`), 6);
+});
+
+// Stage 6 MINOR 2: `disconnect()` runs its teardown in one try, so a throw
+// before its E2EE block left the last call's media E2EE alive: the next
+// `#bindE2EEWorker` overwrote `#unbindE2EEWorker` without running it, the old
+// worker was never terminated, its key tick kept running (R8), its keys and the
+// provider's raw key bytes survived (§7.2, A-3), and the old session, still fed
+// native key pushes, could refill the provider and write its state into the
+// next call's chip. The release's own behaviour (order, every step run, every
+// throw returned) is `webkitSenderHold.test.ts`'s; these pins hold
+// `#releaseCallE2EE` to handing it everything and clearing every field first,
+// and the call attempt to running it before it builds anything.
+test("source pin (Stage 6 MINOR 2): a call attempt releases whatever media E2EE a failed teardown left, before it builds anything", () => {
+  const release = bodyOf(`#releaseCallE2EE(): void {`);
+  assert.equal(
+    countWired(
+      release,
+      `const session = this.#mlsSession;
+      const backstop = this.#keyPushBackstop;
+      const leftovers = {
+        disposeSession: session && (() => session.dispose({ discard: false })),
+        forgetSessionState:
+          session && (() => this.#setCallSessionState(undefined)),
+        unlistenKeys: this.#unlistenCallKeys,
+        disarmWitness: () => this.#disarmDecodeWitness(),
+        resetBackstop: backstop && (() => backstop.reset()),
+        unbind: this.#unbindE2EEWorker,
+        worker: this.#e2eeWorker,
+        provider: this.#mlsKeyProvider,
+      };`,
+    ),
+    1,
+    "every leftover, read before anything is cleared",
+  );
+  const ra = (s: string) => firstAt("#releaseCallE2EE", release, s);
+  const run = `const errors = releaseCallE2EE(leftovers);`;
+  for (const clear of [
+    `this.#mlsSession = undefined;`,
+    `this.#unlistenCallKeys = undefined;`,
+    `this.#keyPushBackstop = undefined;`,
+    `this.#webkitHold = undefined;`,
+    `this.#preSessionMediaErrors = [];`,
+    `this.#unbindE2EEWorker = undefined;`,
+    `this.#workerAcks = undefined;`,
+    `this.#workerEnabled = undefined;`,
+    `this.#e2eeWorker = undefined;`,
+    `this.#mlsKeyProvider = undefined;`,
+  ]) {
+    assert.equal(countWired(release, clear), 1, clear);
+    assert.ok(ra(`const leftovers = {`) < ra(clear), `read first: ${clear}`);
+    // A session disposing, or a late key push, finds no current session and
+    // no provider to write into.
+    assert.ok(ra(clear) < ra(run), `cleared before the release: ${clear}`);
+  }
+  assert.equal(countWired(release, run), 1);
+  assert.equal(
+    countWired(release, `for (const error of errors) this.onErr(error);`),
+    1,
+    "a step that threw is reported, never swallowed",
+  );
+  assert.ok(ra(run) < ra(`for (const error of errors) this.onErr(error);`));
+
+  // `connect()` tears the previous call down, then runs `#connectAttempt`,
+  // which builds the new call's media E2EE.
+  const connect = connectBody();
+  assert.ok(
+    firstAt("connect()", connect, `this.disconnect();`) <
+      firstAt(
+        "connect()",
+        connect,
+        `return await this.#connectAttempt(channel, auth, opts, latchedReason);`,
+      ),
+    "the leading teardown runs before the attempt",
+  );
+  const attempt = connectAttempt();
+  const call = `this.#releaseCallE2EE();`;
+  assert.equal(countWired(attempt, call), 1);
+  assert.equal(countWired(STATE_CODE, `this.#releaseCallE2EE(`), 1);
+  const ca = (s: string) => firstAt("#connectAttempt", attempt, s);
+  assert.equal(
+    braceDepthAt(attempt, ca(call)),
+    0,
+    "unconditional: a call that is not E2EE-capable releases the leftovers too",
+  );
+  assert.ok(
+    ca(`const e2eeCapable = callEncryptionCapable(readiness);`) < ca(call) &&
+      ca(call) < ca(`if (e2eeCapable) {`),
+    "right before the capable block",
+  );
+  for (const build of [
+    `createWorkerAckTracker({`,
+    `this.#mlsKeyProvider = new MlsKeyProvider({`,
+    `this.#e2eeWorker = new E2EEWorker();`,
+    `this.#bindE2EEWorker(this.#e2eeWorker, ackTracker);`,
+    `this.#unlistenCallKeys = unlisten;`,
+    `this.#mlsSession = session;`,
+  ]) {
+    assert.ok(ca(call) < ca(build), `before ${build}`);
+  }
+});
+
+// Stage 5 F7 (A-M1): the dead worker, a lost key push, an overdue hold and a
+// pre-session handleSender failure are FATAL (`noteFatalMediaError`: a control
+// latch no remote echo cancels), never `noteEncryptionError`'s debounce.
+test("source pin (W3 R7, A-M1): a dead worker on iOS is fatal for THIS session", () => {
+  assert.equal(
+    countWired(
+      armDecodeWitness(),
+      `onDead: IOS_WEBKIT
+        ? () => {
+            if (this.#mlsSession === session)
+              session.noteFatalMediaError(new Error(E2EE_WORKER_DEAD));
+          }
+        : undefined,`,
+    ),
+    1,
+  );
+});
+
+test("source pin (W3 A-M1): a lost key push is fatal", () => {
+  assert.equal(
+    countWired(
+      connectAttempt(),
+      `onLost: () => {
+        if (this.#keyPushBackstop === backstop)
+          this.#mlsSession?.noteFatalMediaError(new Error(KEY_PUSH_LOST));
+      },`,
+    ),
+    1,
+  );
+  // The four fatal producers, and only those, use the fatal path.
+  assert.equal(countWired(STATE_CODE, `noteFatalMediaError(`), 4);
+});
+
+test("source pin (W3 B-m4): a handleSender failure before the session is buffered for THIS Room and replayed as fatal", () => {
+  const attempt = connectAttempt();
+  assert.equal(
+    countWired(
+      attempt,
+      `room.addListener("encryptionError", (error) => {
+        const session = this.#mlsSession;
+        if (session) {
+          session.noteEncryptionError(error);
+          return;
+        }
+        if (
+          this.room() === room &&
+          error instanceof Error &&
+          error.message.startsWith(HANDLE_SENDER_FAILED)
+        )
+          this.#preSessionMediaErrors.push(error);
+      });`,
+    ),
+    1,
+    "buffered, not dropped",
+  );
+  assertWired(
+    "the D7.2 prefix",
+    `const HANDLE_SENDER_FAILED = "sloga: handleSender failed";`,
+  );
+  const replay = `void session.start();
+    const early = this.#preSessionMediaErrors;
+    this.#preSessionMediaErrors = [];
+    for (const error of early) session.noteFatalMediaError(error);`;
+  assert.equal(countWired(attempt, replay), 1, "replayed at construction");
+  const at = (s: string) => firstAt("#connectAttempt", attempt, s);
+  assert.ok(at(`this.#mlsSession = session;`) < at(replay));
+  assert.equal(
+    countWired(disconnectBody(), `this.#preSessionMediaErrors = [];`),
+    1,
+    "dropped with the call",
+  );
+});
+
+test("source pin (W3 B-m1): the escalation re-arms when the session's latch heals", () => {
+  const clear = bodyAfter(
+    STATE_CODE,
+    `if (state === "clear" && error !== undefined) {`,
+  );
+  assert.equal(
+    countWired(
+      clear,
+      `if (gen === this.#connectGen) this.#witnessAmber.rearm();`,
+    ),
+    1,
+  );
+  assert.equal(countWired(STATE_CODE, `.rearm(`), 1);
+});
+
+test("source pin (W3 A-3 + the import race): every drop of the provider CLOSES it first, at teardown and in the construct-catch", () => {
+  assert.equal(
+    countWired(
+      bodyAfter(STATE_CODE, `if (e2eeCapable) { try {`),
+      `this.#mlsKeyProvider?.close(); this.#mlsKeyProvider = undefined;`,
+    ),
+    0,
+    "(the try's own body never drops it)",
+  );
+  assert.equal(
+    countWired(
+      STATE_CODE,
+      `this.#e2eeWorker?.terminate();
+      this.#mlsKeyProvider?.close();
+      this.#mlsKeyProvider = undefined;`,
+    ),
+    1,
+    "the construct-catch",
+  );
+  assert.equal(
+    countWired(
+      disconnectBody(),
+      `try {
+        this.#mlsKeyProvider?.close();
+      } catch {}
+      this.#mlsKeyProvider = undefined;`,
+    ),
+    1,
+    "the teardown, guarded",
+  );
+  // `resetForGroup` clears the fence and leaves the provider open, so an
+  // install still importing would land after it: state.tsx never calls it
+  // (the session's own mid-call group swap does, on its installer).
+  assert.equal(countWired(STATE_CODE, `.resetForGroup(`), 0);
+  assert.equal(countWired(STATE_CODE, `this.#mlsKeyProvider?.close();`), 2);
+});
+
+test("source pin (W3 B-m2/R19): on iOS the no-session in-app press changes nothing while a webkit hold exists", () => {
+  const body = bodyOf(`async #confirmNoSessionPlaintext(): Promise<void> {`);
+  const early = `if (IOS_WEBKIT && this.#webkitHold !== undefined) return;`;
+  assert.equal(countWired(body, early), 1);
+  const at = (s: string) => firstAt("#confirmNoSessionPlaintext", body, s);
+  assert.ok(at(early) < at(`this.#setCallMode({`), "before the mode flip");
+  assert.ok(at(early) < at(`await this.#resumeGate(room, "negotiating");`));
+});
+
+test("source pin (W3 WJ1): the amber escalation judges every chip read, is read once a second, and reports its edge to the session", () => {
+  assertWired(
+    "the chip's last word",
+    `return this.#witnessAmber.judge(chipInputsFrom(sources), performance.now());`,
+  );
+  assert.equal(countWired(STATE_CODE, `chipStateFrom(`), 0, "no unjudged chip");
+  const arm = armDecodeWitness();
+  assert.equal(countWired(arm, `this.#witnessAmber.reset();`), 1, "per call");
+  // Its own timer, on the witness's interval, cleared with the witness.
+  const amber = bodyAfter(arm, `const amber = setInterval(() => {`);
+  for (const s of [
+    `if (this.#mlsSession !== session) return;`,
+    `this.callEncryptionChip();`,
+    `escalated = this.#witnessAmber.escalated;`,
+    `session.noteWitnessEscalated();`,
+  ])
+    assert.equal(countWired(amber, s), 1, s);
+  assert.equal(countWired(arm, `}, listener.checkMs);`), 1, "its interval");
+  assert.equal(countWired(arm, `clearInterval(amber);`), 1, "cleared");
+  assert.equal(countWired(STATE_CODE, `.noteWitnessEscalated(`), 1);
+  assert.equal(
+    countWired(disconnectBody(), `this.#witnessAmber.reset();`),
+    1,
+    "and at teardown",
+  );
+});
+
+test("source pin (W3 R12): the key push is counted before it is routed, and the session talks through the backstop view (iOS)", () => {
+  const attempt = connectAttempt();
+  assert.equal(
+    countWired(
+      attempt,
+      `const backstop = keyPushArrivesBeforeResolve(Capacitor.getPlatform())
+        ? createKeyPushBackstop({`,
+    ),
+    1,
+  );
+  assert.equal(
+    countWired(
+      attempt,
+      `pull: (groupId, epoch) =>
+        this.#mlsSession?.onLocalKeysChanged(groupId, epoch),`,
+    ),
+    1,
+    "the SAME handler a push drives, its promise returned",
+  );
+  assert.equal(
+    countWired(
+      attempt,
+      `const registration = bridge.onCallKeysChanged((event) => {
+        backstop?.notePush(event.group_id, event.epoch);
+        void this.#mlsSession?.onLocalKeysChanged(
+          event.group_id,
+          event.epoch,
+        );
+      });`,
+    ),
+    1,
+    "notePush BEFORE onLocalKeysChanged",
+  );
+  // R18d: the view is the pure, spec'd `backstopBridge` (keyPushBackstop.ts),
+  // its check deferred to a macrotask. state.tsx builds no view of its own:
+  // the inline one it used to carry threw on construction with every text
+  // pin here green (a pin proves shape, never behaviour).
+  const args = bodyAfter(attempt, `const session = new MlsCallSession(`);
+  assert.equal(
+    countWired(
+      args,
+      `bridge: backstop
+        ? backstopBridge(bridge, backstop, {
+            defer: (f) => setTimeout(f, 0),
+          })
+        : bridge,`,
+    ),
+    1,
+  );
+  assert.equal(countWired(STATE_CODE, `backstopBridge(`), 1, "one view");
+  for (const gone of [`keyPushBackstopBridge`, `outcomeEpoch`, `new Proxy(`])
+    assert.equal(countWired(STATE_CODE, gone), 0, gone);
+  assert.equal(
+    countWired(STATE_CODE, `Object.create(`),
+    0,
+    "no hand-rolled view",
+  );
+  assert.equal(
+    countWired(disconnectBody(), `this.#keyPushBackstop?.reset();`),
+    1,
+  );
+});
+
+test("source pin (W3 R5): the iOS call audio bracket is live with the call and ends only after the Room is down; VoiceCallService is Android-only", () => {
+  assertWired(
+    "VoiceCallService, Android only",
+    `const VoiceCallServiceNative =
+      Capacitor.getPlatform() === "android"
+        ? registerPlugin<{ start(): Promise<void>; stop(): Promise<void> }>(
+            "VoiceCallService",
+          )
+        : undefined;`,
+  );
+  assertWired(
+    "SlogaCallAudio, iOS only",
+    `const SlogaCallAudioNative = IOS_WEBKIT
+      ? registerPlugin<{ start(): Promise<void>; stop(): Promise<void> }>(
+          "SlogaCallAudio",
+        )
+      : undefined;`,
+  );
+  assert.equal(countWired(STATE_CODE, `createCallAudioBracket(`), 1);
+  const connected = bodyAfter(
+    STATE_CODE,
+    `room.addListener("connected", () => {`,
+  );
+  assert.equal(
+    countWired(
+      connected,
+      `if (gen === this.#connectGen) this.#callAudioLive();`,
+    ),
+    1,
+    "live when the call goes live",
+  );
+  // R18e: the release is in the teardown's `finally` (the throw path
+  // included), waiting on THIS Room's disconnect, or the bound when the Room
+  // was never reached.
+  assert.equal(
+    countWired(
+      STATE_CODE,
+      `} catch (e) {
+        this.onErr(e);
+      } finally {
+        this.#callAudioEnded(roomGone ?? new Promise<never>(() => undefined));
+      }`,
+    ),
+    1,
+    "the teardown's finally",
+  );
+  const teardown = disconnectBody();
+  assert.equal(
+    countWired(
+      teardown,
+      `room.removeAllListeners();
+      roomGone = room.disconnect();`,
+    ),
+    1,
+    "ended once THIS Room's disconnect settles",
+  );
+  assert.equal(
+    countWired(teardown, `roomGone = Promise.resolve(); return;`),
+    1,
+    "and on the no-room path",
+  );
+  assert.equal(
+    countWired(teardown, `this.#callAudioEnded(`),
+    1,
+    "the finally's is the teardown's only release",
+  );
+  const dropped = bodyAfter(
+    connectAttempt(),
+    `room.addListener("disconnected", (reason) => {`,
+  );
+  const guarded = bodyAfter(dropped, `if (gen === this.#connectGen) {`);
+  assert.equal(
+    countWired(guarded, `this.#callAudioEnded(Promise.resolve());`),
+    1,
+    "the SFU drop, generation-guarded",
+  );
+  // Ended waits for the Room, bounded (R18e), IN ISSUE ORDER behind earlier
+  // ops.
+  assert.equal(
+    bodyOf(`#callAudioEnded(roomGone: Promise<unknown>): void {`),
+    codeOf(`const audio = this.#callAudio;
+      if (!audio) return;
+      this.#callAudioTail = this.#callAudioTail
+        .then(() => {
+          let bound: ReturnType<typeof setTimeout> | undefined;
+          return Promise.race([
+            roomGone.then(
+              () => undefined,
+              () => undefined,
+            ),
+            new Promise<void>((resolve) => {
+              bound = setTimeout(resolve, CALL_AUDIO_TEARDOWN_BOUND_MS);
+            }),
+          ]).finally(() => clearTimeout(bound));
+        })
+        .then(() => audio.callEnded())`),
+  );
+  assertWired("the bound", `const CALL_AUDIO_TEARDOWN_BOUND_MS = 5_000;`);
+});
+
+// Stage 5 F7 (C-M1): stop+start ONLY after a real interruption. The one
+// gate is `#micInterruptedSinceStart`, set by a raw mic `mute` and cleared
+// by a session start and by the stop+start itself; every other edge (an
+// `unmute`, the foreground) asks through it. The watch rebinds on every edge
+// livekit can swap the raw track on.
+test("source pin (W3 MUST 2, C-M1): stop+start only after a raw mic mute, then its unmute or the foreground; the watch rebinds on any raw-track swap", () => {
+  assert.equal(
+    bodyOf(`#callAudioInterruptionEnded(): void {`),
+    codeOf(`const audio = this.#callAudio;
+      if (!audio || !this.#micInterruptedSinceStart) return;
+      this.#micInterruptedSinceStart = false;
+      this.#callAudioTail = this.#callAudioTail.then(() =>
+        audio.interruptionEnded(),
+      )`),
+    "only after a seen mute",
+  );
+  assert.equal(
+    countWired(
+      bodyOf(`#callAudioLive(): void {`),
+      `this.#micInterruptedSinceStart = false;`,
+    ),
+    1,
+    "a fresh start forgets an old mute",
+  );
+  const watch = bodyOf(`#watchMicInterruption(track: LocalTrack): void {`);
+  for (const s of [
+    `const source = track.mediaStream?.getAudioTracks()[0];`,
+    `source.addEventListener("mute", () => {
+      this.#micInterruptedSinceStart = true;
+    });`,
+    `source.addEventListener("unmute", () =>
+      this.#callAudioInterruptionEnded(),
+    );`,
+    `track.on(TrackEvent.Restarted, rebind);`,
+    `track.on(TrackEvent.UpstreamResumed, rebind);`,
+    `track.on(TrackEvent.Unmuted, rebind);`,
+  ])
+    assert.equal(countWired(watch, s), 1, s);
+  // Nothing else sets the flag, so nothing else can make a stop happen.
+  assert.equal(
+    countWired(STATE_CODE, `this.#micInterruptedSinceStart = true;`),
+    1,
+  );
+  assertWired(
+    "the foreground edge",
+    `if (this.#callAudio)
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible")
+          this.#callAudioInterruptionEnded();
+      });`,
+  );
+});
+
+// --- Calls that ring: Answer, Decline, the key-status wait, the lock check
+// on "Stay unencrypted" and the two hang-up timers. The decisions live in
+// `answerPolicy.ts` and `outgoingRingPolicy.ts`, where their own specs hold
+// them; these pins hold `state.tsx` to asking them in the right place, and to
+// the few rules that exist only as the order of statements in this file.
+
+/** The 6th `joinCall` argument, and the one place `answer` is worked out. */
+const RING_OPTIONS = `{
+  answer: opts?.answer === true && !opts?.rejoinAttempt && !hadAuth,
+  video: opts?.video === true,
+}`;
+
+test("source pin (ring): the key-status wait sits immediately before the readiness read, bounded and generation-checked, and stands nothing in for a missing status", () => {
+  const attempt = connectAttempt();
+  const wait = `if (shellSupported && bridge && bridge.status.get("state") === undefined) {
+    await this.#waitForKeyStatus(bridge, gen, preConnectBudgetLeft());
+    if (gen !== this.#connectGen) return false;
+  }`;
+  const read = `const readiness = callEncryptionReadiness({`;
+  assert.equal(
+    countWired(attempt, wait + read),
+    1,
+    "the wait, then at once the readiness read",
+  );
+  assert.equal(
+    braceDepthAt(attempt, firstAt("#connectAttempt", attempt, wait)),
+    0,
+    "the wait is not under any other condition",
+  );
+  assert.equal(countWired(STATE_CODE, `#waitForKeyStatus(`), 2, "one call");
+  // The readiness reads the status itself, raw. A wait that timed out leaves
+  // it missing, and missing is not "off".
+  const readiness = bodyAfter(attempt, read.slice(0, -1));
+  assert.equal(
+    countWired(readiness, `status: bridge?.status.get("state"),`),
+    1,
+    "the raw status, in the one readiness read",
+  );
+  // The wait hands nothing back and writes nothing: its whole body. The one
+  // statement besides the poll is the startup retry, which writes no status
+  // here (the retry's own pins are in the next test).
+  assert.equal(
+    bodyOf(`async #waitForKeyStatus(
+      bridge: E2EEBridge,
+      gen: number,
+      budgetLeftMs: number | undefined,
+    ): Promise<void> {`),
+    codeOf(`const boundMs =
+      budgetLeftMs === undefined
+        ? KEY_STATUS_WAIT_MS
+        : Math.min(KEY_STATUS_WAIT_MS, budgetLeftMs);
+    const deadline = performance.now() + boundMs;
+    try {
+      void bridge.retryStartupIfUnset();
+      while (
+        gen === this.#connectGen &&
+        bridge.status.get("state") === undefined &&
+        performance.now() < deadline
+      ) {
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, KEY_STATUS_POLL_MS),
+        );
+      }
+    } catch {}`),
+    "the wait only looks",
+  );
+  assert.equal(countWired(STATE_CODE, `status.set(`), 0, "no status write");
+  // Nothing is awaited between the readiness read and the device-id read
+  // that follows it, so both see the same status. The three "await"s in that
+  // span today are the `awaitKeyAck:` option and the two awaits inside the
+  // screen-leg key callback, which runs later; a fourth is a new await.
+  const at = (s: string) => firstAt("#connectAttempt", attempt, s);
+  const span = attempt.slice(at(read), at(`const e2eeDeviceId =`));
+  assert.ok(span.length > 0, "the device id is read after the readiness");
+  assert.equal(span.split("await").length - 1, 3, "awaits in the span");
+  assert.equal(countWired(span, `awaitKeyAck: ackTracker.waitKeyAck,`), 1);
+  assert.equal(
+    countWired(span, `provider.onLocalScreenKey = async (key) => {`),
+    1,
+    "the callback the other two awaits are in",
+  );
+});
+
+// --- The locked cold start (M2 final audit, finding M2). A phone answering
+// from its lock screen starts the page while locked; the bridge's startup
+// (`#onReady` in `e2ee.ts`) cannot open the key store then, and the socket's
+// `ready` does not fire again. The key-status wait asks the bridge once to
+// retry (`retryStartupIfUnset`). `state.tsx` cannot load here, so its half is
+// pinned as text; `e2ee.ts` cannot load either, so the retry's own members
+// are cut out of the real file, stripped of their types and run in a small
+// stand-in class (`startupShim`), which exercises that code itself, not a
+// copy of it.
+
+const E2EE_SOURCE = readFileSync(
+  new URL("../client/e2ee.ts", import.meta.url),
+  "utf8",
+);
+const E2EE_CODE = codeOf(E2EE_SOURCE);
+
+/** The inside of the ONE block `head` opens in e2ee.ts's code. */
+function e2eeBodyOf(head: string): string {
+  const bodies = bodiesAfter(E2EE_CODE, head);
+  assert.equal(
+    bodies.length,
+    1,
+    `e2ee.ts must contain this exactly once, found ${bodies.length}:\n` +
+      codeOf(head),
+  );
+  return bodies[0];
+}
+
+/**
+ * The RAW text of the e2ee.ts member that starts with `head` (which must
+ * occur once, character for character), through the `;` of a field or the
+ * `}` that closes a method. Strings and comments are skipped while matching
+ * braces.
+ */
+function e2eeRawMember(head: string): string {
+  const found = E2EE_SOURCE.split(head).length - 1;
+  assert.equal(found, 1, `e2ee.ts must contain this exactly once: ${head}`);
+  const start = E2EE_SOURCE.indexOf(head);
+  if (!head.endsWith("{")) {
+    const end = E2EE_SOURCE.indexOf(";", start);
+    return E2EE_SOURCE.slice(start, end + 1);
+  }
+  let depth = 0;
+  for (let i = start + head.length - 1; i < E2EE_SOURCE.length; i++) {
+    const c = E2EE_SOURCE[i];
+    const next = E2EE_SOURCE[i + 1];
+    if (c === "/" && next === "/") {
+      i = E2EE_SOURCE.indexOf("\n", i);
+    } else if (c === "/" && next === "*") {
+      i = E2EE_SOURCE.indexOf("*/", i + 2) + 1;
+    } else if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1;
+      while (j < E2EE_SOURCE.length && E2EE_SOURCE[j] !== c) {
+        if (E2EE_SOURCE[j] === "\\") j++;
+        j++;
+      }
+      i = j;
+    } else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) {
+      return E2EE_SOURCE.slice(start, i + 1);
+    }
+  }
+  assert.fail(`e2ee.ts: ${head} is never closed`);
+}
+
+/** What the stand-in class exposes to the behaviour tests below. */
+interface StartupShim {
+  status: Map<string, unknown>;
+  onReadyCalls: number;
+  onReadyImpl: (shim: StartupShim) => Promise<void>;
+  setUser(user: { id: string } | undefined): void;
+  dispose(): void;
+  signOut(): void;
+  /** What the socket's `ready` does: `void this.#runStartup();`. */
+  ready(): void;
+  retryStartupIfUnset(): Promise<void>;
+}
+
+/**
+ * A class holding e2ee.ts's own `#startupRun`, `#startupRetry`,
+ * `#runStartup`, `#startupStillOwed` and `retryStartupIfUnset`, verbatim
+ * apart from their types, around stand-ins for what they read: `status`,
+ * `#client.user`, `#disposed`, `#ptSignedOut` and `#onReady` (which counts
+ * its runs and does whatever `onReadyImpl` says).
+ */
+function startupShim(): StartupShim {
+  const members = [
+    `#startupRun: Promise<void> | null = null;`,
+    `#startupRetry: Promise<void> | null = null;`,
+    `#runStartup(): Promise<void> {`,
+    `#startupStillOwed(): boolean {`,
+    `retryStartupIfUnset(): Promise<void> {`,
+  ]
+    .map(e2eeRawMember)
+    .join("\n");
+  const source = `(class {
+    status = new Map();
+    #client = { user: { id: "u1" } };
+    #disposed = false;
+    #ptSignedOut = false;
+    onReadyCalls = 0;
+    onReadyImpl = async () => {};
+    async #onReady() {
+      this.onReadyCalls++;
+      return this.onReadyImpl(this);
+    }
+    setUser(user) { this.#client.user = user; }
+    dispose() { this.#disposed = true; }
+    signOut() { this.#ptSignedOut = true; }
+    ready() { void this.#runStartup(); }
+    ${members}
+  })`;
+  const js = stripTypeScriptTypes(source, { mode: "strip" });
+  const Shim = new Function(`return ${js};`)() as new () => StartupShim;
+  return new Shim();
+}
+
+/** A promise and the function that settles it. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+/** Let every queued microtask (and promise chain) run. */
+const settle = () => new Promise<void>((r) => setTimeout(r, 0));
+
+const LOADED = { enabled: true, published: true, device_id: "d1" };
+
+test("source pin (ring, locked start): the key-status wait asks the bridge once to retry its startup, before polling, unawaited, inside the same bound", () => {
+  const wait = bodyOf(`async #waitForKeyStatus(
+      bridge: E2EEBridge,
+      gen: number,
+      budgetLeftMs: number | undefined,
+    ): Promise<void> {`);
+  const retry = `void bridge.retryStartupIfUnset();`;
+  assert.equal(
+    countWired(STATE_CODE, `retryStartupIfUnset(`),
+    1,
+    "one retry in the whole store, the wait's",
+  );
+  assert.equal(countWired(wait, retry), 1, "in the wait, and not awaited");
+  const at = (s: string) => firstAt("#waitForKeyStatus", wait, s);
+  assert.ok(
+    at(`const deadline = performance.now() + boundMs;`) < at(retry),
+    "the deadline is fixed before the retry starts, so the retry cannot move it",
+  );
+  assert.ok(at(retry) < at(`while (`), "asked before polling");
+  assert.equal(
+    braceDepthAt(wait, at(retry)),
+    1,
+    "at the top of the try, under no condition of its own",
+  );
+  assert.equal(
+    wait.split("await").length - 1,
+    1,
+    "the poll's timer is the wait's only await: the retry never lengthens it",
+  );
+  assert.equal(countWired(wait, `performance.now() < deadline`), 1);
+});
+
+test("source pin (ring, locked start): every e2ee.ts startup run goes through #runStartup, and the retry writes no status", () => {
+  assertLexesInSync("e2ee.ts", E2EE_SOURCE, E2EE_CODE, 100);
+  // The retry can only wait for a run in flight that it can see.
+  assert.equal(
+    countWired(E2EE_CODE, `this.#onReady()`),
+    1,
+    "#onReady is run from one place",
+  );
+  assert.equal(
+    countWired(
+      e2eeBodyOf(`#runStartup(): Promise<void> {`),
+      `const run = this.#onReady().finally(`,
+    ),
+    1,
+    "and that place is #runStartup",
+  );
+  assert.equal(
+    countWired(
+      e2eeBodyOf(`client.on("ready", () => {`),
+      `void this.#runStartup();`,
+    ),
+    1,
+    "the socket's ready runs it",
+  );
+  assert.equal(countWired(E2EE_CODE, `this.#runStartup()`), 2, "ready + retry");
+  assert.equal(
+    countWired(E2EE_CODE, `retryStartupIfUnset(): Promise<void> {`),
+    1,
+    "the public signature",
+  );
+  // A failed startup writes nothing: #onReady's catch only logs, so a throw
+  // (a locked key store) leaves the status unset and the join holds.
+  assert.equal(
+    countWired(
+      e2eeBodyOf(`async #onReady(): Promise<void> {`),
+      `} catch (error) {
+      console.error("[e2ee] startup failed", error);
+    } finally {`,
+    ),
+    1,
+    "#onReady's catch only logs",
+  );
+  for (const head of [
+    `#runStartup(): Promise<void> {`,
+    `#startupStillOwed(): boolean {`,
+    `retryStartupIfUnset(): Promise<void> {`,
+  ]) {
+    const body = e2eeBodyOf(head);
+    for (const write of [
+      `status.set(`,
+      `#setDisabledStatus(`,
+      `#disposed =`,
+      `#ptSignedOut =`,
+      `#claimAccepted =`,
+    ])
+      assert.equal(countWired(body, write), 0, `${head} writes ${write}`);
+  }
+});
+
+test("behaviour (locked start): retryStartupIfUnset does nothing when the status is loaded or the bridge no longer serves a signed-in client", async () => {
+  const loaded = startupShim();
+  loaded.status.set("state", LOADED);
+  await loaded.retryStartupIfUnset();
+  assert.equal(loaded.onReadyCalls, 0, "status already loaded");
+
+  for (const [what, end] of [
+    ["disposed (client replaced)", (s: StartupShim) => s.dispose()],
+    ["signed out", (s: StartupShim) => s.signOut()],
+    ["no signed-in user", (s: StartupShim) => s.setUser(undefined)],
+  ] as const) {
+    const shim = startupShim();
+    end(shim);
+    await shim.retryStartupIfUnset();
+    assert.equal(shim.onReadyCalls, 0, what);
+  }
+
+  const owed = startupShim();
+  owed.onReadyImpl = async (s) => void s.status.set("state", LOADED);
+  await owed.retryStartupIfUnset();
+  assert.equal(owed.onReadyCalls, 1, "unset and signed in: one run");
+  assert.deepEqual(owed.status.get("state"), LOADED);
+});
+
+test("behaviour (locked start): concurrent retries share one run; a run in flight is waited for, and a second runs only if it left the status unset", async () => {
+  // Three callers at once: one run, one promise.
+  const shared = startupShim();
+  const gate = deferred();
+  shared.onReadyImpl = async (s) => {
+    await gate.promise;
+    s.status.set("state", LOADED);
+  };
+  const a = shared.retryStartupIfUnset();
+  const b = shared.retryStartupIfUnset();
+  assert.equal(a, b, "the second caller gets the first caller's retry");
+  void shared.retryStartupIfUnset();
+  await settle();
+  assert.equal(shared.onReadyCalls, 1, "one run while it is in flight");
+  gate.resolve();
+  await a;
+  assert.equal(shared.onReadyCalls, 1, "and still one once it loaded");
+
+  // A `ready` run in flight that loads the status: the retry waits for it
+  // and starts nothing of its own.
+  const inFlight = startupShim();
+  const readyGate = deferred();
+  inFlight.onReadyImpl = async (s) => {
+    await readyGate.promise;
+    s.status.set("state", LOADED);
+  };
+  inFlight.ready();
+  const waited = inFlight.retryStartupIfUnset();
+  await settle();
+  assert.equal(inFlight.onReadyCalls, 1, "no second run beside the ready's");
+  readyGate.resolve();
+  await waited;
+  assert.equal(inFlight.onReadyCalls, 1, "the ready's run loaded it");
+
+  // A `ready` run that began while locked and fails: once it ends with the
+  // status still unset, the retry runs the startup once more.
+  const failed = startupShim();
+  const lockedGate = deferred();
+  let run = 0;
+  failed.onReadyImpl = async (s) => {
+    run++;
+    // The first run is the locked one: it loads nothing.
+    if (run === 1) await lockedGate.promise;
+    else s.status.set("state", LOADED);
+  };
+  failed.ready();
+  const retried = failed.retryStartupIfUnset();
+  await settle();
+  assert.equal(failed.onReadyCalls, 1, "waits for the locked run first");
+  lockedGate.resolve();
+  await retried;
+  assert.equal(failed.onReadyCalls, 2, "then one more run");
+  assert.deepEqual(failed.status.get("state"), LOADED);
+
+  // Signed out while it waited for the run in flight: no new run.
+  const gone = startupShim();
+  const goneGate = deferred();
+  gone.onReadyImpl = () => goneGate.promise;
+  gone.ready();
+  const ended = gone.retryStartupIfUnset();
+  gone.signOut();
+  goneGate.resolve();
+  await ended;
+  assert.equal(gone.onReadyCalls, 1, "nothing runs for a signed-out bridge");
+});
+
+test("behaviour (locked start): the retry never rejects, stands nothing in for a status that did not load, and a later wait may retry again", async () => {
+  const shim = startupShim();
+  // Still locked: the startup fails (the real #onReady catches its own
+  // failures; a rejection here proves the retry would hold even if not).
+  shim.onReadyImpl = async () => {
+    throw new Error("locked key store");
+  };
+  const original = console.error;
+  console.error = () => {};
+  try {
+    await assert.doesNotReject(shim.retryStartupIfUnset());
+  } finally {
+    console.error = original;
+  }
+  assert.equal(shim.onReadyCalls, 1);
+  assert.equal(shim.status.get("state"), undefined, "still unset, not 'off'");
+
+  // The phone is unlocked now: the next join's wait retries, and it loads.
+  shim.onReadyImpl = async (s) => void s.status.set("state", LOADED);
+  await shim.retryStartupIfUnset();
+  assert.equal(shim.onReadyCalls, 2, "a settled retry does not block the next");
+  assert.deepEqual(shim.status.get("state"), LOADED);
+});
+
+test("source pin (ring): answer is worked out once, at the joinCall, from the attempt's own options, and a ready-made token is noted before M3 can drop it", () => {
+  const attempt = connectAttempt();
+  const at = (s: string) => firstAt("#connectAttempt", attempt, s);
+  // One join route call in the whole store, and its 6th argument.
+  assert.equal(countWired(STATE_CODE, `.joinCall(`), 1, "one joinCall");
+  const args = argumentsOf(
+    bodyAfter(attempt, `auth = await channel.joinCall(`),
+  );
+  assert.equal(args.length, 6, "joinCall's arguments");
+  assert.equal(args[4], codeOf(`opts?.rejoinAttempt`), "the 5th is rejoin");
+  assert.equal(args[5], codeOf(RING_OPTIONS), "the 6th, the ring options");
+  // `hadAuth` is the token as the attempt was handed it: taken at the top,
+  // above M3's switch, which is where a token is dropped.
+  const hadAuth = `const hadAuth = auth !== undefined;`;
+  assertWired("hadAuth", hadAuth);
+  assert.equal(braceDepthAt(attempt, at(hadAuth)), 0, "unconditional");
+  assert.ok(at(hadAuth) < at(`switch (authDecision) {`), "before M3");
+  assert.equal(
+    attempt.slice(0, at(hadAuth)),
+    codeOf(`const gen = ++this.#connectGen;`),
+    "nothing but the generation runs before it",
+  );
+  // The remembered field is written from the same three facts, for this
+  // generation, before anything is awaited: our own join can be echoed back
+  // before connect() returns.
+  const remember = `this.#setAnswerGen(
+    opts?.answer === true && !opts?.rejoinAttempt && !hadAuth
+      ? gen
+      : undefined,
+  );`;
+  assert.equal(countWired(attempt, remember), 1, "the remembered field");
+  assert.ok(
+    !attempt.slice(0, at(remember)).includes("await"),
+    "written before the first await",
+  );
+  assert.equal(
+    bodyOf(`this.joinedAsAnswer = () => {`),
+    codeOf(`const gen = this.#answerGen();
+      return gen !== undefined && gen === this.#connectGen`),
+    "joinedAsAnswer speaks only for the generation that set it",
+  );
+  // Written by the attempt and cleared by disconnect(), nowhere else.
+  assert.equal(countWired(STATE_CODE, `this.#setAnswerGen(`), 2);
+  assert.equal(
+    countWired(disconnectBody(), `this.#setAnswerGen(undefined);`),
+    1,
+    "disconnect() clears it",
+  );
+  // `answer` is read in four statements and decides nothing else: the
+  // remembered field, the joinCall argument, whether this join could be the
+  // start of a call (the caller's timer), and whether the user's own Decline
+  // cancels this Answer before its join (pinned whole in the Decline test
+  // below). A fifth read is `answer` steering something it must not: the
+  // refusal latch, the E2EE release, the readiness read.
+  assert.equal(countWired(STATE_CODE, `opts?.answer`), 4, "reads of answer");
+  assert.equal(
+    countWired(
+      attempt,
+      `if (opts?.answer === true && ownAnswer !== undefined) {`,
+    ),
+    1,
+    "the fourth read",
+  );
+  assert.equal(countWired(STATE_CODE, `opts.answer`), 0);
+  assert.equal(countWired(STATE_CODE, `opts?.video`), 1, "video: one read");
+  assert.equal(countWired(STATE_CODE, `opts.video`), 0);
+  assert.equal(
+    countWired(
+      attempt,
+      `startedByUser:
+        channel.type === "DirectMessage" &&
+        !hadAuth &&
+        !isMove &&
+        opts?.answer !== true &&
+        !opts?.rejoinAttempt,`,
+    ),
+    1,
+    "the third read",
+  );
+  assert.equal(
+    braceDepthAt(attempt, at(`const readiness = callEncryptionReadiness({`)),
+    0,
+    "the readiness read is unconditional",
+  );
+});
+
+test("source pin (ring): answer: true is set by answerCall alone, never by a rejoin, a move or the keybind", () => {
+  // One `answer: true` in the store, inside answerCall's connect effect.
+  assert.equal(countWired(STATE_CODE, `answer: true`), 1, "answer: true");
+  // driveAnswer with its six effects, and around it only the per-channel
+  // record of this Answer that a Decline on this device reads (the Decline
+  // test below): a channel already being answered gets the running Answer's
+  // result and starts nothing; otherwise the record is filed in the same turn
+  // as the press and cleared once it settles. The connect effect opens with
+  // the one check that record adds.
+  assert.equal(
+    bodyOf(`answerCall(channel: Channel): Promise<AnswerResult> {`),
+    codeOf(`const running = this.#answerAttempts.get(channel.id);
+    if (running) return running.result;
+    const attempt: AnswerAttempt = {
+      channelId: channel.id,
+      declined: false,
+      joinGen: undefined,
+    };
+    const result = driveAnswer({
+      isLocked: () => deviceLocked(),
+      decide: (locked) =>
+        answerDecision({
+          channelType: channel.type,
+          serverId: channel.serverId,
+          slim: this.#slimActive(),
+          locked,
+        }),
+      ensureUnlocked: () => ensureDeviceUnlocked(),
+      connect: async () => {
+        if (attempt.declined) return false;
+        try {
+          return await this.connect(channel, undefined, { answer: true });
+        } catch (error) {
+          if (!isCallEnded(error))
+            console.error("[rtc] answering the call failed", error);
+          throw error;
+        }
+      },
+      onEnded: () => this.#setCallEndedNotice({ channel }),
+      dismiss: (reason) => dismissIncomingCall(channel.id, reason),
+    }).finally(() => {
+      if (this.#answerAttempts.get(channel.id)?.attempt !== attempt) return;
+      this.#answerAttempts.delete(channel.id);
+      let still: string | undefined;
+      for (const channelId of this.#answerAttempts.keys()) still = channelId;
+      this.#setAnsweringChannelId(still);
+    });
+    this.#answerAttempts.set(channel.id, { attempt, result });
+    this.#setAnsweringChannelId(channel.id);
+    return result`),
+    "answerCall is driveAnswer with its six effects, inside its own record",
+  );
+  assert.equal(countWired(STATE_CODE, `driveAnswer(`), 1);
+  // The auto-rejoin loop and the three move connects never mention it.
+  const rejoin = bodyOf(`async #autoRejoin(channel: Channel) {`);
+  assert.equal(
+    countWired(
+      rejoin,
+      `await this.connect(channel, undefined, { rejoinAttempt: true });`,
+    ),
+    1,
+    "the loop's attempt",
+  );
+  assert.equal(countWired(rejoin, `this.connect(`), 1);
+  assert.ok(!rejoin.includes("answer"), "#autoRejoin never mentions answer");
+  assert.ok(
+    !handleMove().includes("answer"),
+    "#handleVoiceMove never mentions answer",
+  );
+  // The keybinds go through the same two methods as the popup's buttons.
+  assert.equal(
+    bodyOf(`async #acceptRingingCall(): Promise<void> {`),
+    codeOf(`const call = untrack(incomingCall);
+      if (!call) return;
+      if ((await this.answerCall(call.channel)) !== "joined") return;
+      try {
+        this.#navigate?.(call.channel.path);
+      } catch {}`),
+    "accept-call is answerCall, and opens the chat only once joined",
+  );
+  assert.equal(
+    bodyOf(`#dismissRingingCall(): void {`),
+    codeOf(`const call = untrack(incomingCall);
+      if (!call) return;
+      void this.declineCall(call.channel)`),
+    "dismiss-call is declineCall",
+  );
+  // Slim view for the decision: the pure rule, over the handed-in setting
+  // and the same staff fact useSlimMode reads.
+  assert.equal(
+    bodyOf(`#slimActive(): boolean {`),
+    codeOf(`return resolveSlim({
+      setting: this.#slimSetting(),
+      nativeShell: Capacitor.isNativePlatform(),
+      locked: false,
+      staff: !!this.getClient()?.user?.privileged,
+      devOverride: slimDevOverride(),
+    })`),
+    "#slimActive",
+  );
+  assertWired(
+    "the Slim setting wiring",
+    `voice.setSlimSetting(
+      () => state.settings.getValue("appearance:slim_view") === true,
+    );`,
+  );
+});
+
+test("source pin (ring): CallEnded is read only where a refused joinCall is handled, after the teardown, and latches nothing", () => {
+  const attempt = connectAttempt();
+  // The owned branch of the catch, whole: the teardown, then the ring that
+  // was already over (rethrown, nothing recorded, nothing shown), then the
+  // refusals that do latch.
+  const owned = `if (owned) {
+    this.disconnect();
+    if (error === joinCallError && isCallEnded(error)) throw error;
+    const refusal =
+      error === joinCallError ? classifyJoinRefusal(error) : undefined;
+    if (refusal) {
+      this.#recordJoinRefusal(channel, refusal);
+      this.onErr(new Error(this.#joinRefusalText(channel, refusal)));
+      return false;
+    }
+    throw error;
+  }`;
+  assert.equal(countWired(attempt, owned), 1, "the owned branch");
+  // The latch is recorded in that one place, below the CallEnded rethrow.
+  assert.equal(countWired(STATE_CODE, `this.#recordJoinRefusal(`), 1);
+  // And the only other reader is answerCall's log guard (pinned above).
+  assert.equal(countWired(STATE_CODE, `isCallEnded(`), 2);
+  assert.equal(countWired(attempt, `isCallEnded(`), 1);
+});
+
+test("source pin (ring): confirmCallPlaintext asks the lock first, above the session split, and reads the session only after it", () => {
+  const confirm = bodyOf(`async confirmCallPlaintext(): Promise<void> {`);
+  const head = codeOf(`let locked = true;
+    try {
+      locked = (await deviceLocked()) !== false;
+    } catch {}
+    if (locked) return;
+    const session = this.#mlsSession;
+    if (!session) {
+      await this.#confirmNoSessionPlaintext();
+      return;
+    }`);
+  assert.ok(
+    confirm.startsWith(head),
+    `confirmCallPlaintext must open with the lock check, then the session read, then the split:\n${head}\nfound:\n${confirm.slice(0, head.length + 40)}`,
+  );
+  // One lock question and one session read in the method, in that order.
+  assert.equal(countWired(confirm, `deviceLocked(`), 1);
+  assert.equal(countWired(confirm, `this.#mlsSession`), 1);
+  // The no-session path has no other way in, so the check covers it too.
+  assert.equal(countWired(STATE_CODE, `this.#confirmNoSessionPlaintext(`), 1);
+  // The store asks the lock in two places: here and answerCall's isLocked.
+  assert.equal(countWired(STATE_CODE, `deviceLocked(`), 2);
+});
+
+test("source pin (ring): the hang-up timers act only for the current, connected call, and hang up with a bare this.disconnect()", () => {
+  const ask = bodyOf(`#askCallRing(ring: CallRingWatch): void {`);
+  // First the one exception (a Room reconnecting for this same call asks
+  // again shortly and decides nothing), then the token and state check:
+  // nothing else runs before both.
+  const guard = codeOf(`const room = ring.room;
+    if (
+      this.#callRing === ring &&
+      ring.gen === this.#connectGen &&
+      room !== undefined &&
+      this.room() === room &&
+      (this.state() === "RECONNECTING" ||
+        room.state === ConnectionState.Reconnecting ||
+        room.state === ConnectionState.SignalReconnecting)
+    ) {
+      this.#armCallRing(ring, CALL_RING_RETRY_MS);
+      return;
+    }
+    if (
+      this.#callRing !== ring ||
+      ring.gen !== this.#connectGen ||
+      room === undefined ||
+      room.state !== ConnectionState.Connected ||
+      this.room() !== room ||
+      this.state() !== "CONNECTED"
+    )
+      return;`);
+  assert.ok(ask.startsWith(guard), "the token and state check comes first");
+  // Two hang-ups, each exactly the Hang up button's call, each followed only
+  // by its notice.
+  assert.equal(countWired(ask, `this.disconnect();`), 2, "bare hang-ups");
+  assert.equal(countWired(ask, `disconnect(`), 2, "no other disconnect");
+  assert.equal(
+    countWired(
+      ask,
+      `case "hangup_no_answer":
+      case "hangup_declined":
+        this.disconnect();
+        this.#setCallerRingNotice({
+          channelId: ring.channel.id,
+          outcome: outcome === "hangup_declined" ? "declined" : "no_answer",
+        });
+        return;`,
+    ),
+    1,
+    "the caller's hang-up",
+  );
+  assert.equal(
+    countWired(
+      ask,
+      `case "hangup_ended":
+        this.disconnect();
+        this.#setCallEndedNotice({ channel: ring.channel });
+        return;`,
+    ),
+    1,
+    "the answerer's hang-up",
+  );
+  // It touches no encryption state and records no refusal.
+  for (const never of [
+    `discardMls`,
+    `confirmCallPlaintext`,
+    `#confirmNoSessionPlaintext`,
+    `#resumeGate`,
+    `#publishGate`,
+    `#applyPublishGate`,
+    `#setCallMode`,
+    `#mlsSession`,
+    `#recordJoinRefusal`,
+    `bridge`,
+    `await`,
+  ])
+    assert.ok(!ask.includes(never), `#askCallRing must not touch ${never}`);
+  // Both decisions are the pure modules', asked once each.
+  assert.equal(countWired(ask, `callerRingOutcome({`), 1);
+  assert.equal(countWired(ask, `answererAloneOutcome({`), 1);
+  assert.equal(countWired(STATE_CODE, `callerRingOutcome(`), 1);
+  assert.equal(countWired(STATE_CODE, `answererAloneOutcome(`), 1);
+  assert.equal(
+    countWired(
+      bodyAfter(ask, `const outcome = callerRingOutcome(`),
+      `ringMs: ring.ringMs,`,
+    ),
+    1,
+    "the ring length taken at connect",
+  );
+  // It is run by the timer and by a decline, and by nothing else.
+  assert.equal(countWired(STATE_CODE, `this.#askCallRing(ring)`), 2);
+  assert.equal(countWired(STATE_CODE, `#askCallRing(`), 3, "2 calls + itself");
+  assert.equal(
+    bodyOf(`#armCallRing(ring: CallRingWatch, delayMs: number): void {`),
+    codeOf(`clearTimeout(ring.timer);
+      ring.timer = setTimeout(() => {
+        ring.timer = undefined;
+        this.#askCallRing(ring);
+      }, delayMs)`),
+    "the timer",
+  );
+  // The clock is performance.now(), started when the call connects, where
+  // openedCall is decided once from who is there.
+  assert.equal(
+    bodyOf(`#startCallRing(ring: CallRingWatch, room: Room): void {`),
+    codeOf(`ring.room = room;
+      ring.connectedAt = performance.now();
+      this.#sweepCallRing(ring, room);
+      ring.openedCall = ring.startedByUser && !ring.remoteEverJoined;
+      if (ring.remoteEverJoined) return;
+      if (ring.openedCall) this.#armCallRing(ring, ring.ringMs);
+      else if (this.joinedAsAnswer())
+        this.#armCallRing(ring, ANSWER_ALONE_GRACE_MS)`),
+    "#startCallRing",
+  );
+  assert.equal(countWired(STATE_CODE, `ring.openedCall = `), 1, "decided once");
+  assert.equal(
+    countWired(
+      bodyAfter(STATE_CODE, `room.addListener("connected", () => {`),
+      `if (gen === this.#connectGen) this.#startCallRing(ring, room);`,
+    ),
+    1,
+    "started by the connected listener, under its generation",
+  );
+  assert.equal(countWired(STATE_CODE, `this.#startCallRing(`), 1);
+  // The latch only ever sets, counts other users only, and cancels the
+  // timer for good.
+  assert.equal(
+    bodyOf(`#noteCallRingUser(ring: CallRingWatch, userId: string): void {`),
+    codeOf(`if (ring.connectedAt === undefined) return;
+      if (userId === this.getClient()?.user?.id) return;
+      ring.remoteEverJoined = true;
+      clearTimeout(ring.timer);
+      ring.timer = undefined`),
+    "the latch",
+  );
+  assert.equal(countWired(STATE_CODE, `remoteEverJoined = `), 1, "one write");
+  // disconnect() ends the watch: the timer, the facts, the answer flag.
+  assert.equal(
+    countWired(
+      disconnectBody(),
+      `clearTimeout(this.#callRing?.timer);
+      this.#callRing = undefined;
+      this.#setAnswerGen(undefined);`,
+    ),
+    1,
+    "disconnect() clears the ring facts",
+  );
+});
+
+test("source pin (ring): a decline counts only for the connected call it names while its ring timer runs, and declineCall always gives a reason", () => {
+  assert.equal(
+    bodyOf(`noteCallDeclined(channelId: string): void {`),
+    codeOf(`const ring = this.#callRing;
+      if (!ring || !ring.openedCall || ring.timer === undefined) return;
+      if (ring.channel.id !== channelId) return;
+      if (this.state() !== "CONNECTED" || this.channel()?.id !== channelId)
+        return;
+      ring.declined = true;
+      this.#askCallRing(ring)`),
+    "noteCallDeclined",
+  );
+  // The flag is set there and born false with every join; nothing keeps it
+  // per channel.
+  assert.equal(countWired(STATE_CODE, `ring.declined = `), 1);
+  assert.equal(countWired(connectAttempt(), `declined: false,`), 1);
+  assert.equal(
+    bodyOf(`async declineCall(channel: Channel): Promise<void> {`),
+    codeOf(`try {
+        const ownAnswer = this.#answerAttempts.get(channel.id)?.attempt;
+        if (ownAnswer !== undefined) {
+          ownAnswer.declined = true;
+          if (
+            ownAnswer.joinGen !== undefined &&
+            ownAnswer.joinGen === this.#connectGen
+          )
+            this.disconnect();
+        }
+      } catch {}
+      try {
+        if (
+          untrack(incomingCall)?.channel.id === channel.id &&
+          this.sound.ringtoneKind() === "incoming"
+        )
+          this.sound.stopRingtone();
+        dismissIncomingCall(channel.id, "declined");
+      } catch {}
+      try {
+        await channel.declineCall();
+      } catch {}`),
+    "declineCall never throws, and the ring comes down as declined",
+  );
+  // Every dismiss in the store names its channel and its reason.
+  assert.equal(countWired(STATE_CODE, `dismissIncomingCall(`), 2);
+  assert.equal(
+    countWired(STATE_CODE, `dismissIncomingCall(channel.id, reason)`),
+    1,
+  );
+  assert.equal(
+    countWired(STATE_CODE, `dismissIncomingCall(channel.id, "declined");`),
+    1,
+  );
+});
+
+test("source pin (ring fix S1/S2): our own Decline cancels our own pending Answer of that channel, and nothing else does", () => {
+  // The records: one per channel, filed and dropped by answerCall alone
+  // (pinned whole in the answerCall test above). A second Answer of the same
+  // ring is the same Answer: it returns the running one's result before
+  // anything else, so the popup's Accept and the notification's Answer never
+  // make two attempts whose records could shadow each other.
+  assertWired(
+    "the records",
+    `#answerAttempts = new Map<
+      string,
+      { attempt: AnswerAttempt; result: Promise<AnswerResult> }
+    >();`,
+  );
+  assert.equal(countWired(STATE_CODE, `this.#answerAttempts.set(`), 1);
+  assert.equal(countWired(STATE_CODE, `this.#answerAttempts.delete(`), 1);
+  assert.equal(countWired(STATE_CODE, `this.#answerAttempts.get(`), 4);
+  assert.equal(countWired(STATE_CODE, `this.#answerAttempts = `), 0);
+  assert.equal(countWired(STATE_CODE, `this.#setAnsweringChannelId(`), 2);
+  const answer = bodyOf(
+    `answerCall(channel: Channel): Promise<AnswerResult> {`,
+  );
+  assert.ok(
+    answer.startsWith(
+      codeOf(`const running = this.#answerAttempts.get(channel.id);
+        if (running) return running.result;`),
+    ),
+    "a channel already being answered gets the running Answer, first thing",
+  );
+  assert.equal(
+    countWired(
+      answer,
+      `this.#answerAttempts.set(channel.id, { attempt, result });`,
+    ),
+    1,
+  );
+  // Nothing is awaited at answerCall's own level: before driveAnswer starts,
+  // or between it and the record being filed (its awaits are inside it).
+  const filed = firstAt("answerCall", answer, `this.#answerAttempts.set(`);
+  assert.ok(
+    !answer
+      .slice(0, firstAt("answerCall", answer, `driveAnswer(`))
+      .includes("await") && !answer.slice(filed).includes("await"),
+    "the record and answeringChannelId are set in the same turn as the press",
+  );
+  assertWired(
+    "the accessor",
+    `const [answeringChannelId, setAnsweringChannelId] = createSignal<string>();
+    this.answeringChannelId = answeringChannelId;
+    this.#setAnsweringChannelId = setAnsweringChannelId;`,
+  );
+  // disconnect() leaves it alone: connect()'s own leading disconnect() runs
+  // inside every Answer and must not erase the Answer it belongs to.
+  assert.ok(!disconnectBody().includes("#answerAttempts"));
+  assert.ok(!disconnectBody().includes("#setAnsweringChannelId"));
+
+  // Before the join: the check sits immediately before the one joinCall,
+  // after the last await, so a Decline pressed at any point up to the join
+  // is seen, and nothing is awaited between the check and the request.
+  const attempt = connectAttempt();
+  const check = `const ownAnswer = this.#answerAttempts.get(channel.id)?.attempt;
+    if (opts?.answer === true && ownAnswer !== undefined) {
+      if (ownAnswer.declined) {
+        if (gen === this.#connectGen) this.disconnect();
+        return false;
+      }
+      ownAnswer.joinGen = gen;
+    }
+    try {
+      auth = await channel.joinCall(`;
+  assert.equal(countWired(attempt, check), 1, "the check, then the join");
+  const node = `const node = await voiceNodeForChannel(this.getClient(), channel);`;
+  const between = attempt.slice(
+    firstAt("#connectAttempt", attempt, node) + codeOf(node).length,
+    firstAt("#connectAttempt", attempt, `const ownAnswer =`),
+  );
+  assert.equal(between, "", "nothing between the last await and the check");
+  assert.equal(
+    countWired(STATE_CODE, `.joinGen = gen;`),
+    1,
+    "joinGen: one write",
+  );
+  // While the phone was being unlocked: connect() is never started, so the
+  // call the user is in now is not torn down by its leading disconnect().
+  assert.equal(
+    countWired(
+      answer,
+      `connect: async () => {
+        if (attempt.declined) return false;
+        try {`,
+    ),
+    1,
+  );
+
+  // The Decline: the one writer of the flag, and the hang-up of our own leg
+  // once the join is out is the Hang up button's bare disconnect(), and only
+  // for the generation that join belongs to.
+  assert.equal(countWired(STATE_CODE, `.declined = true`), 2, "two writers");
+  assert.equal(countWired(STATE_CODE, `ownAnswer.declined = true`), 1);
+  const decline = bodyOf(
+    `async declineCall(channel: Channel): Promise<void> {`,
+  );
+  assert.equal(countWired(decline, `ownAnswer.declined = true;`), 1);
+  assert.equal(countWired(decline, `this.disconnect();`), 1);
+  assert.equal(countWired(decline, `disconnect(`), 1, "a bare disconnect()");
+  assert.equal(
+    countWired(decline, `ownAnswer.joinGen === this.#connectGen`),
+    1,
+    "only the leg this Answer's join started",
+  );
+  // Somebody else's decline, or one from another of our devices, never
+  // reaches the Answer.
+  const note = bodyOf(`noteCallDeclined(channelId: string): void {`);
+  assert.ok(!note.includes("#answerAttempts"), "noteCallDeclined");
+  assert.equal(
+    countWired(STATE_CODE, `this.#answerAttempts.get(channel.id)?.attempt;`),
+    2,
+    "looked up by its own channel in the join check and declineCall only",
+  );
+});
+
+test("source pin (ring fix S3): flipCamera goes through the store, refuses under a held gate and re-asserts one that filled", () => {
+  assert.equal(
+    bodyOf(`async flipCamera(): Promise<boolean> {`),
+    codeOf(`const room = this.room();
+      if (!room || this.state() !== "CONNECTED" || this.#gateHeld()) return false;
+      let result: CameraFlipResult;
+      try {
+        result = await flipRoomCamera(
+          room,
+          () =>
+            this.room() === room &&
+            this.state() === "CONNECTED" &&
+            !this.#gateHeld(),
+        );
+      } finally {
+        if (this.#gateHeld() && this.room() === room)
+          void this.#applyPublishGate(room);
+      }
+      if (result.outcome === "failed") {
+        if (result.restored)
+          void this.reapplyCameraEffects().catch((error) =>
+            console.warn("[rtc] camera effects not restored", error),
+          );
+        this.onErr(result.error);
+      }
+      return result.outcome === "flipped"`),
+    "flipCamera",
+  );
+  assert.equal(countWired(STATE_CODE, `flipRoomCamera(`), 1);
+  assertWired(
+    "the helper",
+    `import {
+      type CameraFlipResult,
+      flipCamera as flipRoomCamera,
+    } from "./cameraFlip";`,
+  );
+  // The gate the flip reads is the publish gate's own reason set.
+  assertWired(
+    "#gateHeld",
+    `#gateHeld = (): boolean => this.#publishGate.size > 0;`,
+  );
+});
+
+test("source pin (ring fix S4/S5): a timer that fires while the Room reconnects asks again; the ring length is the server's", () => {
+  const ask = bodyOf(`#askCallRing(ring: CallRingWatch): void {`);
+  assertWired("the retry", `const CALL_RING_RETRY_MS = 2_000;`);
+  assert.equal(
+    braceDepthAt(
+      STATE_CODE,
+      firstAt("retry", STATE_CODE, `const CALL_RING_RETRY_MS`),
+    ),
+    0,
+    "module scope",
+  );
+  assert.equal(countWired(STATE_CODE, `CALL_RING_RETRY_MS`), 2);
+  assert.equal(
+    countWired(ask, `this.#armCallRing(ring, CALL_RING_RETRY_MS);`),
+    1,
+  );
+  // The re-ask comes before anything is decided, and the act still needs
+  // both the state and the Room's own connection to be CONNECTED.
+  assert.ok(
+    firstAt("ask", ask, `this.#armCallRing(ring, CALL_RING_RETRY_MS);`) <
+      firstAt("ask", ask, `this.#sweepCallRing(ring, room);`),
+  );
+  assert.equal(
+    countWired(ask, `room.state !== ConnectionState.Connected ||`),
+    1,
+  );
+  // The dead term is gone: the guard already requires CONNECTED.
+  assert.equal(
+    countWired(
+      bodyAfter(ask, `const outcome = callerRingOutcome(`),
+      `rejoining: this.#rejoinConnectInFlight,`,
+    ),
+    1,
+  );
+  assert.equal(
+    countWired(ask, `this.state() === "RECONNECTING"`),
+    1,
+    "the re-ask only",
+  );
+
+  // S5: the caller timer's ring length, from the server's own value.
+  assert.equal(
+    countWired(
+      connectAttempt(),
+      `ringMs:
+        untrack(() => ringDurationMs(serverCallRingSecs())) +
+        CALLER_HANGUP_GRACE_MS,`,
+    ),
+    1,
+  );
+  assertWired(
+    "the import",
+    `import { serverCallRingSecs } from "./serverRingLength";`,
+  );
+  assert.equal(countWired(STATE_CODE, `serverCallRingSecs(`), 1);
+  assert.equal(countWired(STATE_CODE, `call_ring_duration`), 0);
 });

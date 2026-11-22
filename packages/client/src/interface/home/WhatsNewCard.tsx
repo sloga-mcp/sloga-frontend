@@ -8,10 +8,10 @@ import { fetchAllChangelogs } from "@revolt/modal/modals/Changelog";
 import { iconSize } from "@revolt/ui";
 
 import MdArrowForward from "@material-design-icons/svg/filled/arrow_forward.svg?component-solid";
+import MdCallEnd from "@material-design-icons/svg/filled/call_end.svg?component-solid";
 import MdClose from "@material-design-icons/svg/filled/close.svg?component-solid";
-import MdDevices from "@material-design-icons/svg/filled/devices.svg?component-solid";
-import MdFolderZip from "@material-design-icons/svg/filled/folder_zip.svg?component-solid";
-import MdImage from "@material-design-icons/svg/filled/image.svg?component-solid";
+import MdPhoneMissed from "@material-design-icons/svg/filled/phone_missed.svg?component-solid";
+import MdPhonelinkRing from "@material-design-icons/svg/filled/phonelink_ring.svg?component-solid";
 
 import pkg from "../../../../../package.json";
 
@@ -21,23 +21,23 @@ import { showWhatsNew, WHATS_NEW_KEY } from "./homeHub";
  * The release these highlights were written for. Update it together with
  * HIGHLIGHTS each release; until both are updated the card stays hidden.
  */
-const HIGHLIGHTS_RELEASE = "0.71";
+const HIGHLIGHTS_RELEASE = "0.72";
 
 const ACCENT = "#3BB8ED";
 
 /** Two or three headline changes, short enough for one line each */
 const HIGHLIGHTS: { icon: () => JSX.Element; text: () => JSX.Element }[] = [
   {
-    icon: () => <MdDevices {...iconSize(18)} />,
-    text: () => <Trans>Restore encryption on a second device</Trans>,
+    icon: () => <MdCallEnd {...iconSize(18)} />,
+    text: () => <Trans>Decline a call, and see when nobody answered</Trans>,
   },
   {
-    icon: () => <MdFolderZip {...iconSize(18)} />,
-    text: () => <Trans>Send a whole folder as a .zip</Trans>,
+    icon: () => <MdPhonelinkRing {...iconSize(18)} />,
+    text: () => <Trans>Choose which of your devices ring for calls</Trans>,
   },
   {
-    icon: () => <MdImage {...iconSize(18)} />,
-    text: () => <Trans>Images open again in chat windows</Trans>,
+    icon: () => <MdPhoneMissed {...iconSize(18)} />,
+    text: () => <Trans>Full-screen incoming calls on Android</Trans>,
   },
 ];
 

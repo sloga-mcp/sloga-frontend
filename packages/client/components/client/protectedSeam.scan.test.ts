@@ -92,11 +92,20 @@ const SRC = readFileSync(FILE, "utf8");
  * Re-pinned for protected channels S2 (lane L0T, W4-0; was 88e76b2a...):
  * the region gains exactly the `textAuthoritySign` plugin entry, its
  * `CapacitorTransport.invoke` dialog route (the S5 pattern above) and one
- * comment line beside each. Nothing else in the region changed.
+ * comment line beside each (S2 value 2817d5fc...).
+ *
+ * iOS call E2EE phase 2 (feat/ios-call-e2ee) edits the region on purpose
+ * too: `CapacitorTransport.keyPushAvailable` answers for iOS (plan D6) and
+ * `#rethrow` maps a call-plane `protector_locked` to a typed error (D10)
+ * (main be9c013c value 8814ad34...).
+ *
+ * Re-pinned on the S2 re-merge over main be9c013c (2026-11-21): the merged
+ * region is byte-identical to `git merge-file` of (S2 43d293c3, base
+ * 68653961, main be9c013c), i.e. the union of the two changes above and
+ * nothing else.
  */
-// Re-pinned for S2 L0T: textAuthoritySign (see above).
 const TRANSPORT_REGION_SHA256 =
-  "2817d5fc7d54bcd0af6956462a36d83cb775b1ad79f74acfd5871ac26947fa43";
+  "c38661cf4f9c8bf47b4bfd6f004b05093f423a4d16f559d69f4a44165ec9c37a";
 
 /**
  * S7 D9 / PA-7: the text commands Android signs only after a tap on a native

@@ -7,10 +7,11 @@ import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
     /**
-     * The live activity, so the Decline broadcast receiver can reach the
-     * WebView. Weak so a destroyed activity is never held alive.
+     * The live activity, so the Decline broadcast receiver and the notifier
+     * can reach it from their own threads. Weak so a destroyed activity is
+     * never held alive; volatile so those threads see the current one.
      */
-    private static java.lang.ref.WeakReference<MainActivity> INSTANCE;
+    private static volatile java.lang.ref.WeakReference<MainActivity> INSTANCE;
 
     /**
      * Whether the activity is resumed. Read by SlogaNotifier, through
@@ -52,6 +53,53 @@ public class MainActivity extends BridgeActivity {
     /** API 24-32 registration. Null on API 33+. */
     private androidx.activity.OnBackPressedCallback legacyBackCallback;
 
+    /**
+     * How long an Answer tap may wait for the lock screen to go away. An older
+     * tap is forgotten, so an unlock much later can never join a call the user
+     * has stopped thinking about. It applies on every Android version: the
+     * platform can report a dismissal late, and this bounds how late.
+     */
+    private static final long HELD_ANSWER_MAX_MS = 60_000L;
+
+    /*
+     * Right after the platform reports the lock screen dismissed, the keyguard
+     * query can still read locked while the lock screen animates away. The
+     * Answer is handed on only once the query reads unlocked, so it is asked
+     * again every CallRingPolicy.UNLOCK_SETTLE_POLL_MS, for at most
+     * CallRingPolicy.UNLOCK_SETTLE_MAX_MS. PushTokenPlugin.ensureUnlocked
+     * waits for the query the same way.
+     */
+
+    /**
+     * The chat whose ring put the lock-screen window flags on, or null while
+     * they are off. Only the end of that chat's ring takes them off early;
+     * the safety timer and every other exit take them off whatever the chat.
+     * Main thread only.
+     */
+    private String ringFlagsChannelId;
+
+    /** Token of the timer that takes the ring flags off when the ring's time is up. */
+    private final Object ringFlagsTimer = new Object();
+
+    /**
+     * The one Answer tap that is waiting for the user to unlock, or null.
+     *
+     * It lives in this field and nowhere else. It is not written to the saved
+     * instance state and it is not static, so a recreated activity starts
+     * without it, and onDestroy clears it. Nothing about it reaches the web
+     * layer or PushTokenPlugin until {@link #proceedWithAnswer} runs.
+     *
+     * Read and written on the main thread only.
+     */
+    private HeldAnswer heldAnswer;
+
+    /** Whether this activity instance is between onResume and onPause. */
+    private boolean resumed = false;
+
+    /** Runs the held Answer's expiry and its unlock re-checks. */
+    private final android.os.Handler mainHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+
     static boolean isForeground() {
         return FOREGROUND;
     }
@@ -60,11 +108,18 @@ public class MainActivity extends BridgeActivity {
     public void onResume() {
         super.onResume();
         FOREGROUND = true;
+        resumed = true;
+        // An Answer taken while the lock screen was up continues from here:
+        // the platform only accepts an unlock request from a resumed activity,
+        // and on Android 7 a resume with the lock screen gone is the only
+        // signal that the user unlocked.
+        advanceHeldAnswer();
     }
 
     @Override
     public void onPause() {
         FOREGROUND = false;
+        resumed = false;
         // A user who left and came back starts a fresh burst: the wedge hatch
         // must never fire on presses accumulated in an earlier visit.
         backPressesSinceReply = 0;
@@ -77,22 +132,88 @@ public class MainActivity extends BridgeActivity {
      * action button. Cancelling the notification stops the system ringtone,
      * but the in-app popup has no other way to learn the call is over. No-op
      * when the app isn't running — there is no popup to dismiss then.
+     *
+     * A Decline also withdraws an Answer for the same chat that is still
+     * waiting for the unlock. Without that, Answer, then Decline, then an
+     * unlock inside the waiting time would join the call the user declined.
      */
     static void dispatchCallDeclined(String channelId) {
-        MainActivity activity = INSTANCE == null ? null : INSTANCE.get();
-        if (activity == null || activity.bridge == null) return;
+        MainActivity activity = liveInstance();
+        if (activity == null) return;
         org.json.JSONObject detail = new org.json.JSONObject();
+        String built;
         try {
             detail.put("declined", true);
             detail.put(
                     "channelId",
                     channelId == null ? org.json.JSONObject.NULL : channelId);
+            built = detail.toString();
         } catch (org.json.JSONException e) {
-            return;
+            built = null;
         }
-        final String payload = detail.toString();
-        activity.runOnUiThread(() -> activity.bridge.triggerWindowJSEvent(
-                "slogaNotificationAction", payload));
+        final String payload = built;
+        activity.runOnUiThread(() -> {
+            // First, and whether or not there is a web layer to tell.
+            activity.dropHeldAnswerFor(channelId);
+            if (payload != null && activity.bridge != null) {
+                activity.bridge.triggerWindowJSEvent("slogaNotificationAction", payload);
+            }
+        });
+    }
+
+    /**
+     * The ring for this chat is over on this device, for any reason: answered
+     * here or elsewhere, declined, ended, timed out or dismissed. Called by
+     * SlogaNotifier.resolveCall from any thread, after the stored ring is
+     * gone. On the activity's main thread it drops an Answer still waiting
+     * for the unlock for this chat, and takes the lock-screen window flags
+     * off when this chat's ring put them on. Another chat's waiting Answer
+     * and another chat's ringing flags are left alone. Never throws.
+     *
+     * The stored ring is gone before this runs, and the ring Intent only puts
+     * the flags on while its ring is stored (see handleNotificationIntent),
+     * so the flags cannot come back for this ring afterwards.
+     */
+    static void onRingResolved(final String channelId) {
+        final MainActivity activity = liveInstance();
+        if (activity == null) return;
+        try {
+            activity.runOnUiThread(() -> activity.ringOver(channelId, false));
+        } catch (RuntimeException e) {
+            android.util.Log.w("SlogaIntent", "could not end a ring on the activity");
+        }
+    }
+
+    /**
+     * Sign-out: drop any waiting Answer and the lock-screen window flags,
+     * whatever chat they were for. Any thread. Never throws.
+     */
+    static void onSignedOut() {
+        final MainActivity activity = liveInstance();
+        if (activity == null) return;
+        try {
+            activity.runOnUiThread(() -> activity.ringOver(null, true));
+        } catch (RuntimeException e) {
+            android.util.Log.w("SlogaIntent", "could not clear the rings on the activity");
+        }
+    }
+
+    private static MainActivity liveInstance() {
+        java.lang.ref.WeakReference<MainActivity> ref = INSTANCE;
+        return ref == null ? null : ref.get();
+    }
+
+    /** The two halves of onRingResolved and onSignedOut. Main thread only. */
+    private void ringOver(String channelId, boolean everyChat) {
+        HeldAnswer held = heldAnswer;
+        String heldChannelId = held == null ? null : held.action.channelId;
+        if (held != null
+                && (everyChat || CallRingPolicy.ringResolutionApplies(channelId, heldChannelId))) {
+            clearHeldAnswer();
+        }
+        if (everyChat || CallRingPolicy.ringResolutionApplies(channelId, ringFlagsChannelId)) {
+            removeRingingWindowFlags();
+        }
     }
 
     @Override
@@ -102,6 +223,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(PushTokenPlugin.class);
         registerPlugin(AppFlavorPlugin.class);
         registerPlugin(SlogaBackPlugin.class);
+        registerPlugin(CallAudioRoutePlugin.class);
         // Sideload adds the self-updater; foss adds UnifiedPush and the
         // website-install update notice; the Play twin registers nothing. See
         // FlavorPlugins in src/{sideload,play,foss}.
@@ -186,37 +308,334 @@ public class MainActivity extends BridgeActivity {
             intent.removeExtra("sloga_ring_call");
             intent.removeExtra("sloga_answer_call");
             intent.removeExtra("sloga_caller_id");
+            intent.removeExtra("sloga_call_id");
+            intent.removeExtra("sloga_video");
             return;
         }
 
         boolean answer = intent.getBooleanExtra("sloga_answer_call", false);
         boolean ring = intent.getBooleanExtra("sloga_ring_call", false);
         String callerId = intent.getStringExtra("sloga_caller_id");
+        String callId = intent.getStringExtra("sloga_call_id");
+        boolean video = intent.getBooleanExtra("sloga_video", false);
         intent.removeExtra("sloga_path");
         intent.removeExtra("sloga_ring_call");
         intent.removeExtra("sloga_answer_call");
         intent.removeExtra("sloga_caller_id");
+        intent.removeExtra("sloga_call_id");
+        intent.removeExtra("sloga_video");
         intent.removeExtra(IntentNonce.EXTRA);
 
-        // Action-button taps don't auto-dismiss notifications — clear the
-        // call notification once we're handling the answer.
+        // Asked now, for this Intent, and never remembered from an earlier one.
+        boolean locked = keyguardLockedOrUnknown();
+
         if (answer) {
-            String channelId = path.substring(path.lastIndexOf('/') + 1);
-            androidx.core.app.NotificationManagerCompat.from(this)
-                    .cancel(channelId.hashCode());
+            // An Answer takes its own route and never falls through to the
+            // code below, which can only ever say "not an answer". The ring
+            // extra is ignored here: the notifier never sets both, and an
+            // Answer must not ask to be shown over the lock screen. The time
+            // of the tap goes with it: the Answer's age counts from here.
+            onAnswerTapped(
+                    new AnswerAction(
+                            path, callerId, callId, video,
+                            android.os.SystemClock.elapsedRealtime()),
+                    locked);
+            return;
         }
 
         // A full-screen intent fires while the device is asleep or locked. Wake
         // the display and show over the keyguard so the Accept/Decline UI is
         // actually reachable — the call must NEVER be joined without that
-        // explicit choice.
-        if (ring) applyRingingWindowFlags();
+        // explicit choice. Only for a ring that is still on record and still
+        // has time left: a ring that was resolved, or one that ran out, never
+        // gets the lock screen bypass again.
+        if (ring) {
+            String ringChannelId = CallRingPolicy.channelIdFromPath(path);
+            long holdMs = SlogaNotifier.ringFlagsHoldMs(this, ringChannelId, callId);
+            if (holdMs > 0L) applyRingingWindowFlags(ringChannelId, holdMs);
+        }
 
-        PushTokenPlugin.setPendingAction(path, answer, ring, callerId);
+        // The literal false is the point: this path opens a chat or shows the
+        // ring, and has no way to tell the web layer to join. The lock state
+        // is passed along for the ring screen to read and decides nothing
+        // here. An Answer that is waiting for the unlock is left alone; it
+        // carries its own chat and call and cannot pick up this Intent's.
+        PushTokenPlugin.setPendingAction(path, false, ring, callerId, callId, video, locked);
         if (bridge != null) {
             bridge.triggerWindowJSEvent(
                     "slogaNotificationAction",
-                    notificationActionPayload(path, answer, ring, callerId));
+                    notificationActionPayload(path, false, ring, callerId, callId, video, locked));
+        }
+    }
+
+    /**
+     * Whether the lock screen is up. A missing service or a failed query reads
+     * as locked, so a broken answer can only ever make the app more careful.
+     */
+    private boolean keyguardLockedOrUnknown() {
+        try {
+            android.app.KeyguardManager keyguard = (android.app.KeyguardManager)
+                    getSystemService(android.content.Context.KEYGUARD_SERVICE);
+            return keyguard == null || keyguard.isKeyguardLocked();
+        } catch (RuntimeException e) {
+            return true;
+        }
+    }
+
+    /** What one Answer tap asked for. Never changes after the tap. */
+    private static final class AnswerAction {
+        final String path;
+        final String channelId;
+        final String callerId;
+        final String callId;
+        final boolean video;
+        /** SystemClock.elapsedRealtime() when the tap reached the activity. */
+        final long tappedAt;
+
+        AnswerAction(
+                String path, String callerId, String callId, boolean video, long tappedAt) {
+            this.path = path;
+            this.channelId = CallRingPolicy.channelIdFromPath(path);
+            this.callerId = callerId;
+            this.callId = callId;
+            this.video = video;
+            this.tappedAt = tappedAt;
+        }
+    }
+
+    /** An Answer tap that arrived while the lock screen was up. */
+    private static final class HeldAnswer {
+        final AnswerAction action;
+        /** SystemClock.elapsedRealtime() at the tap; it keeps counting in sleep. */
+        final long heldAt;
+        /** The platform was asked to dismiss the lock screen for this tap. */
+        boolean dismissRequested;
+        /** The platform reported that dismissal as done. */
+        boolean unlockReported;
+        long unlockReportedAt;
+        /** A re-check of the lock state is already queued. */
+        boolean settleCheckQueued;
+
+        HeldAnswer(AnswerAction action, long heldAt) {
+            this.action = action;
+            this.heldAt = heldAt;
+        }
+    }
+
+    /**
+     * The user pressed Answer on the call notification.
+     *
+     * With the lock screen down the call is answered at once. With it up the
+     * tap is only remembered: the notification keeps ringing, the stored ring
+     * stays, and the web layer is told nothing until the user has unlocked.
+     */
+    private void onAnswerTapped(AnswerAction action, boolean locked) {
+        // One Answer waits at a time, and the newest tap is the one the user
+        // means. Whatever was waiting is forgotten, whichever chat it was for.
+        clearHeldAnswer();
+
+        if (!locked) {
+            proceedWithAnswer(action);
+            return;
+        }
+
+        final HeldAnswer held =
+                new HeldAnswer(action, android.os.SystemClock.elapsedRealtime());
+        heldAnswer = held;
+        // Frees the memory on time. The age check in advanceHeldAnswer is what
+        // actually refuses a late Answer, because this timer does not count
+        // time the phone spent asleep.
+        mainHandler.postAtTime(
+                () -> {
+                    if (heldAnswer == held) clearHeldAnswer();
+                },
+                held,
+                android.os.SystemClock.uptimeMillis() + HELD_ANSWER_MAX_MS);
+        // Resumed already: ask for the unlock now. Otherwise onResume does.
+        advanceHeldAnswer();
+    }
+
+    /**
+     * Move the waiting Answer one step: forget it when it is too old, answer
+     * when the lock screen is gone, otherwise ask the platform to dismiss the
+     * lock screen (Android 8 and later, once, and only while resumed) or keep
+     * waiting for the user to unlock by themselves (Android 7).
+     */
+    private void advanceHeldAnswer() {
+        final HeldAnswer held = heldAnswer;
+        if (held == null) return;
+
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (isDestroyed() || now - held.heldAt >= HELD_ANSWER_MAX_MS) {
+            clearHeldAnswer();
+            return;
+        }
+
+        if (!keyguardLockedOrUnknown()) {
+            // Taken out of the field first, so no later callback or timer can
+            // answer the same tap a second time.
+            clearHeldAnswer();
+            proceedWithAnswer(held.action);
+            return;
+        }
+
+        if (held.unlockReported) {
+            // Dismissed according to the platform, still locked according to
+            // the query. Ask again shortly, and give up if it never agrees.
+            if (!CallRingPolicy.unlockSettleKeepWaiting(held.unlockReportedAt, now)) {
+                clearHeldAnswer();
+                return;
+            }
+            if (!held.settleCheckQueued) {
+                held.settleCheckQueued = true;
+                mainHandler.postAtTime(
+                        () -> {
+                            held.settleCheckQueued = false;
+                            if (heldAnswer == held) advanceHeldAnswer();
+                        },
+                        held,
+                        android.os.SystemClock.uptimeMillis()
+                                + CallRingPolicy.UNLOCK_SETTLE_POLL_MS);
+            }
+            return;
+        }
+
+        if (!resumed) return;
+
+        // On Android 7 there is nothing to ask: the Answer waits for a later
+        // resume with the lock screen gone. Nested rather than `&&`, so the
+        // annotated call sits plainly inside the version-checked block.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            if (!held.dismissRequested) {
+                held.dismissRequested = true;
+                if (!Api26Keyguard.requestDismiss(this, held)) {
+                    // The request could not even be made. Same as a failed unlock.
+                    android.util.Log.i(
+                            "SlogaIntent",
+                            "an Answer was dropped: the unlock could not be requested");
+                    if (heldAnswer == held) clearHeldAnswer();
+                }
+            }
+        }
+    }
+
+    /**
+     * The platform's reply to the unlock request made for one waiting Answer.
+     * A reply for an Answer that has since been replaced, withdrawn, answered
+     * or forgotten is ignored: only the very object the request was made for
+     * can still be in the field.
+     */
+    private void onKeyguardDismissResult(HeldAnswer held, boolean succeeded) {
+        if (heldAnswer != held) return;
+        if (!succeeded) {
+            // Cancelled or failed. The Answer is gone for good: nothing was
+            // parked, nothing was sent, and the ring was never touched, so it
+            // keeps going and the user can press Answer again.
+            android.util.Log.i("SlogaIntent", "an Answer was dropped: the unlock did not complete");
+            clearHeldAnswer();
+            return;
+        }
+        held.unlockReported = true;
+        held.unlockReportedAt = android.os.SystemClock.elapsedRealtime();
+        advanceHeldAnswer();
+    }
+
+    /** Forget the waiting Answer, if any, and its timers. Main thread only. */
+    private void clearHeldAnswer() {
+        HeldAnswer held = heldAnswer;
+        if (held == null) return;
+        heldAnswer = null;
+        mainHandler.removeCallbacksAndMessages(held);
+    }
+
+    /** Forget the waiting Answer when it is for this chat, or for any chat when none is named. */
+    private void dropHeldAnswerFor(String channelId) {
+        HeldAnswer held = heldAnswer;
+        if (held == null) return;
+        if (channelId == null || channelId.equals(held.action.channelId)) clearHeldAnswer();
+    }
+
+    /**
+     * Answer the call. This is the only code that tells the web layer to join:
+     * no other call to setPendingAction or notificationActionPayload in this
+     * file passes true for the answer.
+     *
+     * It refuses while the lock screen is up, whoever called it, so an Answer
+     * can not reach the web layer, parked or sent, before the user unlocked.
+     *
+     * The order matters. The ring is closed as answered first, so it stops and
+     * is not counted as a missed call. The lock screen bypass the ring asked
+     * for is given up next. Only then is the action parked for a web layer
+     * that is still starting and sent to one that is already running. The
+     * parked action carries the time of the tap, so the time spent waiting
+     * for the unlock counts against its age limit too.
+     */
+    private void proceedWithAnswer(AnswerAction action) {
+        if (isDestroyed() || keyguardLockedOrUnknown()) return;
+
+        SlogaNotifier.resolveCall(this, action.channelId, "answered", false);
+        clearRingingWindowFlags();
+        PushTokenPlugin.setPendingAction(
+                action.path, true, false, action.callerId, action.callId, action.video, false,
+                action.tappedAt);
+        if (bridge != null) {
+            bridge.triggerWindowJSEvent(
+                    "slogaNotificationAction",
+                    notificationActionPayload(
+                            action.path, true, false, action.callerId, action.callId,
+                            action.video, false));
+        }
+    }
+
+    /**
+     * The Android 8+ unlock request, kept in its own class so the callback
+     * type it names is never resolved on Android 7. Same reason and same
+     * annotation as {@link Api33Back}.
+     */
+    @androidx.annotation.RequiresApi(android.os.Build.VERSION_CODES.O)
+    private static final class Api26Keyguard {
+        private Api26Keyguard() {}
+
+        /**
+         * Ask the platform to dismiss the lock screen, showing the PIN,
+         * pattern or password prompt when there is one. Returns false when
+         * the request could not be made at all.
+         */
+        static boolean requestDismiss(final MainActivity activity, final HeldAnswer held) {
+            try {
+                android.app.KeyguardManager keyguard = (android.app.KeyguardManager)
+                        activity.getSystemService(android.content.Context.KEYGUARD_SERVICE);
+                if (keyguard == null) return false;
+                keyguard.requestDismissKeyguard(
+                        activity,
+                        new android.app.KeyguardManager.KeyguardDismissCallback() {
+                            @Override
+                            public void onDismissSucceeded() {
+                                reply(true);
+                            }
+
+                            @Override
+                            public void onDismissCancelled() {
+                                reply(false);
+                            }
+
+                            @Override
+                            public void onDismissError() {
+                                reply(false);
+                            }
+
+                            private void reply(boolean succeeded) {
+                                // The platform already replies on the main
+                                // thread. This keeps the held Answer on one
+                                // thread even if a device does not.
+                                activity.runOnUiThread(
+                                        () -> activity.onKeyguardDismissResult(held, succeeded));
+                            }
+                        });
+                return true;
+            } catch (RuntimeException e) {
+                return false;
+            }
         }
     }
 
@@ -374,9 +793,14 @@ public class MainActivity extends BridgeActivity {
      * code. JSON escaping makes that impossible; the nonce gate above decides
      * WHETHER we are called, and this decides that what we pass can only ever
      * be read as data.
+     *
+     * {@code locked} is the lock state when the Intent was handled. It is
+     * there for the ring screen to read. The web layer asks again, through
+     * PushToken.isLocked(), before it acts on an Answer.
      */
     private static String notificationActionPayload(
-            String path, boolean answer, boolean ring, String callerId) {
+            String path, boolean answer, boolean ring, String callerId, String callId,
+            boolean video, boolean locked) {
         org.json.JSONObject detail = new org.json.JSONObject();
         try {
             detail.put("path", path);
@@ -385,14 +809,24 @@ public class MainActivity extends BridgeActivity {
             detail.put(
                     "callerId",
                     callerId == null ? org.json.JSONObject.NULL : callerId);
+            detail.put(
+                    "callId",
+                    callId == null ? org.json.JSONObject.NULL : callId);
+            detail.put("video", video);
+            detail.put("locked", locked);
         } catch (org.json.JSONException e) {
             return "{}";
         }
         return detail.toString();
     }
 
-    /** Turn the screen on and show over the lockscreen while a call is ringing. */
-    private void applyRingingWindowFlags() {
+    /**
+     * Turn the screen on and show over the lockscreen while a call is ringing.
+     * The flags now belong to this chat's ring, and a timer takes them off
+     * after holdMs (the ring's time left plus a margin) even if nothing else
+     * does. A later ring takes the flags over and restarts the timer.
+     */
+    private void applyRingingWindowFlags(String channelId, long holdMs) {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true);
             setTurnScreenOn(true);
@@ -403,6 +837,12 @@ public class MainActivity extends BridgeActivity {
         }
         // Don't let the display sleep again mid-ring.
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        ringFlagsChannelId = channelId;
+        mainHandler.removeCallbacksAndMessages(ringFlagsTimer);
+        mainHandler.postAtTime(
+                this::removeRingingWindowFlags,
+                ringFlagsTimer,
+                android.os.SystemClock.uptimeMillis() + holdMs);
     }
 
     /**
@@ -415,27 +855,54 @@ public class MainActivity extends BridgeActivity {
      * and clearing `turnScreenOn` there cancels the very wake it was asked for
      * (observed on a Retroid Pocket 5 / Android 13 — the screen stayed off).
      * The lifetime is tied to the RING instead: cleared when the popup is
-     * resolved (accept / decline / timeout, via PushTokenPlugin), with onStop as
-     * a backstop for when the activity is genuinely no longer visible.
+     * resolved (accept / decline / timeout, via PushTokenPlugin), when the
+     * ring ends natively (onRingResolved), and by the safety timer set with
+     * the flags, with onStop as a backstop for when the activity is genuinely
+     * no longer visible.
+     *
+     * Every caller of this method is saying the ring is over, so an Answer
+     * that is still waiting for the unlock is forgotten here too. That covers
+     * a Decline or a timeout in the in-app popup while a notification Answer
+     * waits: unlocking afterwards must not join that call. onStop does not go
+     * through here, see below.
      */
     void clearRingingWindowFlags() {
         runOnUiThread(() -> {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
-                setShowWhenLocked(false);
-                setTurnScreenOn(false);
-            } else {
-                getWindow().clearFlags(
-                        android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
-                                | android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
-            }
-            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            clearHeldAnswer();
+            removeRingingWindowFlags();
         });
+    }
+
+    /**
+     * The window half of clearRingingWindowFlags, and the one place the ring
+     * flags come off: the end of the ring (onRingResolved), the web layer,
+     * an Answer, the safety timer, onStop and sign-out all come here. Main
+     * thread only.
+     */
+    private void removeRingingWindowFlags() {
+        ringFlagsChannelId = null;
+        mainHandler.removeCallbacksAndMessages(ringFlagsTimer);
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(false);
+            setTurnScreenOn(false);
+        } else {
+            getWindow().clearFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                            | android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+        }
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
 
     @Override
     public void onStop() {
         super.onStop();
-        clearRingingWindowFlags();
+        // Only the window flags, as before. The unlock prompt can stop this
+        // activity while an Answer waits behind it, and being stopped is not
+        // the user changing their mind, so the waiting Answer stays. Giving up
+        // the flags here does not end the ring either: the ring is the
+        // notification, which keeps sounding on the lock screen with its
+        // Answer and Decline buttons.
+        removeRingingWindowFlags();
     }
 
     // Declared public, not protected: BridgeActivity widens some lifecycle
@@ -466,6 +933,11 @@ public class MainActivity extends BridgeActivity {
         // androidx already removes it on DESTROY; dropping the reference here
         // only keeps the two paths symmetrical.
         legacyBackCallback = null;
+        // An Answer waiting for the unlock dies with this activity. Its
+        // timers go with it, and a late reply from the platform finds the
+        // field empty and does nothing.
+        clearHeldAnswer();
+        mainHandler.removeCallbacksAndMessages(null);
         if (INSTANCE != null && INSTANCE.get() == this) INSTANCE = null;
         super.onDestroy();
     }

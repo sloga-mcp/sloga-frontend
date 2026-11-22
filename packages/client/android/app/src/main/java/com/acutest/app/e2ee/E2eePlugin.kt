@@ -1,6 +1,7 @@
 package com.acutest.app.e2ee
 
 import android.app.AlertDialog
+import android.app.KeyguardManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -91,6 +92,14 @@ internal val GENERIC_CALL_REFUSED: Set<String> = setOf("e2ee_split_begin")
 
 /** Whether the generic `call()` refuses [name] outright (see [GENERIC_CALL_REFUSED]). */
 internal fun genericCallRefuses(name: String): Boolean = name in GENERIC_CALL_REFUSED
+
+/**
+ * Whether a keyguard reading stops a plaintext confirm. `true` is a locked
+ * phone. `null` is a reading that could not be taken (no keyguard service, or
+ * the query threw), and it stops the confirm as well: only a definite "not
+ * locked" lets one through.
+ */
+internal fun keyguardBlocks(locked: Boolean?): Boolean = locked != false
 
 /**
  * Capacitor bridge for the native E2EE layer (slice 4) — the Android analog
@@ -368,6 +377,14 @@ class E2eePlugin : Plugin() {
                 // unblocks. `expected` goes through the core's one strict
                 // parser; nothing is mapped here. Never provisions a store.
                 "e2ee_acknowledge_group_plaintext" -> {
+                    // No native dialog stands in front of this one, so a
+                    // locked phone is refused here, before the core is asked.
+                    // The prompt reads only two `invalid_argument` refusals as
+                    // the group having changed. `declined` is neither, so the
+                    // prompt stays up, shows an error and nothing is recorded.
+                    if (keyguardBlocksNow()) {
+                        throw E2eeException.Failure("{\"type\":\"declined\"}")
+                    }
                     engine.acknowledgeGroupPlaintext(
                         requireString(call, "conversationId"),
                         requireString(call, "expected"),
@@ -872,6 +889,49 @@ class E2eePlugin : Plugin() {
     }
 
     /**
+     * Whether the phone is locked right now, read fresh on every call. A
+     * keyguard that cannot be read (no keyguard service, or the query threw)
+     * counts as locked.
+     */
+    private fun keyguardBlocksNow(): Boolean {
+        val locked: Boolean? =
+            try {
+                (context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)
+                    ?.isKeyguardLocked
+            } catch (error: Throwable) {
+                null
+            }
+        return keyguardBlocks(locked)
+    }
+
+    /**
+     * Refuses a plaintext confirm while the phone is locked. A call can ring
+     * and be shown over the lock screen, so whoever holds a locked phone could
+     * otherwise reach the dialogs of [downgrade], [confirmPeerDowngradeAccept]
+     * and [callConfirmDowngrade] without unlocking it. Turning encryption off
+     * is a choice for the person who can unlock the phone. Each of those
+     * commands asks here first, before it reads an argument or builds a
+     * dialog, and asks again when its confirm button is pressed, because the
+     * phone can lock while the dialog is up.
+     *
+     * The rejection is the same typed `declined` error the Cancel button of
+     * the [downgrade] and [callConfirmDowngrade] dialogs gives, and it has to
+     * stay that one. The call screen reads `declined` as the user saying no
+     * and keeps the call paused. It reads any other rejection of
+     * [callConfirmDowngrade] as a dialog that could not be shown and falls
+     * back to its own in-app confirm, which would let the locked phone
+     * through after all.
+     *
+     * Returns true when the call was rejected. The caller then returns at
+     * once and does nothing else.
+     */
+    private fun rejectedWhileLocked(call: PluginCall): Boolean {
+        if (!keyguardBlocksNow()) return false
+        call.reject("{\"type\":\"declined\"}")
+        return true
+    }
+
+    /**
      * Turn off encryption for a conversation — behind a BLOCKING NATIVE
      * dialog (slice 5, design §5.2). Mirrors the desktop `e2ee_downgrade`:
      * the webview can only REQUEST; the plaintext-direction transition needs
@@ -879,6 +939,8 @@ class E2eePlugin : Plugin() {
      */
     @PluginMethod
     fun downgrade(call: PluginCall) {
+        // A locked phone is refused before anything is read or shown.
+        if (rejectedWhileLocked(call)) return
         val conversationId = call.getString("conversationId") ?: run {
             call.reject("{\"type\":\"invalid_argument\",\"field\":\"conversationId\"}")
             return
@@ -898,6 +960,9 @@ class E2eePlugin : Plugin() {
                         "this conversation?",
                 )
                 .setPositiveButton("Turn off") { _, _ ->
+                    // The phone may have locked while the dialog was up. The
+                    // press closes the dialog either way.
+                    if (rejectedWhileLocked(call)) return@setPositiveButton
                     run(call) {
                         resolveJson(call, engine().downgrade(conversationId, selfUserId, bundles))
                     }
@@ -2060,6 +2125,10 @@ class E2eePlugin : Plugin() {
      */
     @PluginMethod
     fun confirmPeerDowngradeAccept(call: PluginCall) {
+        // A locked phone is refused before anything is read or shown. It is a
+        // rejection and not the Keep encrypted answer below: that answer is
+        // recorded, and this refusal records nothing.
+        if (rejectedWhileLocked(call)) return
         val conversationId = call.getString("conversationId") ?: run {
             call.reject("{\"type\":\"invalid_argument\",\"field\":\"conversationId\"}")
             return
@@ -2073,6 +2142,9 @@ class E2eePlugin : Plugin() {
                         "readable by the server.\n\nSend unencrypted from now on?",
                 )
                 .setPositiveButton("Send unencrypted") { _, _ ->
+                    // The phone may have locked while the dialog was up. The
+                    // press closes the dialog either way.
+                    if (rejectedWhileLocked(call)) return@setPositiveButton
                     run(call) {
                         engine().confirmPeerDowngrade(conversationId, true)
                         resolveJson(call, "null")
@@ -2112,6 +2184,8 @@ class E2eePlugin : Plugin() {
      */
     @PluginMethod
     fun callConfirmDowngrade(call: PluginCall) {
+        // A locked phone is refused before anything is read or shown.
+        if (rejectedWhileLocked(call)) return
         val groupId = call.getString("groupId") ?: run {
             call.reject("{\"type\":\"invalid_argument\",\"field\":\"groupId\"}")
             return
@@ -2160,6 +2234,9 @@ class E2eePlugin : Plugin() {
     }
 
     private fun showConfirmDowngradeDialog(call: PluginCall, groupId: String, who: String) {
+        // The roster was computed on another thread, so the phone may have
+        // locked since the command began. Asked again here, before the dialog.
+        if (rejectedWhileLocked(call)) return
         AlertDialog.Builder(activity)
             .setTitle("Turn off call encryption")
             .setMessage(
@@ -2169,6 +2246,9 @@ class E2eePlugin : Plugin() {
                     "this call?",
             )
             .setPositiveButton("Turn off") { _, _ ->
+                // The phone may have locked while the dialog was up. The press
+                // closes the dialog either way, and nothing is armed.
+                if (rejectedWhileLocked(call)) return@setPositiveButton
                 run(call) {
                     // Only this path arms the announce gate.
                     engine().mlsCallMarkDowngradeConfirmed(groupId)

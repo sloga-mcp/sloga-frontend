@@ -25,6 +25,15 @@
  *     not is LOUD, never silent: an epoch with no entry for us throws rather
  *     than reporting the send key installed, and an install the group has
  *     already moved past is refused by the `(group, epoch)` fence.
+ *  5. iOS only (phase 2, D2 + R3): `rawKeyBytes` mode hands the worker the
+ *     raw HKDF bytes instead of a `CryptoKey` (the patched livekit imports
+ *     them inside the worker), and the local send key counts as installed only
+ *     once the worker has acked it. Without the option every Chromium shell
+ *     (Windows, Linux, Android) keeps the `CryptoKey` path exactly as before.
+ *  6. D15: nothing here (or anywhere under `components/`) asks livekit to
+ *     ratchet a key. The worker's ratchet reply carries a `CryptoKey`, which
+ *     WebKit may fail to clone; `ratchetWindowSize: 0` plus that absence keep
+ *     the path unreachable, and the spec scans for it.
  */
 import { type KeyInfo, BaseKeyProvider } from "livekit-client";
 
@@ -180,6 +189,81 @@ export class MissingLocalFrameKeyError extends Error {
 }
 
 /**
+ * The E2EE worker did not confirm this device's send key (iOS raw-bytes mode
+ * only): the ack came back `ok: false`, never came (timeout), or the ack wait
+ * itself failed.
+ *
+ * Thrown from `applyLocalKey` AFTER the key was posted, so a Remove-driven
+ * switch still reaches the worker as early as it can; what the throw refuses
+ * is the CLAIM that the local send key is installed. On WebKit a `setKey` the
+ * worker could not import leaves the encoder on the PREVIOUS key, so resolving
+ * here would report a rotation done while this device still publishes under
+ * a key a removed member holds. Carries no key material and no identity.
+ */
+export class LocalKeyAckError extends Error {
+  readonly epoch: number;
+
+  readonly groupId: string;
+
+  readonly keyIndex: number;
+
+  constructor(groupId: string, epoch: number, keyIndex: number) {
+    super(
+      `the E2EE worker did not confirm this device's send key at epoch ` +
+        `${epoch} (index ${keyIndex}, group ${groupId}) — refusing to report ` +
+        `the local send key installed`,
+    );
+    this.name = "LocalKeyAckError";
+    this.groupId = groupId;
+    this.epoch = epoch;
+    this.keyIndex = keyIndex;
+  }
+}
+
+/** Constructor options for {@link MlsKeyProvider}. */
+export interface MlsKeyProviderOptions {
+  /**
+   * iOS only (D2): hand the worker raw HKDF bytes (`KeyInfo.keyBytes`) on
+   * every install AND every replay, instead of a `CryptoKey` it may not be
+   * able to clone. Requires `awaitKeyAck`; the constructor throws without it.
+   */
+  rawKeyBytes?: boolean;
+  /**
+   * Resolve `true` once the worker acks `setKey` for `(identity, keyIndex)`,
+   * `false` on a failed ack or a timeout (`WorkerAckTracker.waitKeyAck`).
+   * Called for the LOCAL identity in the same task that posts its key, BEFORE
+   * the post. Only consulted when `rawKeyBytes` is set: Chromium shells get no
+   * ack gating (R3), so passing it without `rawKeyBytes` changes nothing.
+   * Called unbound.
+   */
+  awaitKeyAck?: (identity: string, keyIndex: number) => Promise<boolean>;
+}
+
+/**
+ * Zero every `keyBytes` in `dropped` that no key in `served` still uses.
+ *
+ * The check is by array IDENTITY, and it is what makes zeroing safe: a replay
+ * posts whatever `getKeys()` holds, so zeroing an array that is still served
+ * would make the next replay hand the worker a key of zeros. Every install
+ * creates fresh arrays, so a dropped one is normally never served, but the
+ * rule is stated here instead of relying on that.
+ */
+function scrubKeyBytes(
+  dropped: Iterable<KeyInfo>,
+  served: readonly KeyInfo[],
+): void {
+  const live = new Set<Uint8Array>();
+  for (const info of served) {
+    if (info.keyBytes !== undefined) live.add(info.keyBytes);
+  }
+  for (const info of dropped) {
+    if (info.keyBytes !== undefined && !live.has(info.keyBytes)) {
+      info.keyBytes.fill(0);
+    }
+  }
+}
+
+/**
  * `BaseKeyProvider`'s retained key map — TypeScript-`private`, but plainly
  * reachable at runtime — reached through this ONE accessor.
  *
@@ -270,8 +354,46 @@ export class MlsKeyProvider extends BaseKeyProvider {
    */
   onLocalScreenKey?: (key: LocalScreenKey) => void | Promise<void>;
 
-  constructor() {
+  /**
+   * iOS raw-bytes mode (D2). Fixed at construction: a provider that switched
+   * modes mid-call would replay a set whose entries disagree on whether the
+   * worker gets bytes or a `CryptoKey`.
+   */
+  readonly #rawKeyBytes: boolean;
+
+  /** Set by `close()` and never cleared: every install is refused after it. */
+  #closed = false;
+  /**
+   * Moves on every `resetForGroup` (and so on `close`). An install takes it
+   * once `#admits` has let it in, and refuses to land if it moved during the
+   * install's import: the group it was for has been replaced, and landing
+   * would publish that group's keys into the provider that now stands for the
+   * next one (or, against a new group's fence, reset that group's keys away).
+   * Epochs cannot tell old from new: they restart per group, and a group can
+   * be re-established under the same id.
+   */
+  #resetGeneration = 0;
+
+  /** The local key's ack wait; set exactly when `#rawKeyBytes` is. */
+  readonly #awaitKeyAck:
+    | ((identity: string, keyIndex: number) => Promise<boolean>)
+    | undefined;
+
+  constructor(options: MlsKeyProviderOptions = {}) {
+    // Fail closed BEFORE anything is built: raw bytes with no ack wait would
+    // report the send key installed on nothing but the post, which is the
+    // claim the ack exists to back.
+    const rawKeyBytes = options.rawKeyBytes === true;
+    const awaitKeyAck = options.awaitKeyAck;
+    if (rawKeyBytes && typeof awaitKeyAck !== "function") {
+      throw new TypeError(
+        "MlsKeyProvider: rawKeyBytes requires awaitKeyAck — the local send " +
+          "key may only count as installed once the worker acks it",
+      );
+    }
     super({ sharedKey: false, ratchetWindowSize: 0, failureTolerance: 0 });
+    this.#rawKeyBytes = rawKeyBytes;
+    this.#awaitKeyAck = rawKeyBytes ? awaitKeyAck : undefined;
   }
 
   /**
@@ -295,33 +417,59 @@ export class MlsKeyProvider extends BaseKeyProvider {
    * replay landing in that gap would re-post the PREVIOUS set on top of them.
    * It also makes an install atomic: an entry that fails to import means the
    * worker took none of them, rather than a half-keyed epoch nobody records.
+   *
+   * In raw-bytes mode the main-thread import stays, as VALIDATION (D2): bytes
+   * the main thread cannot import as HKDF material are refused here, before
+   * any of the set is posted, exactly as on Chromium. Each entry then carries
+   * its own fresh copy of the bytes, which `#publish` hands the worker and the
+   * replay set keeps; copies of a set that fails part-way are zeroed.
    */
   async #import(entries: MlsFrameKey[]): Promise<InstalledKey[]> {
     const imported: InstalledKey[] = [];
-    for (const entry of entries) {
-      if (!entry.livekit_identity) {
-        // Checked HERE, where nothing has been published yet. The base class
-        // throws on a keyless identity under `sharedKey:false`, and it throws
-        // from inside `onSetEncryptionKey` — i.e. from the middle of
-        // `#publish`, after the replay slot has been assigned, which is the one
-        // way `#publish` could leave the replay set describing keys the worker
-        // never got.
-        throw new Error(
-          `MLS frame key at index ${entry.key_index} carried no LiveKit identity`,
+    // The entry being imported right now (raw mode), so a throw from its own
+    // import zeroes it too, not only the entries already done.
+    let inFlight: Uint8Array[] = [];
+    try {
+      for (const entry of entries) {
+        if (!entry.livekit_identity) {
+          // Checked HERE, where nothing has been published yet. The base
+          // class throws on a keyless identity under `sharedKey:false`, and it
+          // throws from inside `onSetEncryptionKey` — i.e. from the middle of
+          // `#publish`, after the replay slot has been assigned, which is the
+          // one way `#publish` could leave the replay set describing keys the
+          // worker never got.
+          throw new Error(
+            `MLS frame key at index ${entry.key_index} carried no LiveKit identity`,
+          );
+        }
+        const raw = base64ToBytes(entry.frame_key_b64);
+        // Copied BEFORE the import: the copy is what the worker gets, and
+        // nothing the import does to its argument can reach it.
+        const keyBytes = this.#rawKeyBytes ? new Uint8Array(raw) : undefined;
+        if (keyBytes !== undefined) inFlight = [raw, keyBytes];
+        const material = await crypto.subtle.importKey(
+          "raw",
+          raw,
+          "HKDF",
+          false,
+          ["deriveBits", "deriveKey"],
         );
+        const info: InstalledKey = {
+          key: material,
+          participantIdentity: entry.livekit_identity,
+          keyIndex: entry.key_index,
+        };
+        if (keyBytes !== undefined) {
+          raw.fill(0);
+          info.keyBytes = keyBytes;
+          inFlight = [];
+        }
+        imported.push(info);
       }
-      const material = await crypto.subtle.importKey(
-        "raw",
-        base64ToBytes(entry.frame_key_b64),
-        "HKDF",
-        false,
-        ["deriveBits", "deriveKey"],
-      );
-      imported.push({
-        key: material,
-        participantIdentity: entry.livekit_identity,
-        keyIndex: entry.key_index,
-      });
+    } catch (error) {
+      for (const bytes of inFlight) bytes.fill(0);
+      scrubKeyBytes(imported, []);
+      throw error;
     }
     return imported;
   }
@@ -335,11 +483,30 @@ export class MlsKeyProvider extends BaseKeyProvider {
    * `SetKey`, which `E2EEManager` turns straight into a `postMessage`), and a
    * worker message is a macrotask; nothing between these statements yields, so
    * no replay can observe the two halves disagreeing.
+   *
+   * Raw-bytes mode passes each entry's `keyBytes` as the 4th argument, which
+   * the patched livekit carries on the emitted `KeyInfo`; `E2EEManager.postKey`
+   * then sends `keyBytes` and no `CryptoKey`. The replay reads the SAME
+   * `InstalledKey` objects through `getKeys()` and goes through the same
+   * `postKey`, so a replay carries the bytes too. The arrays of the set this
+   * replaces are zeroed once the new set is posted (`postMessage` copies
+   * synchronously, so nothing still in flight refers to them).
    */
   #publish(infos: InstalledKey[], slot: "remotes" | "local"): void {
+    const outgoing =
+      slot === "remotes" ? this.#replayRemotes : this.#replayLocal;
     if (slot === "remotes") this.#replayRemotes = infos;
     else this.#replayLocal = infos;
     for (const info of infos) {
+      if (this.#rawKeyBytes) {
+        this.onSetEncryptionKey(
+          info.key,
+          info.participantIdentity,
+          info.keyIndex,
+          info.keyBytes,
+        );
+        continue;
+      }
       // BaseKeyProvider.onSetEncryptionKey(keyMaterial, identity, keyIndex).
       this.onSetEncryptionKey(
         info.key,
@@ -348,6 +515,7 @@ export class MlsKeyProvider extends BaseKeyProvider {
       );
     }
     this.#pruneRetainedKeys();
+    scrubKeyBytes(outgoing, this.getKeys());
   }
 
   /**
@@ -360,10 +528,17 @@ export class MlsKeyProvider extends BaseKeyProvider {
   #pruneRetainedKeys(): void {
     const retained = retainedKeyMap(this);
     if (!retained) return;
-    const live = new Set(this.getKeys().map(retainedId));
-    for (const id of [...retained.keys()]) {
-      if (!live.has(id)) retained.delete(id);
+    const served = this.getKeys();
+    const live = new Set(served.map(retainedId));
+    const pruned: KeyInfo[] = [];
+    for (const [id, info] of [...retained]) {
+      if (live.has(id)) continue;
+      retained.delete(id);
+      pruned.push(info);
     }
+    // Raw mode: the base class's record shares the replay entry's array, so
+    // this is normally already zero; it is zeroed here too in case not.
+    scrubKeyBytes(pruned, served);
   }
 
   /**
@@ -394,18 +569,22 @@ export class MlsKeyProvider extends BaseKeyProvider {
    * re-assert (the Add-grace's deferred local install rides one), a lower one
    * has been superseded and must do nothing.
    *
-   * 🔴 The GROUP half is deliberately weaker, and the session owns it. A
-   * different group resets rather than compares, because epochs only count
-   * within one group and a cross-group number is neither newer nor older — but
-   * that means the provider trusts ARRIVAL ORDER to say which group is
-   * current, so a late install for an abandoned group would replace a live
-   * one's keys. Nothing can reach that today: the session re-checks
-   * `groupId !== this.#groupId` after its fetch, and `#resetRotationState`
-   * cancels the grace timer before any group swap. A caller that wants the
-   * provider to enforce it must hand it the authoritative group id; this fence
-   * restates the EPOCH invariant only.
+   * 🔴 The GROUP half is deliberately weaker. A different group resets
+   * rather than compares, because epochs only count within one group and a
+   * cross-group number is neither newer nor older, so the provider trusts
+   * ARRIVAL ORDER to say which group is current. What it does enforce is the
+   * reset itself: an install still importing when its group was replaced
+   * (`resetForGroup`, which the session's `#resetRotationState` runs on a
+   * re-establish, a poisoned successor or a removed-self rejoin) lands
+   * nothing, because every reset moves `#resetGeneration` and an install
+   * refuses to land across a move. The session drops such an install's
+   * result on its own side too. Two installs for different groups that both
+   * start with no reset between them are still ordered by arrival; a caller
+   * that wants more must hand the provider the authoritative group id.
    */
   #admits(groupId: string, epoch: number): boolean {
+    // Checked first: a closed provider must not reset for a "new" group.
+    if (this.#closed) return false;
     const fence = this.#fence;
     if (!fence) return true;
     if (fence.groupId !== groupId) {
@@ -433,11 +612,34 @@ export class MlsKeyProvider extends BaseKeyProvider {
    * front of that, but not holding the key is the stronger control.
    */
   resetForGroup(): void {
+    this.#resetGeneration += 1;
+    const dropped = this.getKeys();
     this.#replayRemotes = [];
     this.#replayLocal = [];
     this.#fence = undefined;
     this.#lastLocalScreenKey = undefined;
     this.#pruneRetainedKeys();
+    // Raw mode: nothing is served any more, so every dropped array is zeroed.
+    scrubKeyBytes(dropped, this.getKeys());
+  }
+
+  /**
+   * End this provider for good — the call is over (both `state.tsx`
+   * teardowns and the WebKit sender hold's release, in place of
+   * `resetForGroup`).
+   *
+   * 🔴 `resetForGroup` alone is not enough there: it clears the fence, and an
+   * install whose `#import` was still awaiting `importKey` when the call ended
+   * then passed `#admits` on its re-check and `#publish`ed fresh raw key bytes
+   * (iOS, D2) into a provider nobody would zero again. The latch makes
+   * `#admits` refuse every install from now on, in flight or new, for any
+   * group and epoch; a refused install zeroes what it imported and returns,
+   * exactly like a superseded one. Nothing reopens it, a later
+   * `resetForGroup` included.
+   */
+  close(): void {
+    this.#closed = true;
+    this.resetForGroup();
   }
 
   /**
@@ -480,6 +682,11 @@ export class MlsKeyProvider extends BaseKeyProvider {
    * The `override` keyword is deliberate: if a LiveKit upgrade renames or
    * drops `getKeys`, `tsc` fails here instead of silently restoring the
    * replay.
+   *
+   * Raw-bytes mode: every entry carries its `keyBytes`, and every replay site
+   * (`initAck`, `enable`, `SignalConnected`) hands the entry itself to
+   * `postKey`, so a replay posts the bytes exactly as the install did, never
+   * a `CryptoKey` alone.
    */
   override getKeys(): InstalledKey[] {
     return [...this.#replayRemotes, ...this.#replayLocal];
@@ -522,8 +729,12 @@ export class MlsKeyProvider extends BaseKeyProvider {
     frameKeys: MlsFrameKeys,
     localIdentity: string,
   ): Promise<void> {
-    await this.applyRemoteKeys(frameKeys, localIdentity);
-    await this.applyLocalKey(frameKeys, localIdentity);
+    // 🔴 The local half is held to the generation the remote half was
+    // admitted under. Started fresh after a reset, it would find the next
+    // group's fence (or none), reset or pass, and publish this group's send
+    // key on top of the group that replaced it.
+    const generation = await this.#applyRemote(frameKeys, localIdentity);
+    await this.#applyLocal(frameKeys, localIdentity, generation);
   }
 
   /**
@@ -537,32 +748,71 @@ export class MlsKeyProvider extends BaseKeyProvider {
     frameKeys: MlsFrameKeys,
     localIdentity: string,
   ): Promise<void> {
+    await this.#applyRemote(frameKeys, localIdentity);
+  }
+
+  /**
+   * `applyRemoteKeys`, returning the reset generation it ran under (taken
+   * after its entry check, which may itself reset for a new group), so
+   * `applyKeys` can hold its local half to the same group.
+   */
+  async #applyRemote(
+    frameKeys: MlsFrameKeys,
+    localIdentity: string,
+  ): Promise<number> {
     const epoch = this.#epochOf(frameKeys);
-    if (!this.#admits(frameKeys.group_id, epoch)) return;
+    if (!this.#admits(frameKeys.group_id, epoch)) return this.#resetGeneration;
+    const generation = this.#resetGeneration;
     const imported = await this.#import(
       remoteInstallEntries(frameKeys, localIdentity),
     );
     // Re-check across the import: `#import` awaits, so a newer epoch may have
-    // installed while we were deriving this one.
-    if (!this.#admits(frameKeys.group_id, epoch)) return;
+    // installed while we were deriving this one, or the group been replaced
+    // (remote-half generation check).
+    if (
+      generation !== this.#resetGeneration ||
+      !this.#admits(frameKeys.group_id, epoch)
+    ) {
+      scrubKeyBytes(imported, []);
+      return generation;
+    }
     // Replace the remote replay set wholesale rather than merging: a sender
     // removed at this epoch is absent from the imported set, and that absence
     // is exactly what stops LiveKit re-installing their key on the next ack.
     this.#publish(imported, "remotes");
     this.#stamp(frameKeys.group_id, epoch);
+    return generation;
   }
 
   /**
    * Install the current-epoch LOCAL send key — THE send-index switch (§1.5),
    * always the final `onSetEncryptionKey`. Immediate rotations call it inline
    * via `applyKeys`; Add-driven rotations call it after the epoch-fenced grace.
+   *
+   * Raw-bytes mode (iOS, D2): resolves only once the worker has acked the new
+   * local key, and throws {@link LocalKeyAckError} if it does not (`ok:
+   * false`, a timeout, a failed wait). Remote keys are not ack-gated.
    */
   async applyLocalKey(
     frameKeys: MlsFrameKeys,
     localIdentity: string,
   ): Promise<void> {
+    await this.#applyLocal(frameKeys, localIdentity);
+  }
+
+  /**
+   * `applyLocalKey`; `since` (from `applyKeys`) is the generation the remote
+   * half ran under, and a reset since then refuses this half before it starts.
+   */
+  async #applyLocal(
+    frameKeys: MlsFrameKeys,
+    localIdentity: string,
+    since?: number,
+  ): Promise<void> {
     const epoch = this.#epochOf(frameKeys);
+    if (since !== undefined && since !== this.#resetGeneration) return;
     if (!this.#admits(frameKeys.group_id, epoch)) return;
+    const generation = this.#resetGeneration;
     const entries = localInstallEntries(frameKeys, localIdentity);
     if (entries.length === 0) {
       // 🔴 FAIL LOUD, TERMINALLY. An egress with no entry for us means native
@@ -581,10 +831,67 @@ export class MlsKeyProvider extends BaseKeyProvider {
       throw new MissingLocalFrameKeyError(frameKeys.group_id, epoch);
     }
     const imported = await this.#import(entries);
-    if (!this.#admits(frameKeys.group_id, epoch)) return;
+    // Local-half generation check: a reset during the import refuses it.
+    if (
+      generation !== this.#resetGeneration ||
+      !this.#admits(frameKeys.group_id, epoch)
+    ) {
+      scrubKeyBytes(imported, []);
+      return;
+    }
+    // 🔴 Raw mode (R13a): the ack wait is registered HERE, in the same task
+    // as the post and BEFORE it. `waitKeyAck` withdraws any earlier ack for
+    // the pair when it registers (indices repeat every 16 epochs), so a wait
+    // started after the post could miss the fresh ack, and one started after
+    // an `await` could be satisfied by nothing newer than the post.
+    const acks = this.#registerKeyAcks(imported);
     this.#publish(imported, "local");
     this.#stamp(frameKeys.group_id, epoch);
     await this.#applyLocalScreenKey(frameKeys, localIdentity);
+    await this.#confirmKeyAcks(acks, frameKeys.group_id, epoch);
+  }
+
+  /**
+   * Start one ack wait per local entry (raw mode; none otherwise). Each wait
+   * settles to a plain boolean: a rejecting or throwing `awaitKeyAck` counts
+   * as "not acked", never as an unhandled rejection or an install that skips
+   * the post.
+   */
+  #registerKeyAcks(
+    infos: InstalledKey[],
+  ): { keyIndex: number; acked: Promise<boolean> }[] {
+    const awaitKeyAck = this.#awaitKeyAck;
+    if (!this.#rawKeyBytes || awaitKeyAck === undefined) return [];
+    return infos.map((info) => {
+      let acked: Promise<boolean>;
+      try {
+        acked = Promise.resolve(
+          awaitKeyAck(info.participantIdentity, info.keyIndex),
+        ).then(
+          (ok) => ok === true,
+          () => false,
+        );
+      } catch {
+        acked = Promise.resolve(false);
+      }
+      return { keyIndex: info.keyIndex, acked };
+    });
+  }
+
+  /**
+   * Claim the local key installed only if the worker acked every local
+   * entry; otherwise throw {@link LocalKeyAckError}. The key stays posted and
+   * replayable either way: the replay set mirrors what was SENT, and the
+   * throw takes the session's media-error path.
+   */
+  async #confirmKeyAcks(
+    acks: { keyIndex: number; acked: Promise<boolean> }[],
+    groupId: string,
+    epoch: number,
+  ): Promise<void> {
+    for (const { keyIndex, acked } of acks) {
+      if (!(await acked)) throw new LocalKeyAckError(groupId, epoch, keyIndex);
+    }
   }
 
   /**
