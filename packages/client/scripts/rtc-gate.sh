@@ -301,8 +301,11 @@ EXPECTED=(
   # 12 -> 26: the backup refresh shells and the hourly focus throttle, with
   # their in-suite mutants. 26 -> 37: Tauri out of the refresh (sync
   # main-thread backup commands) and the `recoveryPollMs` setup poll rule,
-  # with their mutants and wiring scans.
-  "components/client/e2eePlatform.test.ts 37 0"
+  # with their mutants and wiring scans. 37 -> 38: Tauri back in once its
+  # backup commands went async (sloga-desktop feat/tauri-backup-async); the
+  # "Tauri refreshes again" mutant became "Tauri left out", plus "Tauri
+  # matched loosely".
+  "components/client/e2eePlatform.test.ts 38 0"
   "components/client/e2eeCallPlaneIos.test.ts 8 0"
   # 181 -> 218 by fix round F (L3q: the fetched switch, the offer helper,
   # the prejoin and Settings readers); 218 -> 220 for the Settings card's

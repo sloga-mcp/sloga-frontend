@@ -1,8 +1,8 @@
 // Behavior of the backup refresh courier against the REAL `E2EEBridge`: the
 // iOS orphaned recovery bundle (audit M2, Stage 6 fixes MAJOR-1, MINOR-2,
-// MINOR-3), and the refresh that also runs on Electron after a claim and on
-// main-window focus (at most hourly), never on Tauri while its backup
-// commands are sync and engine-locked, never on Android, and never marks an
+// MINOR-3), and the refresh that also runs on Tauri and Electron after a
+// claim and on main-window focus (at most hourly; Tauri since its backup
+// commands went async), never on Android, and never marks an
 // upload the server did not store (on any transport: the desktop courier,
 // the Android and iOS create and rotate dialogs, the refresh).
 //
@@ -25,8 +25,7 @@
 // else (413, 429, 5xx, network, a native take that threw) and the 15-minute
 // wait running out the generic ones. The console gets the error's name
 // only. A background refresh only logs. `refreshBackupIfDue()` refuses by
-// itself on Tauri, Android, the website and a window that is not the main
-// one.
+// itself on Android, the website and a window that is not the main one.
 //
 // `E2EE_COURIER_TS` swaps in another e2ee.ts (resolved against THIS
 // directory) and `E2EE_COURIER_ERRORS_TS` another errors.ts, which is how
@@ -583,7 +582,7 @@ test("control: a claimed, connected bridge does take and PUT", async () => {
 
 // ---- Which shells refresh after a claim -------------------------------------
 
-for (const shell of ["electron", "ios"] as const) {
+for (const shell of ["tauri", "electron", "ios"] as const) {
   test(`${shell}: an accepted claim runs the due check and uploads a due backup`, async () => {
     fresh(shell);
     plugin.due = [BUNDLE];
@@ -594,9 +593,7 @@ for (const shell of ["electron", "ios"] as const) {
   });
 }
 
-// Tauri: `e2ee_backup_refresh_if_due` is a sync, engine-locked command on
-// the main thread until the sloga-desktop follow-up makes it async.
-for (const shell of ["tauri", "android", "web"] as const) {
+for (const shell of ["android", "web"] as const) {
   test(`${shell}: no due check after a claim, and none on focus`, async () => {
     let now = 1_000_000;
     Date.now = () => now;
@@ -634,7 +631,7 @@ test("electron: no due check before the claim is accepted", async () => {
 
 // ---- Main-window focus, at most hourly --------------------------------------
 
-for (const shell of ["electron"] as const) {
+for (const shell of ["tauri", "electron"] as const) {
   test(`${shell}: main-window focus re-checks at most once an hour`, async () => {
     let now = 1_000_000;
     Date.now = () => now;
@@ -697,7 +694,7 @@ test("focus: a disposed bridge stops listening", async () => {
 
 // ---- The server's echoed generation ----------------------------------------
 
-for (const shell of ["electron", "ios"] as const) {
+for (const shell of ["tauri", "electron", "ios"] as const) {
   test(`${shell}: an echoed generation other than the one sent is not marked, and not retried`, async () => {
     let now = 1_000_000;
     Date.now = () => now;
@@ -1115,7 +1112,7 @@ test("electron: a background refresh the server did not keep only logs its name"
 
 // ---- refreshBackupIfDue() refuses by itself ---------------------------------
 
-for (const shell of ["tauri", "android", "web"] as const) {
+for (const shell of ["android", "web"] as const) {
   test(`${shell}: a direct refreshBackupIfDue() never asks native`, async () => {
     fresh(shell);
     const { bridge } = await claimedBridge();
@@ -1141,12 +1138,14 @@ for (const shell of ["tauri", "electron"] as const) {
   });
 }
 
-test("control: a direct refreshBackupIfDue() in the electron main window takes", async () => {
-  fresh("electron");
-  const { bridge } = await claimedBridge();
-  plugin.calls = [];
-  plugin.due = [BUNDLE];
-  await bridge.refreshBackupIfDue();
-  assert.equal(plugin.takes(), 1);
-  assert.deepEqual(puts, [7]);
-});
+for (const shell of ["tauri", "electron"] as const) {
+  test(`control: a direct refreshBackupIfDue() in the ${shell} main window takes`, async () => {
+    fresh(shell);
+    const { bridge } = await claimedBridge();
+    plugin.calls = [];
+    plugin.due = [BUNDLE];
+    await bridge.refreshBackupIfDue();
+    assert.equal(plugin.takes(), 1);
+    assert.deepEqual(puts, [7]);
+  });
+}

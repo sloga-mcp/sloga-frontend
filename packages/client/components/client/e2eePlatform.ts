@@ -189,13 +189,15 @@ export function capacitorCouriersOrphanedRecovery(platform: string): boolean {
 
 /**
  * Whether this page refreshes the key backup by itself: after each accepted
- * device claim and when the main window regains focus. Electron and iOS do.
- * Tauri does not for now: `e2ee_backup_refresh_if_due` and
- * `e2ee_backup_status` are sync Tauri commands, so they run on the main
- * thread under the engine lock (sloga-desktop `src-tauri/src/e2ee.rs`
- * 1186-1211), and a refresh behind a long engine job would freeze every
- * window. Tauri comes back once those commands are async with
- * `spawn_blocking` (a sloga-desktop follow-up). Android never does: it
+ * device claim and when the main window regains focus. Tauri, Electron and
+ * iOS do. Tauri only because its backup commands (`e2ee_backup_status`,
+ * `e2ee_backup_refresh_if_due`, `e2ee_backup_mark_uploaded`) are async and
+ * reach the engine inside `spawn_blocking` (sloga-desktop
+ * `feat/tauri-backup-async`; `BACKUP_OFF_MAIN_THREAD_COMMANDS` in
+ * `src-tauri/build.rs` keeps them that way). As sync commands they ran on
+ * the main thread under the engine lock, and a refresh behind a long engine
+ * job froze every window. The shell bundles this page, so this rule must not
+ * reach a desktop build without that change. Android never does: it
  * writes a new backup key before the code is shown, so a refresh after a
  * cancelled or killed rotate would replace the blob the old code still
  * opens. The web has no native layer, and a page that is not the main
@@ -212,6 +214,7 @@ export function shellRefreshesBackup(input: {
 }): boolean {
   if (input.capacitorPlatform === "android") return false;
   if (input.mainWindow !== true) return false;
+  if (input.shell === "tauri") return true;
   if (input.shell === "electron") return true;
   return input.shell === "capacitor" && input.capacitorPlatform === "ios";
 }
@@ -219,17 +222,18 @@ export function shellRefreshesBackup(input: {
 /** How often the Encrypted-only setup re-reads the backup status, in ms. */
 export const RECOVERY_POLL_MS = 3000;
 
-/** The same where each read blocks the shell's main thread (Tauri), in ms. */
+/** The same where each read blocks the shell's main thread, in ms. */
 export const RECOVERY_POLL_BLOCKING_MS = 15_000;
 
 /**
  * How often the Encrypted-only setup may re-read the backup status while it
- * waits for a recovery code's upload, in ms, or null for not now. On Tauri
- * the status read is a sync command on the main thread under the engine
- * lock (see `shellRefreshesBackup`), and a create or rotate holds that lock
- * while it mints, so there it never polls while one is running and then
- * polls at most every 15 s. Elsewhere every 3 s, as before. Anything but a
- * literal false reads as the slower, blocking case.
+ * waits for a recovery code's upload, in ms, or null for not now. Where the
+ * status read blocks the shell's main thread under the engine lock (Tauri's
+ * did until its backup commands went async; see `shellRefreshesBackup`), a
+ * create or rotate holds that lock while it mints, so there it never polls
+ * while one is running and then polls at most every 15 s. Elsewhere every
+ * 3 s. No bridge reports blocking today. Anything but a literal false reads
+ * as the slower, blocking case.
  *
  * - `blocksMainThread` is the bridge's `backupCommandsBlockMainThread`.
  * - `minting` is true while a create or rotate has not settled.

@@ -239,12 +239,12 @@ const HOUR = 60 * 60 * 1000;
 
 /** [label, input, expected]: every shell and platform the bridge can see. */
 const REFRESH_ROWS: [string, RefreshInput, boolean][] = [
-  // Not Tauri while its backup commands are sync and engine-locked
-  // (sloga-desktop follow-up)
+  // Tauri since its backup commands run off the main thread (sloga-desktop
+  // feat/tauri-backup-async)
   [
     "Tauri main window",
     { shell: "tauri", capacitorPlatform: "web", mainWindow: true },
-    false,
+    true,
   ],
   [
     "Electron main window",
@@ -363,21 +363,37 @@ function refreshFailures(m: Module): string[] {
   return out;
 }
 
-test("shellRefreshesBackup: Electron and iOS refresh in the main window", () => {
+test("shellRefreshesBackup: Tauri, Electron and iOS refresh in the main window", () => {
   const refreshing = REFRESH_ROWS.filter(([, , want]) => want).map(
     ([label]) => label,
   );
-  assert.deepEqual(refreshing, ["Electron main window", "iOS"]);
+  assert.deepEqual(refreshing, [
+    "Tauri main window",
+    "Electron main window",
+    "iOS",
+  ]);
   for (const [label, input, want] of REFRESH_ROWS) {
     if (want) assert.equal(mod.shellRefreshesBackup(input), true, label);
   }
 });
 
-test("shellRefreshesBackup: Tauri never refreshes while its backup commands are sync", () => {
-  for (const [label, input] of REFRESH_ROWS) {
-    if (input.shell === "tauri") {
-      assert.equal(mod.shellRefreshesBackup(input), false, label);
-    }
+test("shellRefreshesBackup: Tauri refreshes in its main window and nowhere else", () => {
+  const tauri = REFRESH_ROWS.filter(([, input]) => input.shell === "tauri");
+  assert.deepEqual(
+    tauri.map(([label]) => label),
+    [
+      "Tauri main window",
+      "Android under a Tauri shell value",
+      "Tauri, not the main window",
+      "Tauri, main window flag 1",
+    ],
+  );
+  for (const [label, input] of tauri) {
+    assert.equal(
+      mod.shellRefreshesBackup(input),
+      label === "Tauri main window",
+      label,
+    );
   }
 });
 
@@ -450,12 +466,14 @@ const REFRESH_MUTANTS: {
     kills: /^refresh Electron, main window flag 1: true/,
   },
   {
-    label: "Tauri refreshes again",
-    swap: [
-      'if (input.shell === "electron") return true;',
-      'if (input.shell === "tauri" || input.shell === "electron") return true;',
-    ],
-    kills: /^refresh Tauri main window: true/,
+    label: "Tauri left out",
+    swap: ['  if (input.shell === "tauri") return true;\n', ""],
+    kills: /^refresh Tauri main window: false/,
+  },
+  {
+    label: "Tauri matched loosely",
+    swap: ['input.shell === "tauri"', 'input.shell.toLowerCase() === "tauri"'],
+    kills: /^refresh shell spelled Tauri: true/,
   },
   {
     label: "every Capacitor platform refreshes",
@@ -639,10 +657,11 @@ test("EncryptedOnlyOnboarding: the recovery poll takes its interval from recover
   assert.equal(occurrences(src, ".rotateRecoveryCode("), 1);
 });
 
-test("E2EEBridge: backupCommandsBlockMainThread is true exactly on the Tauri transport", () => {
+test("E2EEBridge: backupCommandsBlockMainThread is false on every transport (Tauri's backup commands are async)", () => {
+  const src = squashed(BRIDGE_TS);
   assert.ok(
-    squashed(BRIDGE_TS).includes(
-      "getbackupCommandsBlockMainThread():boolean{returnthis.#transportinstanceofTauriTransport;}",
-    ),
+    src.includes("getbackupCommandsBlockMainThread():boolean{returnfalse;}"),
+    "the getter does not answer a plain false",
   );
+  assert.equal(occurrences(src, "getbackupCommandsBlockMainThread("), 1);
 });

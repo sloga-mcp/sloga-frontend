@@ -105,9 +105,13 @@ const SRC = readFileSync(FILE, "utf8");
  * Re-pinned when Tauri was taken out of the backup refresh (M3 final audit
  * B: its backup commands are sync and block the main thread): only the
  * `NativeTransport.refreshesBackup` doc comment changed, to say so.
+ *
+ * Re-pinned when Tauri came back into the backup refresh (sloga-desktop
+ * feat/tauri-backup-async made its backup commands async): again only the
+ * `NativeTransport.refreshesBackup` doc comment changed (dd95a025... before).
  */
 const TRANSPORT_REGION_SHA256 =
-  "dd95a02537c7f5c03caf9a753bf1888ac4cb3ed8696a7d2dc19b6ba1cc20ddb0";
+  "27ced2b9792857d8481e2c99fd54115b164866bbfe1616a4cf5b5df5573375de";
 
 /**
  * S7 D9 / PA-7: the text commands Android signs only after a tap on a native

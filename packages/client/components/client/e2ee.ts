@@ -1178,8 +1178,8 @@ interface NativeTransport {
   /**
    * Whether the bridge refreshes the key backup by itself on this page, after
    * each accepted claim and on main-window focus (`shellRefreshesBackup`):
-   * Electron and iOS in the main window. Never Android, and not Tauri while
-   * its backup commands run on the main thread.
+   * Tauri, Electron and iOS in the main window. Never Android. Tauri needs a
+   * shell whose backup commands run off the main thread.
    */
   readonly refreshesBackup: boolean;
   invoke<T>(
@@ -3336,7 +3336,7 @@ export class E2EEBridge implements E2EEAdapter {
     }
 
     // Refresh the backup if native says one is due, on the shells that do
-    // (`refreshesBackup`: Electron, iOS; not Tauri for now, never Android).
+    // (`refreshesBackup`: Tauri, Electron, iOS; never Android).
     // On iOS this also uploads a recovery bundle the native sheet kept for
     // an earlier page whose event came before this claim (see
     // `#watchOrphanedBackup`).
@@ -8269,12 +8269,13 @@ export class E2EEBridge implements E2EEAdapter {
 
   /**
    * Whether this bridge's native backup status and refresh commands block
-   * the shell's main thread: true on Tauri, where they are sync commands
-   * run under the engine lock (see `shellRefreshesBackup`). The
-   * Encrypted-only setup reads it to poll less often (`recoveryPollMs`).
+   * the shell's main thread. False on every transport: Tauri's were sync
+   * commands under the engine lock until they went async with
+   * `spawn_blocking` (see `shellRefreshesBackup`). The Encrypted-only setup
+   * reads it to poll less often (`recoveryPollMs`) where one does.
    */
   get backupCommandsBlockMainThread(): boolean {
-    return this.#transport instanceof TauriTransport;
+    return false;
   }
 
   /**

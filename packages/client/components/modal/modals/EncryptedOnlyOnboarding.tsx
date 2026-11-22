@@ -205,7 +205,8 @@ export function EncryptedOnlyOnboardingModal(
   // Recovery code (required)
   const [backup, setBackup] = createSignal<BackupSnapshot>();
   const [recoveryStarted, setRecoveryStarted] = createSignal(false);
-  // A create or rotate has not settled yet (Tauri pauses the polling then)
+  // A create or rotate has not settled yet (a bridge whose status reads
+  // block the main thread pauses the polling then; none does today)
   const [minting, setMinting] = createSignal(false);
   const recoveryDone = () => recoveryCodeMadeThisRun(backup(), runStartedAt);
   // A code was made during this setup (here or in the enable dialog) and
@@ -258,9 +259,10 @@ export function EncryptedOnlyOnboardingModal(
   }
 
   // The desktop recovery window uploads after it closes: keep re-reading
-  // while waiting on this step. On Tauri each read is a main-thread,
-  // engine-locked command: none while a create or rotate runs, and at most
-  // every 15 s after (`recoveryPollMs`)
+  // while waiting on this step, every 3 s. Where each read would block the
+  // shell's main thread (`backupCommandsBlockMainThread`; no shipped bridge
+  // since Tauri's backup commands went async): none while a create or rotate
+  // runs, and at most every 15 s after (`recoveryPollMs`)
   createEffect(() => {
     if (step() !== "recovery" || !recoveryPending()) return;
     const every = recoveryPollMs({
