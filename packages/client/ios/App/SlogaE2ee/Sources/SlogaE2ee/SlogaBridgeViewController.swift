@@ -6,8 +6,8 @@
 //   - the `e2ee-att://` scheme handler that serves decrypted attachments
 //     from memory (a same-origin path is not possible on iOS: `loadView` is
 //     final, and WKWebView refuses handlers for http/https);
-//   - the main-frame bridge guard, and the E2ee and SlogaCallAudio plugins
-//     ONLY when the guard is in place;
+//   - the main-frame bridge guard, and the E2ee, SlogaCallAudio and Passkey
+//     plugins ONLY when the guard is in place;
 //   - the `window.__slogaIosCaps` capability object (call E2EE phase 2, C4),
 //     defined by a document-start user script in the main frame;
 //   - teardown of any open consent dialog, save folder picker and
@@ -115,9 +115,10 @@ open class SlogaBridgeViewController: CAPBridgeViewController {
             if bridgeGuard != nil {
                 // Arm first: an instance Capacitor might create by class name
                 // stays inert unless the guard got this far (E2eePlugin.arm,
-                // SlogaCallAudioPlugin.arm).
+                // SlogaCallAudioPlugin.arm, PasskeyPlugin.arm).
                 E2eePlugin.arm()
                 SlogaCallAudioPlugin.arm()
+                PasskeyPlugin.arm()
                 let e2ee = E2eePlugin()
                 bridge.registerPluginInstance(e2ee)
                 // The key push: the relay holds this instance and the bridge weakly,
@@ -126,6 +127,9 @@ open class SlogaBridgeViewController: CAPBridgeViewController {
                 // class name), falling back to this one.
                 KeysChangedRelay.attach(e2ee, bridge: bridge)
                 bridge.registerPluginInstance(SlogaCallAudioPlugin())
+                // Passkey sheets (PasskeyPlugin.swift): the same rule, so an
+                // embed frame can never raise one over the app.
+                bridge.registerPluginInstance(PasskeyPlugin())
             }
         }
 
@@ -149,8 +153,9 @@ open class SlogaBridgeViewController: CAPBridgeViewController {
         // 164-168), and that reload is a main-frame load.
         // Acting on every notification whose new value is true (not only a
         // false-to-true change) errs toward declining and releasing, which is
-        // the safe side. All four calls are safe from any thread and never
-        // wait on main.
+        // the safe side. An open passkey sheet is closed for the same
+        // reason: its answer would go to a page that no longer exists. All
+        // five calls are safe from any thread and never wait on main.
         loadingObservation = webView?.observe(\.isLoading, options: [.new]) { _, change in
             guard change.newValue == true else {
                 return
@@ -159,6 +164,7 @@ open class SlogaBridgeViewController: CAPBridgeViewController {
             RecoverySheet.teardownForNavigation()
             AttachmentTransfer.teardownForNavigation()
             SlogaCallAudioPlugin.releaseAfterPageLoss()
+            PasskeyPlugin.cancelAfterPageLoss()
         }
 
         // IndexedDB drafts and the outbox can hold E2EE plaintext; an iCloud or

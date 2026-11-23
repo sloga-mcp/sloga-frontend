@@ -12,9 +12,12 @@
  *
  * Usage, from packages/client:
  *   node scripts/check-ios-e2ee-commands.mjs [--root <client dir>]
- *     [--sources <dir>] [--bindings <file>] [--fe <file>] [--list]
+ *     [--sources <dir>] [--bindings <file>] [--fe <file>] [--app <dir>]
+ *     [--list]
  * Paths are relative to --root (default: the client dir this script is in),
- * so a test can point every input at a mutated copy.
+ * so a test can point every input at a mutated copy. --app (default ios/App)
+ * is the iOS app dir the passkey rules scan in full; the two entitlements
+ * files are read at their fixed paths under --root.
  * Exit 0 = pass. 1 = violations, one per line: `<rule> <file>:<line> <what>`.
  * 2 = an input could not be read or parsed (missing file, unbalanced
  * brackets, unterminated string or comment, a landmark not found).
@@ -196,10 +199,10 @@
  *                      mutable…Value, setValuesForKeys, dictionaryWithValues);
  *                      setValue( only as URLRequest's (_:forHTTPHeaderField:).
  *                      `#selector` (compile-checked target/action) stays
- *   G8c-plugin-final   E2eePlugin and SlogaCallAudioPlugin are each declared
- *                      `final` (never open) once in their own file; no type
- *                      inherits from either; neither is extended outside its
- *                      own file
+ *   G8c-plugin-final   E2eePlugin, SlogaCallAudioPlugin and PasskeyPlugin are
+ *                      each declared `final` (never open) once in their own
+ *                      file; no type inherits from any of them; none is
+ *                      extended outside its own file
  *   G8b-reach          REACHABILITY over a call graph of every Swift function
  *                      under the sources dir (below). (a) From each root, the
  *                      only native-only methods reachable are its own:
@@ -250,8 +253,9 @@
  *                      the ONLY node that can reach a mention of it is that
  *                      arm (a helper, a stored closure, a second arm or a
  *                      second runCallPlane caller all fail)
- *   G8c-audio-plugin   the Capacitor plugin classes are exactly E2eePlugin and
- *                      SlogaCallAudioPlugin; the latter (CallAudioSession.swift)
+ *   G8c-audio-plugin   the Capacitor plugin classes are exactly E2eePlugin,
+ *                      SlogaCallAudioPlugin and PasskeyPlugin; the second
+ *                      (CallAudioSession.swift)
  *                      is `@objc(SlogaCallAudioPlugin) … final class …:
  *                      CAPPlugin, CAPBridgedPlugin` (final, never open: a
  *                      subclass would escape this rule), jsName "SlogaCallAudio",
@@ -260,7 +264,71 @@
  *                      E2EE core; it is armed then built once, in the
  *                      bridge view controller's guarded block with the E2ee
  *                      plugin
- *   G8c-ios-caps       one string literal names __slogaIosCaps (in
+ *   G8d-passkey-plugin the passkey plugin (passkeys plan, Step 1), pinned as
+ *                      the audio plugin is: PasskeyPlugin.swift declares
+ *                      `@objc(PasskeyPlugin) … final class …: CAPPlugin,
+ *                      CAPBridgedPlugin`, jsName "Passkey", pluginMethods
+ *                      exactly the literal promise methods isAvailable,
+ *                      create and get, no other @objc member, and no name of
+ *                      the E2EE core; it is armed then built once as
+ *                      `registerPluginInstance(PasskeyPlugin())` in the
+ *                      block the E2ee plugin is registered in, and that
+ *                      block is the `if` on the main-frame guard
+ *                      (bridgeGuard / MainFrameBridgeGuard); `PasskeyPlugin
+ *                      .self` appears nowhere (registerPluginType would
+ *                      build it outside the guard)
+ *   G8d-passkey-extensions sign-in passkeys never carry a WebAuthn extension
+ *                      (plan rule R1): no identifier or string literal
+ *                      containing `prf` or `largeBlob` in ANY native source
+ *                      of the app (the WIDE scan: every .swift, .m, .mm and
+ *                      .h under --app, default ios/App, outside Pods, build,
+ *                      .build and DerivedData; the bindings and the test
+ *                      target included; .m/.mm/.h are scanned as raw text,
+ *                      comments too), except in R1_FIXTURE_FILES (the R1
+ *                      unit tests, which feed those members in to prove they
+ *                      change nothing); in PasskeyPlugin.swift and
+ *                      PasskeyWire.swift (both must exist) nothing
+ *                      containing `extension` but the Swift keyword, except
+ *                      `"clientExtensionResults"`, written exactly once in
+ *                      the sources, in PasskeyWire.swift, as
+ *                      `"clientExtensionResults": [String: Any](),`;
+ *                      AuthenticationServices and ASAuthorization* named
+ *                      only in PasskeyPlugin.swift, over the same wide scan
+ *                      (no allow-list: nothing else in the app uses them),
+ *                      and in NO string literal of any file, that one
+ *                      included (a class reached by its name)
+ *   G8d-passkey-rp     the page-driven plugin serves ONE relying party
+ *                      (plan rule R1: a passkey under any other relying
+ *                      party must be out of the page's reach). Over the
+ *                      wide scan: `signInRelyingParty` is declared exactly
+ *                      once, in PasskeyWire.swift, as `static let
+ *                      signInRelyingParty = "app.sloga.gg"` (a plain literal
+ *                      and nothing after it, a direct member of
+ *                      PasskeyWire); `relyingPartyIdentifier` is named
+ *                      exactly once, in PasskeyPlugin.swift, as
+ *                      `ASAuthorizationPlatformPublicKeyCredentialProvider(
+ *                      relyingPartyIdentifier: PasskeyWire.signInRelyingParty)`
+ *                      (never a variable, a literal or a parsed value), and
+ *                      in no string literal; an ASAuthorization…Provider
+ *                      type is named only there or as a `-> T {` return
+ *                      type in that file (never `.init`, `.self`, a
+ *                      typealias, or another provider class); the host of
+ *                      the one `webcredentials:` entry in BOTH
+ *                      ios/App/App/App.entitlements (`?mode=developer`
+ *                      allowed) and AppRelease.entitlements (not allowed)
+ *                      equals the constant; and PasskeyPlugin.swift and
+ *                      PasskeyWire.swift hold no other host-shaped string
+ *                      literal (`label(.label)*.tld` anywhere in it)
+ *   G8d-passkey-dynamic PasskeyPlugin.swift and PasskeyWire.swift reach
+ *                      nothing by name: no NSClassFromString,
+ *                      NSSelectorFromString, NSProtocolFromString,
+ *                      NSInvocation or Objective-C runtime function
+ *                      (objc_/class_/object_/method_/sel_/protocol_/
+ *                      property_/ivar_…), no setValue or setValuesForKeys
+ *                      at all, no forKey/forKeyPath/forUndefinedKey label,
+ *                      and no `perform(` (G8b-dynamic's two exemptions do
+ *                      not apply to these files)
+ *   G8c-ios-caps      one string literal names __slogaIosCaps (in
  *                      SlogaBridgeViewController.swift), decoded exactly
  *                      `Object.defineProperty(window,"__slogaIosCaps",{value:
  *                      Object.freeze({mediaE2EE:\(b)}),writable:false,
@@ -346,7 +414,7 @@
  *   name. The scan is lexical, not a type checker.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // --------------------------------------------------------------- contract
@@ -570,13 +638,98 @@ const KEYS_EVENT = {
 
 /** G8c-audio-plugin: the call audio plugin (phase 2 C-W2-5). */
 const AUDIO = {
+  rule: "G8c-audio-plugin",
+  what: "the call audio plugin",
   file: "CallAudioSession.swift",
   type: "SlogaCallAudioPlugin",
   jsName: "SlogaCallAudio",
   methods: ["start", "stop"],
+  guarded: false,
+};
+/** G8d-passkey-plugin: the passkey plugin (passkeys plan, Step 1 "Phones"). */
+const PASSKEY = {
+  rule: "G8d-passkey-plugin",
+  what: "the passkey plugin",
+  file: "PasskeyPlugin.swift",
+  type: "PasskeyPlugin",
+  jsName: "Passkey",
+  methods: ["isAvailable", "create", "get"],
+  guarded: true,
+  /** The pure JSON half: options in, credential out. */
+  wire: "PasskeyWire.swift",
+};
+/** G8d-passkey-extensions: the files that build and answer passkey requests. */
+const PASSKEY_FILES = [PASSKEY.file, PASSKEY.wire];
+/** The one extension-shaped name those files may write, and what follows it. */
+const PASSKEY_RESULTS = {
+  name: "clientExtensionResults",
+  empty: ":[String:Any]()",
+};
+/**
+ * G8d-passkey-rp: the one relying party the page-driven plugin serves. The
+ * host is pinned three ways that must agree: here, in the Swift constant,
+ * and in both entitlements files. Changing it means changing all of them.
+ */
+const PASSKEY_RP = {
+  rule: "G8d-passkey-rp",
+  why: "the page-driven passkey plugin serves one relying party (R1)",
+  owner: "PasskeyWire",
+  constant: "signInRelyingParty",
+  host: "app.sloga.gg",
+  label: "relyingPartyIdentifier",
+  provider: "ASAuthorizationPlatformPublicKeyCredentialProvider",
+  /** Relative to --root. Only the development file may carry the mode. */
+  entitlements: [
+    { rel: "ios/App/App/App.entitlements", developer: true },
+    { rel: "ios/App/App/AppRelease.entitlements", developer: false },
+  ],
+  domainsKey: "com.apple.developer.associated-domains",
+  scheme: "webcredentials:",
+  developerMode: "?mode=developer",
+};
+/**
+ * A host inside a string literal: dot-separated labels ending in a
+ * TLD-like one (two or more letters, or punycode). Matched anywhere in the
+ * literal and in any case, so `App.Sloga.GG`, `app.sloga.gg.` and
+ * `https://x.example/…` all count.
+ */
+const HOST_SHAPED =
+  /[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:xn--[a-z0-9-]+|[a-z]{2,})(?![a-z0-9-])/i;
+/**
+ * The wide scan (G8d-passkey-extensions, G8d-passkey-rp): directory names
+ * never descended into under --app. Dependencies and build output only;
+ * checked-in headers (the xcframework's) are scanned.
+ */
+const APP_PRUNED_DIRS = new Set([
+  "Pods",
+  "build",
+  ".build",
+  "DerivedData",
+  "node_modules",
+  ".git",
+]);
+/**
+ * The only files of the wide scan that may name `prf` / `largeBlob`, by
+ * path relative to --root. PasskeyWireTests.swift is the R1 unit test: it
+ * feeds options carrying those members to the readers to prove they change
+ * nothing, so it has to spell them. It is in the test target, not the app,
+ * and every other rule of the wide scan still applies to it (it may not
+ * name AuthenticationServices or ASAuthorization*).
+ */
+const R1_FIXTURE_FILES = [
+  "ios/App/SlogaE2ee/Tests/AppTests/PasskeyWireTests.swift",
+];
+/** G8d-passkey-dynamic: what the two passkey files may not name. */
+const PASSKEY_DYNAMIC =
+  /\b(?:NSClassFromString|NSSelectorFromString|NSProtocolFromString|NSInvocation|(?:objc|class|object|method|sel|protocol|property|ivar)_\w+|setValue|setValuesForKeys|for(?:Undefined)?Key(?:Path)?)\b|\bperform\s*\(/g;
+/** Each Capacitor plugin class of these sources and its own file. */
+const PLUGIN_HOME = {
+  E2eePlugin: "E2eePlugin.swift",
+  [AUDIO.type]: AUDIO.file,
+  [PASSKEY.type]: PASSKEY.file,
 };
 /** The Capacitor plugin classes of these sources; any other is new webview surface. */
-const PLUGIN_CLASSES = ["E2eePlugin", AUDIO.type];
+const PLUGIN_CLASSES = Object.keys(PLUGIN_HOME);
 /** Names CallAudioSession.swift may not mention: it never reaches the core. */
 const AUDIO_FORBIDDEN =
   /\b(?:E2eeEngine|E2eeEngineProtocol|E2eeRuntime|E2eePlugin|KeysChangedRelay|RecoverySheet|AttachmentTransfer|NativeConfirmPresenter)\b/g;
@@ -659,6 +812,7 @@ const DEFAULTS = {
   sources: "ios/App/SlogaE2ee/Sources/SlogaE2ee",
   bindings: "ios/App/SlogaE2ee/Bindings/acutest_e2ee_ios.swift",
   fe: "components/client/e2ee.ts",
+  app: "ios/App",
 };
 
 // ----------------------------------------------------------------- shared
@@ -1350,6 +1504,7 @@ function parseArgs(argv) {
     "--sources": "sources",
     "--bindings": "bindings",
     "--fe": "fe",
+    "--app": "app",
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--list") {
@@ -1369,7 +1524,53 @@ function parseArgs(argv) {
     sources: at(opts.sources),
     bindings: at(opts.bindings),
     fe: at(opts.fe),
+    app: at(opts.app),
   };
+}
+
+/**
+ * The wide scan: every .swift, .m, .mm and .h under the app dir, outside
+ * APP_PRUNED_DIRS, that is not already loaded (`known`: resolved paths of
+ * the sources and the bindings). Swift is lexed (comments and literal
+ * contents blanked, the literal table kept); the Objective-C family is kept
+ * as raw text and scanned whole, comments included. `rel` is relative to
+ * --root. A symlinked directory is not followed; a symlinked file is read.
+ */
+function loadApp(opts, known) {
+  const swift = [];
+  const other = [];
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      throw new InputError(`cannot read the app dir ${dir}`);
+    }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!APP_PRUNED_DIRS.has(entry.name)) walk(path);
+        continue;
+      }
+      const kind = /\.(swift|mm|m|h)$/.exec(entry.name)?.[1];
+      if (!kind || known.has(resolve(path))) continue;
+      if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+      const rel = relative(opts.root, path).split(sep).join("/");
+      const src = readText(path, rel);
+      if (kind === "swift") {
+        const lexed = lexSwift(src, rel);
+        const file = { rel, src, ...lexed };
+        file.line = (p) => lineAt(lexed.starts, p);
+        swift.push(file);
+      } else {
+        const starts = lineStarts(src);
+        other.push({ rel, src, line: (p) => lineAt(starts, p) });
+      }
+    }
+  };
+  walk(opts.app);
+  return { swift, other };
 }
 
 // ------------------------------------------------------- E2eeCommands.swift
@@ -2378,19 +2579,24 @@ function buildGraph(ctx) {
   const nodes = [];
   const typeAt = (f, p) =>
     frameAt(f, p, (fr) => fr.kind === "type")?.name ?? null;
-  const callable = (fr) => fr.kind === "func" && !ACCESSORS.has(fr.name);
+  // An accessor block (`get {`, `didSet {`) belongs to its property. A
+  // DECLARED `func get(…)` is a function like any other: PasskeyPlugin's
+  // `get` plugin method is one, and must be a node (and a root).
+  const callable = (f, fr) =>
+    fr.kind === "func" &&
+    (!ACCESSORS.has(fr.name) || f.code.startsWith("func", fr.declPos));
   const byFrame = new Map();
   const types = new Set();
 
   for (const f of swift) {
     for (const t of f.frames) if (t.kind === "type") types.add(t.name);
     for (const fr of f.frames) {
-      if (!callable(fr)) continue;
+      if (!callable(f, fr)) continue;
       let ranges = [[fr.declPos, fr.close + 1]];
       for (const inner of f.frames) {
         if (
           inner !== fr &&
-          callable(inner) &&
+          callable(f, inner) &&
           inner.declPos > fr.declPos &&
           inner.close < fr.close
         ) {
@@ -3827,7 +4033,7 @@ function checkDynamicDispatch(swift, add) {
  */
 function checkPluginsFinal(swift, add) {
   const rule = "G8c-plugin-final";
-  const home = { E2eePlugin: "E2eePlugin.swift", [AUDIO.type]: AUDIO.file };
+  const home = PLUGIN_HOME;
   const names = Object.keys(home);
   const nameRe = new RegExp(`\\b(${names.join("|")})\\b`);
   const declared = new Set();
@@ -3891,18 +4097,22 @@ function checkPluginsFinal(swift, add) {
  * file names nothing of the E2EE core. It is constructed and armed only in
  * SlogaBridgeViewController.swift, armed before it is registered, in the
  * same block as the E2ee plugin (the main-frame guard's).
+ *
+ * G8d-passkey-plugin (passkeys plan, Step 1) is the same rule for
+ * PasskeyPlugin (PasskeyPlugin.swift, jsName "Passkey", methods isAvailable,
+ * create and get), and it also requires the block to be the `if` that tests
+ * the main-frame guard itself, so a passkey sheet can only be raised by the
+ * app's own main frame.
  */
-function checkCallAudio(swift, add) {
-  const rule = "G8c-audio-plugin";
+function checkPluginClassSet(swift, add) {
   for (const f of swift) {
     for (const t of f.frames) {
       if (t.kind !== "type" || !f.code.startsWith("class", t.declPos)) continue;
       if (!/:[^{]*\bCAPPlugin\b/.test(f.code.slice(t.declPos, t.open)))
         continue;
-      const home = t.name === AUDIO.type ? AUDIO.file : "E2eePlugin.swift";
-      if (!PLUGIN_CLASSES.includes(t.name) || f.rel !== home) {
+      if (!has(PLUGIN_HOME, t.name) || f.rel !== PLUGIN_HOME[t.name]) {
         add(
-          rule,
+          "G8c-audio-plugin",
           f,
           t.declPos,
           `Capacitor plugin class ${t.name} in ${f.rel}; the plugins are exactly ${PLUGIN_CLASSES.join(", ")} (each in its own file)`,
@@ -3910,13 +4120,18 @@ function checkCallAudio(swift, add) {
       }
     }
   }
-  const f = swift.find((x) => x.rel === AUDIO.file);
+}
+
+/** One leaf plugin (`spec` is AUDIO or PASSKEY); see checkPluginClassSet. */
+function checkLeafPlugin(swift, add, spec) {
+  const rule = spec.rule;
+  const f = swift.find((x) => x.rel === spec.file);
   if (!f) {
-    add(rule, null, null, `${AUDIO.file} not found`);
+    add(rule, null, null, `${spec.file} not found`);
     return;
   }
   const types = f.frames.filter(
-    (t) => t.kind === "type" && t.name === AUDIO.type,
+    (t) => t.kind === "type" && t.name === spec.type,
   );
   const cls = types.length === 1 ? types[0] : null;
   if (
@@ -3926,28 +4141,28 @@ function checkCallAudio(swift, add) {
       f.code.slice(cls.declPos, cls.open),
     ) ||
     !new RegExp(
-      `@objc\\s*\\(\\s*${AUDIO.type}\\s*\\)\\s*(?:(?:public|open|final)\\s+)*$`,
+      `@objc\\s*\\(\\s*${spec.type}\\s*\\)\\s*(?:(?:public|open|final)\\s+)*$`,
     ).test(f.code.slice(Math.max(0, cls.declPos - 80), cls.declPos))
   ) {
     add(
       rule,
       f,
       cls?.declPos ?? null,
-      `${AUDIO.file} must declare @objc(${AUDIO.type}) class ${AUDIO.type}: CAPPlugin, CAPBridgedPlugin once`,
+      `${spec.file} must declare @objc(${spec.type}) class ${spec.type}: CAPPlugin, CAPBridgedPlugin once`,
     );
     return;
   }
   // final (W2 Stage 5): a subclass declared elsewhere would be a plugin
   // class of its own that inherits start/stop and escapes this rule.
   const modifiers = new RegExp(
-    `@objc\\s*\\(\\s*${AUDIO.type}\\s*\\)\\s*((?:(?:public|open|final)\\s+)*)$`,
+    `@objc\\s*\\(\\s*${spec.type}\\s*\\)\\s*((?:(?:public|open|final)\\s+)*)$`,
   ).exec(f.code.slice(Math.max(0, cls.declPos - 80), cls.declPos))[1];
   if (!/\bfinal\b/.test(modifiers) || /\bopen\b/.test(modifiers)) {
     add(
       rule,
       f,
       cls.declPos,
-      `${AUDIO.type} must be declared final (and not open): a subclass would escape this rule`,
+      `${spec.type} must be declared final (and not open): a subclass would escape this rule`,
     );
   }
   const inCls = (p) => frameAt(f, p, (fr) => fr.kind === "type") === cls;
@@ -3956,12 +4171,12 @@ function checkCallAudio(swift, add) {
   );
   const jsLit =
     js.length === 1 ? f.strings.get(js[0].index + js[0][0].length) : null;
-  if (!jsLit || jsLit.interpolated || jsLit.value !== AUDIO.jsName) {
+  if (!jsLit || jsLit.interpolated || jsLit.value !== spec.jsName) {
     add(
       rule,
       f,
       js[0]?.index ?? cls.declPos,
-      `${AUDIO.type}.jsName must be "${AUDIO.jsName}", once`,
+      `${spec.type}.jsName must be "${spec.jsName}", once`,
     );
   }
   // pluginMethods = [ CAPPluginMethod(name: "start", …), CAPPluginMethod(name: "stop", …) ]
@@ -4000,13 +4215,13 @@ function checkCallAudio(swift, add) {
   }
   if (
     !names ||
-    [...names].sort().join(",") !== [...AUDIO.methods].sort().join(",")
+    [...names].sort().join(",") !== [...spec.methods].sort().join(",")
   ) {
     add(
       rule,
       f,
       pm[0]?.index ?? cls.declPos,
-      `${AUDIO.type}.pluginMethods must be exactly [${AUDIO.methods.join(", ")}] as literal CAPPluginMethod(name:, returnType: CAPPluginReturnPromise), got [${(names ?? []).join(", ")}]`,
+      `${spec.type}.pluginMethods must be exactly [${spec.methods.join(", ")}] as literal CAPPluginMethod(name:, returnType: CAPPluginReturnPromise), got [${(names ?? []).join(", ")}]`,
     );
   }
   // @objc members: the class attribute and the two plugin methods only.
@@ -4015,7 +4230,7 @@ function checkCallAudio(swift, add) {
     const after = f.code.slice(m.index, m.index + 300);
     if (
       new RegExp(
-        `^@objc\\s*\\(\\s*${AUDIO.type}\\s*\\)\\s*(?:(?:public|open|final)\\s+)*class\\s+${AUDIO.type}\\b`,
+        `^@objc\\s*\\(\\s*${spec.type}\\s*\\)\\s*(?:(?:public|open|final)\\s+)*class\\s+${spec.type}\\b`,
       ).test(after)
     ) {
       continue;
@@ -4026,7 +4241,7 @@ function checkCallAudio(swift, add) {
       );
     if (
       fn &&
-      AUDIO.methods.includes(fn[1]) &&
+      spec.methods.includes(fn[1]) &&
       !objcFuncs.has(fn[1]) &&
       inCls(m.index)
     ) {
@@ -4037,16 +4252,16 @@ function checkCallAudio(swift, add) {
       rule,
       f,
       m.index,
-      `${AUDIO.file}: an @objc member other than ${AUDIO.methods.join("/")}(_ call: CAPPluginCall)`,
+      `${spec.file}: an @objc member other than ${spec.methods.join("/")}(_ call: CAPPluginCall)`,
     );
   }
-  for (const name of AUDIO.methods) {
+  for (const name of spec.methods) {
     if (!objcFuncs.has(name)) {
       add(
         rule,
         f,
         cls.declPos,
-        `${AUDIO.type} has no @objc func ${name}(_ call: CAPPluginCall)`,
+        `${spec.type} has no @objc func ${name}(_ call: CAPPluginCall)`,
       );
     }
   }
@@ -4055,7 +4270,7 @@ function checkCallAudio(swift, add) {
       rule,
       f,
       m.index,
-      `${AUDIO.file} names ${m[0]}; the call audio plugin never reaches the E2EE core`,
+      `${spec.file} names ${m[0]}; ${spec.what} never reaches the E2EE core`,
     );
   }
   // Constructed and armed only by the bridge view controller, armed first,
@@ -4065,13 +4280,26 @@ function checkCallAudio(swift, add) {
       [...x.code.matchAll(re)].map((m) => ({ f: x, p: m.index })),
     );
   const built = sites(
-    new RegExp(`\\b${AUDIO.type}\\s*(?:\\.\\s*init\\s*)?\\(`, "g"),
+    new RegExp(`\\b${spec.type}\\s*(?:\\.\\s*init\\s*)?\\(`, "g"),
   );
-  const armed = sites(new RegExp(`\\b${AUDIO.type}\\s*\\.\\s*arm\\s*\\(`, "g"));
+  const armed = sites(new RegExp(`\\b${spec.type}\\s*\\.\\s*arm\\s*\\(`, "g"));
   // The E2ee plugin's registration, either form (W2 Stage 5 binds the
   // instance first so KeysChangedRelay can be attached to it).
   const e2ee = e2eeRegistrations(swift);
   const block = (s) => frameAt(s.f, s.p, (fr) => fr.kind !== "closure");
+  // spec.guarded (the passkey plugin): the block is the `if` on the
+  // main-frame guard itself, and the class is never handed out as a type
+  // (`T.self`: registerPluginType would build it outside this block).
+  const guardedBlock = (s) => {
+    const b = block(s);
+    return (
+      !!b &&
+      /^\s*if\b[^{]*\b(?:bridgeGuard|MainFrameBridgeGuard)\b/.test(
+        s.f.code.slice(b.declPos, b.open),
+      )
+    );
+  };
+  const asType = sites(new RegExp(`\\b${spec.type}\\s*\\.\\s*self\\b`, "g"));
   const ok =
     built.length === 1 &&
     armed.length === 1 &&
@@ -4085,14 +4313,390 @@ function checkCallAudio(swift, add) {
     block(built[0])?.kind === "control" &&
     /\bregisterPluginInstance\s*\(\s*$/.test(
       built[0].f.code.slice(Math.max(0, built[0].p - 40), built[0].p),
-    );
+    ) &&
+    (!spec.guarded || (guardedBlock(built[0]) && asType.length === 0));
   if (!ok) {
     add(
       rule,
       built[0]?.f ?? null,
       built[0]?.p ?? null,
-      `${AUDIO.type} must be armed, then built once as registerPluginInstance(${AUDIO.type}()), in ${CAPS.file}'s guarded block with the E2ee plugin`,
+      `${spec.type} must be armed, then built once as registerPluginInstance(${spec.type}()), in ${CAPS.file}'s guarded block with the E2ee plugin`,
     );
+  }
+}
+
+/**
+ * G8d-passkey-extensions (passkeys plan rule R1): a sign-in passkey never
+ * carries a WebAuthn extension, the pseudo-random function one above all.
+ *   - In EVERY native source of the app (`wide`: the sources, the bindings
+ *     and every other .swift under the app dir; `app.other`: its .m, .mm and
+ *     .h, as raw text): no identifier and no string literal containing
+ *     `prf` or `largeBlob` (any case). The system request types spell their
+ *     extension inputs and outputs with exactly those words, so no request
+ *     can set one and no result can be read from one. R1_FIXTURE_FILES (the
+ *     R1 unit tests) are the one exception, for this ban only.
+ *   - In PasskeyPlugin.swift and PasskeyWire.swift (both must exist): no
+ *     identifier containing `extension` other than the Swift keyword, and no
+ *     string literal containing it, so the options' `extensions` member is
+ *     never looked up, except the one result name below.
+ *   - `"clientExtensionResults"` is written exactly once in the sources, in
+ *     PasskeyWire.swift, as `"clientExtensionResults": [String: Any](),`: the
+ *     empty object built here, never a value.
+ *   - AuthenticationServices and every ASAuthorization* name stay in
+ *     PasskeyPlugin.swift, over the same wide scan: no other file builds a
+ *     system credential request. No string literal of ANY file names them
+ *     (PasskeyPlugin.swift included): a class reached through its name
+ *     would be a request this scan cannot see.
+ * Comments are blanked by the Swift lexer, so Swift prose may name what is
+ * forbidden; the Objective-C family is scanned raw, comments included.
+ */
+function checkPasskeyExtensions(swift, add, wide, app) {
+  const rule = "G8d-passkey-extensions";
+  const why = "sign-in passkeys never carry a WebAuthn extension (R1)";
+  for (const name of PASSKEY_FILES) {
+    if (!swift.some((f) => f.rel === name)) {
+      add(rule, null, null, `${name} not found`);
+    }
+  }
+  const home = swift.find((f) => f.rel === PASSKEY.file) ?? null;
+  const system = /AuthenticationServices|ASAuthorization/;
+  const byName =
+    "system credential types are never reached through a name in a string";
+  for (const f of wide) {
+    const fixtures = R1_FIXTURE_FILES.includes(f.rel);
+    if (!fixtures) {
+      for (const m of f.code.matchAll(/\b\w*(?:prf|largeblob)\w*\b/gi)) {
+        add(rule, f, m.index, `${m[0]} in the sources: ${why}`);
+      }
+    }
+    for (const m of f.code.matchAll(
+      /\b(?:AuthenticationServices|ASAuthorization\w*)\b/g,
+    )) {
+      if (f !== home) {
+        add(
+          rule,
+          f,
+          m.index,
+          `${m[0]} outside ${PASSKEY.file}: system credential requests are built there only`,
+        );
+      }
+    }
+    for (const s of f.strings.values()) {
+      if (!fixtures && /prf|largeblob/i.test(s.value)) {
+        add(rule, f, s.start, `a string literal naming "${s.value}": ${why}`);
+      }
+      if (system.test(s.value)) {
+        add(
+          rule,
+          f,
+          s.start,
+          `a string literal naming "${s.value}" in ${f.rel}: ${byName}`,
+        );
+      }
+    }
+  }
+  // Objective-C family: raw text, so a comment fails too (fail closed).
+  for (const f of app.other) {
+    for (const m of f.src.matchAll(/\w*(?:prf|largeblob)\w*/gi)) {
+      add(rule, f, m.index, `${m[0]} in the sources: ${why}`);
+    }
+    for (const m of f.src.matchAll(
+      /\w*(?:AuthenticationServices|ASAuthorization)\w*/g,
+    )) {
+      add(
+        rule,
+        f,
+        m.index,
+        `${m[0]} outside ${PASSKEY.file}: system credential requests are built there only`,
+      );
+    }
+  }
+  const results = [];
+  for (const f of swift) {
+    const passkeyFile = PASSKEY_FILES.includes(f.rel);
+    for (const m of f.code.matchAll(/\b\w*extension\w*\b/gi)) {
+      if (passkeyFile && m[0] !== "extension") {
+        add(rule, f, m.index, `${m[0]} in ${f.rel}: ${why}`);
+      }
+    }
+    for (const s of f.strings.values()) {
+      if (/prf|largeblob/i.test(s.value)) {
+        continue; // reported above
+      } else if (s.value === PASSKEY_RESULTS.name && !s.interpolated) {
+        results.push({ f, s });
+      } else if (passkeyFile && /extension/i.test(s.value)) {
+        add(
+          rule,
+          f,
+          s.start,
+          `a string literal naming "${s.value}" in ${f.rel}: ${why}`,
+        );
+      }
+    }
+  }
+  const shape = `"${PASSKEY_RESULTS.name}" is written exactly once, in ${PASSKEY.wire}, as "${PASSKEY_RESULTS.name}": [String: Any](), (the empty object, never a value)`;
+  if (results.length !== 1) {
+    add(
+      rule,
+      results[1]?.f ?? null,
+      results[1]?.s.start ?? null,
+      `${shape} (found ${results.length})`,
+    );
+    return;
+  }
+  const { f, s } = results[0];
+  let lineEnd = f.code.indexOf("\n", s.end);
+  if (lineEnd < 0) lineEnd = f.code.length;
+  const after = normalized(f, s.end, lineEnd);
+  if (
+    f.rel !== PASSKEY.wire ||
+    (after !== `${PASSKEY_RESULTS.empty},` && after !== PASSKEY_RESULTS.empty)
+  ) {
+    add(rule, f, s.start, shape);
+  }
+}
+
+/**
+ * The raw `webcredentials:` entries of an entitlements plist: every
+ * `<string>` of the associated-domains array that mentions webcredentials
+ * (any case, so a misspelt prefix is compared and fails rather than being
+ * skipped). XML comments are dropped first. null when the array is absent.
+ */
+function webcredentialEntries(text) {
+  const plain = text.replace(/<!--[\s\S]*?-->/g, "");
+  const key = PASSKEY_RP.domainsKey.replace(/\./g, "\\.");
+  const array = new RegExp(
+    `<key>\\s*${key}\\s*</key>\\s*<array>([\\s\\S]*?)</array>`,
+  ).exec(plain);
+  if (!array) return null;
+  return [...array[1].matchAll(/<string>([\s\S]*?)<\/string>/g)]
+    .map((m) => m[1])
+    .filter((entry) => /webcredentials/i.test(entry));
+}
+
+/**
+ * G8d-passkey-rp (passkeys plan rule R1): the Passkey plugin is driven by
+ * the page, so it serves exactly one relying party, the sign-in passkey's.
+ * A passkey under any other relying party (a backup-only one, later) must
+ * be reachable from native code only, never through this plugin. `wide` is
+ * every Swift file of the app (see loadApp).
+ *   (1) The constant: `signInRelyingParty` is declared exactly once in the
+ *       wide scan (let/var/func/case of that name), in PasskeyWire.swift, as
+ *       `static let signInRelyingParty = "<host>"`: a plain one-line literal
+ *       with no interpolation, nothing after it on its line and no operator
+ *       or member access continuing it on the next, declared directly in
+ *       the type PasskeyWire. A second declaration anywhere would be a way
+ *       to shadow it. The literal equals PASSKEY_RP.host.
+ *   (2) `relyingPartyIdentifier` is named exactly once in the wide scan, in
+ *       PasskeyPlugin.swift, and the call it labels is exactly
+ *       `ASAuthorizationPlatformPublicKeyCredentialProvider(
+ *       relyingPartyIdentifier: PasskeyWire.signInRelyingParty)`: not a
+ *       variable, not a literal, not a parsed value. No string literal
+ *       names it either (key-value coding).
+ *   (3) An `ASAuthorization…Provider` type is named only as that call or as
+ *       a `-> ASAuthorizationPlatformPublicKeyCredentialProvider {` return
+ *       type in PasskeyPlugin.swift: not `.init` taken as a value, not
+ *       `.self`, not a typealias, not the security-key provider.
+ *   (4) Both entitlements files associate the app with that host and no
+ *       other: exactly one `webcredentials:` entry each, equal to the
+ *       constant; App.entitlements may carry `?mode=developer`, the release
+ *       file may not.
+ *   (5) PasskeyPlugin.swift and PasskeyWire.swift hold no other host-shaped
+ *       string literal (HOST_SHAPED): no second relying party is spelt
+ *       there. A host assembled from pieces is not seen by (5); (2) is what
+ *       keeps it from the system.
+ */
+function checkPasskeyRp(swift, wide, opts, add) {
+  const { rule, why, owner, constant, label, provider } = PASSKEY_RP;
+  const home = swift.find((f) => f.rel === PASSKEY.file);
+  const wire = swift.find((f) => f.rel === PASSKEY.wire);
+  if (!home || !wire) {
+    add(rule, null, null, `${!home ? PASSKEY.file : PASSKEY.wire} not found`);
+    return;
+  }
+
+  // (1) the constant.
+  const declRe = new RegExp(`\\b(?:let|var|func|case)\\s+${constant}\\b`, "g");
+  const decls = wide.flatMap((f) =>
+    [...f.code.matchAll(declRe)].map((m) => ({ f, p: m.index })),
+  );
+  let pinned = null;
+  if (decls.length === 1 && decls[0].f === wire) {
+    const p = decls[0].p;
+    const head = new RegExp(
+      `^let\\s+${constant}\\s*(?::\\s*String\\s*)?=\\s*(?=")`,
+    ).exec(wire.code.slice(p));
+    const lit = head ? wire.strings.get(p + head[0].length) : null;
+    const scope = frameAt(wire, p, (fr) => fr.kind !== "control");
+    if (
+      lit &&
+      !lit.interpolated &&
+      !lit.multi &&
+      lit.hashes === 0 &&
+      /\bstatic\s+$/.test(wire.code.slice(Math.max(0, p - 40), p))
+    ) {
+      let lineEnd = wire.code.indexOf("\n", lit.end);
+      if (lineEnd < 0) lineEnd = wire.code.length;
+      const next = wire.code[skipSpace(wire.code, lineEnd)];
+      if (
+        wire.code.slice(lit.end, lineEnd).trim() === "" &&
+        (next === undefined || /[A-Za-z_@}]/.test(next)) &&
+        scope?.kind === "type" &&
+        scope.name === owner
+      ) {
+        pinned = lit;
+      }
+    }
+  }
+  if (!pinned) {
+    add(
+      rule,
+      decls[0]?.f ?? wire,
+      decls[0]?.p ?? null,
+      `${owner}.${constant} must be declared exactly once in the app's Swift, in ${PASSKEY.wire}, as static let ${constant} = "${PASSKEY_RP.host}" (a plain literal, a direct member of ${owner}; found ${decls.length} declaration(s)): ${why}`,
+    );
+  } else if (pinned.value !== PASSKEY_RP.host) {
+    add(
+      rule,
+      wire,
+      pinned.start,
+      `${owner}.${constant} is "${pinned.value}", not "${PASSKEY_RP.host}": ${why}`,
+    );
+  }
+  const host = pinned?.value ?? PASSKEY_RP.host;
+
+  // (2) the one relying party identifier handed to the system.
+  const expected = `${label}:${owner}.${constant}`;
+  const shape = `${provider}(${label}: ${owner}.${constant})`;
+  const isTheCall = (open) =>
+    normalized(home, open + 1, home.match.get(open)) === expected;
+  const labelRe = new RegExp(`\\b${label}\\b`, "g");
+  const headRe = new RegExp(`\\b${provider}\\s*\\(\\s*$`);
+  let built = 0;
+  for (const f of wide) {
+    for (const m of f.code.matchAll(labelRe)) {
+      let ok = false;
+      if (f === home) {
+        const before = f.code.slice(Math.max(0, m.index - 300), m.index);
+        if (headRe.test(before)) {
+          ok = isTheCall(f.code.lastIndexOf("(", m.index));
+        }
+      }
+      if (ok) {
+        built++;
+      } else {
+        add(
+          rule,
+          f,
+          m.index,
+          `${label} here: ${why}; it is written once, in ${PASSKEY.file}, as ${shape}`,
+        );
+      }
+    }
+    for (const s of f.strings.values()) {
+      if (s.value.includes(label)) {
+        add(
+          rule,
+          f,
+          s.start,
+          `a string literal naming "${s.value}" in ${f.rel}: ${why}; the relying party is never set through a name in a string`,
+        );
+      }
+    }
+  }
+  if (built !== 1) {
+    add(
+      rule,
+      home,
+      null,
+      `${shape} must appear exactly once, in ${PASSKEY.file} (found ${built}): ${why}`,
+    );
+  }
+
+  // (3) provider types.
+  for (const f of wide) {
+    for (const m of f.code.matchAll(/\bASAuthorization\w*Provider\b/g)) {
+      let ok = false;
+      if (f === home && m[0] === provider) {
+        const k = skipSpace(f.code, m.index + m[0].length);
+        const returned = /->\s*$/.test(
+          f.code.slice(Math.max(0, m.index - 20), m.index),
+        );
+        ok =
+          (f.code[k] === "(" && !returned && isTheCall(k)) ||
+          (f.code[k] === "{" && returned);
+      }
+      if (!ok) {
+        add(
+          rule,
+          f,
+          m.index,
+          `${m[0]} here: a credential provider is built once, as ${shape} in ${PASSKEY.file}, and otherwise named only as a function's return type there: ${why}`,
+        );
+      }
+    }
+  }
+
+  // (4) the entitlements associate the app with that host and no other.
+  for (const e of PASSKEY_RP.entitlements) {
+    let text;
+    try {
+      text = readFileSync(join(opts.root, e.rel), "utf8");
+    } catch {
+      add(rule, null, null, `${e.rel} not found`);
+      continue;
+    }
+    const entries = webcredentialEntries(text);
+    const hosts = (entries ?? []).map((entry) => {
+      if (!entry.startsWith(PASSKEY_RP.scheme)) return entry;
+      const value = entry.slice(PASSKEY_RP.scheme.length);
+      return e.developer && value.endsWith(PASSKEY_RP.developerMode)
+        ? value.slice(0, -PASSKEY_RP.developerMode.length)
+        : value;
+    });
+    if (hosts.length !== 1 || hosts[0] !== host) {
+      add(
+        rule,
+        null,
+        null,
+        `${e.rel}: ${PASSKEY_RP.domainsKey} must hold exactly one ${PASSKEY_RP.scheme} entry, for "${host}" (${owner}.${constant})${e.developer ? `, ${PASSKEY_RP.developerMode} allowed` : `, no ${PASSKEY_RP.developerMode}`}; found [${(entries ?? ["<no associated-domains array>"]).join(", ")}]`,
+      );
+    }
+  }
+
+  // (5) no other host spelt in the two passkey files.
+  for (const f of [home, wire]) {
+    for (const s of f.strings.values()) {
+      if (s === pinned || !HOST_SHAPED.test(s.value)) continue;
+      add(
+        rule,
+        f,
+        s.start,
+        `a host-shaped string literal "${s.value}" in ${f.rel}: ${why}; the only host these files name is ${owner}.${constant}`,
+      );
+    }
+  }
+}
+
+/**
+ * G8d-passkey-dynamic (passkeys plan rule R1): the two passkey files reach
+ * nothing by a name the other passkey rules cannot see. G8b-dynamic already
+ * bans most of this in every source; here there are no exemptions: no
+ * class, selector or protocol looked up from a string, no Objective-C
+ * runtime function, no setValue at all (not even URLRequest's), no
+ * forKey-style label, and no `perform(` of any kind.
+ */
+function checkPasskeyDynamic(swift, add) {
+  for (const f of swift) {
+    if (!PASSKEY_FILES.includes(f.rel)) continue;
+    for (const m of f.code.matchAll(PASSKEY_DYNAMIC)) {
+      add(
+        "G8d-passkey-dynamic",
+        f,
+        m.index,
+        `${m[0].replace(/\s+/g, "")} in ${f.rel}: the passkey files reach nothing by name (no runtime lookup, no key-value coding, no perform)`,
+      );
+    }
   }
 }
 
@@ -4411,6 +5015,16 @@ function check(opts) {
   const relTo = (p) => relative(opts.root, p) || p;
   const bindings = loadSwift(opts.bindings, relTo(opts.bindings));
   const fe = loadTs(opts.fe, relTo(opts.fe));
+  // The wide scan of the passkey rules: every other native source of the
+  // app, next to the sources and the bindings already loaded.
+  const app = loadApp(
+    opts,
+    new Set([
+      ...allFiles.map((n) => resolve(join(opts.sources, n))),
+      resolve(opts.bindings),
+    ]),
+  );
+  const wide = [...swift, bindings, ...app.swift];
 
   // G7-main-sync, raw text first (comments included), every file.
   for (const n of allFiles) {
@@ -5074,7 +5688,12 @@ function check(opts) {
   }
   checkEvents(swift, plugin, add);
   checkRawFfi(swift, add);
-  checkCallAudio(swift, add);
+  checkPluginClassSet(swift, add);
+  checkLeafPlugin(swift, add, AUDIO);
+  checkLeafPlugin(swift, add, PASSKEY);
+  checkPasskeyExtensions(swift, add, wide, app);
+  checkPasskeyRp(swift, wide, opts, add);
+  checkPasskeyDynamic(swift, add);
   checkIosCaps(swift, add);
   checkRelayAttach(swift, add);
   checkNoLogging(swift, add);
@@ -5308,6 +5927,7 @@ function check(opts) {
     engineCalls: [...calls.values()].reduce((n, c) => n + c.length, 0),
     bodies,
     files: swift.length,
+    scanned: wide.length + app.other.length,
     reach,
   };
   return { violations, summary };
@@ -5337,7 +5957,8 @@ function main() {
     `ok: table generic ${summary.generic.length}, native ${summary.native.length}, call ${summary.call.length}, dedicated ${summary.dedicated.length}, out ${summary.out.length}; ` +
       `bindings export ${summary.exports} E2eeEngine methods; e2ee.ts ${summary.feNames} e2ee_ names, ${summary.invokeSites} #invoke sites; ` +
       `${summary.engineCalls} engine calls in ${summary.bodies} preconditioned bodies across ${summary.files} Swift files; ` +
-      `call graph ${summary.reach.nodes} nodes, ${summary.reach.roots} roots, ${summary.reach.reaches} native-only callers`,
+      `call graph ${summary.reach.nodes} nodes, ${summary.reach.roots} roots, ${summary.reach.reaches} native-only callers; ` +
+      `passkey rules over ${summary.scanned} native files of the app`,
   );
   if (opts.list) {
     for (const k of ROUTES) {

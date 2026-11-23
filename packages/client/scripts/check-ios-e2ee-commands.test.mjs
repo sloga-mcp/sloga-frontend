@@ -15,13 +15,21 @@
  * (below): a small synthetic Swift/bindings/e2ee.ts tree written from the
  * strings in this file, so their positive and failing mutants do not depend
  * on the state of the real tree.
+ *
+ * The passkey rules (G8d-passkey-plugin, G8d-passkey-extensions,
+ * G8d-passkey-rp, G8d-passkey-dynamic; passkeys plan Step 1, rule R1) are
+ * pinned the same two ways at the end of the file. They scan the whole iOS
+ * app dir and read the two entitlements files, so a copy of the real tree
+ * carries those as well (copyTree).
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   unlinkSync,
@@ -39,7 +47,8 @@ const SCRIPT =
   process.env.CHECK_IOS_E2EE_SCRIPT ??
   join(here, "check-ios-e2ee-commands.mjs");
 // Override only to replay the real-tree mutants against a snapshot of the
-// client dir (the three inputs at the same relative paths).
+// client dir (the three inputs at the same relative paths, plus the rest of
+// ios/App's native sources and the two entitlements files).
 const ROOT = process.env.CHECK_IOS_E2EE_ROOT ?? dirname(here);
 
 const SOURCES = "ios/App/SlogaE2ee/Sources/SlogaE2ee";
@@ -47,6 +56,42 @@ const BINDINGS = "ios/App/SlogaE2ee/Bindings/acutest_e2ee_ios.swift";
 const FE = "components/client/e2ee.ts";
 const PLUGIN = `${SOURCES}/E2eePlugin.swift`;
 const COMMANDS = `${SOURCES}/E2eeCommands.swift`;
+/** The app dir the passkey rules scan in full, and what they read beside it. */
+const APP = "ios/App";
+const DEV_ENTITLEMENTS = `${APP}/App/App.entitlements`;
+const RELEASE_ENTITLEMENTS = `${APP}/App/AppRelease.entitlements`;
+/** As the checker's APP_PRUNED_DIRS: dependencies and build output. */
+const PRUNED = [
+  "Pods",
+  "build",
+  ".build",
+  "DerivedData",
+  "node_modules",
+  ".git",
+];
+
+/**
+ * The native sources under ROOT's ios/App that the three inputs do not
+ * already cover (the app delegate, the package manifests, the test target,
+ * checked-in headers), relative to ROOT.
+ */
+function appExtras() {
+  const found = [];
+  const walk = (rel) => {
+    const entries = readdirSync(join(ROOT, rel), { withFileTypes: true });
+    for (const entry of entries) {
+      const child = `${rel}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (!PRUNED.includes(entry.name) && child !== SOURCES) walk(child);
+      } else if (/\.(swift|mm|m|h)$/.test(entry.name) && child !== BINDINGS) {
+        found.push(child);
+      }
+    }
+  };
+  walk(APP);
+  return found;
+}
+let extras = null;
 
 let tmp;
 let counter = 0;
@@ -65,11 +110,22 @@ function run(root) {
   });
 }
 
-/** A fresh copy of the three inputs; returns its client root. */
+/**
+ * A fresh copy of the three inputs, of the other native sources of the iOS
+ * app and of the two entitlements files; returns its client root.
+ */
 function copyTree() {
   const root = join(tmp, String(counter++));
   for (const rel of [SOURCES, BINDINGS, FE]) {
     cpSync(join(ROOT, rel), join(root, rel), { recursive: true });
+  }
+  extras ??= appExtras();
+  for (const rel of [...extras, DEV_ENTITLEMENTS, RELEASE_ENTITLEMENTS]) {
+    // A snapshot without the entitlements files is copied as it is: the
+    // checker then reports them missing.
+    if (!existsSync(join(ROOT, rel))) continue;
+    mkdirSync(dirname(join(root, rel)), { recursive: true });
+    cpSync(join(ROOT, rel), join(root, rel));
   }
   return root;
 }
@@ -1535,6 +1591,62 @@ public final class SlogaCallAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 }
 `;
 
+const W_PASSKEY = String.raw`import AuthenticationServices
+import Capacitor
+import Foundation
+
+@objc(PasskeyPlugin)
+public final class PasskeyPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "PasskeyPlugin"
+    public let jsName = "Passkey"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "isAvailable", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "create", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "get", returnType: CAPPluginReturnPromise),
+    ]
+
+    static func arm() {}
+
+    @objc func isAvailable(_ call: CAPPluginCall) {
+        call.resolve(["available": true])
+    }
+
+    @objc func create(_ call: CAPPluginCall) {
+        if #available(iOS 16.0, *) {
+            let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: PasskeyWire.signInRelyingParty)
+            let registration = provider.createCredentialRegistrationRequest(challenge: Data(), name: "n", userID: Data())
+            registration.userVerificationPreference = .required
+            _ = registration
+        }
+        call.resolve(["credentialJson": PasskeyWire.credentialJSON(PasskeyWire.member("rp"))])
+    }
+
+    @objc func get(_ call: CAPPluginCall) {
+        call.resolve(["credentialJson": PasskeyWire.credentialJSON("id")])
+    }
+}
+`;
+
+const W_PASSKEY_WIRE = String.raw`import Foundation
+
+enum PasskeyWire {
+    static let signInRelyingParty = "app.sloga.gg"
+
+    static func member(_ key: String) -> String {
+        key
+    }
+
+    static func credentialJSON(_ id: String) -> String {
+        let credential: [String: Any] = [
+            "id": id,
+            "type": "public-key",
+            "clientExtensionResults": [String: Any](),
+        ]
+        return String(describing: credential)
+    }
+}
+`;
+
 const W_CAPS_LINE = String.raw`        return "Object.defineProperty(window,\"__slogaIosCaps\",{value:Object.freeze({mediaE2EE:\(flag)}),writable:false,configurable:false,enumerable:false});"`;
 const W_BRIDGE = String.raw`import Capacitor
 import Foundation
@@ -1563,12 +1675,14 @@ ${W_CAPS_LINE}
         }
         if let bridge = bridge {
             if MainFrameBridgeGuard.install(on: bridge) != nil {
+                PasskeyPlugin.arm()
                 E2eePlugin.arm()
                 SlogaCallAudioPlugin.arm()
                 let e2ee = E2eePlugin()
                 bridge.registerPluginInstance(e2ee)
                 // The key push goes to this instance only.
                 KeysChangedRelay.attach(e2ee, bridge: bridge)
+                bridge.registerPluginInstance(PasskeyPlugin())
                 bridge.registerPluginInstance(SlogaCallAudioPlugin())
             }
         }
@@ -1624,12 +1738,39 @@ const W_FE = [
 const W_RELAY_FILE = `${SOURCES}/KeysChangedRelay.swift`;
 const W_AUDIO_FILE = `${SOURCES}/CallAudioSession.swift`;
 const W_BRIDGE_FILE = `${SOURCES}/SlogaBridgeViewController.swift`;
+const W_PASSKEY_FILE = `${SOURCES}/PasskeyPlugin.swift`;
+const W_PASSKEY_WIRE_FILE = `${SOURCES}/PasskeyWire.swift`;
+/** An entitlements file whose associated domains are `entries`. */
+const entitlements = (...entries) =>
+  [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<plist version="1.0">',
+    "<dict>",
+    "\t<key>aps-environment</key>",
+    "\t<string>development</string>",
+    "\t<key>com.apple.developer.associated-domains</key>",
+    "\t<array>",
+    ...entries.map((entry) => `\t\t<string>${entry}</string>`),
+    "\t</array>",
+    "</dict>",
+    "</plist>",
+    "",
+  ].join("\n");
+const W_DEV_DOMAIN =
+  "<string>webcredentials:app.sloga.gg?mode=developer</string>";
+const W_RELEASE_DOMAIN = "<string>webcredentials:app.sloga.gg</string>";
 const W_FILES = {
+  [DEV_ENTITLEMENTS]: entitlements(
+    "webcredentials:app.sloga.gg?mode=developer",
+  ),
+  [RELEASE_ENTITLEMENTS]: entitlements("webcredentials:app.sloga.gg"),
   [COMMANDS]: W_COMMANDS_SWIFT,
   [PLUGIN]: W_PLUGIN,
   [SUPPORT]: W_SUPPORT,
   [W_RELAY_FILE]: W_RELAY,
   [W_AUDIO_FILE]: W_AUDIO,
+  [W_PASSKEY_FILE]: W_PASSKEY,
+  [W_PASSKEY_WIRE_FILE]: W_PASSKEY_WIRE,
   [W_BRIDGE_FILE]: W_BRIDGE,
   [BINDINGS]: W_BINDINGS,
   [FE]: W_FE,
@@ -3004,5 +3145,1362 @@ describe("phase 2 rules on the real tree's own shapes", () => {
       '        CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),\n',
       '        CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),\n        CAPPluginMethod(name: "route", returnType: CAPPluginReturnPromise),\n',
     ]);
+  });
+});
+
+// ------------------------------------------------- passkeys (plan Step 1)
+
+const W_PASSKEY_REGISTER =
+  "                bridge.registerPluginInstance(PasskeyPlugin())\n";
+const W_PASSKEY_ARM = "                PasskeyPlugin.arm()\n";
+const W_PASSKEY_UV =
+  "            registration.userVerificationPreference = .required\n";
+const W_PASSKEY_AVAILABLE = '        call.resolve(["available": true])\n';
+const W_PASSKEY_LAST_METHOD =
+  '        CAPPluginMethod(name: "get", returnType: CAPPluginReturnPromise),\n';
+const W_WIRE_MEMBER = "    static func member(_ key: String) -> String {\n";
+const W_WIRE_RESULTS = '"clientExtensionResults": [String: Any](),';
+
+describe("passkeys: the Passkey plugin behind the main-frame guard (G8d-passkey-plugin)", () => {
+  const pluginExpect = (needles, ...mutations) =>
+    worldExpect("G8d-passkey-plugin", needles, ...mutations);
+
+  test("registered outside the guarded block", () => {
+    pluginExpect(
+      ["PasskeyPlugin must be armed, then built once"],
+      [W_BRIDGE_FILE, W_PASSKEY_REGISTER, ""],
+      [
+        W_BRIDGE_FILE,
+        "                bridge.registerPluginInstance(SlogaCallAudioPlugin())\n            }\n",
+        `                bridge.registerPluginInstance(SlogaCallAudioPlugin())\n            }\n${W_PASSKEY_REGISTER}`,
+      ],
+    );
+  });
+
+  test("registered in a block that does not test the guard", () => {
+    pluginExpect(
+      ["PasskeyPlugin must be armed, then built once"],
+      [
+        W_BRIDGE_FILE,
+        "            if MainFrameBridgeGuard.install(on: bridge) != nil {\n",
+        "            if bridge.config.localURL.scheme != nil {\n",
+      ],
+    );
+  });
+
+  test("registered without arming it", () => {
+    pluginExpect(
+      ["PasskeyPlugin must be armed, then built once"],
+      [W_BRIDGE_FILE, W_PASSKEY_ARM, ""],
+    );
+  });
+
+  test("armed after it is registered", () => {
+    pluginExpect(
+      ["PasskeyPlugin must be armed, then built once"],
+      [W_BRIDGE_FILE, W_PASSKEY_ARM, ""],
+      [W_BRIDGE_FILE, W_PASSKEY_REGISTER, W_PASSKEY_REGISTER + W_PASSKEY_ARM],
+    );
+  });
+
+  test("registered through a variable, not built in place", () => {
+    pluginExpect(
+      ["PasskeyPlugin must be armed, then built once"],
+      [
+        W_BRIDGE_FILE,
+        W_PASSKEY_REGISTER,
+        "                let passkey = PasskeyPlugin()\n                bridge.registerPluginInstance(passkey)\n",
+      ],
+    );
+  });
+
+  test("a second instance built somewhere else", () => {
+    pluginExpect(
+      ["PasskeyPlugin must be armed, then built once"],
+      inReject("    _ = PasskeyPlugin()\n"),
+    );
+  });
+
+  test("the class handed out as a type (registerPluginType)", () => {
+    pluginExpect(
+      ["PasskeyPlugin must be armed, then built once"],
+      inReject("    _ = PasskeyPlugin.self\n"),
+    );
+  });
+
+  test("a fourth @objc plugin method", () => {
+    pluginExpect(
+      ["an @objc member other than isAvailable/create/get"],
+      [
+        W_PASSKEY_FILE,
+        "    @objc func get(_ call: CAPPluginCall) {",
+        "    @objc func export(_ call: CAPPluginCall) {\n        call.resolve()\n    }\n\n    @objc func get(_ call: CAPPluginCall) {",
+      ],
+    );
+  });
+
+  test("a fourth plugin method in pluginMethods", () => {
+    pluginExpect(
+      ["pluginMethods must be exactly [isAvailable, create, get]"],
+      [
+        W_PASSKEY_FILE,
+        W_PASSKEY_LAST_METHOD,
+        `${W_PASSKEY_LAST_METHOD}        CAPPluginMethod(name: "export", returnType: CAPPluginReturnPromise),\n`,
+      ],
+    );
+  });
+
+  test("a plugin method removed", () => {
+    pluginExpect(
+      ["pluginMethods must be exactly [isAvailable, create, get]"],
+      [W_PASSKEY_FILE, W_PASSKEY_LAST_METHOD, ""],
+    );
+  });
+
+  test("another jsName", () => {
+    pluginExpect(
+      ['jsName must be "Passkey"'],
+      [
+        W_PASSKEY_FILE,
+        'public let jsName = "Passkey"',
+        'public let jsName = "E2ee"',
+      ],
+    );
+  });
+
+  test("not final", () => {
+    const mutation = [
+      W_PASSKEY_FILE,
+      "public final class PasskeyPlugin",
+      "public class PasskeyPlugin",
+    ];
+    pluginExpect(["must be declared final"], mutation);
+    worldExpect(
+      "G8c-plugin-final",
+      ["class PasskeyPlugin must be declared final"],
+      mutation,
+    );
+  });
+
+  test("a subclass of PasskeyPlugin", () => {
+    worldExpect(
+      "G8c-plugin-final",
+      ["LoosePasskey inherits from PasskeyPlugin"],
+      [
+        SUPPORT,
+        "final class NativeConfirmPresenter",
+        "final class LoosePasskey: PasskeyPlugin {}\n\nfinal class NativeConfirmPresenter",
+      ],
+    );
+  });
+
+  test("the passkey plugin reaching for the E2EE core", () => {
+    pluginExpect(
+      ["names E2eeRuntime"],
+      [
+        W_PASSKEY_FILE,
+        W_PASSKEY_AVAILABLE,
+        `${W_PASSKEY_AVAILABLE}        _ = E2eeRuntime.shared\n`,
+      ],
+    );
+  });
+
+  test("PasskeyPlugin.swift missing", () => {
+    const root = world();
+    unlinkSync(join(root, W_PASSKEY_FILE));
+    const lines = violationsOf(run(root));
+    assert.ok(
+      lines.some(
+        (l) =>
+          l.startsWith("G8d-passkey-plugin ") &&
+          l.includes("PasskeyPlugin.swift not found"),
+      ),
+      lines.join("\n"),
+    );
+  });
+
+  test("a passkey method is a reachability root", () => {
+    worldExpect(
+      "G8b-reach",
+      [
+        /^G8b-reach PasskeyPlugin\.swift:\d+ PasskeyPlugin\.isAvailable\(_:\) -> attachmentForExport \(root may reach: none\)$/,
+      ],
+      [
+        W_PASSKEY_FILE,
+        W_PASSKEY_AVAILABLE,
+        `${W_PASSKEY_AVAILABLE}        _ = attachmentForExport\n`,
+      ],
+    );
+  });
+
+  test("the passkey method named get is a root too, not an accessor block", () => {
+    const body =
+      '        call.resolve(["credentialJson": PasskeyWire.credentialJSON("id")])\n';
+    worldExpect(
+      "G8b-reach",
+      [
+        /^G8b-reach PasskeyPlugin\.swift:\d+ PasskeyPlugin\.get\(_:\) -> attachmentForExport \(root may reach: none\)$/,
+      ],
+      [W_PASSKEY_FILE, body, `${body}        _ = attachmentForExport\n`],
+    );
+  });
+});
+
+describe("passkeys: no WebAuthn extension in or out, rule R1 (G8d-passkey-extensions)", () => {
+  const r1Expect = (needles, ...mutations) =>
+    worldExpect("G8d-passkey-extensions", needles, ...mutations);
+
+  test("prf set on the registration request", () => {
+    r1Expect(
+      ["prf in the sources"],
+      [
+        W_PASSKEY_FILE,
+        W_PASSKEY_UV,
+        `${W_PASSKEY_UV}            registration.prf = .checkForSupport\n`,
+      ],
+    );
+  });
+
+  test("a PRF input type named", () => {
+    r1Expect(
+      ["ASAuthorizationPublicKeyCredentialPRFAssertionInput in the sources"],
+      [
+        W_PASSKEY_FILE,
+        W_PASSKEY_UV,
+        `${W_PASSKEY_UV}            _ = ASAuthorizationPublicKeyCredentialPRFAssertionInput.self\n`,
+      ],
+    );
+  });
+
+  test("the PRF output read from a credential", () => {
+    r1Expect(
+      ["prf in the sources"],
+      [
+        W_PASSKEY_FILE,
+        W_PASSKEY_AVAILABLE,
+        `${W_PASSKEY_AVAILABLE}        _ = (call as AnyObject).prf\n`,
+      ],
+    );
+  });
+
+  test("largeBlob set on the registration request", () => {
+    r1Expect(
+      ["largeBlob in the sources"],
+      [
+        W_PASSKEY_FILE,
+        W_PASSKEY_UV,
+        `${W_PASSKEY_UV}            registration.largeBlob = nil\n`,
+      ],
+    );
+  });
+
+  test("prf in a file other than the passkey ones", () => {
+    r1Expect(
+      ["prf in the sources"],
+      inReject("    _ = (error as AnyObject).prf\n"),
+    );
+  });
+
+  test("a string literal naming prf, any file", () => {
+    r1Expect(
+      ['a string literal naming "prf"'],
+      inReject('    _ = ["prf": 1]\n'),
+    );
+  });
+
+  test("the options' extensions member looked up", () => {
+    r1Expect(
+      ['a string literal naming "extensions" in PasskeyWire.swift'],
+      [
+        W_PASSKEY_WIRE_FILE,
+        W_WIRE_MEMBER,
+        `${W_WIRE_MEMBER}        _ = ["extensions": key]\n`,
+      ],
+    );
+  });
+
+  test("an extension-named identifier in the passkey files", () => {
+    r1Expect(
+      ["extensionInputs in PasskeyWire.swift"],
+      [
+        W_PASSKEY_WIRE_FILE,
+        W_WIRE_MEMBER,
+        `${W_WIRE_MEMBER}        let extensionInputs = key\n        _ = extensionInputs\n`,
+      ],
+    );
+  });
+
+  test("clientExtensionResults filled from a value", () => {
+    r1Expect(
+      ["written exactly once"],
+      [
+        W_PASSKEY_WIRE_FILE,
+        W_WIRE_RESULTS,
+        '"clientExtensionResults": ["id": id],',
+      ],
+    );
+  });
+
+  test("clientExtensionResults filled from a variable", () => {
+    r1Expect(
+      ["written exactly once"],
+      [W_PASSKEY_WIRE_FILE, W_WIRE_RESULTS, '"clientExtensionResults": id,'],
+    );
+  });
+
+  test("a second clientExtensionResults, written by the plugin", () => {
+    r1Expect(
+      ["(found 2)"],
+      [
+        W_PASSKEY_FILE,
+        W_PASSKEY_AVAILABLE,
+        '        call.resolve(["available": true, "clientExtensionResults": 1])\n',
+      ],
+    );
+  });
+
+  test("clientExtensionResults no longer written", () => {
+    r1Expect(
+      ["(found 0)"],
+      [W_PASSKEY_WIRE_FILE, `            ${W_WIRE_RESULTS}\n`, ""],
+    );
+  });
+
+  test("a system credential type named outside PasskeyPlugin.swift", () => {
+    r1Expect(
+      ["ASAuthorizationController outside PasskeyPlugin.swift"],
+      inReject("    _ = ASAuthorizationController.self\n"),
+    );
+  });
+
+  test("PasskeyWire.swift missing", () => {
+    const root = world();
+    unlinkSync(join(root, W_PASSKEY_WIRE_FILE));
+    const lines = violationsOf(run(root));
+    assert.ok(
+      lines.some(
+        (l) =>
+          l.startsWith("G8d-passkey-extensions ") &&
+          l.includes("PasskeyWire.swift not found"),
+      ),
+      lines.join("\n"),
+    );
+  });
+
+  test("a comment may name what is forbidden, and the extension keyword stays", () => {
+    worldClean(
+      "G8d-passkey-extensions",
+      [
+        W_PASSKEY_FILE,
+        W_PASSKEY_UV,
+        `${W_PASSKEY_UV}            // Never PRF, never largeBlob, never the options' "extensions".\n`,
+      ],
+      [
+        W_PASSKEY_WIRE_FILE,
+        "enum PasskeyWire {\n",
+        "extension PasskeyWire {\n    static let unused = 0\n}\n\nenum PasskeyWire {\n",
+      ],
+    );
+  });
+});
+
+describe("passkey rules on the real tree's own shapes", () => {
+  const REAL_BRIDGE = `${SOURCES}/SlogaBridgeViewController.swift`;
+  const REAL_PASSKEY = `${SOURCES}/PasskeyPlugin.swift`;
+  const REAL_WIRE = `${SOURCES}/PasskeyWire.swift`;
+  const REAL_CREATE_UV =
+    "        registration.userVerificationPreference = preference(creation.userVerification)\n";
+  const REAL_GET_UV =
+    "        request.userVerificationPreference = preference(assertion.userVerification)\n";
+  const REAL_LAST_METHOD =
+    '        CAPPluginMethod(name: "get", returnType: CAPPluginReturnPromise),\n';
+
+  test("Passkey registered outside the guarded block", () => {
+    expectViolationWith(
+      "G8d-passkey-plugin",
+      ["PasskeyPlugin must be armed, then built once"],
+      [
+        REAL_BRIDGE,
+        "                bridge.registerPluginInstance(PasskeyPlugin())\n            }\n",
+        "            }\n            bridge.registerPluginInstance(PasskeyPlugin())\n",
+      ],
+    );
+  });
+
+  test("Passkey registered without arming it", () => {
+    expectViolationWith(
+      "G8d-passkey-plugin",
+      ["PasskeyPlugin must be armed, then built once"],
+      [REAL_BRIDGE, "                PasskeyPlugin.arm()\n", ""],
+    );
+  });
+
+  test("a fourth Passkey plugin method", () => {
+    expectViolationWith(
+      "G8d-passkey-plugin",
+      ["pluginMethods must be exactly [isAvailable, create, get]"],
+      [
+        REAL_PASSKEY,
+        REAL_LAST_METHOD,
+        `${REAL_LAST_METHOD}        CAPPluginMethod(name: "export", returnType: CAPPluginReturnPromise),\n`,
+      ],
+    );
+  });
+
+  test("prf set on the real registration request", () => {
+    expectViolationWith(
+      "G8d-passkey-extensions",
+      ["prf in the sources"],
+      [
+        REAL_PASSKEY,
+        REAL_CREATE_UV,
+        `${REAL_CREATE_UV}        registration.prf = .checkForSupport\n`,
+      ],
+    );
+  });
+
+  test("prf set on the real assertion request", () => {
+    expectViolationWith(
+      "G8d-passkey-extensions",
+      ["prf in the sources"],
+      [
+        REAL_PASSKEY,
+        REAL_GET_UV,
+        `${REAL_GET_UV}        request.prf = .inputValues(.saltInput1(Data()))\n`,
+      ],
+    );
+  });
+
+  test("the real options reader looking up extensions", () => {
+    expectViolationWith(
+      "G8d-passkey-extensions",
+      ['a string literal naming "extensions" in PasskeyWire.swift'],
+      [
+        REAL_WIRE,
+        '        let user = try member(options, "user")\n',
+        '        let user = try member(options, "user")\n        _ = present(options, "extensions")\n',
+      ],
+    );
+  });
+
+  test("the real credential writer filling clientExtensionResults", () => {
+    expectViolationWith(
+      "G8d-passkey-extensions",
+      ["written exactly once"],
+      [
+        REAL_WIRE,
+        '"clientExtensionResults": [String: Any](),',
+        '"clientExtensionResults": response,',
+      ],
+    );
+  });
+});
+
+// ------------------- passkeys: one relying party, the wide scan, no lookups
+
+/** Write (or replace) one file of a test tree. */
+function put(root, rel, text) {
+  mkdirSync(dirname(join(root, rel)), { recursive: true });
+  writeFileSync(join(root, rel), text);
+}
+
+/** The fixture world after `prepare(root)`: the checker's violation lines. */
+function worldLines(prepare) {
+  const root = world();
+  prepare(root);
+  return violationsOf(run(root));
+}
+
+/** A copy of the real tree after `prepare(root)`: must exit 1; its lines. */
+function realLines(prepare) {
+  const root = copyTree();
+  prepare(root);
+  const result = run(root);
+  assert.equal(
+    result.status,
+    1,
+    `expected exit 1, got ${result.status}\n${result.stdout}${result.stderr}`,
+  );
+  return result.stdout.split("\n").filter((l) => l);
+}
+
+/** One `rule` line of `lines` holds every needle (substring or RegExp). */
+function assertReported(lines, rule, needles) {
+  const hit = (l, n) => (typeof n === "string" ? l.includes(n) : n.test(l));
+  assert.ok(
+    lines.some(
+      (l) => l.startsWith(`${rule} `) && needles.every((n) => hit(l, n)),
+    ),
+    `expected a ${rule} violation with [${needles.join(", ")}], got:\n${lines.join("\n")}`,
+  );
+}
+
+/** No line of `lines` is under `rule`. */
+function assertSilent(lines, rule) {
+  assert.deepEqual(
+    lines.filter((l) => l.startsWith(`${rule} `)),
+    [],
+    lines.join("\n"),
+  );
+}
+
+const RP_PROVIDER = "ASAuthorizationPlatformPublicKeyCredentialProvider";
+const RP_CALL = `${RP_PROVIDER}(relyingPartyIdentifier: PasskeyWire.signInRelyingParty)`;
+const RP_CONSTANT = '    static let signInRelyingParty = "app.sloga.gg"\n';
+const W_APP_DELEGATE = `${APP}/App/AppDelegate.swift`;
+const W_R1_TESTS = `${APP}/SlogaE2ee/Tests/AppTests/PasskeyWireTests.swift`;
+const W_OTHER_TESTS = `${APP}/SlogaE2ee/Tests/AppTests/OtherTests.swift`;
+const delegateWith = (line) =>
+  `import UIKit\n\nfinal class AppDelegate: UIResponder {\n    func boot() {\n${line}    }\n}\n`;
+
+describe("passkeys: one relying party, pinned (G8d-passkey-rp)", () => {
+  const rule = "G8d-passkey-rp";
+  const rpExpect = (needles, ...mutations) =>
+    worldExpect(rule, needles, ...mutations);
+  const inCreate = (line) => [
+    W_PASSKEY_FILE,
+    W_PASSKEY_UV,
+    `${W_PASSKEY_UV}${line}`,
+  ];
+  const argument = (text) => [
+    W_PASSKEY_FILE,
+    RP_CALL,
+    `${RP_PROVIDER}(relyingPartyIdentifier: ${text})`,
+  ];
+  const constant = (line) => [W_PASSKEY_WIRE_FILE, RP_CONSTANT, line];
+
+  // (2) what reaches relyingPartyIdentifier:
+
+  test("the relying party taken from a variable", () => {
+    rpExpect(
+      [/^G8d-passkey-rp PasskeyPlugin\.swift:\d+ relyingPartyIdentifier here/],
+      [
+        W_PASSKEY_FILE,
+        "            let provider = ",
+        "            let rp = PasskeyWire.signInRelyingParty\n            let provider = ",
+      ],
+      argument("rp"),
+    );
+  });
+
+  for (const [what, text] of [
+    ["a literal, even the right host", '"app.sloga.gg"'],
+    ["a value parsed from the options", 'PasskeyWire.member("rpId")'],
+    ["a value read from the call", 'call.getString("rpId") ?? ""'],
+    ["the constant with something appended", 'PasskeyWire.signInRelyingParty + ".x"'],
+    ["a constant of another type", "Other.signInRelyingParty"],
+    ["the bare constant name", "signInRelyingParty"],
+  ]) {
+    test(`the relying party is ${what}`, () => {
+      rpExpect(["relyingPartyIdentifier here"], argument(text));
+      rpExpect(["must appear exactly once", "(found 0)"], argument(text));
+    });
+  }
+
+  test("a second provider, even one built from the constant", () => {
+    rpExpect(
+      ["must appear exactly once", "(found 2)"],
+      inCreate(`            _ = ${RP_CALL}\n`),
+    );
+  });
+
+  test("a provider built in another source file", () => {
+    rpExpect(
+      [/^G8d-passkey-rp Support\.swift:\d+ relyingPartyIdentifier here/],
+      inReject(`    _ = ${RP_CALL}\n`),
+    );
+  });
+
+  test("a provider built outside the plugin package (the app delegate)", () => {
+    const lines = worldLines((root) =>
+      put(root, W_APP_DELEGATE, delegateWith(`        _ = ${RP_CALL}\n`)),
+    );
+    assertReported(lines, rule, [
+      "ios/App/App/AppDelegate.swift:5 relyingPartyIdentifier here",
+    ]);
+    assertReported(lines, rule, [
+      `ios/App/App/AppDelegate.swift:5 ${RP_PROVIDER} here`,
+    ]);
+  });
+
+  test("the security-key provider", () => {
+    rpExpect(
+      ["ASAuthorizationSecurityKeyPublicKeyCredentialProvider here"],
+      inCreate(
+        "            _ = ASAuthorizationSecurityKeyPublicKeyCredentialProvider(relyingPartyIdentifier: PasskeyWire.signInRelyingParty)\n",
+      ),
+    );
+  });
+
+  test("the provider's init taken as a value (no label at the call)", () => {
+    rpExpect(
+      [`${RP_PROVIDER} here: a credential provider is built once`],
+      inCreate(
+        `            let make = ${RP_PROVIDER}.init\n            _ = make("backup")\n`,
+      ),
+    );
+  });
+
+  test("the provider type handed out", () => {
+    rpExpect(
+      [`${RP_PROVIDER} here: a credential provider is built once`],
+      inCreate(`            _ = ${RP_PROVIDER}.self\n`),
+    );
+  });
+
+  test("a typealias of the provider type", () => {
+    rpExpect(
+      [`${RP_PROVIDER} here: a credential provider is built once`],
+      [
+        W_PASSKEY_FILE,
+        "@objc(PasskeyPlugin)\n",
+        `typealias Provider = ${RP_PROVIDER}\n\n@objc(PasskeyPlugin)\n`,
+      ],
+    );
+  });
+
+  test("relyingPartyIdentifier named in a string literal", () => {
+    rpExpect(
+      ['a string literal naming "relyingPartyIdentifier" in Support.swift'],
+      inReject('    _ = ["relyingPartyIdentifier": 1]\n'),
+    );
+  });
+
+  test("the one factory form passes: built once, named as a return type", () => {
+    worldClean(
+      rule,
+      [W_PASSKEY_FILE, RP_CALL, "Self.signInProvider()"],
+      [
+        W_PASSKEY_FILE,
+        "    static func arm() {}\n",
+        `    static func arm() {}\n\n    @available(iOS 16.0, *)\n    private static func signInProvider() -> ${RP_PROVIDER} {\n        ${RP_CALL}\n    }\n`,
+      ],
+    );
+  });
+
+  // (1) the constant
+
+  test("the constant names another host", () => {
+    rpExpect(
+      ['PasskeyWire.signInRelyingParty is "backup.sloga.gg", not "app.sloga.gg"'],
+      constant('    static let signInRelyingParty = "backup.sloga.gg"\n'),
+    );
+  });
+
+  for (const [what, line] of [
+    ["a var", '    static var signInRelyingParty = "app.sloga.gg"\n'],
+    ["not static", '    let signInRelyingParty = "app.sloga.gg"\n'],
+    [
+      "joined from pieces",
+      '    static let signInRelyingParty = "app.sloga" + ".gg"\n',
+    ],
+    [
+      "continued on the next line",
+      '    static let signInRelyingParty = "app.sloga.gg"\n        + ".example"\n',
+    ],
+    [
+      "transformed on the next line",
+      '    static let signInRelyingParty = "app.sloga.gg"\n        .replacingOccurrences(of: "app", with: "backup")\n',
+    ],
+    [
+      "interpolated",
+      '    static let signInRelyingParty = "app.\\(member("sloga")).gg"\n',
+    ],
+    ["a call", '    static let signInRelyingParty = member("app.sloga.gg")\n'],
+    [
+      "a computed property",
+      '    static var signInRelyingParty: String { "app.sloga.gg" }\n',
+    ],
+    [
+      "inside a nested type",
+      '    enum Inner {\n        static let signInRelyingParty = "app.sloga.gg"\n    }\n',
+    ],
+  ]) {
+    test(`the constant is ${what}`, () => {
+      rpExpect(
+        [
+          /^G8d-passkey-rp PasskeyWire\.swift:\d+ PasskeyWire\.signInRelyingParty must be declared exactly once/,
+          "found 1 declaration(s)",
+        ],
+        constant(line),
+      );
+    });
+  }
+
+  test("a second declaration of the constant's name (a shadow)", () => {
+    rpExpect(
+      ["must be declared exactly once", "found 2 declaration(s)"],
+      inReject(
+        '    let signInRelyingParty = "evil.example"\n    _ = signInRelyingParty\n',
+      ),
+    );
+  });
+
+  test("the constant moved to an extension in another file", () => {
+    rpExpect(
+      [
+        /^G8d-passkey-rp Support\.swift:\d+ PasskeyWire\.signInRelyingParty must be declared exactly once/,
+      ],
+      constant(""),
+      [
+        SUPPORT,
+        "final class NativeConfirmPresenter",
+        'extension PasskeyWire {\n    static let signInRelyingParty = "app.sloga.gg"\n}\n\nfinal class NativeConfirmPresenter',
+      ],
+    );
+  });
+
+  test("a second declaration in the test target", () => {
+    const lines = worldLines((root) =>
+      put(
+        root,
+        W_OTHER_TESTS,
+        'enum PasskeyWire {\n    static let signInRelyingParty = "evil.example"\n}\n',
+      ),
+    );
+    assertReported(lines, rule, ["found 2 declaration(s)"]);
+  });
+
+  test("the constant removed", () => {
+    rpExpect(["found 0 declaration(s)"], constant(""));
+  });
+
+  // (4) the entitlements
+
+  const devEntry = (text) => [DEV_ENTITLEMENTS, W_DEV_DOMAIN, text];
+  const releaseEntry = (text) => [RELEASE_ENTITLEMENTS, W_RELEASE_DOMAIN, text];
+
+  test("the development entitlements name another host", () => {
+    rpExpect(
+      [
+        "ios/App/App/App.entitlements:",
+        'for "app.sloga.gg"',
+        "found [webcredentials:sloga.gg?mode=developer]",
+      ],
+      devEntry("<string>webcredentials:sloga.gg?mode=developer</string>"),
+    );
+  });
+
+  test("the release entitlements name another host", () => {
+    rpExpect(
+      [
+        "ios/App/App/AppRelease.entitlements:",
+        "found [webcredentials:backup.sloga.gg]",
+      ],
+      releaseEntry("<string>webcredentials:backup.sloga.gg</string>"),
+    );
+  });
+
+  test("the release entitlements carry the developer mode", () => {
+    rpExpect(
+      ["ios/App/App/AppRelease.entitlements:", "no ?mode=developer"],
+      releaseEntry(W_DEV_DOMAIN),
+    );
+  });
+
+  test("another mode on the development entry", () => {
+    rpExpect(
+      ["ios/App/App/App.entitlements:"],
+      devEntry("<string>webcredentials:app.sloga.gg?mode=managed</string>"),
+    );
+  });
+
+  test("a second webcredentials entry beside the right one", () => {
+    rpExpect(
+      [
+        "ios/App/App/AppRelease.entitlements:",
+        "found [webcredentials:app.sloga.gg, webcredentials:backup.sloga.gg]",
+      ],
+      releaseEntry(
+        `${W_RELEASE_DOMAIN}\n\t\t<string>webcredentials:backup.sloga.gg</string>`,
+      ),
+    );
+  });
+
+  test("the webcredentials entry commented out", () => {
+    rpExpect(
+      ["ios/App/App/AppRelease.entitlements:", "found []"],
+      releaseEntry(`<!-- ${W_RELEASE_DOMAIN} -->`),
+    );
+  });
+
+  test("a misspelt webcredentials prefix", () => {
+    rpExpect(
+      ["ios/App/App/App.entitlements:"],
+      devEntry("<string>WebCredentials:app.sloga.gg?mode=developer</string>"),
+    );
+  });
+
+  test("space around the host", () => {
+    rpExpect(
+      ["ios/App/App/AppRelease.entitlements:"],
+      releaseEntry("<string>webcredentials:app.sloga.gg </string>"),
+    );
+  });
+
+  test("the associated domains array missing", () => {
+    rpExpect(
+      [
+        "ios/App/App/AppRelease.entitlements:",
+        "<no associated-domains array>",
+      ],
+      [
+        RELEASE_ENTITLEMENTS,
+        "\t<key>com.apple.developer.associated-domains</key>\n",
+        "\t<key>com.apple.developer.other</key>\n",
+      ],
+    );
+  });
+
+  for (const rel of [DEV_ENTITLEMENTS, RELEASE_ENTITLEMENTS]) {
+    test(`${rel} missing`, () => {
+      const lines = worldLines((root) => unlinkSync(join(root, rel)));
+      assertReported(lines, rule, [`${rel} not found`]);
+    });
+  }
+
+  test("the constant and both entitlements moved together still fail the pin", () => {
+    rpExpect(
+      ['is "backup.sloga.gg", not "app.sloga.gg"'],
+      constant('    static let signInRelyingParty = "backup.sloga.gg"\n'),
+      devEntry(
+        "<string>webcredentials:backup.sloga.gg?mode=developer</string>",
+      ),
+      releaseEntry("<string>webcredentials:backup.sloga.gg</string>"),
+    );
+  });
+
+  test("the development entry without the mode, and other domain kinds, pass", () => {
+    worldClean(
+      rule,
+      devEntry(
+        "<string>applinks:sloga.gg</string>\n\t\t<string>webcredentials:app.sloga.gg</string>",
+      ),
+      releaseEntry(
+        `<!-- <string>webcredentials:old.sloga.gg</string> -->\n\t\t${W_RELEASE_DOMAIN}`,
+      ),
+    );
+  });
+
+  // (5) no other host in the two passkey files
+
+  for (const [what, literal] of [
+    ["another host", '"backup.sloga.gg"'],
+    ["the same host, written a second time", '"app.sloga.gg"'],
+    ["a host in another case", '"Backup.Sloga.GG"'],
+    ["a host with a trailing dot", '"backup.sloga.gg."'],
+    ["a host inside a URL", '"https://keys.sloga.gg/x"'],
+    ["a two-label host", '"sloga.gg"'],
+    ["a punycode host", '"xn--80ak6aa92e.xn--p1ai"'],
+  ]) {
+    test(`${what} spelt in PasskeyPlugin.swift`, () => {
+      rpExpect(
+        [
+          `a host-shaped string literal ${literal} in PasskeyPlugin.swift`,
+        ],
+        [
+          W_PASSKEY_FILE,
+          W_PASSKEY_AVAILABLE,
+          `${W_PASSKEY_AVAILABLE}        _ = ${literal}\n`,
+        ],
+      );
+    });
+  }
+
+  test("another host spelt in PasskeyWire.swift", () => {
+    rpExpect(
+      ['a host-shaped string literal "backup.sloga.gg" in PasskeyWire.swift'],
+      [
+        W_PASSKEY_WIRE_FILE,
+        W_WIRE_MEMBER,
+        `${W_WIRE_MEMBER}        _ = "backup.sloga.gg"\n`,
+      ],
+    );
+  });
+
+  test("dotted text that is not a host, and hosts in other files, pass", () => {
+    worldClean(
+      rule,
+      [
+        W_PASSKEY_WIRE_FILE,
+        W_WIRE_MEMBER,
+        `${W_WIRE_MEMBER}        _ = ["v1.0", "a.b", "public-key", "not associated with domain", "16.0"]\n`,
+      ],
+      inReject('    _ = "api.sloga.gg"\n'),
+    );
+  });
+
+  test("PasskeyWire.swift missing", () => {
+    const lines = worldLines((root) =>
+      unlinkSync(join(root, W_PASSKEY_WIRE_FILE)),
+    );
+    assertReported(lines, rule, ["PasskeyWire.swift not found"]);
+  });
+});
+
+describe("passkeys: nothing reached by name in the passkey files (G8d-passkey-dynamic)", () => {
+  const rule = "G8d-passkey-dynamic";
+  const inPlugin = (line) => [
+    W_PASSKEY_FILE,
+    W_PASSKEY_AVAILABLE,
+    `${W_PASSKEY_AVAILABLE}${line}`,
+  ];
+  const inWire = (line) => [
+    W_PASSKEY_WIRE_FILE,
+    W_WIRE_MEMBER,
+    `${W_WIRE_MEMBER}${line}`,
+  ];
+
+  for (const [what, needle, line] of [
+    [
+      "NSClassFromString",
+      "NSClassFromString in PasskeyPlugin.swift",
+      '        _ = NSClassFromString("X")\n',
+    ],
+    [
+      "NSSelectorFromString",
+      "NSSelectorFromString in PasskeyPlugin.swift",
+      '        _ = NSSelectorFromString("x:")\n',
+    ],
+    [
+      "NSProtocolFromString",
+      "NSProtocolFromString in PasskeyPlugin.swift",
+      '        _ = NSProtocolFromString("X")\n',
+    ],
+    [
+      "an Objective-C runtime function",
+      "objc_getClass in PasskeyPlugin.swift",
+      '        _ = objc_getClass("X")\n',
+    ],
+    [
+      "setValue(_:forKey:)",
+      "setValue in PasskeyPlugin.swift",
+      '        (call as AnyObject).setValue("x", forKey: "y")\n',
+    ],
+    [
+      "a forKey label",
+      "forKey in PasskeyPlugin.swift",
+      '        _ = (call as AnyObject).value(forKey: "y")\n',
+    ],
+    [
+      "a forKeyPath label",
+      "forKeyPath in PasskeyPlugin.swift",
+      '        _ = (call as AnyObject).value(forKeyPath: "y.z")\n',
+    ],
+    [
+      "setValue(_:forHTTPHeaderField:), allowed elsewhere",
+      "setValue in PasskeyPlugin.swift",
+      '        var request = URLRequest(url: URL(fileURLWithPath: "/"))\n        request.setValue("a", forHTTPHeaderField: "b")\n',
+    ],
+    [
+      "a perform( on a value",
+      "perform( in PasskeyPlugin.swift",
+      "        _ = (call as AnyObject).perform(nil)\n",
+    ],
+    [
+      "a bare perform(, allowed elsewhere",
+      "perform( in PasskeyPlugin.swift",
+      "        perform(call)\n",
+    ],
+  ]) {
+    test(`${what} in PasskeyPlugin.swift`, () => {
+      worldExpect(rule, [needle], inPlugin(line));
+    });
+  }
+
+  test("NSClassFromString in PasskeyWire.swift", () => {
+    worldExpect(
+      rule,
+      ["NSClassFromString in PasskeyWire.swift"],
+      inWire("        _ = NSClassFromString(key)\n"),
+    );
+  });
+
+  test("performRequests stays, and other files are not this rule's", () => {
+    worldClean(
+      rule,
+      inPlugin("        ASAuthorizationController(authorizationRequests: []).performRequests()\n"),
+      inReject('    _ = NSClassFromString("X")\n'),
+    );
+  });
+});
+
+describe("passkeys: R1 over every native source of the app (G8d-passkey-extensions, wide scan)", () => {
+  const rule = "G8d-passkey-extensions";
+  const withFile = (rel, text) => worldLines((root) => put(root, rel, text));
+
+  test("prf in the app delegate", () => {
+    assertReported(
+      withFile(W_APP_DELEGATE, delegateWith("        let prfSalt = 1\n")),
+      rule,
+      ["ios/App/App/AppDelegate.swift:5 prfSalt in the sources"],
+    );
+  });
+
+  test("a largeBlob literal in the app delegate", () => {
+    assertReported(
+      withFile(W_APP_DELEGATE, delegateWith('        _ = ["largeBlob": 1]\n')),
+      rule,
+      ['ios/App/App/AppDelegate.swift:5 a string literal naming "largeBlob"'],
+    );
+  });
+
+  for (const ext of ["m", "mm", "h"]) {
+    test(`prf in an Objective-C .${ext} file`, () => {
+      assertReported(
+        withFile(
+          `${APP}/App/Legacy.${ext}`,
+          "#import <Foundation/Foundation.h>\n\nvoid f(id request) {\n    [request setPrf:nil];\n}\n",
+        ),
+        rule,
+        [`ios/App/App/Legacy.${ext}:4 setPrf in the sources`],
+      );
+    });
+  }
+
+  test("Objective-C is scanned raw: a comment naming largeBlob fails too", () => {
+    assertReported(
+      withFile(`${APP}/App/Legacy.m`, "// no largeBlob here\n"),
+      rule,
+      ["ios/App/App/Legacy.m:1 largeBlob in the sources"],
+    );
+  });
+
+  test("ASAuthorization in an Objective-C file", () => {
+    assertReported(
+      withFile(
+        `${APP}/App/Legacy.m`,
+        "@import AuthenticationServices;\n\nid f(void) {\n    return [ASAuthorizationController alloc];\n}\n",
+      ),
+      rule,
+      [
+        "ios/App/App/Legacy.m:4 ASAuthorizationController outside PasskeyPlugin.swift",
+      ],
+    );
+  });
+
+  test("AuthenticationServices imported by the app delegate", () => {
+    assertReported(
+      withFile(
+        W_APP_DELEGATE,
+        `import AuthenticationServices\n${delegateWith("")}`,
+      ),
+      rule,
+      [
+        "ios/App/App/AppDelegate.swift:1 AuthenticationServices outside PasskeyPlugin.swift",
+      ],
+    );
+  });
+
+  test("prf in the bindings", () => {
+    const lines = worldLines((root) =>
+      put(root, BINDINGS, `${W_BINDINGS}\nlet prfProbe = 0\n`),
+    );
+    assertReported(lines, rule, [
+      "ios/App/SlogaE2ee/Bindings/acutest_e2ee_ios.swift:",
+      "prfProbe in the sources",
+    ]);
+  });
+
+  test("prf in a test file that is not the R1 fixture file", () => {
+    assertReported(
+      withFile(W_OTHER_TESTS, 'let options = ["prf": 1]\n'),
+      rule,
+      ["OtherTests.swift:1", 'a string literal naming "prf"'],
+    );
+  });
+
+  test("the R1 fixture file may spell prf and largeBlob", () => {
+    assertSilent(
+      withFile(
+        W_R1_TESTS,
+        'let optionsWithPrf = "{ \\"extensions\\": { \\"prf\\": {}, \\"largeBlob\\": {} } }"\n',
+      ),
+      rule,
+    );
+  });
+
+  test("the R1 fixture file may still not name a system credential type", () => {
+    assertReported(
+      withFile(W_R1_TESTS, "let controller = ASAuthorizationController.self\n"),
+      rule,
+      ["PasskeyWireTests.swift:1 ASAuthorizationController outside"],
+    );
+  });
+
+  test("a file of the same name elsewhere is not the fixture file", () => {
+    assertReported(
+      withFile(`${APP}/App/PasskeyWireTests.swift`, "let prfSalt = 0\n"),
+      rule,
+      ["ios/App/App/PasskeyWireTests.swift:1 prfSalt in the sources"],
+    );
+  });
+
+  test("a second PasskeyPlugin.swift elsewhere is not the plugin's file", () => {
+    assertReported(
+      withFile(
+        `${APP}/App/PasskeyPlugin.swift`,
+        "import AuthenticationServices\n",
+      ),
+      rule,
+      [
+        "ios/App/App/PasskeyPlugin.swift:1 AuthenticationServices outside PasskeyPlugin.swift",
+      ],
+    );
+  });
+
+  test("a checked-in framework header is scanned", () => {
+    assertReported(
+      withFile(
+        `${APP}/SlogaE2ee/AcutestE2ee.xcframework/ios-arm64/Headers/x.h`,
+        "void set_prf(void);\n",
+      ),
+      rule,
+      ["Headers/x.h:1 set_prf in the sources"],
+    );
+  });
+
+  test("dependencies and build output are not scanned", () => {
+    const bad = "import AuthenticationServices\nlet prfSalt = 0\n";
+    const lines = worldLines((root) => {
+      put(root, `${APP}/Pods/Dep/Dep.swift`, bad);
+      put(root, `${APP}/build/Gen.swift`, bad);
+      put(root, `${APP}/SlogaE2ee/.build/checkouts/Dep.swift`, bad);
+      put(root, `${APP}/DerivedData/Gen.m`, "// prf\n");
+      put(root, `${APP}/App/Notes.txt`, "prf\n");
+    });
+    assertSilent(lines, rule);
+  });
+
+  test("a system credential type named in a string literal, another file", () => {
+    worldExpect(
+      rule,
+      ['a string literal naming "ASAuthorizationController" in Support.swift'],
+      inReject('    _ = NSClassFromString("ASAuthorizationController")\n'),
+    );
+  });
+
+  test("a system credential type named in a string literal, the plugin itself", () => {
+    worldExpect(
+      rule,
+      [
+        `a string literal naming "${RP_PROVIDER}" in PasskeyPlugin.swift`,
+      ],
+      [
+        W_PASSKEY_FILE,
+        W_PASSKEY_AVAILABLE,
+        `${W_PASSKEY_AVAILABLE}        _ = "${RP_PROVIDER}"\n`,
+      ],
+    );
+  });
+
+  test("the framework named in a string literal, the app delegate", () => {
+    assertReported(
+      withFile(
+        W_APP_DELEGATE,
+        delegateWith('        _ = "AuthenticationServices.framework"\n'),
+      ),
+      rule,
+      [
+        'a string literal naming "AuthenticationServices.framework" in ios/App/App/AppDelegate.swift',
+      ],
+    );
+  });
+});
+
+describe("passkey relying party, wide scan and lookup rules on the real tree's own shapes", () => {
+  const REAL_PASSKEY = `${SOURCES}/PasskeyPlugin.swift`;
+  const REAL_WIRE = `${SOURCES}/PasskeyWire.swift`;
+  const REAL_DELEGATE = `${APP}/App/AppDelegate.swift`;
+  const REAL_GUARD_TESTS = `${APP}/SlogaE2ee/Tests/AppTests/BridgeGuardTests.swift`;
+  const REAL_CREATE_UV =
+    "        registration.userVerificationPreference = preference(creation.userVerification)\n";
+  const REAL_USER = '        let user = try member(options, "user")\n';
+  const REAL_RUN = "        sheet.performRequests()\n";
+  const append = (rel, text) => (root) =>
+    put(root, rel, readFileSync(join(root, rel), "utf8") + text);
+
+  test("the real tree's wide scan covers the app delegate, the tests and the headers", () => {
+    const result = run(ROOT);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const scanned = /passkey rules over (\d+) native files of the app$/m.exec(
+      result.stdout,
+    );
+    assert.ok(scanned, result.stdout);
+    // 14 sources + the bindings + the app delegate, two manifests, the SPM
+    // stub, the test target and the framework headers: well over the 15 the
+    // sources and bindings make.
+    assert.ok(Number(scanned[1]) >= 25, result.stdout);
+  });
+
+  test("the real provider built from a literal", () => {
+    expectViolationWith(
+      "G8d-passkey-rp",
+      ["relyingPartyIdentifier here"],
+      [
+        REAL_PASSKEY,
+        RP_CALL,
+        `${RP_PROVIDER}(relyingPartyIdentifier: "app.sloga.gg")`,
+      ],
+    );
+  });
+
+  test("the real provider built from the request description", () => {
+    expectViolationWith(
+      "G8d-passkey-rp",
+      ["must appear exactly once", "(found 0)"],
+      [
+        REAL_PASSKEY,
+        RP_CALL,
+        `${RP_PROVIDER}(relyingPartyIdentifier: relyingParty)`,
+      ],
+    );
+  });
+
+  test("a second provider in the real registration path", () => {
+    expectViolationWith(
+      "G8d-passkey-rp",
+      ["ASAuthorizationSecurityKeyPublicKeyCredentialProvider here"],
+      [
+        REAL_PASSKEY,
+        REAL_CREATE_UV,
+        `${REAL_CREATE_UV}        _ = ASAuthorizationSecurityKeyPublicKeyCredentialProvider(relyingPartyIdentifier: creation.userName)\n`,
+      ],
+    );
+  });
+
+  test("the real constant naming another host", () => {
+    expectViolationWith(
+      "G8d-passkey-rp",
+      ['is "backup.sloga.gg", not "app.sloga.gg"'],
+      [
+        REAL_WIRE,
+        RP_CONSTANT,
+        '    static let signInRelyingParty = "backup.sloga.gg"\n',
+      ],
+    );
+  });
+
+  test("the real constant made a var", () => {
+    expectViolationWith(
+      "G8d-passkey-rp",
+      ["must be declared exactly once"],
+      [
+        REAL_WIRE,
+        RP_CONSTANT,
+        '    static var signInRelyingParty = "app.sloga.gg"\n',
+      ],
+    );
+  });
+
+  test("the real development entitlements naming another host", () => {
+    expectViolationWith(
+      "G8d-passkey-rp",
+      ["ios/App/App/App.entitlements:"],
+      [
+        DEV_ENTITLEMENTS,
+        W_DEV_DOMAIN,
+        "<string>webcredentials:sloga.gg?mode=developer</string>",
+      ],
+    );
+  });
+
+  test("the real release entitlements naming another host", () => {
+    expectViolationWith(
+      "G8d-passkey-rp",
+      ["ios/App/App/AppRelease.entitlements:"],
+      [
+        RELEASE_ENTITLEMENTS,
+        W_RELEASE_DOMAIN,
+        "<string>webcredentials:backup.sloga.gg</string>",
+      ],
+    );
+  });
+
+  test("another host spelt in the real wire file", () => {
+    expectViolationWith(
+      "G8d-passkey-rp",
+      ['a host-shaped string literal "backup.sloga.gg" in PasskeyWire.swift'],
+      [REAL_WIRE, REAL_USER, `${REAL_USER}        _ = "backup.sloga.gg"\n`],
+    );
+  });
+
+  test("the real app delegate importing AuthenticationServices", () => {
+    expectViolationWith(
+      "G8d-passkey-extensions",
+      [
+        "ios/App/App/AppDelegate.swift:",
+        "AuthenticationServices outside PasskeyPlugin.swift",
+      ],
+      [REAL_DELEGATE, "import UIKit\n", "import UIKit\nimport AuthenticationServices\n"],
+    );
+  });
+
+  test("prf in the real app delegate", () => {
+    assertReported(
+      realLines(append(REAL_DELEGATE, "\nlet prfSalt = 0\n")),
+      "G8d-passkey-extensions",
+      ["ios/App/App/AppDelegate.swift:", "prfSalt in the sources"],
+    );
+  });
+
+  test("prf in a real test file other than the R1 fixture file", () => {
+    assertReported(
+      realLines(append(REAL_GUARD_TESTS, '\nlet stray = ["prf": 1]\n')),
+      "G8d-passkey-extensions",
+      ["BridgeGuardTests.swift:", 'a string literal naming "prf"'],
+    );
+  });
+
+  test("the real R1 fixture file naming a system credential type", () => {
+    assertReported(
+      realLines(append(W_R1_TESTS, "\nlet stray = ASAuthorizationController.self\n")),
+      "G8d-passkey-extensions",
+      ["PasskeyWireTests.swift:", "ASAuthorizationController outside"],
+    );
+  });
+
+  test("a system credential type named in a literal in the real plugin", () => {
+    expectViolationWith(
+      "G8d-passkey-extensions",
+      ['a string literal naming "ASAuthorizationController" in PasskeyPlugin.swift'],
+      [
+        REAL_PASSKEY,
+        REAL_RUN,
+        `${REAL_RUN}        _ = NSClassFromString("ASAuthorizationController")\n`,
+      ],
+    );
+  });
+
+  test("a class looked up by name in the real plugin", () => {
+    expectViolationWith(
+      "G8d-passkey-dynamic",
+      ["NSClassFromString in PasskeyPlugin.swift"],
+      [REAL_PASSKEY, REAL_RUN, `${REAL_RUN}        _ = NSClassFromString("X")\n`],
+    );
+  });
+
+  test("the real sheet run through perform", () => {
+    expectViolationWith(
+      "G8d-passkey-dynamic",
+      ["perform( in PasskeyPlugin.swift"],
+      [
+        REAL_PASSKEY,
+        REAL_RUN,
+        '        _ = sheet.perform(NSSelectorFromString("performRequests"))\n',
+      ],
+    );
+  });
+
+  test("key-value coding in the real wire file", () => {
+    expectViolationWith(
+      "G8d-passkey-dynamic",
+      ["forKey in PasskeyWire.swift"],
+      [
+        REAL_WIRE,
+        REAL_USER,
+        `${REAL_USER}        _ = (options as NSDictionary).value(forKey: "rpId")\n`,
+      ],
+    );
   });
 });
