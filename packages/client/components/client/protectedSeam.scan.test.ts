@@ -740,6 +740,27 @@ test("S8: port.sleep rejects on the manager's lifetime; dispose aborts it", () =
   );
 });
 
+test("F-R8: the port hands the manager's own-listing request (force, want) to the bridge's OwnListingCache, which a dispose clears", () => {
+  const port = stripComments(member(SRC, /\n {2}#protectedPort\(/));
+  assert.match(
+    port,
+    /ownDeviceListing: \(request\) => this\.#protectedOwnListing\(request\),/,
+  );
+  // Its return type holds a brace, so the method is matched whole here.
+  assert.match(
+    stripComments(SRC),
+    /\n {2}#protectedOwnListing\(\s*request\?: OwnListingRequest,\s*\): Promise<\{ hash: string; listing: unknown\[\] \}> \{\s*return this\.#ptOwnListing\.get\(async \(\) => \{[\s\S]*?\n {4}\}, request\);\n {2}\}\n/,
+  );
+  assert.match(
+    stripComments(SRC),
+    /readonly #ptOwnListing = new OwnListingCache\(\s*\(\) => Date\.now\(\),\s*\(\) => this\.#ptLife,\s*\);/,
+  );
+  assert.match(
+    member(SRC, /\n {2}#protectedDispose\(\): void /),
+    /this\.#ptOwnListing\.clear\(\);/,
+  );
+});
+
 test("S8: onChannelProtected is deduped per manager; seeding is allSettled", () => {
   const fwd = member(
     SRC,

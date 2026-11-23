@@ -5711,10 +5711,19 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    * before (a failure is logged, never thrown). A listing the bridge served
    * from its cache past its freshness (its `at`, read only if present) came
    * after a failed fetch: `transport`, though it is still pinned as before.
+   * F-R8: `force` (a pin native asked for) also asks the bridge for a fresh
+   * listing, and `want` names the devices it must list: a cached listing
+   * from before a new own device registered cannot pin it. The bridge
+   * marks the listing it fell back to for such a request (`stale`, read
+   * only if present) when the fresh fetch failed: `transport` too, however
+   * young its `at`.
    */
-  async #ensureOwnPins(force: boolean): Promise<PinOutcome> {
+  async #ensureOwnPins(
+    force: boolean,
+    want?: readonly string[],
+  ): Promise<PinOutcome> {
     try {
-      const own = await this.#port.ownDeviceListing();
+      const own = await this.#port.ownDeviceListing({ force, want });
       const { hash, listing } = own;
       if (!force && hash === this.#ownPinsHash) return "answered";
       await this.#invoke("e2ee_text_pin_own_devices", {
@@ -5723,6 +5732,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       });
       this.#ownPinsHash = hash;
       const at: unknown = (own as { at?: unknown }).at;
+      if ((own as { stale?: unknown }).stale === true) return "transport";
       return typeof at === "number" &&
         this.#port.now() - at >= OWN_LISTING_FRESH_MS
         ? "transport"
@@ -5742,7 +5752,9 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    * `pinFailureOutcome`. Callers that ignore it behave as before.
    */
   async #pinFor(userId: string, deviceIds: string[]): Promise<PinOutcome> {
-    if (userId === this.#port.selfUserId) return this.#ensureOwnPins(true);
+    if (userId === this.#port.selfUserId) {
+      return this.#ensureOwnPins(true, deviceIds);
+    }
     try {
       await this.#port.pinCallIdentities(userId, deviceIds);
       return "answered";

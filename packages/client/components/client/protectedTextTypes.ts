@@ -1244,8 +1244,17 @@ export interface ProtectedTextPort {
    * newly pinned device ids.
    */
   pinCallIdentities(userId: string, targets: string[]): Promise<string[]>;
-  /** This user's COMPLETE signed listing and a hash to detect changes. */
-  ownDeviceListing(): Promise<{ hash: string; listing: unknown[] }>;
+  /**
+   * This user's COMPLETE signed listing and a hash to detect changes.
+   * F-R8: `force` asks for a fresh listing (never a cached one or a fetch
+   * begun earlier); `want` names device ids it must list, else refetched.
+   * The last listing served for either after the fetch failed carries
+   * `stale: true` (and the bridge's `at`; the manager reads both if present).
+   */
+  ownDeviceListing(request?: {
+    force?: boolean;
+    want?: readonly string[];
+  }): Promise<{ hash: string; listing: unknown[] }>;
   api(
     method: TextApiMethod,
     path: string,

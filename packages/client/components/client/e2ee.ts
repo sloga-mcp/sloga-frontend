@@ -148,6 +148,7 @@ import {
 } from "./mlsResumeKeep";
 import { IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW } from "./popout";
 import { fetchProtectedChannelsFlag } from "./protectedChannelsFlag";
+import { type OwnListingRequest, OwnListingCache } from "./protectedOwnListing";
 import {
   type AndroidProbe,
   type AndroidTextCapability,
@@ -9023,9 +9024,11 @@ export class E2EEBridge implements E2EEAdapter {
    */
   readonly #ptStripped = new Set<string>();
   readonly #ptFlagState = new ReactiveMap<"state", ProtectedChannelsFlag>();
-  #ptOwnListing: { hash: string; listing: unknown[]; at: number } | null = null;
-  #ptOwnListingFlight: Promise<{ hash: string; listing: unknown[] }> | null =
-    null;
+  /** D18 own listing (F-R8); a dispose mid-flight resets `#ptLife`. */
+  readonly #ptOwnListing = new OwnListingCache(
+    () => Date.now(),
+    () => this.#ptLife,
+  );
   /** Last server KeyPackage count the text plane saw (D12). */
   #ptServerKeyPackages = 0;
   #ptReplenishing = false;
@@ -9853,8 +9856,7 @@ export class E2EEBridge implements E2EEAdapter {
     this.#ptStripped.clear();
     this.#ptLife?.abort();
     this.#ptLife = null;
-    this.#ptOwnListing = null;
-    this.#ptOwnListingFlight = null;
+    this.#ptOwnListing.clear();
     this.#ptServerKeyPackages = 0;
     this.#ptPending.clear();
     if (manager) {
@@ -10083,7 +10085,7 @@ export class E2EEBridge implements E2EEAdapter {
         }),
       pinCallIdentities: (peer, targets) =>
         this.#protectedPinIdentities(peer, targets),
-      ownDeviceListing: () => this.#protectedOwnListing(),
+      ownDeviceListing: (request) => this.#protectedOwnListing(request),
       api: (method, path, body, headers) =>
         this.textApi(method, path, body, life, headers),
       ack: async (ids) => {
@@ -10222,40 +10224,22 @@ export class E2EEBridge implements E2EEAdapter {
   /**
    * D18: this user's COMPLETE signed listing, cached for 60 s and
    * single-flight (the manager asks before every `_process`). A failed
-   * refresh falls back to the last listing.
+   * refresh falls back to the last listing. F-R8: a `force` request, or
+   * one whose `want` the cache does not list, fetches afresh
+   * (`OwnListingCache`).
    */
-  #protectedOwnListing(): Promise<{ hash: string; listing: unknown[] }> {
-    const cached = this.#ptOwnListing;
-    if (cached && Date.now() - cached.at < 60_000) {
-      return Promise.resolve(cached);
-    }
-    if (this.#ptOwnListingFlight) return this.#ptOwnListingFlight;
-    // A dispose mid-flight resets `#ptLife`; a stale answer is not cached.
-    const life = this.#ptLife;
-    const flight = (async () => {
+  #protectedOwnListing(
+    request?: OwnListingRequest,
+  ): Promise<{ hash: string; listing: unknown[] }> {
+    return this.#ptOwnListing.get(async () => {
       const userId = this.#client.user?.id;
       if (!userId || !this.protectedTextCapable()) {
         throw { source: "client", reason: "not_capable" };
       }
       const report = await this.#reconcileDevices(userId);
       if (!report) throw { source: "client", reason: "not_capable" };
-      const entry = {
-        hash: JSON.stringify(report.listing),
-        listing: report.listing,
-        at: Date.now(),
-      };
-      if (this.#ptLife === life) this.#ptOwnListing = entry;
-      return entry;
-    })()
-      .catch((error: unknown) => {
-        if (cached) return cached;
-        throw error;
-      })
-      .finally(() => {
-        if (this.#ptLife === life) this.#ptOwnListingFlight = null;
-      });
-    this.#ptOwnListingFlight = flight;
-    return flight;
+      return { hash: JSON.stringify(report.listing), listing: report.listing };
+    }, request);
   }
 
   /** D13: fetch the flag; when enabled, run the D12 ready-time replenish. */

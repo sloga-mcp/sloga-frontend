@@ -513,7 +513,8 @@ async function readSeats(ctx: Ctx): Promise<SeatsSnapshot> {
 
 async function pinIdentity(ctx: Ctx, userId: string, deviceId: string) {
   if (userId === ctx.port.selfUserId) {
-    const { listing } = await ctx.port.ownDeviceListing();
+    // F-R8: a cached listing without the device native named is refetched.
+    const { listing } = await ctx.port.ownDeviceListing({ want: [deviceId] });
     await ctx.port.invoke("e2ee_text_pin_own_devices", {
       userId,
       devices: listing,
@@ -1365,7 +1366,8 @@ export async function moveOwnerKey(
     }
     assertSignAllowed(ctx);
     const self = port.selfUserId;
-    const { listing } = await port.ownDeviceListing();
+    // F-R8: a target registered since the bridge cached its listing.
+    const { listing } = await port.ownDeviceListing({ want: [toDeviceId] });
     if (!ownDeviceIds(listing).has(toDeviceId)) {
       throw clientFailure("handover_target_not_own");
     }

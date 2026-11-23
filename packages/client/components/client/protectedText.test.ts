@@ -27,6 +27,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { MlsJoinRequest, MlsMemberDevice } from "./e2ee";
+import {
+  type OwnListingRequest,
+  OwnListingCache,
+} from "./protectedOwnListing.ts";
 import { TEXT_PROTOCOL } from "./protectedPlatform.ts";
 import { validReason } from "./protectedRemovalReasonPolicy.ts";
 import {
@@ -501,7 +505,9 @@ class Env implements ProtectedTextPort, ProtectedTextPortExtensions {
     return targets;
   }
 
-  async ownDeviceListing() {
+  async ownDeviceListing(
+    _request?: OwnListingRequest,
+  ): Promise<{ hash: string; listing: unknown[] }> {
     return { hash: this.listingHash, listing: [{ device_id: DEV }] };
   }
 
@@ -8029,6 +8035,239 @@ test("FXP F-L6 MJ-1: an own device's pin reports a stale cached listing (served 
       env.calls("e2ee_text_process").length,
       stale ? 1 : 2,
       stale ? "transport: no second pass" : "answered: once more",
+    );
+    m.dispose();
+  }
+});
+
+/**
+ * F-R8: the bridge's own-listing cache (`OwnListingCache`, as `e2ee.ts`
+ * wires it) over a scripted `GET /e2ee/devices/{self}`: `server` is the
+ * listed device ids, `fetches` counts the GETs, and while `hold` is set
+ * each GET waits for its `releases[i]()`.
+ */
+class OwnListingRig {
+  t = 1_700_000_000_000;
+  server = [DEV];
+  fetches = 0;
+  fail = false;
+  hold = false;
+  releases: (() => void)[] = [];
+  life: object = {};
+  readonly cache: OwnListingCache;
+
+  constructor(now?: () => number) {
+    this.cache = new OwnListingCache(now ?? (() => this.t), () => this.life);
+  }
+
+  readonly load = async () => {
+    this.fetches++;
+    const listing = this.server.map((device_id) => ({ device_id }));
+    if (this.hold) await new Promise<void>((r) => this.releases.push(r));
+    if (this.fail) throw new Error("network");
+    return { hash: JSON.stringify(listing), listing };
+  };
+
+  get(request?: OwnListingRequest) {
+    return this.cache.get(this.load, request);
+  }
+}
+
+/** One macrotask: a flight's fetch (a microtask after its start) began. */
+const tick = () => new Promise<void>((r) => setImmediate(r));
+
+function listedIds(own: { listing: unknown[] }): unknown[] {
+  return own.listing.map((row) => (row as { device_id?: unknown }).device_id);
+}
+
+const A3 = "dev-a3";
+
+test("F-R8: a new own device registered after the cache filled gets pinned on the first forced attempt; no poison, no successor", async () => {
+  const env = new Env();
+  const rig = new OwnListingRig(() => env.clock);
+  env.ownDeviceListing = (request?: OwnListingRequest) => rig.get(request);
+  // The cache filled; A3 registers 1 s later (well inside the 60 s).
+  await env.ownDeviceListing();
+  env.clock += 1_000;
+  rig.server = [DEV, A3];
+  // Native applies the commit adding A3 only once A3 is pinned.
+  let refusals = 0;
+  const pinsAfterRefusal: unknown[][] = [];
+  env.handlers.e2ee_text_pin_own_devices = (a) => {
+    if (refusals > 0) pinsAfterRefusal.push(listedIds({ listing: a.devices }));
+    return null;
+  };
+  env.handlers.e2ee_text_process = (a) => {
+    if (!pinsAfterRefusal.some((ids) => ids.includes(A3))) {
+      refusals++;
+      throw { type: "identity_pin_required", user_id: SELF, device_id: A3 };
+    }
+    return outcome({ epoch: a.envelope.epoch });
+  };
+  const m = make(env);
+  m.channelProtected(CH);
+  await env.advance(0);
+  m.onEnvelope(
+    envelope("E1", 4, { added: [{ user_id: SELF, device_id: A3 }] }),
+  );
+  await env.advance(0);
+
+  // (a) The pin native asked for carries A3 on its FIRST forced call.
+  assert.equal(refusals, 1, "native asked for one pin");
+  assert.deepEqual(
+    pinsAfterRefusal[0],
+    [DEV, A3],
+    "the first forced pin lists A3 despite a 1 s old cache without it",
+  );
+  assert.equal(rig.fetches, 2, "one fresh GET, for the forced pin");
+  assert.deepEqual(
+    listedIds(await env.ownDeviceListing()),
+    [DEV, A3],
+    "the forced answer refreshed the cache",
+  );
+  assert.equal(rig.fetches, 2);
+  // No poison, no successor: the commit applies on the retry.
+  assert.equal(env.calls("e2ee_text_process").length, 2);
+  assert.deepEqual(env.acks, ["E1"]);
+  assert.equal(env.views.get(CH)?.groupError ?? null, null, "no poison");
+  assert.equal(env.calls("e2ee_text_group_create").length, 0, "no successor");
+  m.dispose();
+});
+
+test("F-R8 (a): a forced own listing is fetched afresh inside the 60 s, never taken from the cache or from a flight begun before it was asked; later requests share it and it refreshes the cache", async () => {
+  const rig = new OwnListingRig();
+  const first = await rig.get();
+  rig.t += 1_000;
+  assert.equal(await rig.get(), first, "unforced inside 60 s: the cache");
+  assert.equal(rig.fetches, 1);
+  rig.server = [DEV, A3];
+  const forced = await rig.get({ force: true });
+  assert.equal(rig.fetches, 2, "forced: a fresh GET inside the 60 s");
+  assert.deepEqual(listedIds(forced), [DEV, A3]);
+  assert.equal(await rig.get(), forced, "the forced answer is cached");
+  assert.equal(rig.fetches, 2);
+
+  // A flight begun before the force (the cache past 60 s) is not handed
+  // back; a request after the force shares the forced flight.
+  rig.t += 60_000;
+  rig.hold = true;
+  const early = rig.get();
+  await tick();
+  rig.server = [DEV, A3, "dev-a4"];
+  const late = rig.get({ force: true });
+  const joined = rig.get();
+  await tick();
+  assert.equal(rig.fetches, 4, "the force did not join the earlier flight");
+  // The forced GET answers first; the earlier one settling after it never
+  // replaces the newer answer in the cache.
+  rig.releases[1]();
+  assert.deepEqual(listedIds(await late), [DEV, A3, "dev-a4"]);
+  assert.equal(await joined, await late);
+  rig.releases[0]();
+  assert.deepEqual(listedIds(await early), [DEV, A3]);
+  rig.hold = false;
+  assert.equal(await rig.get(), await late, "the newer answer stays cached");
+  assert.equal(rig.fetches, 4);
+});
+
+test("F-R8 (b): an unforced request for a device the cached listing lacks refetches; one the cache lists is served from it", async () => {
+  const rig = new OwnListingRig();
+  const first = await rig.get();
+  rig.t += 1_000;
+  rig.server = [DEV, A3];
+  assert.equal(await rig.get({ want: [DEV] }), first, "a listed want");
+  assert.equal(rig.fetches, 1);
+  const wanted = await rig.get({ want: [A3] });
+  assert.equal(rig.fetches, 2, "a missing want refetches inside the 60 s");
+  assert.deepEqual(listedIds(wanted), [DEV, A3]);
+  assert.equal(await rig.get({ want: [A3] }), wanted, "now cached");
+  assert.equal(rig.fetches, 2);
+});
+
+test("F-R8: failure behaviour: a failed fetch still answers the cached entry (its `at` as it was), marked stale for a force or want request; no cache rethrows; an answer across a dispose is not cached", async () => {
+  const rig = new OwnListingRig();
+  const first = await rig.get();
+  const at = first.at;
+  rig.t += 1_000;
+  rig.fail = true;
+  assert.deepEqual(await rig.get({ force: true }), { ...first, stale: true });
+  assert.deepEqual(await rig.get({ want: [A3] }), { ...first, stale: true });
+  // An unforced request (the cache past 60 s) gets the entry as before.
+  rig.t += 60_000;
+  assert.equal(await rig.get(), first);
+  assert.equal(first.at, at);
+  assert.equal(first.stale, undefined);
+  assert.equal(rig.fetches, 4);
+  rig.cache.clear();
+  await assert.rejects(rig.get({ force: true }));
+  rig.fail = false;
+  rig.hold = true;
+  const across = rig.get();
+  await tick();
+  rig.life = {};
+  rig.releases[0]();
+  await across;
+  rig.hold = false;
+  assert.notEqual(await rig.get(), await across, "not cached across lives");
+});
+
+test("F-R8: force and want requests made in the same tick share ONE fetch; a forced request made after a fetch began gets a new one", async () => {
+  const rig = new OwnListingRig();
+  await rig.get();
+  rig.t += 1_000;
+  rig.server = [DEV, A3];
+  const same = await Promise.all([
+    rig.get({ force: true }),
+    rig.get({ force: true }),
+    rig.get({ want: [A3] }),
+  ]);
+  assert.equal(rig.fetches, 2, "one fetch for the three");
+  assert.deepEqual(listedIds(same[0]), [DEV, A3]);
+  assert.equal(same[1], same[0]);
+  assert.equal(same[2], same[0]);
+
+  rig.hold = true;
+  const early = rig.get({ force: true });
+  await tick();
+  assert.equal(rig.fetches, 3, "its fetch began");
+  rig.server = [DEV, A3, "dev-a4"];
+  const late = rig.get({ force: true });
+  await tick();
+  assert.equal(rig.fetches, 4, "a force after the fetch began: a new one");
+  rig.releases[1]();
+  rig.releases[0]();
+  assert.deepEqual(listedIds(await late), [DEV, A3, "dev-a4"]);
+  assert.deepEqual(listedIds(await early), [DEV, A3]);
+});
+
+test("F-R8: an own pin whose forced fetch fails inside the 60 s reports transport (the stale fallback), so a Welcome refused for unknown_identity gets no second pass; a fetch that answers does", async () => {
+  for (const fail of [true, false]) {
+    const env = joiningEnv();
+    joinSetsJoining(env);
+    const rig = new OwnListingRig(() => env.clock);
+    env.ownDeviceListing = (request?: OwnListingRequest) => rig.get(request);
+    await env.ownDeviceListing();
+    env.clock += 1_000;
+    rig.fail = fail;
+    env.handlers.e2ee_text_process = () => {
+      throw {
+        type: "mls_leaf_rejected",
+        user_id: SELF,
+        device_id: A3,
+        reason: "unknown_identity",
+      };
+    };
+    const m = make(env);
+    silence(m.ensureJoined(CH));
+    await env.advance(0);
+    env.group = groupBody({ current_epoch: 4, member_added: addedAt(4) });
+    m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+    await env.advance(0);
+    assert.equal(rig.fetches, 2, `fail=${fail}: the forced fetch ran`);
+    assert.equal(
+      env.calls("e2ee_text_process").length,
+      fail ? 1 : 2,
+      fail ? "transport: no second pass" : "answered: once more",
     );
     m.dispose();
   }

@@ -2162,6 +2162,65 @@ test("S2 F5 moveOwnerKey: a statement that is not the one asked for is never pub
   }
 });
 
+test("F-R8: the own listing is asked for the device in question: the own pin native names (setSeats verify, handover sign) and the handover target", async () => {
+  // setSeats: the verify's own-device pin (`pinIdentity`).
+  let n = 0;
+  const h = harness({
+    routes: seatsRoutes([res(200)]),
+    invoke: {
+      e2ee_text_seat_list_verify: () => {
+        if (n++ === 0) {
+          throw {
+            type: "identity_pin_required",
+            user_id: ME,
+            device_id: MY_DEV,
+          };
+        }
+        return verdict([ME]);
+      },
+      e2ee_text_pin_own_devices: () => null,
+      e2ee_text_seat_list_sign: () => v3,
+      e2ee_text_state: () => nativeState([]),
+    },
+  });
+  const asked: unknown[] = [];
+  h.port.ownDeviceListing = async (request) => {
+    asked.push(request);
+    return { hash: "h", listing: [{ device: MY_DEV }] };
+  };
+  await setSeats(h.ops, h.port, CH, [ME], 5);
+  assert.deepEqual(asked, [{ want: [MY_DEV] }], "setSeats pin");
+
+  // moveOwnerKey: the target check, then the handover sign's own pin.
+  _resetOwnerFlowsForTest();
+  let signs = 0;
+  const m = moveHarness({
+    invoke: {
+      e2ee_text_owner_handover_sign: () => {
+        if (++signs === 1) {
+          throw {
+            type: "identity_pin_required",
+            user_id: ME,
+            device_id: OTHER_DEV,
+          };
+        }
+        return HANDOVER;
+      },
+    },
+  });
+  const movedAsked: unknown[] = [];
+  m.port.ownDeviceListing = async (request) => {
+    movedAsked.push(request);
+    return { hash: "h", listing: OWN_LISTING };
+  };
+  await moveOwnerKey(m.ops, m.port, CH, OTHER_DEV);
+  assert.deepEqual(
+    movedAsked,
+    [{ want: [OTHER_DEV] }, { want: [OTHER_DEV] }],
+    "handover target check, then its pin",
+  );
+});
+
 test("S2 F5 moveOwnerKey: identity_pin_required pins the own devices from the listing and asks ONCE more; a decline publishes nothing", async () => {
   let asked = 0;
   const h = moveHarness({
