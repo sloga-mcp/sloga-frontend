@@ -379,6 +379,18 @@ export type Modals =
       type: "e2ee_disable";
     }
   | {
+      /** Guided setup that turns Encrypted-only chats on */
+      type: "encrypted_only_onboarding";
+    }
+  | {
+      /**
+       * Turn Encrypted-only chats off. `elsewhere`: it was already turned
+       * off on another device and this device is still latched.
+       */
+      type: "encrypted_only_leave";
+      elsewhere?: boolean;
+    }
+  | {
       /**
        * Multi-device D3: this device holds keys that were never registered
        * (a restore that still needs its second MFA prompt, or an interrupted

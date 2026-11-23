@@ -6,6 +6,7 @@
  * what the shell will accept.
  * toastShell.ts wires them to the running app.
  */
+import { encryptionRequiredSide } from "./apiErrorType.ts";
 import {
   type DmPreviewMode,
   type NotificationSurface,
@@ -257,6 +258,11 @@ export function classifySendError(error: unknown): SendFailure {
   // By name, as Draft does: an `instanceof` would pull e2ee.ts in here.
   if ((error as { name?: unknown } | null)?.name === "E2EESendError")
     return "e2ee";
+
+  // Refused for not being encrypted: by the server, the app's guard or the
+  // encryption bridge (whose refusals carry the guard's name). Nothing was
+  // sent, so it is the same review message as any E2EE refusal.
+  if (encryptionRequiredSide(error) !== undefined) return "e2ee";
 
   if ((error as { status?: unknown } | null)?.status === 429)
     return "ratelimited";

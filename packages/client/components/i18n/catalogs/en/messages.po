@@ -38,6 +38,54 @@ msgstr "[Last] dddd [at] LT"
 msgid "dddd [at] LT"
 msgstr "dddd [at] LT"
 
+#: components/i18n/errors.ts
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "This person only accepts encrypted messages."
+msgstr "This person only accepts encrypted messages."
+
+#: components/i18n/errors.ts
+#: src/interface/channels/text/Composition.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "You only send encrypted messages. This chat is not encrypted yet."
+msgstr "You only send encrypted messages. This chat is not encrypted yet."
+
+#: components/i18n/errors.ts
+#: src/interface/channels/text/Composition.tsx
+msgid "This group is encrypted. Send from a device where encryption is set up."
+msgstr "This group is encrypted. Send from a device where encryption is set up."
+
+#: components/i18n/errors.ts
+#: components/modal/modals/AddFriendToGroup.tsx
+#: components/modal/modals/AddMembersToGroup.tsx
+#: components/modal/modals/CreateGroup.tsx
+msgid "This group is encrypted. Only people with encryption turned on can be added (up to 24)."
+msgstr "This group is encrypted. Only people with encryption turned on can be added (up to 24)."
+
+#: components/i18n/errors.ts
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+#: src/interface/channels/ChannelPage.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Open the Sloga app to read and send encrypted chats."
+msgstr "Open the Sloga app to read and send encrypted chats."
+
+#: components/i18n/errors.ts
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+#: src/interface/channels/ChannelPage.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Finish setting up encryption on this device to use your chats."
+msgstr "Finish setting up encryption on this device to use your chats."
+
+#: components/i18n/errors.ts
+msgid "This person may no longer use Encrypted-only chats. If you send anyway, your message may not be encrypted."
+msgstr "This person may no longer use Encrypted-only chats. If you send anyway, your message may not be encrypted."
+
+#: components/i18n/errors.ts
+#: src/interface/channels/text/Composition.tsx
+msgid "Add a message to send with your first file."
+msgstr "Add a message to send with your first file."
+
 #: components/app/interface/settings/server/roles/ServerRoleOverview.tsx
 msgid "(changes are being saved…)"
 msgstr "(changes are being saved…)"
@@ -375,6 +423,10 @@ msgstr "{sec} seconds"
 msgid "You are timed out until {time}"
 msgstr "You are timed out until {time}"
 
+#: src/interface/channels/text/Composition.tsx
+msgid "Send anyway"
+msgstr "Send anyway"
+
 #: components/ui/components/features/messaging/elements/Reactions.tsx
 msgid "{unknown} reacted"
 msgstr "{unknown} reacted"
@@ -586,6 +638,20 @@ msgstr "Removed"
 #: components/modal/modals/TakedownQueue.tsx
 msgid "Partly removed"
 msgstr "Partly removed"
+
+#: components/modal/modals/TimelockCompose.tsx
+msgid "This person may no longer use Encrypted-only chats. Confirm with Send anyway in the message box first."
+msgstr "This person may no longer use Encrypted-only chats. Confirm with Send anyway in the message box first."
+
+#: components/modal/modals/TimelockCompose.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Turn on encryption for this group to send messages."
+msgstr "Turn on encryption for this group to send messages."
+
+#: components/modal/modals/TimelockCompose.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "You can't write in this group while Encrypted-only chats is on."
+msgstr "You can't write in this group while Encrypted-only chats is on."
 
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "30 minutes"
@@ -1526,6 +1592,11 @@ msgstr "Background effects aren't supported on this device."
 msgid "Badges"
 msgstr "Badges"
 
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+#: src/interface/channels/ChannelHeader.tsx
+msgid "Encrypted-only"
+msgstr "Encrypted-only"
+
 #: components/modal/modals/BanNonMember.tsx
 #: components/modal/modals/BanMember.tsx
 msgid "Ban"
@@ -1971,6 +2042,24 @@ msgstr "Change tag emoji"
 msgid "Change username"
 msgstr "Change username"
 
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted-only chats isn't available on this server right now."
+msgstr "Encrypted-only chats isn't available on this server right now."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Sloga couldn't confirm whether Encrypted-only chats turned on. For now, this device only sends encrypted messages."
+msgstr "Sloga couldn't confirm whether Encrypted-only chats turned on. For now, this device only sends encrypted messages."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted-only chats was not turned on."
+msgstr "Encrypted-only chats was not turned on."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Your identity check didn't go through. Try again."
+msgstr "Your identity check didn't go through. Try again."
+
 #: components/app/interface/settings/user/profile/EditProfile.tsx
 msgid "Change your profile per-server"
 msgstr "Change your profile per-server"
@@ -2124,6 +2213,10 @@ msgstr "Click to play again"
 #: src/interface/channels/ChannelHeader.tsx
 msgid "Click to show full description"
 msgstr "Click to show full description"
+
+#: src/interface/channels/ChannelHeader.tsx
+msgid "Stored on Sloga's servers, not end-to-end encrypted."
+msgstr "Stored on Sloga's servers, not end-to-end encrypted."
 
 #: components/ui/components/utils/Spoiler.tsx
 msgid "Click to show spoiler"
@@ -4231,6 +4324,59 @@ msgstr "Encrypted calls aren't set up on this device, so your audio and video ar
 msgid "Encrypted direct messages"
 msgstr "Encrypted direct messages"
 
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "On for your account."
+msgstr "On for your account."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Sloga's servers refuse unencrypted direct messages to you, and nobody can add you to an unencrypted group."
+msgstr "Sloga's servers refuse unencrypted direct messages to you, and nobody can add you to an unencrypted group."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/app/interface/settings/user/Privacy.tsx
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Other people can see that you only accept encrypted messages."
+msgstr "Other people can see that you only accept encrypted messages."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "Turned off on another device"
+msgstr "Turned off on another device"
+
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "This device still only sends encrypted messages. Turn it off here too, or turn it on again for your account."
+msgstr "This device still only sends encrypted messages. Turn it off here too, or turn it on again for your account."
+
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "Not available on this server yet."
+msgstr "Not available on this server yet."
+
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "Only send encrypted direct messages and group messages from this account."
+msgstr "Only send encrypted direct messages and group messages from this account."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/app/interface/settings/user/Privacy.tsx
+#: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted-only chats"
+msgstr "Encrypted-only chats"
+
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "Turn off on this device too"
+msgstr "Turn off on this device too"
+
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "Turn on again"
+msgstr "Turn on again"
+
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "A device restored from a recovery code has no backup of its own until you make a new recovery code."
+msgstr "A device restored from a recovery code has no backup of its own until you make a new recovery code."
+
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Encrypted direct messages are on for this device. Messages you send in an encrypted conversation are stored only on the devices that receive them — not on the server, and not in your web session."
 msgstr "Encrypted direct messages are on for this device. Messages you send in an encrypted conversation are stored only on the devices that receive them — not on the server, and not in your web session."
@@ -4796,6 +4942,10 @@ msgstr "This group may be encrypted"
 #: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
 msgid "Allow unencrypted"
 msgstr "Allow unencrypted"
+
+#: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
+msgid "Encrypted-only chats applies to this group, so nothing can be sent to it unencrypted. Nothing has been sent."
+msgstr "Encrypted-only chats applies to this group, so nothing can be sent to it unencrypted. Nothing has been sent."
 
 #: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
 msgid "This device can't confirm this group is unencrypted. Other members may have turned on encryption. Send unencrypted?"
@@ -8611,6 +8761,10 @@ msgstr "Search for groups..."
 msgid "Search for users..."
 msgstr "Search for users..."
 
+#: components/modal/modals/AddMembersToGroup.tsx
+msgid "People who only accept encrypted messages can't be added to this group."
+msgstr "People who only accept encrypted messages can't be added to this group."
+
 #: components/modal/modals/InviteToServer.tsx
 msgid "Search friends..."
 msgstr "Search friends..."
@@ -8693,6 +8847,15 @@ msgstr "Select audio output"
 #: components/modal/modals/CreateGroup.tsx
 msgid "Select members to add"
 msgstr "Select members to add"
+
+#. placeholder {0}: withoutEncryptionNames()
+#: components/modal/modals/CreateGroup.tsx
+msgid "These people have not turned on encryption: {0}"
+msgstr "These people have not turned on encryption: {0}"
+
+#: components/modal/modals/CreateGroup.tsx
+msgid "Remove people until the group has 24 or fewer, you included."
+msgstr "Remove people until the group has 24 or fewer, you included."
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Select noise suppression"
@@ -11046,6 +11209,10 @@ msgstr "this contact"
 msgid "This contact turned off end-to-end encryption for this conversation."
 msgstr "This contact turned off end-to-end encryption for this conversation."
 
+#: components/modal/modals/E2EEPeerDowngrade.tsx
+msgid "Encrypted-only chats applies to this conversation, so it can't continue unencrypted. Keep it encrypted on your side."
+msgstr "Encrypted-only chats applies to this conversation, so it can't continue unencrypted. Keep it encrypted on your side."
+
 #: src/interface/channels/text/Composition.tsx
 msgid "This contact's security identity changed — review before sending."
 msgstr "This contact's security identity changed — review before sending."
@@ -11634,6 +11801,14 @@ msgid "Translated from {0}"
 msgstr "Translated from {0}"
 
 #: components/app/interface/channels/text/Messages.tsx
+msgid "{name} turned off Encrypted-only chats."
+msgstr "{name} turned off Encrypted-only chats."
+
+#: components/app/interface/channels/text/Messages.tsx
+msgid "This group is not encrypted. You can read it, but you can't write here while Encrypted-only chats is on."
+msgstr "This group is not encrypted. You can read it, but you can't write here while Encrypted-only chats is on."
+
+#: components/app/interface/channels/text/Messages.tsx
 msgid "A member"
 msgstr "A member"
 
@@ -11736,6 +11911,10 @@ msgstr "Turn length"
 msgid "Turn off"
 msgstr "Turn off"
 
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "This device still only sends encrypted messages until you turn it off here too."
+msgstr "This device still only sends encrypted messages until you turn it off here too."
+
 #: components/modal/modals/E2EEDisable.tsx
 msgid "This app was sharing encryption with another of your apps, which keeps working. Set this app up again as a new device."
 msgstr "This app was sharing encryption with another of your apps, which keeps working. Set this app up again as a new device."
@@ -11779,6 +11958,126 @@ msgstr "Turn on encrypted direct messages"
 #: components/modal/modals/E2EEEnableGroup.tsx
 msgid "Turn on encryption"
 msgstr "Turn on encryption"
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "You will only send encrypted direct messages and group messages from this account. Channels in servers work as before."
+msgstr "You will only send encrypted direct messages and group messages from this account. Channels in servers work as before."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Groups you were already in stay unencrypted for other members until the group is encrypted or you leave."
+msgstr "Groups you were already in stay unencrypted for other members until the group is encrypted or you leave."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Older Sloga apps on your other devices are stopped by Sloga's servers, not by the app itself. Update them."
+msgstr "Older Sloga apps on your other devices are stopped by Sloga's servers, not by the app itself. Update them."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Calls in direct messages and groups are not covered by this setting."
+msgstr "Calls in direct messages and groups are not covered by this setting."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Message content is encrypted. Names, group names, descriptions and pictures, who is in a group and when messages are sent are not."
+msgstr "Message content is encrypted. Names, group names, descriptions and pictures, who is in a group and when messages are sent are not."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted files can be up to 20 MB."
+msgstr "Encrypted files can be up to 20 MB."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "You need encryption on this device and a recovery code. You will confirm your identity before it turns on."
+msgstr "You need encryption on this device and a recovery code. You will confirm your identity before it turns on."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Checking your groups."
+msgstr "Checking your groups."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "You are not in any unencrypted groups."
+msgstr "You are not in any unencrypted groups."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Your unencrypted groups"
+msgstr "Your unencrypted groups"
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Tick a group to leave it once Encrypted-only chats is on. Groups you keep become read-only for you."
+msgstr "Tick a group to leave it once Encrypted-only chats is on. Groups you keep become read-only for you."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Turn on encryption on this device first. You will confirm your identity."
+msgstr "Turn on encryption on this device first. You will confirm your identity."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encryption is on for this device."
+msgstr "Encryption is on for this device."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Make a recovery code. You need it to restore this device's encrypted backup. The backup holds what was on this device when the code was made. This step can't be skipped."
+msgstr "Make a recovery code. You need it to restore this device's encrypted backup. The backup holds what was on this device when the code was made. This step can't be skipped."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Your recovery code was made and its backup is saved on Sloga's servers. Keep the code somewhere safe."
+msgstr "Your recovery code was made and its backup is saved on Sloga's servers. Keep the code somewhere safe."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Waiting for your recovery code."
+msgstr "Waiting for your recovery code."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "If you cancelled it, make it again."
+msgstr "If you cancelled it, make it again."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Last step: confirm your identity to turn on Encrypted-only chats."
+msgstr "Last step: confirm your identity to turn on Encrypted-only chats."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Once it is on, you leave the groups you ticked."
+msgstr "Once it is on, you leave the groups you ticked."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted-only chats is on."
+msgstr "Encrypted-only chats is on."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Could not leave {name}. You can leave it from the group's menu."
+msgstr "Could not leave {name}. You can leave it from the group's menu."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted-only chats is still on. Try again."
+msgstr "Encrypted-only chats is still on. Try again."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted-only chats is still on."
+msgstr "Encrypted-only chats is still on."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Turn off on this device too?"
+msgstr "Turn off on this device too?"
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Turn off Encrypted-only chats?"
+msgstr "Turn off Encrypted-only chats?"
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Sloga's servers will accept unencrypted direct messages to you again, and people can add you to unencrypted groups."
+msgstr "Sloga's servers will accept unencrypted direct messages to you again, and people can add you to unencrypted groups."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Your contacts' apps may show that you turned it off."
+msgstr "Your contacts' apps may show that you turned it off."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted-only chats was turned off on another device. This device still only sends encrypted messages until you turn it off here too."
+msgstr "Encrypted-only chats was turned off on another device. This device still only sends encrypted messages until you turn it off here too."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Chats that are already encrypted stay encrypted."
+msgstr "Chats that are already encrypted stay encrypted."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "You will confirm your identity to continue."
+msgstr "You will confirm your identity to continue."
 
 #: components/app/interface/settings/user/Encryption.tsx
 msgid "Turn on end-to-end encrypted direct messages for this device."
@@ -12708,6 +13007,18 @@ msgstr "You'll join unencrypted — the call will show a warning"
 #: components/modal/modals/SignOut.tsx
 msgid "You'll need to log in again to get back to your messages."
 msgstr "You'll need to log in again to get back to your messages."
+
+#: components/modal/modals/SignOut.tsx
+msgid "Encrypted-only chats stays on for your account after you sign out."
+msgstr "Encrypted-only chats stays on for your account after you sign out."
+
+#: components/modal/modals/SignOut.tsx
+msgid "To send direct messages and group messages, use a Sloga app where encryption is set up."
+msgstr "To send direct messages and group messages, use a Sloga app where encryption is set up."
+
+#: components/modal/modals/SignOut.tsx
+msgid "Your encryption keys and encrypted chats stay on this device. Sign in here again to use them."
+msgstr "Your encryption keys and encrypted chats stay on this device. Sign in here again to use them."
 
 #: components/i18n/errors.ts
 msgid "You're already part of this group."

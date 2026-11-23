@@ -1,16 +1,21 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { EncryptedOnlyBlockedError } from "stoat.js";
 
 import { styled } from "styled-system/jsx";
 
-import { useE2EE } from "@revolt/client";
+import { useClient, useE2EE } from "@revolt/client";
+import { buildPlainWriteInput } from "@revolt/client/encryptedOnlyGuard";
+import { useError } from "@revolt/i18n";
 import { useState } from "@revolt/state";
 import { Column, Dialog, DialogProps } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import { useModals } from "..";
 import { Modals } from "../types";
+
+import { writeRefusal } from "./encryptedOnlyModals";
 
 /** Server-enforced delivery window */
 const MIN_LEAD_MS = 30_000;
@@ -25,9 +30,17 @@ export function ScheduleMessageModal(
   props: DialogProps & Modals & { type: "schedule_message" },
 ) {
   const { t } = useLingui();
+  const client = useClient();
   const state = useState();
   const e2ee = useE2EE();
+  const err = useError();
   const { showError } = useModals();
+
+  // Encrypted-only chats: a scheduled message is stored unencrypted, so it
+  // is refused wherever the policy refuses that, with the reason in words
+  const blocked = createMemo(() =>
+    writeRefusal("schedule", buildPlainWriteInput(client(), props.channel)),
+  );
 
   const [pending, setPending] = createSignal(false);
   const [refusal, setRefusal] = createSignal<string | undefined>();
@@ -74,7 +87,7 @@ export function ScheduleMessageModal(
   };
 
   const canSchedule = () =>
-    !pending() && !!draft().content?.trim() && validWindow();
+    !pending() && !blocked() && !!draft().content?.trim() && validWindow();
 
   /**
    * The scheduled payload sits on the server as plaintext until it fires,
@@ -191,6 +204,15 @@ export function ScheduleMessageModal(
               Pick a time between 30 seconds and 30 days from now.
             </Trans>
           </Warning>
+        </Show>
+
+        <Show when={blocked()}>
+          {(reason) => (
+            <Warning role="alert">
+              <Symbol size={16}>lock</Symbol>
+              {err(new EncryptedOnlyBlockedError(reason()))}
+            </Warning>
+          )}
         </Show>
 
         <Show when={refusal()}>

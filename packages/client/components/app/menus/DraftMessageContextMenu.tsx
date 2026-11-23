@@ -3,6 +3,13 @@ import { Show } from "solid-js";
 import type { Channel } from "stoat.js";
 
 import { E2EESendError, useClient } from "@revolt/client";
+import { draftRowActions } from "@revolt/client/encryptedOnlyChat";
+import { dmPeerId } from "@revolt/client/encryptedOnlyGuard";
+import {
+  confirmPeerChanged,
+  latchVersion,
+  latchedForClient,
+} from "@revolt/client/encryptedOnlyLatch";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import type { UnsentMessage } from "@revolt/state/stores/Draft";
@@ -11,6 +18,9 @@ import MdClose from "@material-design-icons/svg/outlined/close.svg?component-sol
 import MdContentCopy from "@material-design-icons/svg/outlined/content_copy.svg?component-solid";
 import MdDelete from "@material-design-icons/svg/outlined/delete.svg?component-solid";
 import MdRefresh from "@material-design-icons/svg/outlined/refresh.svg?component-solid";
+import MdSend from "@material-design-icons/svg/outlined/send.svg?component-solid";
+
+import { failedRowSend } from "../../../src/interface/channels/text/encryptedOnlyComposer";
 
 import {
   ContextMenu,
@@ -30,6 +40,33 @@ export function DraftMessageContextMenu(props: Props) {
   const state = useState();
   const client = useClient();
   const { openModal } = useModals();
+
+  // A send refused before it went out (not encrypted, or files waiting for
+  // a text message) is cancelled rather than deleted: nobody received it.
+  // Files waiting for text are refused again as they are, so they offer no
+  // retry.
+  const actions = () => draftRowActions(props.draft.error);
+
+  // Refused for a peer who may have left Encrypted-only: "Send anyway"
+  // confirms the peer and sends it again, in place of a retry that would
+  // be refused the same way
+  const resend = () => {
+    latchVersion();
+    return failedRowSend(
+      props.draft.error,
+      latchedForClient(client().user?.id),
+    );
+  };
+
+  /**
+   * Confirm the peer, then send the message again
+   */
+  function sendAnyway() {
+    const peerId = dmPeerId(client(), props.channel);
+    if (!peerId) return;
+    confirmPeerChanged(peerId, client().user?.id);
+    retrySend();
+  }
 
   /**
    * Retry sending the draft message
@@ -81,32 +118,47 @@ export function DraftMessageContextMenu(props: Props) {
   return (
     <Show when={props.draft.status !== "sending"}>
       <ContextMenu>
-        <Show when={false}>
-          <ContextMenuButton icon={MdClose} onClick={deleteMessage} destructive>
-            <Trans>Cancel message</Trans>
-          </ContextMenuButton>
-        </Show>
         <Show
           when={
             props.draft.status === "failed" || props.draft.status === "unsent"
           }
         >
-          <ContextMenuButton icon={MdRefresh} onClick={retrySend}>
-            <Trans>Retry sending</Trans>
-          </ContextMenuButton>
+          <Show when={resend() === "send-anyway"}>
+            <ContextMenuButton icon={MdSend} onClick={sendAnyway}>
+              <Trans>Send anyway</Trans>
+            </ContextMenuButton>
+          </Show>
+          <Show when={resend() === "retry"}>
+            <ContextMenuButton icon={MdRefresh} onClick={retrySend}>
+              <Trans>Retry sending</Trans>
+            </ContextMenuButton>
+          </Show>
           <Show when={props.draft.content}>
             <ContextMenuButton icon={MdContentCopy} onClick={copyText}>
               <Trans>Copy text</Trans>
             </ContextMenuButton>
           </Show>
           <ContextMenuDivider />
-          <ContextMenuButton
-            icon={MdDelete}
-            onClick={deleteMessage}
-            destructive
+          <Show
+            when={actions().refused}
+            fallback={
+              <ContextMenuButton
+                icon={MdDelete}
+                onClick={deleteMessage}
+                destructive
+              >
+                <Trans>Delete message</Trans>
+              </ContextMenuButton>
+            }
           >
-            <Trans>Delete message</Trans>
-          </ContextMenuButton>
+            <ContextMenuButton
+              icon={MdClose}
+              onClick={deleteMessage}
+              destructive
+            >
+              <Trans>Cancel message</Trans>
+            </ContextMenuButton>
+          </Show>
         </Show>
       </ContextMenu>
     </Show>

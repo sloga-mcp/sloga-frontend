@@ -2,15 +2,20 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import type { Channel } from "stoat.js";
+import { EncryptedOnlyBlockedError } from "stoat.js";
 
 import { styled } from "styled-system/jsx";
 
 import { useClient, useE2EE } from "@revolt/client";
+import { buildPlainWriteInput } from "@revolt/client/encryptedOnlyGuard";
+import { useError } from "@revolt/i18n";
 import { Column, Dialog, DialogProps } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import { useModals } from "..";
 import { Modals } from "../types";
+
+import { writeRefusal } from "./encryptedOnlyModals";
 
 /**
  * Submit-time forward rule. Forwards are server-mediated plaintext, so a
@@ -35,11 +40,24 @@ export function ForwardMessageModal(
   const { t } = useLingui();
   const client = useClient();
   const e2ee = useE2EE();
+  const err = useError();
   const { showError } = useModals();
+
+  /**
+   * Encrypted-only chats: why a forward into this destination is refused,
+   * or `null`. Such a destination stays listed, disabled, with the reason.
+   */
+  const forwardRefusal = (channel: Channel) =>
+    writeRefusal("forward", buildPlainWriteInput(client(), channel));
 
   const [query, setQuery] = createSignal("");
   const [selected, setSelected] = createSignal<Channel | undefined>();
   const [pending, setPending] = createSignal(false);
+
+  const selectedRefusal = createMemo(() => {
+    const destination = selected();
+    return destination ? forwardRefusal(destination) : null;
+  });
 
   /**
    * Whether a channel is in an E2EE conversation (forwards are
@@ -94,6 +112,15 @@ export function ForwardMessageModal(
   async function forward() {
     const destination = selected();
     if (!destination || pending()) return;
+
+    // The policy again at submit, before any native call or request
+    const refused = forwardRefusal(destination);
+    if (refused) {
+      setSelected(undefined);
+      showError(new EncryptedOnlyBlockedError(refused));
+      return;
+    }
+
     setPending(true);
     try {
       // Authoritative re-check at submit time: a fresh native verdict, with
@@ -141,7 +168,7 @@ export function ForwardMessageModal(
             void forward();
             return false;
           },
-          isDisabled: !selected() || pending(),
+          isDisabled: !selected() || pending() || !!selectedRefusal(),
         },
       ]}
       isDisabled={pending()}
@@ -160,27 +187,42 @@ export function ForwardMessageModal(
 
         <Candidates>
           <For each={candidates()}>
-            {(channel) => (
-              <Candidate
-                type="button"
-                data-selected={selected()?.id === channel.id || undefined}
-                onClick={() => setSelected(channel)}
-              >
-                <Symbol size={18}>
-                  {channel.type === "TextChannel"
-                    ? "tag"
-                    : channel.type === "Group"
-                      ? "group"
-                      : channel.type === "SavedMessages"
-                        ? "bookmark"
-                        : "alternate_email"}
-                </Symbol>
-                <CandidateName>{channelLabel(channel)}</CandidateName>
-                <Show when={channel.server}>
-                  <CandidateServer>{channel.server!.name}</CandidateServer>
-                </Show>
-              </Candidate>
-            )}
+            {(channel) => {
+              const refusal = createMemo(() => forwardRefusal(channel));
+              return (
+                <Candidate
+                  type="button"
+                  disabled={!!refusal()}
+                  data-selected={selected()?.id === channel.id || undefined}
+                  onClick={() => {
+                    if (!refusal()) setSelected(channel);
+                  }}
+                >
+                  <Symbol size={18}>
+                    {channel.type === "TextChannel"
+                      ? "tag"
+                      : channel.type === "Group"
+                        ? "group"
+                        : channel.type === "SavedMessages"
+                          ? "bookmark"
+                          : "alternate_email"}
+                  </Symbol>
+                  <CandidateText>
+                    <CandidateName>{channelLabel(channel)}</CandidateName>
+                    <Show when={refusal()}>
+                      {(reason) => (
+                        <CandidateReason>
+                          {err(new EncryptedOnlyBlockedError(reason()))}
+                        </CandidateReason>
+                      )}
+                    </Show>
+                  </CandidateText>
+                  <Show when={channel.server}>
+                    <CandidateServer>{channel.server!.name}</CandidateServer>
+                  </Show>
+                </Candidate>
+              );
+            }}
           </For>
           <Show when={candidates().length === 0}>
             <Empty>
@@ -265,6 +307,28 @@ const Candidate = styled("button", {
       background: "var(--md-sys-color-primary-container)",
       color: "var(--md-sys-color-on-primary-container)",
     },
+    "&:disabled": {
+      opacity: 0.6,
+      cursor: "not-allowed",
+      background: "transparent",
+    },
+  },
+});
+
+const CandidateText = styled("span", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    flexGrow: 1,
+    minWidth: 0,
+  },
+});
+
+const CandidateReason = styled("span", {
+  base: {
+    fontSize: "0.75rem",
+    color: "var(--md-sys-color-on-surface-variant)",
+    whiteSpace: "normal",
   },
 });
 

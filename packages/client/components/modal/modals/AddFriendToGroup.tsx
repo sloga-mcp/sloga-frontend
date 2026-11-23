@@ -12,6 +12,7 @@ import {
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import type { Channel } from "stoat.js";
+import { EncryptedOnlyBlockedError } from "stoat.js";
 import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
@@ -19,6 +20,7 @@ import { useClient, useE2EE } from "@revolt/client";
 import * as chatShell from "@revolt/client/chatShell";
 import type { GroupIncludePreflight, KeyBundle } from "@revolt/client/e2ee";
 import { fetchWithRatelimitPolicy } from "@revolt/client/e2eeRatelimitPolicy";
+import { buildPlainWriteInput } from "@revolt/client/encryptedOnlyGuard";
 import { useWindowCtx } from "@revolt/client/windowCtx";
 import { useError } from "@revolt/i18n";
 import { Button, Column, Dialog, DialogProps } from "@revolt/ui";
@@ -39,6 +41,12 @@ import {
   tooManyToVerify,
   waitForMember,
 } from "./addFriendToGroupPolicy";
+import {
+  type GroupRefusal,
+  addRefusal,
+  groupIsMarked,
+  refusalSide,
+} from "./encryptedOnlyModals";
 import {
   type IncludeFailureDetail,
   type IncludeFailureKind,
@@ -253,6 +261,43 @@ export function AddFriendToGroupModal(
     return user?.displayName ?? user?.username ?? "";
   };
 
+  /** Whether a group carries the encrypted-only mark, or was seen with it */
+  const isMarked = (channel: Channel) =>
+    groupIsMarked(buildPlainWriteInput(client(), channel));
+
+  /**
+   * Encrypted-only chats: why the friend cannot join this group, or `null`.
+   * A marked group takes only people with encryption on, up to 24; a group
+   * that is not marked never takes an Encrypted-only person. Checked before
+   * any request, by every path that adds.
+   */
+  const groupRefusal = (channel: Channel): GroupRefusal | null => {
+    const user = client().users.get(props.userId);
+    return addRefusal({
+      marked: isMarked(channel),
+      groupSize: channel.recipientIds.size,
+      member: {
+        id: props.userId,
+        encrypted: user?.e2eeEnabled === true,
+        encryptedOnly: user?.e2eeOnly === true,
+        bot: !!user?.bot,
+      },
+    });
+  };
+
+  /** The refusal in the words the server's refusal would get */
+  const groupRefusalText = (refusal: GroupRefusal) =>
+    errorText(new EncryptedOnlyBlockedError(refusalSide(refusal)));
+
+  /** Shows the refusal and returns true when the friend cannot join */
+  function refuseForRules(channel: Channel): boolean {
+    const refusal = groupRefusal(channel);
+    if (!refusal) return false;
+    setError(groupRefusalText(refusal));
+    setConfirming(undefined);
+    return true;
+  }
+
   /**
    * Whether E2EE is enabled + published on THIS device (the composer's
    * check), with a device id, on a store that belongs to this account. Native
@@ -340,6 +385,7 @@ export function AddFriendToGroupModal(
 
   async function add(channel: Channel) {
     if (!props.show || pending() || joinFlight(channel)) return;
+    if (refuseForRules(channel)) return;
     if (rowState(channel) !== "addable") return;
     setChecking(channel.id);
     setError(undefined);
@@ -448,6 +494,7 @@ export function AddFriendToGroupModal(
     // doubled: no second preflight (its bundle fetch spends one-time keys)
     // and no second add.
     if (joinFlight(channel)) return;
+    if (refuseForRules(channel)) return;
     const userId = props.userId;
     setChecking(channel.id);
     setError(undefined);
@@ -586,6 +633,7 @@ export function AddFriendToGroupModal(
 
   function openInclude(channel: Channel) {
     if (!props.show || pending() || joinFlight(channel)) return;
+    if (refuseForRules(channel)) return;
     setError(undefined);
     setConfirming(channel);
   }
@@ -695,6 +743,11 @@ export function AddFriendToGroupModal(
                   // click, never started again.
                   const rowFlight = () =>
                     flightFor(includeFlightKey(channel.id, props.userId));
+                  // Encrypted-only chats: a group the friend cannot join
+                  // stays listed, disabled, with the reason
+                  const refusal = createMemo(() => groupRefusal(channel));
+                  // The encrypted group rule, on the groups it applies to
+                  const marked = createMemo(() => isMarked(channel));
                   // A native element (not a styled component) so the
                   // directive binds; aria-disabled rather than `disabled` so
                   // the tooltip still gets hover events.
@@ -704,6 +757,7 @@ export function AddFriendToGroupModal(
                       class={row()}
                       aria-disabled={
                         (state() !== "addable" && state() !== "include") ||
+                        !!refusal() ||
                         !!rowFlight() ||
                         !!pending() ||
                         undefined
@@ -715,8 +769,12 @@ export function AddFriendToGroupModal(
                           : void add(channel)
                       }
                       use:floating={{
-                        tooltip:
-                          state() === "encrypted"
+                        tooltip: refusal()
+                          ? {
+                              placement: "top",
+                              content: groupRefusalText(refusal()!),
+                            }
+                          : state() === "encrypted"
                             ? {
                                 placement: "top",
                                 content: t`Turn on encryption on this device to add people to encrypted group chats.`,
@@ -734,7 +792,17 @@ export function AddFriendToGroupModal(
                           ? "group"
                           : "lock"}
                       </Symbol>
-                      <RowName>{channel.displayName ?? channel.name}</RowName>
+                      <RowText>
+                        <RowName>{channel.displayName ?? channel.name}</RowName>
+                        <Show when={marked()}>
+                          <Rule>
+                            <Trans>
+                              This group is encrypted. Only people with
+                              encryption turned on can be added (up to 24).
+                            </Trans>
+                          </Rule>
+                        </Show>
+                      </RowText>
                       <Show
                         when={
                           pending() === channel.id ||
@@ -934,5 +1002,24 @@ const ErrorText = styled("div", {
   base: {
     fontSize: "0.8125rem",
     color: "var(--md-sys-color-error)",
+  },
+});
+
+/**
+ * A row's name, with the encrypted group rule under it where it applies
+ */
+const RowText = styled("span", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    flexGrow: 1,
+    minWidth: 0,
+  },
+});
+
+const Rule = styled("span", {
+  base: {
+    fontSize: "0.75rem",
+    color: "var(--md-sys-color-on-surface-variant)",
   },
 });

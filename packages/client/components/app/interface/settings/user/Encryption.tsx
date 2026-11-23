@@ -5,9 +5,12 @@ import { Trans } from "@lingui-solid/solid/macro";
 
 import type { BackupStatusView } from "@revolt/client";
 import { useClient, useE2EE } from "@revolt/client";
+import { latchedForClient } from "@revolt/client/encryptedOnlyLatch";
 import { useModals } from "@revolt/modal";
 import { useE2EESplit } from "@revolt/modal/modals/E2EEDeviceShared";
 import { E2EEOwnDeviceList } from "@revolt/modal/modals/E2EERemoveDevice";
+import { useOnlyAdvert } from "@revolt/modal/modals/EncryptedOnlyOnboarding";
+import { onlyCardState } from "@revolt/modal/modals/encryptedOnlySetup";
 import { platformMediaE2EESupported } from "@revolt/rtc";
 import {
   callMediaE2EEOffered,
@@ -39,6 +42,7 @@ export function EncryptionSettings() {
     <Column gap="lg">
       <DeviceStateCards />
       <EncryptionCard />
+      <EncryptedOnlyCard />
       <CallEncryptionCard />
       <RecoveryBackupCard />
       <OwnDevicesCard />
@@ -369,6 +373,121 @@ function EncryptionCard() {
         </Switch>
       </CategoryButton>
     </CategoryButton.Group>
+  );
+}
+
+/**
+ * Encrypted-only chats, an account setting. Shown only while the server
+ * advertises it. Off: the row opens the guided setup (disabled while the
+ * server does not offer it). On: the row opens the leave flow. A device
+ * still latched after the setting was turned off elsewhere offers to turn
+ * it off here too, or on again.
+ */
+function EncryptedOnlyCard() {
+  const client = useClient();
+  const { openModal, isOpen } = useModals();
+  const advert = useOnlyAdvert();
+  // The servers' refusal is stated only while they enforce it
+  const enforced = () => advert()?.enforced === true;
+
+  const state = () =>
+    onlyCardState({
+      advert: advert(),
+      userKnown: !!client().user,
+      latched: latchedForClient(client().user?.id),
+      serverOn: client().user?.e2eeOnly === true,
+      // The setup latches before the server answers
+      settingUp: isOpen("encrypted_only_onboarding"),
+    });
+
+  return (
+    <Show when={state() !== "hidden"}>
+      <CategoryButton.Group>
+        <CategoryButton
+          disabled={state() === "unavailable"}
+          action={
+            <span style={{ "pointer-events": "none", display: "flex" }}>
+              <Checkbox checked={state() === "on"} />
+            </span>
+          }
+          icon={<MdLock {...iconSize(24)} />}
+          description={
+            <Switch>
+              <Match when={state() === "on"}>
+                <Trans>On for your account.</Trans>{" "}
+                <Show when={enforced()}>
+                  <Trans>
+                    Sloga's servers refuse unencrypted direct messages to you,
+                    and nobody can add you to an unencrypted group.
+                  </Trans>{" "}
+                </Show>
+                <Trans>
+                  Other people can see that you only accept encrypted messages.
+                </Trans>
+              </Match>
+              <Match when={state() === "turned-off-elsewhere"}>
+                <Trans>Turned off on another device</Trans>.{" "}
+                <Trans>
+                  This device still only sends encrypted messages. Turn it off
+                  here too, or turn it on again for your account.
+                </Trans>
+              </Match>
+              <Match when={state() === "unavailable"}>
+                <Trans>Not available on this server yet.</Trans>
+              </Match>
+              <Match when={state() === "off"}>
+                <Trans>
+                  Only send encrypted direct messages and group messages from
+                  this account.
+                </Trans>
+                <Show when={enforced()}>
+                  {" "}
+                  <Trans>
+                    Sloga's servers refuse unencrypted direct messages to you,
+                    and nobody can add you to an unencrypted group.
+                  </Trans>
+                </Show>
+              </Match>
+            </Switch>
+          }
+          onClick={() => {
+            const current = state();
+            if (current === "on") {
+              openModal({ type: "encrypted_only_leave" });
+            } else if (current === "off") {
+              openModal({ type: "encrypted_only_onboarding" });
+            }
+          }}
+        >
+          <Trans>Encrypted-only chats</Trans>
+        </CategoryButton>
+
+        <Show when={state() === "turned-off-elsewhere"}>
+          <CategoryButton
+            icon={<MdWarning {...iconSize(24)} />}
+            action="chevron"
+            onClick={() =>
+              openModal({ type: "encrypted_only_leave", elsewhere: true })
+            }
+          >
+            <Trans>Turn off on this device too</Trans>
+          </CategoryButton>
+          <CategoryButton
+            icon="blank"
+            action="chevron"
+            onClick={() => openModal({ type: "encrypted_only_onboarding" })}
+          >
+            <Trans>Turn on again</Trans>
+          </CategoryButton>
+        </Show>
+      </CategoryButton.Group>
+      <Text class="label">
+        <Trans>
+          A device restored from a recovery code has no backup of its own until
+          you make a new recovery code.
+        </Trans>
+      </Text>
+    </Show>
   );
 }
 

@@ -61,7 +61,11 @@ const STUBS: Record<string, string> = {
   "./chunkedUpload": `export async function uploadFileChunked() {
     throw new Error("chunked path not under test");
   }`,
-  "./draftSendError.ts": `export const describeSendError = String;`,
+  // Draft.ts also names the two refusal readers, taken from the real module
+  "./draftSendError.ts": `export const describeSendError = String;
+    export { canRetrySendAsIs, encryptionRequiredSendError } from ${JSON.stringify(
+      new URL("./draftSendError.ts", import.meta.url).href,
+    )};`,
 };
 
 registerHooks({
