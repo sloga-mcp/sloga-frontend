@@ -16,6 +16,7 @@ import android.view.WindowManager
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.acutest.app.AppLockState
 import com.getcapacitor.JSObject
 import com.getcapacitor.MessageHandler
 import com.getcapacitor.Plugin
@@ -883,6 +884,8 @@ class E2eePlugin : Plugin() {
                 }
                 .setOnCancelListener { call.reject("{\"type\":\"declined\"}") }
                 .show()
+                // Every dialog here is hidden while the app lock covers the app.
+                .also { AppLockState.trackDialog(it) }
         }
     }
 
@@ -968,7 +971,10 @@ class E2eePlugin : Plugin() {
                 .setNegativeButton("Cancel") { _, _ -> call.reject("{\"type\":\"declined\"}") }
                 .setOnCancelListener { call.reject("{\"type\":\"declined\"}") }
                 .show()
-                .also { guardDowngradeButtons(it) }
+                .also {
+                    guardDowngradeButtons(it)
+                    AppLockState.trackDialog(it)
+                }
         }
     }
 
@@ -1253,6 +1259,7 @@ class E2eePlugin : Plugin() {
                             }
                             dialog.show()
                             growthDialog = dialog
+                            AppLockState.trackDialog(dialog)
                         } catch (error: Throwable) {
                             if (settled.compareAndSet(false, true)) {
                                 release()
@@ -1415,6 +1422,7 @@ class E2eePlugin : Plugin() {
                             }
                             dialog.show()
                             growthDialog = dialog
+                            AppLockState.trackDialog(dialog)
                         } catch (error: Throwable) {
                             if (settled.compareAndSet(false, true)) {
                                 release()
@@ -1640,6 +1648,7 @@ class E2eePlugin : Plugin() {
                             }
                             dialog.show()
                             identityDialog = dialog
+                            AppLockState.trackDialog(dialog)
                         } catch (error: Throwable) {
                             if (settled.compareAndSet(false, true)) {
                                 release()
@@ -1785,6 +1794,7 @@ class E2eePlugin : Plugin() {
                             }
                             dialog.show()
                             identityDialog = dialog
+                            AppLockState.trackDialog(dialog)
                         } catch (error: Throwable) {
                             if (settled.compareAndSet(false, true)) {
                                 release()
@@ -1952,6 +1962,7 @@ class E2eePlugin : Plugin() {
                             }
                             dialog.show()
                             splitDialog = dialog
+                            AppLockState.trackDialog(dialog)
                         } catch (error: Throwable) {
                             if (settled.compareAndSet(false, true)) {
                                 release()
@@ -2149,7 +2160,10 @@ class E2eePlugin : Plugin() {
                     }
                 }
                 .show()
-                .also { guardDowngradeButtons(it) }
+                .also {
+                    guardDowngradeButtons(it)
+                    AppLockState.trackDialog(it)
+                }
         }
     }
 
@@ -2244,7 +2258,10 @@ class E2eePlugin : Plugin() {
             .setNegativeButton("Cancel") { _, _ -> call.reject("{\"type\":\"declined\"}") }
             .setOnCancelListener { call.reject("{\"type\":\"declined\"}") }
             .show()
-            .also { guardDowngradeButtons(it) }
+            .also {
+                guardDowngradeButtons(it)
+                AppLockState.trackDialog(it)
+            }
     }
 
     // ================================================================
@@ -2454,6 +2471,7 @@ class E2eePlugin : Plugin() {
             }
         }
         dialog.show()
+        AppLockState.trackDialog(dialog)
     }
 
     /**
@@ -2579,6 +2597,7 @@ class E2eePlugin : Plugin() {
             }
         }
         dialog.show()
+        AppLockState.trackDialog(dialog)
     }
 
     /** Parse the `type` tag out of a core error's scrubbed JSON message. */

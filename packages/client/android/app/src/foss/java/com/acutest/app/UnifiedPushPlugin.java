@@ -146,6 +146,8 @@ public class UnifiedPushPlugin extends Plugin {
                         }
                     })
                     .show();
+            // Hidden while the app lock covers the app.
+            AppLockState.trackDialog(picker);
         });
     }
 

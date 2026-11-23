@@ -3,6 +3,7 @@ package com.acutest.app.e2ee
 import android.app.Activity
 import android.app.AlertDialog
 import android.os.Looper
+import com.acutest.app.AppLockState
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -161,6 +162,8 @@ internal class TextConfirmDialog(
                     dialogs.add(dialog)
                     dialog.show()
                     shown.set(dialog)
+                    // Hidden while the app lock covers the app.
+                    AppLockState.trackDialog(dialog)
                     // Tapjacking, applied right after show() (which has built
                     // the buttons) and before this runnable returns, so no
                     // input event reaches an enabled confirm button: confirm

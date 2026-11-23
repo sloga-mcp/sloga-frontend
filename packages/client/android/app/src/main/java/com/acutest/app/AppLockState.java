@@ -1,5 +1,6 @@
 package com.acutest.app;
 
+import android.app.Dialog;
 import android.app.KeyguardManager;
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -45,8 +46,11 @@ import java.util.function.Consumer;
  * passed sets it. Settings that cannot be read count as "on".
  *
  * Main thread only, except get() and hideNotificationText().
+ *
+ * Public only for trackDialog, which the e2ee package calls. Everything
+ * else stays inside this package.
  */
-final class AppLockState {
+public final class AppLockState {
     interface Listener {
         void onLockChanged(boolean locked, boolean enabled);
     }
@@ -67,6 +71,9 @@ final class AppLockState {
 
     /** How long the cover waits for the web lock screen before it offers its own Unlock. */
     private static final long COVER_BUTTON_DELAY_MS = 4_000L;
+
+    /** How long a dialog that comes back at unlock takes no touches. */
+    private static final long DIALOG_TOUCH_DELAY_MS = 700L;
 
     private static final int SECURE = 1;
     private static final int NOT_SECURE = 0;
@@ -106,6 +113,15 @@ final class AppLockState {
     /** Between onStart and onStop. */
     private boolean started = false;
 
+    /**
+     * The last onStop came while a prompt of this class was open. Up to
+     * Android 10 the phone's PIN screen is a separate activity, so the stop
+     * and the start around it are the prompt itself and not a return to the
+     * app. While this is set, the app does not open the prompt by itself.
+     * Never set on Android 11 and later, where the prompt is an overlay.
+     */
+    private boolean stoppedUnderPrompt = false;
+
     private Listener listener;
 
     /** The live activity. Weak, and dropped in onActivityDestroyed. */
@@ -126,6 +142,23 @@ final class AppLockState {
     /** Views hidden from screen readers while the cover is up, with their old setting. */
     private final ArrayList<View> a11yHidden = new ArrayList<>();
     private final ArrayList<Integer> a11yPrevious = new ArrayList<>();
+
+    /** Dialogs of the app that must not sit on top of the lock. Held weakly. */
+    private final ArrayList<TrackedDialog> dialogs = new ArrayList<>();
+
+    private static final class TrackedDialog {
+        final WeakReference<Dialog> ref;
+        /** Hidden by the lock, so the lock shows it again. */
+        boolean hidden;
+        /** The app was locked at some point while this was hidden. */
+        boolean hiddenLocked;
+        /** Times the lock showed it again. Only the newest lets touches back in. */
+        int reshown;
+
+        TrackedDialog(Dialog d) {
+            this.ref = new WeakReference<>(d);
+        }
+    }
 
     /** One enable, disable or unlock request. Answered exactly once. */
     private static final class Request {
@@ -189,6 +222,32 @@ final class AppLockState {
         }
     }
 
+    /**
+     * Main thread. Call right after d.show(). The dialog is hidden while the
+     * app lock covers the app and shown again when it no longer does. Holds
+     * the dialog weakly. No-op for null.
+     */
+    public static void trackDialog(Dialog d) {
+        if (d == null) return;
+        // Never throws to the caller: the dialog is then simply not tracked.
+        try {
+            final AppLockState state = get(d.getContext());
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                state.track(d);
+            } else {
+                state.handler.post(() -> {
+                    try {
+                        state.track(d);
+                    } catch (RuntimeException e) {
+                        Log.w(TAG, "a dialog could not be tracked");
+                    }
+                });
+            }
+        } catch (RuntimeException e) {
+            Log.w(TAG, "a dialog could not be tracked");
+        }
+    }
+
     boolean isEnabled() {
         return enabled;
     }
@@ -238,6 +297,7 @@ final class AppLockState {
         boolean turnedOff = autoOffIfNoDeviceLock();
         applyRecentsPrivacy(a);
         if (isLocked()) showCover(a);
+        syncDialogs();
         if (turnedOff) notifyListener();
     }
 
@@ -275,6 +335,8 @@ final class AppLockState {
                 covered = true;
             }
         }
+        // Hidden while locked, back when the start ends unlocked.
+        syncDialogs();
         // Locked under the cover: the web layer is told every time, so it
         // can draw its lock screen again and report it with gateShown.
         if (changed || covered) notifyListener();
@@ -288,6 +350,7 @@ final class AppLockState {
         stickyLocked = false;
         // Off screen the cover stays; onActivityStarted takes it down.
         if (started && !isLocked()) detachCover();
+        syncDialogs();
         notifyListener();
     }
 
@@ -305,9 +368,14 @@ final class AppLockState {
         excursionStartedMs = excursionPending ? excursionPendingAtMs : 0L;
         excursionPending = false;
         excursionPendingAtMs = 0L;
+        // A stop with no prompt of ours open is the user leaving, and clears
+        // this. Android 11 and later never stop the activity for the prompt.
+        stoppedUnderPrompt =
+                Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q && prompt != null;
         // Up while the app is off screen, whether or not it is locked. With
         // started false, a gateShown from before this stop no longer counts.
         if (enabled) showCover(liveActivity());
+        syncDialogs();
     }
 
     void onActivityDestroyed(MainActivity a) {
@@ -337,6 +405,13 @@ final class AppLockState {
             return;
         }
         if (!usable(a)) {
+            reply(done, false);
+            return;
+        }
+        if (auto && stoppedUnderPrompt) {
+            // This return to the app is the PIN screen closing. Opening the
+            // prompt again would bring it straight back on every cancel, so
+            // the user is left on the lock screen and unlocks from there.
             reply(done, false);
             return;
         }
@@ -454,6 +529,8 @@ final class AppLockState {
         hideText = false;
         timeoutSec = 0;
         applyRecentsPrivacy(liveActivity());
+        // Still locked keeps them hidden. Not locked, the lock is now off.
+        syncDialogs();
         notifyListener();
     }
 
@@ -552,8 +629,12 @@ final class AppLockState {
                 stickyLocked = false;
                 break;
         }
+        // The user passed a prompt, so the next return to the app is a new one.
+        stoppedUnderPrompt = false;
         // Off screen the cover stays; onActivityStarted takes it down.
         if (started && !isLocked()) detachCover();
+        // Only the unlock prompt brings back a dialog hidden while locked.
+        syncDialogs(r.kind == KIND_UNLOCK);
         notifyListener();
         finish(r, null);
     }
@@ -581,6 +662,7 @@ final class AppLockState {
             if (autoOffIfNoDeviceLock()) {
                 applyRecentsPrivacy(liveActivity());
                 if (started && !isLocked()) detachCover();
+                syncDialogs();
                 notifyListener();
             }
         }
@@ -916,6 +998,143 @@ final class AppLockState {
                 },
                 coverTimer,
                 SystemClock.uptimeMillis() + COVER_BUTTON_DELAY_MS);
+    }
+
+    // Dialogs. A dialog is its own window above the activity, so neither the
+    // cover nor the web lock screen is in front of it.
+
+    private void track(Dialog d) {
+        boolean known = false;
+        for (int i = 0; i < dialogs.size(); i++) {
+            if (dialogs.get(i).ref.get() == d) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) dialogs.add(new TrackedDialog(d));
+        syncDialogs();
+    }
+
+    /**
+     * Whether tracked dialogs must be out of sight: while locked, and while
+     * the app is off screen with the lock on. Always false with the lock off.
+     * Lifting the cover for the web lock screen does not change it.
+     */
+    private boolean dialogsMustHide() {
+        return isLocked() || (enabled && !started);
+    }
+
+    /** Every change except a passed unlock prompt. */
+    private void syncDialogs() {
+        syncDialogs(false);
+    }
+
+    /**
+     * Hide or bring back the tracked dialogs to match the lock, and forget
+     * the ones that are gone. Only a dialog the lock hid is shown again, and
+     * one that was closed while hidden is not brought back.
+     *
+     * A dialog that was hidden while the app was locked comes back only after
+     * a passed unlock prompt, which is what passedUnlock says. When the lock
+     * ends any other way, such as a sign out from the lock screen, it is
+     * closed instead: nobody proved they may see it.
+     */
+    private void syncDialogs(boolean passedUnlock) {
+        boolean hide = dialogsMustHide();
+        boolean locked = isLocked();
+        // A copy, because closing a dialog runs its owner's listeners, and
+        // those may track another dialog.
+        TrackedDialog[] all = dialogs.toArray(new TrackedDialog[0]);
+        for (TrackedDialog t : all) {
+            Dialog d = t.ref.get();
+            if (d == null) {
+                dialogs.remove(t);
+                continue;
+            }
+            try {
+                View decor = dialogDecor(d);
+                // isShowing is false for a hidden dialog on some Android
+                // versions, so a dialog whose window is still attached also
+                // counts as open.
+                boolean open = d.isShowing() || (decor != null && decor.getParent() != null);
+                if (!open) {
+                    dialogs.remove(t);
+                    continue;
+                }
+                // The unlock was passed, also when the app is still off
+                // screen and the dialog stays hidden until the next start.
+                if (passedUnlock && !locked) t.hiddenLocked = false;
+                boolean visible =
+                        decor != null ? decor.getVisibility() == View.VISIBLE : !t.hidden;
+                if (hide) {
+                    if (visible) {
+                        d.hide();
+                        t.hidden = true;
+                    }
+                    // Also a dialog hidden earlier, when the app locks later.
+                    if (t.hidden && locked) t.hiddenLocked = true;
+                } else if (t.hidden) {
+                    if (t.hiddenLocked) {
+                        // The lock ended without an unlock. dismiss, so the
+                        // owner's listener lets go of what waits on it.
+                        dialogs.remove(t);
+                        d.dismiss();
+                        continue;
+                    }
+                    t.hidden = false;
+                    // Armed before show, so a failed show still gets its
+                    // touches back.
+                    blockTouchesBriefly(t, d);
+                    d.show();
+                }
+            } catch (RuntimeException e) {
+                // The window went away with its activity. A dialog that had
+                // to stay out of sight is closed rather than left as it is.
+                dialogs.remove(t);
+                if (hide || t.hiddenLocked) {
+                    try {
+                        d.dismiss();
+                    } catch (RuntimeException e2) {
+                        // Nothing left to close.
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * A dialog that comes back at unlock takes no touches for a moment, so
+     * the tap that unlocked the app cannot land on one of its buttons. Each
+     * time it comes back the wait starts again, and the newest wait always
+     * ends with touches allowed.
+     */
+    private void blockTouchesBriefly(final TrackedDialog t, Dialog d) {
+        Window window = d.getWindow();
+        if (window == null) return;
+        final int turn = ++t.reshown;
+        // Posted first: once the flag is set, the clear is already on its way.
+        handler.postDelayed(
+                () -> {
+                    // A later return of the dialog has its own wait.
+                    if (t.reshown != turn) return;
+                    Dialog later = t.ref.get();
+                    if (later == null) return;
+                    try {
+                        Window w = later.getWindow();
+                        if (w != null) {
+                            w.clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
+                        }
+                    } catch (RuntimeException e) {
+                        // The window went away with its activity.
+                    }
+                },
+                DIALOG_TOUCH_DELAY_MS);
+        window.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
+    }
+
+    private static View dialogDecor(Dialog d) {
+        Window window = d.getWindow();
+        return window == null ? null : window.peekDecorView();
     }
 
     /** The theme's window background over black, so the cover is opaque whatever the theme. */
