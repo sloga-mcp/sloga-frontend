@@ -65,6 +65,14 @@ android {
         // Validated "true" or "false" (top of file). No flavor overrides it,
         // so play, sideload and foss all take this value.
         buildConfigField "boolean", "SCREEN_SHARE_AUDIO", screenShareAudio
+        // The one relying-party ID PasskeyPlugin will run a ceremony for; it
+        // refuses options that name any other before the system sees them.
+        // It must equal the server's passkey rp_id. Defined here and nowhere
+        // else, so play, sideload and foss all take it (PasskeyJsonTest pins
+        // that there is exactly one definition). A backup-only passkey, when
+        // one exists, gets its own relying-party ID in native code and never
+        // a second value here.
+        buildConfigField "String", "PASSKEY_RP_ID", "\"app.sloga.gg\""
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
@@ -193,11 +201,29 @@ dependencies {
     sideloadImplementation 'com.google.firebase:firebase-messaging'
     // foss push goes through UnifiedPush instead of FCM.
     fossImplementation 'org.unifiedpush.android:connector:3.0.10'
+    // Passkeys (PasskeyPlugin). The core library is plain androidx and goes
+    // to every flavor; on Android 14+ it talks to the system credential
+    // manager by itself. The Google Play services provider, which is what
+    // serves passkeys on Android 9-13, goes to the two Google-backed flavors
+    // only: it pulls com.google.android.gms, which foss must never carry
+    // (verifyFossClasspathGoogleFree, below). The library finds the provider
+    // through the manifest entry its aar merges in, so PasskeyPlugin is the
+    // same source for all three. 1.3.0 declares kotlin-stdlib 1.8.22, well
+    // inside what the Kotlin 2.0.21 this build pins can read, and its
+    // provider needs no alpha Google artifact (1.5.0's does). The two
+    // artifacts must stay on the same version.
+    implementation 'androidx.credentials:credentials:1.3.0'
+    playImplementation 'androidx.credentials:credentials-play-services-auth:1.3.0'
+    sideloadImplementation 'androidx.credentials:credentials-play-services-auth:1.3.0'
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
+    // A real org.json for the host JVM tests (PasskeyJsonTest): the android.jar
+    // the unit tests compile against only has stubs that throw. Test classpath
+    // only; the app keeps using the platform's own org.json.
+    testImplementation 'org.json:json:20240303'
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')

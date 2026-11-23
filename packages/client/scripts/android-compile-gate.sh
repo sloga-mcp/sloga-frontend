@@ -42,10 +42,10 @@
 #      ScreenUnpublishGuardTest), the GATE_E2EE_TESTS classes in
 #      com.acutest.app.e2ee (E2eeGenericCallTest) and the GATE_APP_TESTS
 #      classes in com.acutest.app (CallRingPolicyTest, CallDeclinePosterTest,
-#      PushTokenPluginParkedActionTest).
+#      PushTokenPluginParkedActionTest, PasskeyJsonTest).
 #   5. Anti-vacuity: compiled Kotlin classes (ScreenSharePlugin.class,
-#      E2eePlugin.class) and a compiled Java class (MainActivity.class) must
-#      exist for every flavor.
+#      E2eePlugin.class, PasskeyPlugin.class) and a compiled Java class
+#      (MainActivity.class) must exist for every flavor.
 #      A green run that produced neither compiled nothing.
 #   6. Anti-vacuity for the tests: for every flavor AND every GATE_TESTS
 #      class, the JUnit XML report must exist, written by THIS run, with at
@@ -110,13 +110,14 @@ GATE_E2EE_TESTS=(
   E2eeGenericCallTest:15
 )
 # The JVM unit tests in the app's own package, same row format:
-# android/app/src/test/java/com/acutest/app/<class>.java. Steps 4 and 6
-# treat them exactly like the screen-share rows.
+# android/app/src/test/java/com/acutest/app/<class>.java (PasskeyJsonTest is
+# .kt). Steps 4 and 6 treat them exactly like the screen-share rows.
 GATE_APP_TEST_PKG=com.acutest.app
 GATE_APP_TESTS=(
   CallRingPolicyTest:59
   CallDeclinePosterTest:29
   PushTokenPluginParkedActionTest:9
+  PasskeyJsonTest:33
 )
 TEST_RESULTS="$ANDROID/app/build/test-results"
 
@@ -387,11 +388,14 @@ for f in "${FLAVORS[@]}"; do
   v="${f}Debug"
   kt="$BUILD/tmp/kotlin-classes/$v/com/acutest/app/screenshare/ScreenSharePlugin.class"
   e2ee="$BUILD/tmp/kotlin-classes/$v/com/acutest/app/e2ee/E2eePlugin.class"
+  passkey="$BUILD/tmp/kotlin-classes/$v/com/acutest/app/PasskeyPlugin.class"
   jv="$BUILD/intermediates/javac/$v/compile${f^}DebugJavaWithJavac/classes/com/acutest/app/MainActivity.class"
   [ -s "$kt" ] ||
     fail 4 "gradle exited 0 but the Kotlin output $kt is missing: nothing proves kotlinc compiled $v"
   [ -s "$e2ee" ] ||
     fail 4 "gradle exited 0 but the Kotlin output $e2ee is missing: nothing proves kotlinc compiled $v"
+  [ -s "$passkey" ] ||
+    fail 4 "gradle exited 0 but the Kotlin output $passkey is missing: nothing proves kotlinc compiled $v"
   [ -s "$jv" ] ||
     fail 4 "gradle exited 0 but the Java output $jv is missing: nothing proves javac compiled $v"
 done

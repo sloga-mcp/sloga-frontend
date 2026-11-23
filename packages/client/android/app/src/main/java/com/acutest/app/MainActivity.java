@@ -232,6 +232,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(com.acutest.app.e2ee.E2eePlugin.class);
         registerPlugin(com.acutest.app.watch.JellyfinPlugin.class);
         registerPlugin(com.acutest.app.screenshare.ScreenSharePlugin.class);
+        registerPlugin(PasskeyPlugin.class);
         // Empty capability marker. JS reads
         // Capacitor.isPluginAvailable("ScreenShareAudio") synchronously at
         // module load to learn whether system-audio capture

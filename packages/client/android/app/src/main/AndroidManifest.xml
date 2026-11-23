@@ -97,5 +97,12 @@
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
+        <!-- PasskeyPlugin.isAvailable(): on Android 14+ it asks whether any
+             credential provider (a password manager that can hold passkeys)
+             is installed, and other packages' services are invisible without
+             this entry. It grants no permission. -->
+        <intent>
+            <action android:name="android.service.credentials.CredentialProviderService" />
+        </intent>
     </queries>
 </manifest>
