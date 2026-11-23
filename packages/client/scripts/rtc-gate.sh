@@ -304,13 +304,18 @@ EXPECTED=(
   "components/rtc/iosCallAudio.test.ts 20 0"
   "components/rtc/livekitPatchHunks.test.ts 23 0"
   "components/rtc/e2eeDeviceReadiness.test.ts 13 0"
-  "components/client/e2eePlatform.test.ts 12 0"
+  # 12 -> 26: the backup refresh shells and the hourly focus throttle, with
+  # their in-suite mutants. 26 -> 37: Tauri out of the refresh (sync
+  # main-thread backup commands) and the `recoveryPollMs` setup poll rule,
+  # with their mutants and wiring scans.
+  "components/client/e2eePlatform.test.ts 37 0"
   "components/client/e2eeCallPlaneIos.test.ts 8 0"
   # 181 -> 218 by fix round F (L3q: the fetched switch, the offer helper,
   # the prejoin and Settings readers); 218 -> 220 for the Settings card's
   # behaviour (no Always-on before the switch answers; the paused copy),
-  # which two `settings-*` mutations survived until then.
-  "components/client/e2eeIosGate.test.ts 220 0"
+  # which two `settings-*` mutations survived until then. 220 -> 245: the
+  # backup courier pins re-stated for Tauri, Electron and iOS (R4-R9).
+  "components/client/e2eeIosGate.test.ts 245 0"
 )
 
 # --- skips -------------------------------------------------------------------

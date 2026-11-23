@@ -11,6 +11,7 @@ import {
   on,
   onCleanup,
   onMount,
+  useContext,
 } from "solid-js";
 
 import { useLingui } from "@lingui-solid/solid/macro";
@@ -26,6 +27,13 @@ import { styled } from "styled-system/jsx";
 
 import { SOFTRES_CREATION_ENABLED } from "@revolt/app";
 import { serverActionsBlocked } from "@revolt/app/interface/channels/text/e2eeTranscriptTrust";
+import {
+  composerOffersInvite,
+  desktopShell,
+  inviteOutcomeShown,
+  inviteShareIn,
+  shareInviteText,
+} from "@revolt/app/interface/channels/text/encryptedOnlyInvite";
 import type { E2EEBridge } from "@revolt/client";
 import { E2EESendError, useClient, useE2EE, useSound } from "@revolt/client";
 import { composerE2EEModeFor } from "@revolt/client/e2eeBadge";
@@ -63,7 +71,7 @@ import {
   useProtectedMessage,
   useProtectedShield,
 } from "@revolt/client/useProtectedChannel";
-import { useWindowCtx } from "@revolt/client/windowCtx";
+import { MAIN_CTX, useWindowCtx } from "@revolt/client/windowCtx";
 import { CONFIGURATION, debounce, useDevice } from "@revolt/common";
 import { pickUploadLimit } from "@revolt/common/lib/uploadLimit";
 import { useError, useTime } from "@revolt/i18n";
@@ -99,6 +107,7 @@ import {
   usePickedFolder,
   zipJobs,
 } from "@revolt/ui";
+import { SnackbarContext } from "@revolt/ui/components/design/Snackbar";
 import { ProtectedShieldIcon } from "@revolt/ui/components/features/protected/ProtectedShieldIcon";
 import { expandTrailingEmoticon } from "@revolt/ui/components/features/texteditor/emoticonExpansion";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -139,6 +148,9 @@ interface Props {
    */
   onMessageSend?: () => void;
 }
+
+/** How an invite shared from a window with no toast went, and where */
+type InviteInline = { channelId: string; kind: "copied" | "failed" };
 
 /**
  * Protected channels whose `maybe_unsent` notice (plan D10) was dismissed
@@ -730,6 +742,9 @@ export function MessageComposition(props: Props) {
 
     const block = encryptedOnlyBlock();
     if (block) {
+      // A window with no toast says how the invite went here
+      const invite = inviteInlineText();
+      if (invite) return `${encryptedOnlyText(block.notice)} ${invite}`;
       return encryptedOnlyText(block.notice);
     }
 
@@ -900,13 +915,98 @@ export function MessageComposition(props: Props) {
    * The button inside the composer block, if it offers one
    */
   const encryptedOnlyBlockedAction = () => {
+    if (protectedBlockedText()) return undefined;
     const action = encryptedOnlyBlock()?.action;
-    if (!action || protectedBlockedText()) return undefined;
+    if (!action) {
+      return encryptedOnlyInviteOffered()
+        ? {
+            label: t`Share invite`,
+            onClick: () => void shareEncryptionInvite(),
+          }
+        : undefined;
+    }
     return {
       label: encryptedOnlyActionLabel(action),
       onClick: () => runEncryptedOnlyAction(action),
     };
   };
+
+  /**
+   * Your own message is refused here because the other person does not
+   * have encryption on: offer to invite them
+   */
+  const encryptedOnlyInviteOffered = createMemo(() => {
+    const peerId = dmPeerId(client(), props.channel);
+    return composerOffersInvite(
+      encryptedOnlyBlock(),
+      encryptedOnlyInput(),
+      encryptedOnlyViewFor(props.channel).peerOptedIn,
+      !!(peerId && client().users.get(peerId)?.bot),
+      client().user?.e2eeOnly === true,
+    );
+  });
+
+  /** Not every window that shows a composer has a snackbar */
+  const snackbar = useContext(SnackbarContext);
+
+  /**
+   * How the last invite went, for a window with no toast: shown after the
+   * composer block's words in that channel only
+   */
+  const [inviteInline, setInviteInline] = createSignal<InviteInline | null>(
+    null,
+  );
+  let inviteInlineTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(inviteInlineTimer));
+
+  /** The words for `inviteInline` in this channel, if any */
+  const inviteInlineText = () => {
+    const shown = inviteInline();
+    if (!shown || shown.channelId !== props.channel.id) return undefined;
+    return shown.kind === "copied"
+      ? t`Invite copied to the clipboard.`
+      : t`Could not copy to the clipboard.`;
+  };
+
+  /**
+   * Share the invite to turn on encryption: the share sheet, or else the
+   * clipboard. Both use the window this composer is in, so a chat window
+   * shares from itself; a desktop shell always copies. The one snackbar
+   * renders in the main window (`src/index.tsx`), so a chat window says how
+   * it went inline in the composer block instead of a toast.
+   */
+  async function shareEncryptionInvite() {
+    const channelId = props.channel.id;
+    clearTimeout(inviteInlineTimer);
+    setInviteInline(null);
+    const { deps, toast: toastHere } = inviteShareIn(
+      windowCtx.win,
+      snackbar ? MAIN_CTX.win : undefined,
+      desktopShell(),
+    );
+    const outcome = await shareInviteText(
+      t`Sloga's servers refuse unencrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption.`,
+      deps,
+    );
+    const shown = inviteOutcomeShown(outcome, toastHere);
+    if (!shown) return;
+    if (shown.place === "toast") {
+      snackbar?.show({
+        message:
+          shown.kind === "copied"
+            ? t`Invite copied to the clipboard.`
+            : t`Could not copy to the clipboard.`,
+        placement: "bottom",
+        closeable: true,
+      });
+      return;
+    }
+    setInviteInline({ channelId, kind: shown.kind });
+    // A copy is confirmed for a moment; a failure stays until the next try
+    if (shown.kind === "copied") {
+      inviteInlineTimer = setTimeout(() => setInviteInline(null), 5000);
+    }
+  }
 
   // Whether the send button should be active/clickable
   const canSend = createMemo(() => {

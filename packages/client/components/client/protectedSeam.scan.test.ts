@@ -95,9 +95,19 @@ const SRC = readFileSync(FILE, "utf8");
  * The merged region is byte-identical to `git merge-file` of (phase 2
  * ca01edb3, base fabe3ab7, main 68653961): main's value above (88e76b2a...)
  * plus those phase 2 lines, nothing else.
+ *
+ * Re-pinned for the desktop backup refresh, which edits the region on
+ * purpose: `NativeTransport.refreshesBackup` and one
+ * `readonly refreshesBackup = shellRefreshesBackup({...})` member in each of
+ * TauriTransport, ElectronTransport and CapacitorTransport. Against the
+ * 099e8c89 region (8814ad34..., the value above) it only ADDS those lines.
+ *
+ * Re-pinned when Tauri was taken out of the backup refresh (M3 final audit
+ * B: its backup commands are sync and block the main thread): only the
+ * `NativeTransport.refreshesBackup` doc comment changed, to say so.
  */
 const TRANSPORT_REGION_SHA256 =
-  "8814ad345ac6bc10acc5584fb880a67507bd7ef49e725d4e1bcd4031bfdbb816";
+  "dd95a02537c7f5c03caf9a753bf1888ac4cb3ed8696a7d2dc19b6ba1cc20ddb0";
 
 /**
  * S7 D9 / PA-7: the text commands Android signs only after a tap on a native

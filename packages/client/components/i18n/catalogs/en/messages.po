@@ -86,6 +86,14 @@ msgstr "This person may no longer use Encrypted-only chats. If you send anyway, 
 msgid "Add a message to send with your first file."
 msgstr "Add a message to send with your first file."
 
+#: components/i18n/errors.ts
+msgid "Sloga's servers kept a different backup. Delete the backup in Settings > Encryption, then make a new recovery code."
+msgstr "Sloga's servers kept a different backup. Delete the backup in Settings > Encryption, then make a new recovery code."
+
+#: components/i18n/errors.ts
+msgid "Your backup did not reach Sloga. Try again."
+msgstr "Your backup did not reach Sloga. Try again."
+
 #: components/app/interface/settings/server/roles/ServerRoleOverview.tsx
 msgid "(changes are being saved…)"
 msgstr "(changes are being saved…)"
@@ -1469,6 +1477,10 @@ msgstr "Shows only your chats and calls. Servers are hidden, not left. Server no
 msgid "You can't change Slim view during a call."
 msgstr "You can't change Slim view during a call."
 
+#: components/app/interface/settings/user/appearance/SlimViewChoice.tsx
+msgid "Set up Encrypted-only chats"
+msgstr "Set up Encrypted-only chats"
+
 #: src/interface/channels/text/TextChannel.tsx
 msgid "Auto-archive"
 msgstr "Auto-archive"
@@ -1495,6 +1507,10 @@ msgstr "You already have an import from {sourceLabel} running."
 #: components/modal/modals/ReportQueue.tsx
 msgid "Automated detection"
 msgstr "Automated detection"
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "Supplied by the reporter"
+msgstr "Supplied by the reporter"
 
 #: components/app/interface/settings/user/Language.tsx
 #: components/app/interface/settings/user/Language.tsx
@@ -4325,6 +4341,16 @@ msgid "Encrypted direct messages"
 msgstr "Encrypted direct messages"
 
 #: components/app/interface/settings/user/Encryption.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Sloga's servers refuse unencrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption."
+msgstr "Sloga's servers refuse unencrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Invite copied to the clipboard."
+msgstr "Invite copied to the clipboard."
+
+#: components/app/interface/settings/user/Encryption.tsx
 #: components/app/interface/settings/user/Privacy.tsx
 msgid "On for your account."
 msgstr "On for your account."
@@ -4372,6 +4398,11 @@ msgstr "Turn off on this device too"
 #: components/app/interface/settings/user/Encryption.tsx
 msgid "Turn on again"
 msgstr "Turn on again"
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Share invite"
+msgstr "Share invite"
 
 #: components/app/interface/settings/user/Encryption.tsx
 msgid "A device restored from a recovery code has no backup of its own until you make a new recovery code."
@@ -8338,6 +8369,18 @@ msgid "Reported content (as seen by the reporter)"
 msgstr "Reported content (as seen by the reporter)"
 
 #: components/modal/modals/ReportQueue.tsx
+msgid "Unverified: this text was supplied by the reporter. Sloga has no copy of this message (it was end-to-end encrypted or deleted) and cannot confirm who sent it or what it said."
+msgstr "Unverified: this text was supplied by the reporter. Sloga has no copy of this message (it was end-to-end encrypted or deleted) and cannot confirm who sent it or what it said."
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "The reporter's app marked it as end-to-end encrypted."
+msgstr "The reporter's app marked it as end-to-end encrypted."
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "Does not match the stored message"
+msgstr "Does not match the stored message"
+
+#: components/modal/modals/ReportQueue.tsx
 msgid "Reported content (server copy)"
 msgstr "Reported content (server copy)"
 
@@ -9967,6 +10010,16 @@ msgstr "Suspend"
 #: components/modal/modals/ReportQueue.tsx
 msgid "Suspend {0}"
 msgstr "Suspend {0}"
+
+#. placeholder {0}: username(reportedUserId())
+#: components/modal/modals/ReportQueue.tsx
+msgid "Suspend {0} (named by the reporter)"
+msgstr "Suspend {0} (named by the reporter)"
+
+#. placeholder {0}: username(reportedUserId())
+#: components/modal/modals/ReportQueue.tsx
+msgid "Suspend {0} anyway"
+msgstr "Suspend {0} anyway"
 
 #: components/app/menus/UserContextMenu.tsx
 msgid "Suspend from platform"

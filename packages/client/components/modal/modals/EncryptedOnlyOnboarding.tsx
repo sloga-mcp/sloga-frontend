@@ -17,6 +17,7 @@ import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import type { Channel, Client } from "stoat.js";
 
 import { useClient, useE2EE } from "@revolt/client";
+import { recoveryPollMs } from "@revolt/client/e2eePlatform";
 import {
   buildPlainWriteInput,
   deviceStateOf,
@@ -44,9 +45,6 @@ import {
   recoveryCodeMadeThisRun,
   turnOnPrecheck,
 } from "./encryptedOnlySetup";
-
-/** How often the recovery step re-reads the backup status while waiting. */
-const RECOVERY_POLL_MS = 3000;
 
 /** How long the recovery step keeps re-reading on its own. */
 const RECOVERY_POLL_FOR_MS = 15 * 60 * 1000;
@@ -207,6 +205,8 @@ export function EncryptedOnlyOnboardingModal(
   // Recovery code (required)
   const [backup, setBackup] = createSignal<BackupSnapshot>();
   const [recoveryStarted, setRecoveryStarted] = createSignal(false);
+  // A create or rotate has not settled yet (Tauri pauses the polling then)
+  const [minting, setMinting] = createSignal(false);
   const recoveryDone = () => recoveryCodeMadeThisRun(backup(), runStartedAt);
   // A code was made during this setup (here or in the enable dialog) and
   // its upload may still be on the way
@@ -240,9 +240,13 @@ export function EncryptedOnlyOnboardingModal(
         // Re-auth as the settings card does for a rotate.
         const token = await reauth(client(), mfaFlow);
         if (!token) return;
-        await e2ee.rotateRecoveryCode();
-      } else {
-        await e2ee.createRecoveryCode();
+      }
+      setMinting(true);
+      try {
+        if (before.exists) await e2ee.rotateRecoveryCode();
+        else await e2ee.createRecoveryCode();
+      } finally {
+        setMinting(false);
       }
       setRecoveryStarted(true);
       await readBackup();
@@ -254,9 +258,16 @@ export function EncryptedOnlyOnboardingModal(
   }
 
   // The desktop recovery window uploads after it closes: keep re-reading
-  // while waiting on this step
+  // while waiting on this step. On Tauri each read is a main-thread,
+  // engine-locked command: none while a create or rotate runs, and at most
+  // every 15 s after (`recoveryPollMs`)
   createEffect(() => {
     if (step() !== "recovery" || !recoveryPending()) return;
+    const every = recoveryPollMs({
+      blocksMainThread: e2ee?.backupCommandsBlockMainThread ?? true,
+      minting: minting(),
+    });
+    if (every === null) return;
     const until = Date.now() + RECOVERY_POLL_FOR_MS;
     const timer = setInterval(() => {
       if (Date.now() > until) {
@@ -264,7 +275,7 @@ export function EncryptedOnlyOnboardingModal(
         return;
       }
       void readBackup();
-    }, RECOVERY_POLL_MS);
+    }, every);
     onCleanup(() => clearInterval(timer));
   });
 

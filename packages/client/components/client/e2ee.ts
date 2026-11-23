@@ -95,12 +95,14 @@ import {
   toOwnDeviceViews,
 } from "./e2eeOwnDevices.ts";
 import {
+  backupRefreshFocusDue,
   capacitorAttachmentUrl,
   capacitorClipboardImageInWebview,
   capacitorCouriersOrphanedRecovery,
   capacitorNativeE2EE,
   iosMediaE2EEReady,
   mediaE2EEPlatformSupported,
+  shellRefreshesBackup,
 } from "./e2eePlatform";
 import { protectorSendErrorCopy } from "./e2eeProtectorCopy";
 import {
@@ -534,6 +536,33 @@ export class E2EEApiError extends Error {
   ) {
     super(message);
     this.name = "E2EEApiError";
+  }
+}
+
+/**
+ * `PUT /e2ee/backup` answered with a generation other than the one sent: the
+ * server kept another blob, so this upload is not recorded as done. The
+ * message is for logs only; `components/i18n/errors.ts` matches the name
+ * and shows its own words.
+ */
+export class BackupNotStoredError extends Error {
+  constructor() {
+    super("The server did not store this backup generation");
+    this.name = "BackupNotStoredError";
+  }
+}
+
+/**
+ * A desktop create or rotate whose recovery window's upload failed for any
+ * other reason (a 413, 429 or 5xx, the network, a native take that threw),
+ * or that had no outcome within `RECOVERY_WAIT_MS`. The message is for logs
+ * only; `components/i18n/errors.ts` matches the name and shows its own
+ * words. The underlying error is not kept: it may carry a server body.
+ */
+export class BackupUploadFailedError extends Error {
+  constructor() {
+    super("The backup upload did not complete");
+    this.name = "BackupUploadFailedError";
   }
 }
 
@@ -1101,6 +1130,20 @@ export function nativeE2EEAvailable(): boolean {
   );
 }
 
+/**
+ * Whether this document is the main window. The popout and the overlay are
+ * their own documents with this flag false. Desktop chat windows are child
+ * windows of main that never load this module, so main's `window` is the
+ * one this module sees.
+ */
+const IS_MAIN_WINDOW = !IS_POPOUT_WINDOW && !IS_OVERLAY_WINDOW;
+
+/**
+ * The longest a desktop create or rotate waits for its recovery window's
+ * outcome before it returns without one.
+ */
+const RECOVERY_WAIT_MS = 15 * 60 * 1000;
+
 // ================================================================
 // Native transports
 //
@@ -1132,6 +1175,13 @@ interface NativeTransport {
    * has to go through the shell's own clipboard command instead.
    */
   readonly clipboardImageInWebview: boolean;
+  /**
+   * Whether the bridge refreshes the key backup by itself on this page, after
+   * each accepted claim and on main-window focus (`shellRefreshesBackup`):
+   * Electron and iOS in the main window. Never Android, and not Tauri while
+   * its backup commands run on the main thread.
+   */
+  readonly refreshesBackup: boolean;
   invoke<T>(
     command: string,
     args?: Record<string, unknown> | Uint8Array,
@@ -1227,6 +1277,11 @@ interface NativeTransport {
 class TauriTransport implements NativeTransport {
   readonly nativeBlobTransfer = false;
   readonly clipboardImageInWebview = false;
+  readonly refreshesBackup = shellRefreshesBackup({
+    shell: "tauri",
+    capacitorPlatform: Capacitor.getPlatform(),
+    mainWindow: IS_MAIN_WINDOW,
+  });
   #tauri = (window as unknown as { __TAURI__: TauriGlobal }).__TAURI__;
 
   invoke<T>(
@@ -1312,6 +1367,11 @@ export type SlogaShellGlobal = {
 class ElectronTransport implements NativeTransport {
   readonly nativeBlobTransfer = false;
   readonly clipboardImageInWebview = false;
+  readonly refreshesBackup = shellRefreshesBackup({
+    shell: "electron",
+    capacitorPlatform: Capacitor.getPlatform(),
+    mainWindow: IS_MAIN_WINDOW,
+  });
   #e2ee = (window as unknown as { slogaShell: Required<SlogaShellGlobal> })
     .slogaShell.e2ee;
 
@@ -1496,6 +1556,12 @@ class CapacitorTransport implements NativeTransport {
   readonly clipboardImageInWebview = capacitorClipboardImageInWebview(
     Capacitor.getPlatform(),
   );
+  // iOS only; Android and a plain web build read false.
+  readonly refreshesBackup = shellRefreshesBackup({
+    shell: "capacitor",
+    capacitorPlatform: Capacitor.getPlatform(),
+    mainWindow: IS_MAIN_WINDOW,
+  });
   #plugin = registerPlugin<E2eeCapacitorPlugin>("E2ee");
 
   /**
@@ -2244,6 +2310,8 @@ export class E2EEBridge implements E2EEAdapter {
     // iOS: listen from the first moment, since the bundle this waits for is
     // usually kept AFTER the page has loaded and claimed. A no-op elsewhere.
     this.#watchOrphanedBackup();
+    // Desktop and iOS: re-check the backup when the main window regains focus
+    this.#watchBackupFocus();
   }
 
   /**
@@ -3267,14 +3335,14 @@ export class E2EEBridge implements E2EEAdapter {
       console.error("[e2ee] post-claim housekeeping failed", error);
     }
 
-    // iOS: upload a recovery bundle the native sheet kept for an earlier page
-    // (see `#watchOrphanedBackup`). The event is the main path; this picks
-    // up a bundle whose event arrived before this connection's claim was
-    // accepted, or while no page was listening. It cannot help after the app
-    // process died: the kept bundle lived only in memory. Outside the try so
-    // a failed reconcile does not skip it.
-    if (this.#transport.subscribeBackupBundleWaiting) {
-      await this.#courierOrphanedBackup();
+    // Refresh the backup if native says one is due, on the shells that do
+    // (`refreshesBackup`: Electron, iOS; not Tauri for now, never Android).
+    // On iOS this also uploads a recovery bundle the native sheet kept for
+    // an earlier page whose event came before this claim (see
+    // `#watchOrphanedBackup`).
+    // Outside the try so a failed reconcile does not skip it.
+    if (this.#transport.refreshesBackup) {
+      await this.#courierBackupRefresh();
     }
   }
 
@@ -7909,6 +7977,24 @@ export class E2EEBridge implements E2EEAdapter {
   #backupRefreshAgain = false;
 
   /**
+   * When the courier last got past its guard (ms), and the main-window focus
+   * listener while one is attached. A focus re-checks only once
+   * `backupRefreshFocusDue` says an hour has passed since then.
+   */
+  #backupRefreshAt: number | null = null;
+  #backupFocusListener: (() => void) | null = null;
+
+  /**
+   * Desktop create and rotate callers waiting for the recovery window's
+   * outcome (`#openRecoveryAndWait`). The next recovery-complete courier
+   * settles all of them with its failure (`#settleRecoveryWaiters`), or
+   * with null.
+   */
+  #recoveryWaiters = new Set<
+    (error: BackupNotStoredError | BackupUploadFailedError | null) => void
+  >();
+
+  /**
    * Post-restore fresh-OTK republish payload, held between a RESTORE and its
    * device claim. A restore recovers the OLD device_id, so on the server the
    * republish takes the `existing.assert_bound_session` path — it is accepted
@@ -8040,10 +8126,70 @@ export class E2EEBridge implements E2EEAdapter {
     if (!this.#transport.subscribeRecoveryComplete) return;
     this.#backupCourierReady = true;
     await this.#transport.subscribeRecoveryComplete((mode) => {
-      this.#courierRecovery(mode).catch((error) =>
-        console.error("[e2ee] backup courier failed", error),
+      this.#courierRecovery(mode).then(
+        () => this.#settleRecoveryWaiters(),
+        (error: unknown) => {
+          // The name only: a server error body may follow the message
+          console.error("[e2ee] backup courier failed:", errorName(error));
+          this.#settleRecoveryWaiters({ error });
+        },
       );
     });
+  }
+
+  /**
+   * Hand a courier's outcome to every waiting create or rotate. Every
+   * `failure` is passed on for the caller to show: a `BackupNotStoredError`
+   * as it is (it has its own words), anything else (a 413, 429 or 5xx, the
+   * network, a native take that threw, even a bare `throw null`) as a
+   * `BackupUploadFailedError`. No `failure` (success, a cancelled window, a
+   * disposed bridge) resolves them.
+   */
+  #settleRecoveryWaiters(failure?: { error: unknown }): void {
+    const waiters = [...this.#recoveryWaiters];
+    this.#recoveryWaiters.clear();
+    const shown = !failure
+      ? null
+      : failure.error instanceof BackupNotStoredError
+        ? failure.error
+        : new BackupUploadFailedError();
+    for (const settle of waiters) settle(shown);
+  }
+
+  /**
+   * Open the desktop recovery window for a create or rotate and wait for
+   * its courier, so an upload that failed reaches the caller, which shows
+   * it. A background refresh never comes here and only logs. The wait
+   * rejects with a `BackupUploadFailedError` after `RECOVERY_WAIT_MS` if no
+   * outcome arrives (the courier still runs and logs then), and resolves
+   * when the bridge is disposed.
+   */
+  async #openRecoveryAndWait(
+    mode: "create" | "rotate",
+    userId: string,
+  ): Promise<void> {
+    if (!this.#backupCourierReady) {
+      await this.#invoke("e2ee_backup_open_recovery", { mode, userId });
+      return;
+    }
+    type Outcome = BackupNotStoredError | BackupUploadFailedError | null;
+    let settle: (error: Outcome) => void = () => {};
+    const outcome = new Promise<Outcome>((resolve) => {
+      settle = resolve;
+    });
+    this.#recoveryWaiters.add(settle);
+    const timer = setTimeout(
+      () => settle(new BackupUploadFailedError()),
+      RECOVERY_WAIT_MS,
+    );
+    try {
+      await this.#invoke("e2ee_backup_open_recovery", { mode, userId });
+      const error = await outcome;
+      if (error) throw error;
+    } finally {
+      clearTimeout(timer);
+      this.#recoveryWaiters.delete(settle);
+    }
   }
 
   async #courierRecovery(mode: string): Promise<void> {
@@ -8089,19 +8235,46 @@ export class E2EEBridge implements E2EEAdapter {
     // mode "cancel" (or unknown): nothing to courier.
   }
 
-  /** PUT a backup blob for the current device, then record the upload. */
+  /**
+   * PUT a backup blob for the current device, then record the upload. The
+   * server answers a stale or equal generation with a 200 that echoes the
+   * generation it kept, so the upload counts only when the echo is the one
+   * sent. Anything else throws `BackupNotStoredError` and is not marked;
+   * nothing here retries it. Every upload goes through here, so the check
+   * holds on every transport: the desktop recovery courier, the Android and
+   * iOS create and rotate dialogs, and the background refresh (with iOS's
+   * kept bundle). On Android and iOS a create or rotate the server did not
+   * keep now rejects to its caller instead of resolving (intended).
+   */
   async #putBackup(bundle: BackupBundle): Promise<void> {
     const deviceId = this.status.get("state")?.device_id;
     if (!deviceId) return;
-    await this.#api("PUT", "/e2ee/backup", {
-      device_id: deviceId,
-      header: bundle.header,
-      ciphertext: bundle.ciphertext,
-      generation: bundle.generation,
-    });
+    const stored = await this.#api<{ generation?: unknown } | undefined>(
+      "PUT",
+      "/e2ee/backup",
+      {
+        device_id: deviceId,
+        header: bundle.header,
+        ciphertext: bundle.ciphertext,
+        generation: bundle.generation,
+      },
+    );
+    if (stored?.generation !== bundle.generation) {
+      throw new BackupNotStoredError();
+    }
     await this.#invoke("e2ee_backup_mark_uploaded", {
       generation: bundle.generation,
     });
+  }
+
+  /**
+   * Whether this bridge's native backup status and refresh commands block
+   * the shell's main thread: true on Tauri, where they are sync commands
+   * run under the engine lock (see `shellRefreshesBackup`). The
+   * Encrypted-only setup reads it to poll less often (`recoveryPollMs`).
+   */
+  get backupCommandsBlockMainThread(): boolean {
+    return this.#transport instanceof TauriTransport;
   }
 
   /**
@@ -8144,8 +8317,9 @@ export class E2EEBridge implements E2EEAdapter {
    * Refresh the backup if native says one is due (timer / message delta), and
    * upload the resulting blob. No-op when no backup exists or none is due. On
    * iOS the native arm first returns a bundle the recovery sheet kept (see
-   * `#watchOrphanedBackup`). Only `#courierOrphanedBackup` calls it, so only
-   * iOS; the other shells do not call it yet.
+   * `#watchOrphanedBackup`). Only `#courierBackupRefresh` calls it, and it
+   * also refuses by itself unless the transport `refreshesBackup` (never
+   * Android, the website or a window that is not the main one).
    *
    * Single flight per bridge: a caller arriving while a pass runs gets the
    * same promise, and the chain runs ONE more pass after the current one
@@ -8156,6 +8330,7 @@ export class E2EEBridge implements E2EEAdapter {
    * follow-up; the chain then rejects with the last failure.
    */
   refreshBackupIfDue(): Promise<void> {
+    if (!this.#transport.refreshesBackup) return Promise.resolve();
     if (this.#backupRefresh) {
       this.#backupRefreshAgain = true;
       return this.#backupRefresh;
@@ -8198,7 +8373,7 @@ export class E2EEBridge implements E2EEAdapter {
    * Whether a native backup take may run now: a live bridge, a connected
    * session with THIS connection's accepted claim (`PUT /e2ee/backup` needs
    * a device-bound session), and an enabled, published device with an id to
-   * PUT under. Shares its terms with `#courierOrphanedBackup`'s guard, and is
+   * PUT under. Shares its terms with `#courierBackupRefresh`'s guard, and is
    * re-read before every pass because a follow-up pass can run long after
    * the caller that asked for it checked.
    */
@@ -8218,11 +8393,12 @@ export class E2EEBridge implements E2EEAdapter {
   /**
    * Tear this bridge down when the Controller replaces its client (Stage 6
    * MAJOR-1). Marks it disposed, so the courier and any pending follow-up
-   * pass refuse; forgets the claim; and removes the iOS `backupBundleWaiting`
-   * listener, which is process-lifetime and would otherwise outlive the
-   * bridge. A pass already past its native take still finishes its PUT: the
-   * take cleared the kept bundle, so that PUT is its only copy. Idempotent,
-   * and never rejects. A no-op off iOS apart from the flags.
+   * pass refuse; forgets the claim; ends any desktop create or rotate wait;
+   * removes the main-window focus listener; and removes the iOS
+   * `backupBundleWaiting` listener, which is process-lifetime and would
+   * otherwise outlive the bridge. A pass already
+   * past its native take still finishes its PUT: the take cleared the kept
+   * bundle, so that PUT is its only copy. Idempotent, and never rejects.
    */
   async dispose(): Promise<void> {
     // Protected channels: stop the text manager first, ahead of the iOS-only
@@ -8235,6 +8411,12 @@ export class E2EEBridge implements E2EEAdapter {
     this.#disposed = true;
     this.#claimAccepted = null;
     this.#backupRefreshAgain = false;
+    this.#settleRecoveryWaiters();
+    const focus = this.#backupFocusListener;
+    if (focus) {
+      this.#backupFocusListener = null;
+      window.removeEventListener("focus", focus);
+    }
     const subscription = this.#backupBundleWaiting;
     if (!subscription) return;
     try {
@@ -8267,7 +8449,7 @@ export class E2EEBridge implements E2EEAdapter {
     if (!this.#transport.subscribeBackupBundleWaiting) return;
     this.#backupBundleWaiting = this.#transport
       .subscribeBackupBundleWaiting(() => {
-        void this.#courierOrphanedBackup();
+        void this.#courierBackupRefresh();
       })
       .catch((error: unknown) => {
         // The post-claim courier still runs on the next claim.
@@ -8280,22 +8462,41 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
-   * Upload a recovery bundle the iOS sheet kept (`#watchOrphanedBackup`)
-   * through `refreshBackupIfDue`. Guarded like the Encryption tab's
-   * `backupStatus()` caller: nothing reaches native unless this device is
-   * enabled and published (core's backup generics no longer provision a
-   * store since IE Stage 6, but most other engine calls still do). It also waits for THIS connection's accepted device
-   * claim: `PUT /e2ee/backup` takes only a session bound to the device
+   * Re-check the backup when the main window regains focus, at most once an
+   * hour since the courier last ran (`backupRefreshFocusDue`). Only where the
+   * transport `refreshesBackup`. `window` is the main window: a chat window
+   * is a separate child window with its own focus events. Attached once per
+   * bridge; `dispose()` removes it.
+   */
+  #watchBackupFocus(): void {
+    if (this.#backupFocusListener || !this.#transport.refreshesBackup) return;
+    const listener = () => {
+      if (!backupRefreshFocusDue(this.#backupRefreshAt, Date.now())) return;
+      void this.#courierBackupRefresh();
+    };
+    this.#backupFocusListener = listener;
+    window.addEventListener("focus", listener);
+  }
+
+  /**
+   * Run `refreshBackupIfDue` for the post-claim call, the main-window focus
+   * and the iOS kept bundle (`#watchOrphanedBackup`). Guarded like the
+   * Encryption tab's `backupStatus()` caller: nothing reaches native unless
+   * this device is enabled and published (core's backup generics no longer
+   * provision a store since IE Stage 6, but most other engine calls still
+   * do). It also waits for THIS connection's accepted device claim:
+   * `PUT /e2ee/backup` takes only a session bound to the device
    * (`assert_bound_session`), and the native take always clears the kept
    * bundle, so taking it before the claim could lose it. An event that
    * arrives first does nothing, and the post-claim call takes the bundle.
    * A disposed bridge, a dropped socket and a device with no id to PUT
    * under refuse too (Stage 6 MAJOR-1, MINOR-3); the terms match
    * `#backupTakeAllowed`, which `refreshBackupIfDue` re-reads per pass.
-   * Best effort: never throws, and logs only the error's name (never the
-   * bundle or an id).
+   * Past the guard it stamps the time the focus throttle reads. Best
+   * effort: never throws, and logs only the error's name (never the bundle
+   * or an id).
    */
-  async #courierOrphanedBackup(): Promise<void> {
+  async #courierBackupRefresh(): Promise<void> {
     const state = this.status.get("state");
     if (
       this.#disposed ||
@@ -8307,10 +8508,11 @@ export class E2EEBridge implements E2EEAdapter {
       this.#claimAccepted !== true
     )
       return;
+    this.#backupRefreshAt = Date.now();
     try {
       await this.refreshBackupIfDue();
     } catch (error) {
-      console.error("[e2ee] orphaned backup upload failed:", errorName(error));
+      console.error("[e2ee] backup refresh failed:", errorName(error));
     }
   }
 
@@ -8337,10 +8539,7 @@ export class E2EEBridge implements E2EEAdapter {
       return;
     }
     await this.#ensureBackupCourier();
-    await this.#invoke("e2ee_backup_open_recovery", {
-      mode: "create",
-      userId: selfId,
-    });
+    await this.#openRecoveryAndWait("create", selfId);
   }
 
   /** Rotate the recovery code (re-auth-gated in the UI). */
@@ -8357,10 +8556,7 @@ export class E2EEBridge implements E2EEAdapter {
       return;
     }
     await this.#ensureBackupCourier();
-    await this.#invoke("e2ee_backup_open_recovery", {
-      mode: "rotate",
-      userId: selfId,
-    });
+    await this.#openRecoveryAndWait("rotate", selfId);
   }
 
   /**
