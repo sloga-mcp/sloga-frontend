@@ -8,7 +8,8 @@ import {
   onMount,
 } from "solid-js";
 
-import { Trans } from "@lingui-solid/solid/macro";
+import { Capacitor } from "@capacitor/core";
+import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
 import { useClientLifecycle } from "@revolt/client";
 import { State, TransitionType } from "@revolt/client/Controller";
@@ -25,12 +26,19 @@ import {
 
 import MdArrowBack from "@material-design-icons/svg/filled/arrow_back.svg?component-solid";
 
-import { CONFIGURATION } from "@revolt/common";
+import { CONFIGURATION, isNativeShell } from "@revolt/common";
+import {
+  PasskeyError,
+  cancelPasskeyCeremony,
+  getPasskey,
+  getPasskeysAdvert,
+  passkeysSupported,
+} from "@revolt/common/lib/passkey";
 import { normalizeReferralCode } from "@revolt/common/lib/referralCode";
 import { useState } from "@revolt/state";
 import { styled } from "styled-system/jsx";
 import { FlowTitle } from "./Flow";
-import { Fields, Form } from "./Form";
+import { Fields, Form, FormError } from "./Form";
 import hopOnSloga from "./hop-on-sloga.mp4";
 
 /**
@@ -341,15 +349,131 @@ async function fetchOauthGoogleEnabled() {
 }
 
 /**
+ * What the login form shows about passkeys: the sign-in button, the note for
+ * the desktop apps (which cannot use passkeys yet), or nothing
+ */
+type PasskeySignIn = "offer" | "desktop" | "off";
+
+/**
+ * Decide what the login form shows about passkeys. Nothing unless the server
+ * has passkeys turned on.
+ */
+async function fetchPasskeySignIn(): Promise<PasskeySignIn> {
+  const advert = await getPasskeysAdvert(CONFIGURATION.DEFAULT_API_URL);
+  if (!advert.available) return "off";
+
+  if (await passkeysSupported()) return "offer";
+
+  return isNativeShell() && !Capacitor.isNativePlatform() ? "desktop" : "off";
+}
+
+/**
  * Flow for logging into an account
  */
 export default function FlowLogin() {
   const state = useState();
   const modals = useModals();
-  const { lifecycle, isLoggedIn, isError, login } = useClientLifecycle();
+  const { t } = useLingui();
+  const { lifecycle, isLoggedIn, isError, login, passkeyLogin } =
+    useClientLifecycle();
 
   const [keepLoggedIn, setKeepLoggedIn] = createSignal(true);
   const [oauthGoogle] = createResource(fetchOauthGoogleEnabled);
+  const [passkeySignIn] = createResource(fetchPasskeySignIn);
+
+  const [passkeyBusy, setPasskeyBusy] = createSignal(false);
+  const [passkeyError, setPasskeyError] = createSignal<unknown>();
+
+  // The last passkey attempt ended as cancelled, which is also how a prompt
+  // that never appeared ends
+  const [passkeyQuiet, setPasskeyQuiet] = createSignal(false);
+
+  // The password form is signing in. One login at a time: each kind keeps
+  // the other's button disabled while it runs.
+  const [passwordBusy, setPasswordBusy] = createSignal(false);
+
+  // Set when a password login takes over from a passkey attempt, so that
+  // attempt opens no prompt and shows nothing when it ends
+  let passkeyAbandoned = false;
+
+  /**
+   * What to show for a failed passkey sign-in; `undefined` shows nothing
+   * @param error Thrown value
+   */
+  function passkeyLoginError(error: unknown): unknown {
+    if (error instanceof PasskeyError) {
+      switch (error.code) {
+        // The user closed the prompt, or it never appeared: the quiet line
+        // under the button covers both
+        case "cancelled":
+          return undefined;
+        case "unavailable":
+          return new Error(t`Passkeys are not available on this device.`);
+        // Only Android 14+ can say "no passkey here"; elsewhere it reads as
+        // a plain failure, so both get the same message
+        case "no_credential":
+        case "failed":
+          return new Error(
+            t`Could not sign in. There may be no passkey for Sloga on this device.`,
+          );
+        default: {
+          const exhaustive: never = error.code;
+          return exhaustive;
+        }
+      }
+    }
+
+    switch (apiErrorType(error)) {
+      case "InvalidCredentials":
+        return new Error(
+          t`The passkey was not accepted. Try again, or sign in another way.`,
+        );
+      case "FeatureDisabled":
+        return new Error(t`Passkeys are turned off right now.`);
+      default:
+        // Everything else (unverified, locked out, suspended, network) reads
+        // as it does for a password login
+        return error;
+    }
+  }
+
+  /**
+   * Sign in with a passkey. The exchange with the server is `passkeyLogin`
+   * in client/Controller.ts; this runs the prompt for it and shows what
+   * went wrong.
+   */
+  async function performPasskeyLogin() {
+    if (passkeyBusy() || passwordBusy()) return;
+
+    setPasskeyBusy(true);
+    setPasskeyError(undefined);
+    setPasskeyQuiet(false);
+    passkeyAbandoned = false;
+
+    try {
+      state.auth.setRemember(keepLoggedIn());
+
+      await passkeyLogin(
+        (options) =>
+          passkeyAbandoned
+            ? Promise.reject(new PasskeyError("cancelled"))
+            : getPasskey(options),
+        modals,
+      );
+    } catch (error) {
+      // The password login that took over reports its own outcome
+      if (passkeyAbandoned) return;
+
+      // Not logged: the thrown value is shown, never the options or the
+      // credential
+      setPasskeyError(passkeyLoginError(error));
+      setPasskeyQuiet(
+        error instanceof PasskeyError && error.code === "cancelled",
+      );
+    } finally {
+      setPasskeyBusy(false);
+    }
+  }
 
   /**
    * Log into account
@@ -361,15 +485,30 @@ export default function FlowLogin() {
 
     if (!email || !password) return;
 
-    state.auth.setRemember(keepLoggedIn());
+    // One password login at a time
+    if (passwordBusy()) return;
 
-    await login(
-      {
-        email,
-        password,
-      },
-      modals,
-    );
+    // A passkey prompt that never answers must not block a password login:
+    // give up on it and go on
+    if (passkeyBusy()) {
+      passkeyAbandoned = true;
+      cancelPasskeyCeremony();
+    }
+
+    setPasswordBusy(true);
+    try {
+      state.auth.setRemember(keepLoggedIn());
+
+      await login(
+        {
+          email,
+          password,
+        },
+        modals,
+      );
+    } finally {
+      setPasswordBusy(false);
+    }
   }
 
   return (
@@ -439,6 +578,37 @@ export default function FlowLogin() {
                 </a>
               </div>
               <div style={{"display": "flex", "flex-direction": "column", "gap": "inherit", "width": "100%"}}>
+                <Show when={passkeySignIn() === "offer"}>
+                  <Row align justify>
+                    <Button
+                      size="md"
+                      variant="tonal"
+                      isDisabled={passkeyBusy() || passwordBusy()}
+                      onPress={() => void performPasskeyLogin()}
+                    >
+                      <Trans>Sign in with a passkey</Trans>
+                    </Button>
+                  </Row>
+                  <Show when={passkeyQuiet()}>
+                    <Row align justify>
+                      <Text class="label" size="small">
+                        <Trans>Nothing happened? Try again.</Trans>
+                      </Text>
+                    </Row>
+                  </Show>
+                </Show>
+                <Show when={passkeyError()}>
+                  <FormError error={passkeyError()} />
+                </Show>
+                <Show when={passkeySignIn() === "desktop"}>
+                  <Text class="label" size="small">
+                    <Trans>
+                      Passkeys do not work in the desktop app yet. If your
+                      account signs in with a passkey, add a password in
+                      Settings on your phone to use the desktop app.
+                    </Trans>
+                  </Text>
+                </Show>
                 <Show when={oauthGoogle()}>
                   <Row align justify>
                     <Button

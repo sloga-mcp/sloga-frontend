@@ -1524,6 +1524,96 @@ msgstr "Away from the keyboard for a bit"
 msgid "Back"
 msgstr "Back"
 
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "Added {added}, not used yet"
+msgstr "Added {added}, not used yet"
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "Added {added}, last used {used}"
+msgstr "Added {added}, last used {used}"
+
+#: components/auth/src/flows/FlowLogin.tsx
+#: components/app/interface/settings/user/account/Passkeys.tsx
+#: components/modal/modals/MFAFlow.tsx
+msgid "Passkeys are turned off right now."
+msgstr "Passkeys are turned off right now."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "To add a passkey, sign out and sign in again, then add it within 10 minutes."
+msgstr "To add a passkey, sign out and sign in again, then add it within 10 minutes."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+#: components/modal/modals/MFAFlow.tsx
+msgid "The passkey was not accepted. Try again."
+msgstr "The passkey was not accepted. Try again."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "This passkey is already on your account."
+msgstr "This passkey is already on your account."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "You have 10 passkeys, which is the limit. Remove one to add another."
+msgstr "You have 10 passkeys, which is the limit. Remove one to add another."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "This passkey is the only way to sign in to your account. Set a password or add another passkey before removing it."
+msgstr "This passkey is the only way to sign in to your account. Set a password or add another passkey before removing it."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+#: components/modal/modals/MFAFlow.tsx
+msgid "This account has no passkey."
+msgstr "This account has no passkey."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "That name cannot be used. Use 1 to 64 characters."
+msgstr "That name cannot be used. Use 1 to 64 characters."
+
+#: components/auth/src/flows/FlowLogin.tsx
+#: components/app/interface/settings/user/account/Passkeys.tsx
+#: components/modal/modals/MFAFlow.tsx
+msgid "Passkeys are not available on this device."
+msgstr "Passkeys are not available on this device."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "The passkey could not be created. It may already be on this device."
+msgstr "The passkey could not be created. It may already be on this device."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "Select to try again."
+msgstr "Select to try again."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "Your passkeys could not be loaded"
+msgstr "Your passkeys could not be loaded"
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "Sign in with your fingerprint, face or screen lock instead of a password"
+msgstr "Sign in with your fingerprint, face or screen lock instead of a password"
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "Add a passkey"
+msgstr "Add a passkey"
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "Select this to save the passkey. Your device will then ask for your fingerprint, face or screen lock."
+msgstr "Select this to save the passkey. Your device will then ask for your fingerprint, face or screen lock."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "Create passkey"
+msgstr "Create passkey"
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "Passkeys cannot be added here. Add one in Sloga on your phone or on the website."
+msgstr "Passkeys cannot be added here. Add one in Sloga on your phone or on the website."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "Passkeys"
+msgstr "Passkeys"
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "That did not work"
+msgstr "That did not work"
+
 #. placeholder {0}: props.channel.parent!.name
 #: src/interface/channels/text/TextChannel.tsx
 msgid "Back to #{0}"
@@ -1962,6 +2052,14 @@ msgstr "Centered"
 msgid "Change"
 msgstr "Change"
 
+#: components/modal/modals/EditPassword.tsx
+msgid "Set password"
+msgstr "Set password"
+
+#: components/modal/modals/EditPassword.tsx
+msgid "This account has no password yet. Set one to sign in with your email and password."
+msgstr "This account has no password yet. Set one to sign in with your email and password."
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Change Avatar"
 msgstr "Change Avatar"
@@ -1982,6 +2080,10 @@ msgstr "Change login email"
 #: components/modal/modals/EditPassword.tsx
 msgid "Change login password"
 msgstr "Change login password"
+
+#: components/modal/modals/EditPassword.tsx
+msgid "Set a login password"
+msgstr "Set a login password"
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Change Nickname"
@@ -2453,6 +2555,27 @@ msgstr "Continue unencrypted — new messages will be readable by the server —
 #: components/auth/src/flows/FlowLogin.tsx
 msgid "Continue with Google"
 msgstr "Continue with Google"
+
+#: components/auth/src/flows/FlowLogin.tsx
+msgid "Sign in with a passkey"
+msgstr "Sign in with a passkey"
+
+#: components/auth/src/flows/FlowLogin.tsx
+msgid "Could not sign in. There may be no passkey for Sloga on this device."
+msgstr "Could not sign in. There may be no passkey for Sloga on this device."
+
+#: components/auth/src/flows/FlowLogin.tsx
+msgid "The passkey was not accepted. Try again, or sign in another way."
+msgstr "The passkey was not accepted. Try again, or sign in another way."
+
+#: components/auth/src/flows/FlowLogin.tsx
+#: components/modal/modals/MFAFlow.tsx
+msgid "Nothing happened? Try again."
+msgstr "Nothing happened? Try again."
+
+#: components/auth/src/flows/FlowLogin.tsx
+msgid "Passkeys do not work in the desktop app yet. If your account signs in with a passkey, add a password in Settings on your phone to use the desktop app."
+msgstr "Passkeys do not work in the desktop app yet. If your account signs in with a passkey, add a password in Settings on your phone to use the desktop app."
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Contrast"
@@ -3751,6 +3874,10 @@ msgstr "email"
 msgid "Email"
 msgstr "Email"
 
+#: components/app/interface/settings/user/Account.tsx
+msgid "Not set"
+msgstr "Not set"
+
 #: components/modal/modals/DeleteAccountConfirm.tsx
 msgid "Email me the link"
 msgstr "Email me the link"
@@ -4148,6 +4275,10 @@ msgstr "Enter Channel"
 msgid "Enter Code"
 msgstr "Enter Code"
 
+#: components/modal/modals/MFAFlow.tsx
+msgid "Use passkey"
+msgstr "Use passkey"
+
 #: components/auth/src/flows/Form.tsx
 msgid "Enter your current password."
 msgstr "Enter your current password."
@@ -4157,6 +4288,19 @@ msgstr "Enter your current password."
 #: components/modal/modals/EditEmail.tsx
 msgid "Enter your current password..."
 msgstr "Enter your current password..."
+
+#: components/modal/modals/EditEmail.tsx
+#: components/modal/modals/EditPassword.tsx
+#: components/modal/modals/EditUsername.tsx
+msgid "This account has no password yet. Add a passkey in Settings first, then come back here."
+msgstr "This account has no password yet. Add a passkey in Settings first, then come back here."
+
+#: components/modal/modals/EditEmail.tsx
+#: components/modal/modals/EditPassword.tsx
+#: components/modal/modals/EditUsername.tsx
+#: components/modal/modals/MFAFlow.tsx
+msgid "This account has no password yet. Use Reset password on the login screen to set one."
+msgstr "This account has no password yet. Use Reset password on the login screen to set one."
 
 #: components/auth/src/flows/Form.tsx
 msgid "Enter your invite code."
@@ -4681,6 +4825,34 @@ msgstr "Going"
 #: components/modal/modals/Onboarding.tsx
 msgid "Good"
 msgstr "Good"
+
+#: components/modal/modals/PasskeyName.tsx
+msgid "Name this passkey"
+msgstr "Name this passkey"
+
+#: components/modal/modals/PasskeyName.tsx
+msgid "Rename passkey"
+msgstr "Rename passkey"
+
+#: components/modal/modals/PasskeyName.tsx
+msgid "A name helps you tell your passkeys apart."
+msgstr "A name helps you tell your passkeys apart."
+
+#: components/modal/modals/PasskeyName.tsx
+msgid "Use 1 to 64 characters."
+msgstr "Use 1 to 64 characters."
+
+#: components/modal/modals/PasskeyName.tsx
+msgid "That name cannot be used."
+msgstr "That name cannot be used."
+
+#: components/modal/modals/PasskeyRemove.tsx
+msgid "You will no longer be able to sign in with \"{name}\". It may still be listed on your device until you delete it there."
+msgstr "You will no longer be able to sign in with \"{name}\". It may still be listed on your device until you delete it there."
+
+#: components/modal/modals/PasskeyRemove.tsx
+msgid "Remove this passkey?"
+msgstr "Remove this passkey?"
 
 #: src/AndroidNag.tsx
 msgid "Google-free APK"
@@ -7274,6 +7446,14 @@ msgstr "Playing back…"
 msgid "Please confirm this action using the selected method."
 msgstr "Please confirm this action using the selected method."
 
+#: components/modal/modals/MFAFlow.tsx
+msgid "Confirm with your passkey."
+msgstr "Confirm with your passkey."
+
+#: components/modal/modals/MFAFlow.tsx
+msgid "The passkey could not be used. Try again."
+msgstr "The passkey could not be used. Try again."
+
 #: components/auth/src/flows/Form.tsx
 msgid "Please enter your email."
 msgstr "Please enter your email."
@@ -7635,6 +7815,18 @@ msgstr "Recording… (max 5s)"
 #: components/modal/modals/MFAFlow.tsx
 msgid "Recovery Code"
 msgstr "Recovery Code"
+
+#: components/modal/modals/MFAFlow.tsx
+msgid "This account has no password or passkey to confirm with. Add a passkey in Settings first."
+msgstr "This account has no password or passkey to confirm with. Add a passkey in Settings first."
+
+#: components/modal/modals/MFAFlow.tsx
+msgid "This action needs a device that has your passkey. Open Sloga on that device to continue."
+msgstr "This action needs a device that has your passkey. Open Sloga on that device to continue."
+
+#: components/modal/modals/MFAFlow.tsx
+msgid "Passkey"
+msgstr "Passkey"
 
 #: components/app/interface/settings/user/Account.tsx
 #~ msgid "Recovery Codes"

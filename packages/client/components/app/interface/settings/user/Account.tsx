@@ -22,6 +22,7 @@ import MdVerifiedUser from "@material-design-icons/svg/outlined/verified_user.sv
 
 import { useSettingsNavigation } from "../Settings";
 
+import { Passkeys } from "./account/Passkeys";
 import { UserSummary } from "./account/index";
 import {
   deleteRequestStatus,
@@ -47,6 +48,7 @@ export function MyAccount() {
         showBadges
       />
       <EditAccount />
+      <Passkeys />
       <MultiFactorAuth />
       <ManageAccount />
     </Column>
@@ -59,6 +61,8 @@ export function MyAccount() {
 function EditAccount() {
   const client = useClient();
   const state = useState();
+  const mfa = createMfaResource();
+  const { t } = useLingui();
   const { openModal } = useModals();
   const [email, setEmail] = createSignal("•••••••••••@•••••••••••");
 
@@ -123,7 +127,10 @@ function EditAccount() {
           })
         }
         icon={<MdPassword {...iconSize(22)} />}
-        description={"•••••••••"}
+        description={
+          // An account made without a password has none to mask
+          !mfa.isLoading && mfa.data?.passwordAbsent ? t`Not set` : "•••••••••"
+        }
       >
         <Trans>Password</Trans>
       </CategoryButton>

@@ -81,6 +81,8 @@ import { MFAEnableTOTPModal } from "./modals/MFAEnableTOTP";
 import { MFAFlowModal } from "./modals/MFAFlow";
 import { MFARecoveryModal } from "./modals/MFARecovery";
 import { OnboardingModal } from "./modals/Onboarding";
+import { PasskeyNameModal } from "./modals/PasskeyName";
+import { PasskeyRemoveModal } from "./modals/PasskeyRemove";
 import { PolicyChangeModal } from "./modals/PolicyChange";
 import { PollVotersModal } from "./modals/PollVoters";
 import { ProtectedSeatPickerModal } from "./modals/ProtectedSeatPicker";
@@ -292,6 +294,10 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <MFARecoveryModal {...modalProps} />;
     case "onboarding":
       return <OnboardingModal {...modalProps} />;
+    case "passkey_name":
+      return <PasskeyNameModal {...modalProps} />;
+    case "passkey_remove":
+      return <PasskeyRemoveModal {...modalProps} />;
     case "policy_change":
       return <PolicyChangeModal {...modalProps} />;
     case "rename_session":

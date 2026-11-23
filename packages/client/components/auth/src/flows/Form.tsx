@@ -91,6 +91,29 @@ function suspendedUntil(error: unknown): string | undefined {
 }
 
 /**
+ * Error line under a form. Shared with the passkey sign-in on the login
+ * form, so both show a suspension the same way.
+ */
+export function FormError(props: { error: unknown }) {
+  const err = useError();
+
+  return (
+    <ErrorContainer>
+      <MdError
+        {...iconSize("1rem")}
+        fill="currentColor"
+        style={{ "flex-shrink": 0 }}
+      />
+      <Text class="label" size="small">
+        <Show when={suspendedUntil(props.error)} fallback={err(props.error)}>
+          {(until) => <SuspensionCountdown until={until()} />}
+        </Show>
+      </Text>
+    </ErrorContainer>
+  );
+}
+
+/**
  * Available field types
  */
 type Field =
@@ -266,7 +289,6 @@ function BrowserHandoff(props: { href: string }) {
 export function Form(props: Props) {
   const { t } = useLingui();
   const [error, setError] = createSignal();
-  const err = useError();
   let hcaptcha: HCaptchaFunctions | undefined;
 
   // Read once: the shell cannot change under a mounted form
@@ -452,18 +474,7 @@ export function Form(props: Props) {
         <Column gap="lg">
           {props.children}
           <Show when={error()}>
-            <ErrorContainer>
-              <MdError
-                {...iconSize("1rem")}
-                fill="currentColor"
-                style={{ "flex-shrink": 0 }}
-              />
-              <Text class="label" size="small">
-                <Show when={suspendedUntil(error())} fallback={err(error())}>
-                  {(until) => <SuspensionCountdown until={until()} />}
-                </Show>
-              </Text>
-            </ErrorContainer>
+            <FormError error={error()} />
           </Show>
         </Column>
         <Show when={widgetSitekey()}>

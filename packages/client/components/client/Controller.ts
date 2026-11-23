@@ -805,6 +805,40 @@ function apiErrorType(error: unknown): string | undefined {
 }
 
 /**
+ * Friendly name for a new session on this device, sent with every kind of
+ * login
+ */
+function sessionFriendlyName(): string {
+  const browser = detect();
+
+  // Generate a friendly name for this browser
+  let friendly_name;
+  if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios") {
+    // The iOS app is a native shell, not a browser. Peers see this name in
+    // their device lists and in new-device notes on encrypted
+    // conversations, so it must not read as a web session.
+    friendly_name = "Sloga for iOS";
+  } else if (browser) {
+    let { name, os } = browser as { name: string; os: string };
+    if (name === "ios") {
+      name = "safari";
+    } else if (name === "fxios") {
+      name = "firefox";
+    } else if (name === "crios") {
+      name = "chrome";
+    } else if (os === "Mac OS" && navigator.maxTouchPoints > 0) {
+      os = "iPadOS";
+    }
+
+    friendly_name = `Sloga for Web (${name} on ${os})`;
+  } else {
+    friendly_name = "Sloga for Web (Unknown Device)";
+  }
+
+  return friendly_name;
+}
+
+/**
  * Controls lifecycle of clients
  */
 export default class ClientController {
@@ -840,6 +874,7 @@ export default class ClientController {
     this.lifecycle = new Lifecycle(this);
 
     this.login = this.login.bind(this);
+    this.passkeyLogin = this.passkeyLogin.bind(this);
     this.completeOauth = this.completeOauth.bind(this);
     this.logout = this.logout.bind(this);
     this.selectUsername = this.selectUsername.bind(this);
@@ -891,37 +926,56 @@ export default class ClientController {
    * @param credentials Credentials
    */
   async login(credentials: API.DataLogin, modals: ModalControllerExtended) {
-    const browser = detect();
-
-    // Generate a friendly name for this browser
-    let friendly_name;
-    if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios") {
-      // The iOS app is a native shell, not a browser. Peers see this name in
-      // their device lists and in new-device notes on encrypted
-      // conversations, so it must not read as a web session.
-      friendly_name = "Sloga for iOS";
-    } else if (browser) {
-      let { name, os } = browser as { name: string; os: string };
-      if (name === "ios") {
-        name = "safari";
-      } else if (name === "fxios") {
-        name = "firefox";
-      } else if (name === "crios") {
-        name = "chrome";
-      } else if (os === "Mac OS" && navigator.maxTouchPoints > 0) {
-        os = "iPadOS";
-      }
-
-      friendly_name = `Sloga for Web (${name} on ${os})`;
-    } else {
-      friendly_name = "Sloga for Web (Unknown Device)";
-    }
+    const friendly_name = sessionFriendlyName();
 
     // Try to login with given credentials
     const session = await this.api.post("/auth/session/login", {
       ...credentials,
       friendly_name,
     });
+
+    await this.completeLoginResponse(session, modals, friendly_name);
+  }
+
+  /**
+   * Login with a passkey: ask the server for a challenge, run the prompt,
+   * send the result, then enter the app as a password login does. There is
+   * never an MFA step after a passkey.
+   *
+   * Rejects with whatever `ceremony` rejects with, or with the API error.
+   * Nothing here is logged: the options and the credential stay out of the
+   * console.
+   * @param ceremony Runs the passkey prompt for the server's options and
+   * resolves with the credential to send back
+   */
+  async passkeyLogin(
+    ceremony: (options: Record<string, unknown>) => Promise<unknown>,
+    modals: ModalControllerExtended,
+  ) {
+    const friendly_name = sessionFriendlyName();
+
+    const client = this.lifecycle.client;
+    const challenge = await client.passkeyLoginStart();
+    const credential = await ceremony(challenge.options);
+
+    // Another login finished while the prompt was open: its session stands,
+    // and no second one is asked for
+    if (this.lifecycle.state() !== State.Ready) return;
+
+    const session = await client.passkeyLoginFinish(
+      challenge.challenge_id,
+      credential as Record<string, unknown>,
+      friendly_name,
+    );
+
+    // The same, for a login that finished during the request above. A
+    // disabled account is still reported.
+    if (
+      session.result !== "Disabled" &&
+      this.lifecycle.state() !== State.Ready
+    ) {
+      return;
+    }
 
     await this.completeLoginResponse(session, modals, friendly_name);
   }
@@ -1022,6 +1076,12 @@ export default class ClientController {
           .suspended_until,
       };
     }
+
+    // Only `Ready` takes a new login (see `transition`). In any other state
+    // another login got there first, while this one waited on the server or
+    // on its MFA step: that session stands and this one is not stored over
+    // it.
+    if (this.lifecycle.state() !== State.Ready) return;
 
     const createdSession = {
       _id: session._id,

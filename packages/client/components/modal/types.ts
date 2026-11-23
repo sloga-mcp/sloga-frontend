@@ -499,6 +499,22 @@ export type Modals =
     ))
   | { type: "mfa_recovery"; codes: string[]; mfa: MFA }
   | {
+      /**
+       * Name a new passkey, or rename one. Answers with the trimmed name,
+       * or nothing when dismissed.
+       */
+      type: "passkey_name";
+      name: string;
+      rename?: boolean;
+      callback: (name?: string) => void;
+    }
+  | {
+      /** Ask before removing a passkey. Answers true to go ahead. */
+      type: "passkey_remove";
+      name: string;
+      callback: (confirmed?: boolean) => void;
+    }
+  | {
       type: "onboarding";
       callback: (username: string, loginAfterSuccess?: true) => Promise<void>;
     }
