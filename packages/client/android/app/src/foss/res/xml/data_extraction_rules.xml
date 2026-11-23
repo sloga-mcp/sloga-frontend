@@ -2,7 +2,8 @@
 <!-- Android 12+ backup & device-transfer rules. See backup_rules.xml for
      why the native E2EE store (files/e2ee), the WebView storage
      (app_webview — holds plaintext DM drafts in localStorage/IndexedDB)
-     the push prefs (sloga_push.xml — holds a live session token) AND the
+     the push prefs (sloga_push.xml — holds a live session token), the
+     app lock prefs (sloga_applock.xml, a device-local setting) AND the
      Intent nonce (sloga_ipc.xml) are excluded from both cloud backup and
      device transfer. -->
 <!-- foss only: this file overrides src/main/res/xml/data_extraction_rules.xml,
@@ -15,6 +16,7 @@
         <exclude domain="file" path="e2ee" />
         <exclude domain="root" path="app_webview" />
         <exclude domain="sharedpref" path="sloga_push.xml" />
+        <exclude domain="sharedpref" path="sloga_applock.xml" />
         <exclude domain="sharedpref" path="call_contacts.xml" />
         <exclude domain="sharedpref" path="sloga_ipc.xml" />
         <exclude domain="sharedpref" path="unifiedpush.connector.xml" />
@@ -25,6 +27,7 @@
         <exclude domain="file" path="e2ee" />
         <exclude domain="root" path="app_webview" />
         <exclude domain="sharedpref" path="sloga_push.xml" />
+        <exclude domain="sharedpref" path="sloga_applock.xml" />
         <exclude domain="sharedpref" path="call_contacts.xml" />
         <exclude domain="sharedpref" path="sloga_ipc.xml" />
         <exclude domain="sharedpref" path="unifiedpush.connector.xml" />

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Android < 12 auto-backup rules.
 
-     Four locations must NEVER ride device backups:
+     Five locations must NEVER ride device backups:
 
      1. `files/e2ee` — the native E2EE store. Its master key only unwraps via
         this install's Android Keystore entry (which does not survive
@@ -29,9 +29,15 @@
 
      4. `shared_prefs/sloga_ipc.xml` — IntentNonce's per-install secret.
         It gates the exported MainActivity, so it must stay unique to this
-        install; a fresh install simply mints a new one. -->
+        install; a fresh install simply mints a new one.
+
+     5. `shared_prefs/sloga_applock.xml` (AppLockState): whether the app
+        lock is on, its timeout and the hide-notification-text choice. The
+        setting is device-local: it depends on this phone's screen lock, so
+        it must not follow a backup or a phone transfer. A new install
+        starts with the app lock off. -->
 <!-- foss only: this file overrides src/main/res/xml/backup_rules.xml, so
-     keep the rules above in sync with it. It adds a fifth location, the
+     keep the rules above in sync with it. It adds a sixth location, the
      UnifiedPush connector's state. Connector 3.0.10 keeps its distributor,
      registration token and Web Push keys in the SharedPreferences file
      "unifiedpush.connector" (PREF_MASTER, Constants.kt). Its private key is
@@ -45,6 +51,7 @@
     <exclude domain="file" path="e2ee" />
     <exclude domain="root" path="app_webview" />
     <exclude domain="sharedpref" path="sloga_push.xml" />
+    <exclude domain="sharedpref" path="sloga_applock.xml" />
     <exclude domain="sharedpref" path="call_contacts.xml" />
     <exclude domain="sharedpref" path="sloga_ipc.xml" />
     <exclude domain="sharedpref" path="unifiedpush.connector.xml" />

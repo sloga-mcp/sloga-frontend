@@ -105,10 +105,18 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
+    public void onStart() {
+        super.onStart();
+        // App lock decides here whether this return to the screen must lock.
+        AppLockState.get(this).onActivityStarted(this, android.os.SystemClock.elapsedRealtime());
+    }
+
+    @Override
     public void onResume() {
         super.onResume();
         FOREGROUND = true;
         resumed = true;
+        AppLockState.get(this).onActivityResumed();
         // An Answer taken while the lock screen was up continues from here:
         // the platform only accepts an unlock request from a resumed activity,
         // and on Android 7 a resume with the lock screen gone is the only
@@ -224,6 +232,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(AppFlavorPlugin.class);
         registerPlugin(SlogaBackPlugin.class);
         registerPlugin(CallAudioRoutePlugin.class);
+        registerPlugin(AppLockPlugin.class);
         // Sideload adds the self-updater; foss adds UnifiedPush and the
         // website-install update notice; the Play twin registers nothing. See
         // FlavorPlugins in src/{sideload,play,foss}.
@@ -247,6 +256,9 @@ public class MainActivity extends BridgeActivity {
             registerPlugin(com.acutest.app.screenshare.ScreenShareAudioPlugin.class);
         }
         super.onCreate(savedInstanceState);
+        // First thing after the content view exists, so the app lock cover is
+        // up before the WebView paints anything.
+        AppLockState.get(this).onActivityCreated(this);
         // One WebViewClient serves both native interceptors: decrypted E2EE
         // attachments (/_e2ee-att/, in the E2eeWebViewClient base) and
         // watch-together Jellyfin media (/_jf/, saved servers only) — the
@@ -903,6 +915,29 @@ public class MainActivity extends BridgeActivity {
         // notification, which keeps sounding on the lock screen with its
         // Answer and Decline buttons.
         removeRingingWindowFlags();
+        // The app left the screen: app lock counts its timeout from here.
+        AppLockState.get(this).onActivityStopped(android.os.SystemClock.elapsedRealtime());
+    }
+
+    @Override
+    public void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        AppLockState.get(this).onWindowAttached(this);
+    }
+
+    /**
+     * Every launch passes through here. A launch made for a result (file
+     * chooser, camera, screen-share consent) carries a request code of zero or
+     * more, and app lock is told so the trip out and back does not lock. A
+     * plain startActivity, a link for one, arrives with -1 and is not told.
+     */
+    @Override
+    @SuppressWarnings("deprecation")
+    public void startActivityForResult(Intent intent, int requestCode, Bundle options) {
+        if (requestCode >= 0) {
+            AppLockState.get(this).noteForResultLaunch(android.os.SystemClock.elapsedRealtime());
+        }
+        super.startActivityForResult(intent, requestCode, options);
     }
 
     // Declared public, not protected: BridgeActivity widens some lifecycle
@@ -938,6 +973,7 @@ public class MainActivity extends BridgeActivity {
         // field empty and does nothing.
         clearHeldAnswer();
         mainHandler.removeCallbacksAndMessages(null);
+        AppLockState.get(this).onActivityDestroyed(this);
         if (INSTANCE != null && INSTANCE.get() == this) INSTANCE = null;
         super.onDestroy();
     }

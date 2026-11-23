@@ -112,13 +112,15 @@ final class SlogaNotifier {
                 String author = data.get("author_name");
                 String body = data.get("body");
                 String channel = data.get("channel");
+                // App lock can hide the text and the picture. The sender stays.
+                boolean hide = AppLockState.hideNotificationText(ctx);
                 notifyTapToOpen(
                         ctx,
                         CHANNEL_MESSAGES,
                         channel != null ? channel.hashCode() : 1,
                         author != null ? author : "New message",
-                        body != null ? body : "",
-                        data.get("image"),
+                        hide ? "New message" : body != null ? body : "",
+                        hide ? null : data.get("image"),
                         channel != null ? "/channel/" + channel : null);
                 break;
             }
@@ -141,10 +143,11 @@ final class SlogaNotifier {
                 break;
             }
             case "push.generic": {
+                boolean hide = AppLockState.hideNotificationText(ctx);
                 notifyTapToOpen(ctx, CHANNEL_MESSAGES, 5,
                         data.getOrDefault("title", "Sloga"),
-                        data.getOrDefault("body", ""),
-                        data.get("image"), null);
+                        hide ? "New notification" : data.getOrDefault("body", ""),
+                        hide ? null : data.get("image"), null);
                 break;
             }
             case "push.calendar": {
