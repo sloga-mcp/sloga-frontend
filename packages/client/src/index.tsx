@@ -43,7 +43,9 @@ import {
   useClientLifecycle,
 } from "@revolt/client";
 import { AndroidBackWorker } from "@revolt/client/AndroidBackWorker";
+import { AppLockGate } from "@revolt/client/AppLockGate";
 import { State } from "@revolt/client/Controller";
+import { initAppLock } from "@revolt/client/appLock";
 import { IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW } from "@revolt/client/popout";
 import { SLIM_ROOT, slimRedirectFor } from "@revolt/client/slimRoutePolicy";
 import { completeStreamLink } from "@revolt/client/streamConnections";
@@ -111,6 +113,10 @@ if (IS_OVERLAY_WINDOW) {
 // iOS Safari: keep #root sized to the visual viewport while the software
 // keyboard is up (no-op everywhere else) — see src/iosViewport.ts.
 mountIosViewportFix();
+
+// App lock on phones: stamp <html> before the first paint, then ask the
+// native side whether the app is locked (no-op everywhere else).
+initAppLock();
 
 // Slim view in this file. Every component below that asks `useSlimMode` is a
 // route under `Interface`, which renders its routed children only once the
@@ -428,7 +434,7 @@ function MountContext(props: { children?: JSX.Element }) {
               <VoiceContext snackbar={snackbarController}>
                 <QueryClientProvider client={client}>
                   <SnackbarProvider controller={snackbarController}>
-                    {props.children}
+                    <AppLockGate>{props.children}</AppLockGate>
                     <ModalRenderer />
                     <FloatingManager />
                     {/* Android back key. Mounted exactly once, HERE rather

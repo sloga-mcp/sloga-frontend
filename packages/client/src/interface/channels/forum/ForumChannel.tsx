@@ -18,6 +18,7 @@ import { Channel, HydratedChannel, Message } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
+import { appLocked } from "@revolt/client/appLock";
 import { noticeCopy } from "@revolt/client/protectedCopy";
 import { protectedActionsBlocked } from "@revolt/client/protectedShield";
 import {
@@ -411,7 +412,7 @@ export function ForumChannel(props: ChannelPageProps) {
     on(
       () => query.data && props.channel.unread,
       (unread) => {
-        if (unread && document.hasFocus()) {
+        if (unread && document.hasFocus() && !appLocked()) {
           props.channel.ack();
         }
       },
@@ -422,13 +423,24 @@ export function ForumChannel(props: ChannelPageProps) {
    * Mark as read on re-focus while the browse view is open
    */
   function onFocus() {
-    if (props.channel.unread) {
+    if (!appLocked() && props.channel.unread) {
       props.channel.ack();
     }
   }
 
   document.addEventListener("focus", onFocus);
   onCleanup(() => document.removeEventListener("focus", onFocus));
+
+  // Mark as read when the app lock opens
+  createEffect(
+    on(
+      appLocked,
+      (locked, was) => {
+        if (was && !locked) onFocus();
+      },
+      { defer: true },
+    ),
+  );
 
   // Keep the list live: new posts arrive as threadCreate, tag/archive edits
   // as channelUpdate, deletions as channelDelete, replies (activity bumps)

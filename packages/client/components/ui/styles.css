@@ -102,6 +102,9 @@ html[data-overlay="1"] #root {
   background: transparent !important;
 }
 
+/* App lock: while the lock screen is up, only what it marks stays visible. */
+html[data-applock] body > :not([data-applock-keep]) { visibility: hidden !important; pointer-events: none !important; }
+
 /*
  * Caption regions for the desktop chat windows' own title bars (friends and
  * chat; components/chatWindows). A frameless window is moved by the OS: on

@@ -7,6 +7,7 @@ import type { Channel } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient, useSound } from "@revolt/client";
+import { appLocked, whenAppUnlocked } from "@revolt/client/appLock";
 import {
   pushProvider,
   unifiedPushRegistered,
@@ -207,7 +208,7 @@ export function IncomingCallOverlay() {
     );
   });
 
-  const fullScreen = () => locked() || slim();
+  const fullScreen = () => locked() || slim() || appLocked();
 
   // Take the ring down when the ring window runs out with no answer. The
   // window is counted from when the ring started, so a re-run of this effect
@@ -276,7 +277,7 @@ export function IncomingCallOverlay() {
 
     ringtoneAfterAnswer(call, result);
     if (result === "joined" && declinedRing !== call) {
-      navigate(call.channel.path);
+      whenAppUnlocked(() => navigate(call.channel.path));
     }
     askLocked();
   }
@@ -350,6 +351,7 @@ export function IncomingCallOverlay() {
    * answer is old.
    */
   async function callBack() {
+    if (appLocked()) return;
     const notice = voice.callEndedNotice();
     if (!notice) return;
 
@@ -453,7 +455,7 @@ export function IncomingCallOverlay() {
   // sent taps through to the message author behind it. A portal escapes every
   // ancestor stacking context so the ringing popup is always the top layer.
   return (
-    <Portal>
+    <Portal ref={(el) => el.setAttribute("data-applock-keep", "")}>
       <Show when={incomingCall()}>
         <Show
           when={fullScreen()}
@@ -534,6 +536,7 @@ export function IncomingCallOverlay() {
       </Show>
       <Show
         when={
+          !appLocked() &&
           !incomingCall() &&
           (voice.callEndedNotice() || voice.callerRingNotice())
         }

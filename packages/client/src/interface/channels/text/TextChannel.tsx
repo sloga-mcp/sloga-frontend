@@ -15,6 +15,7 @@ import { decodeTime, ulid } from "ulid";
 
 import { DraftMessages, Messages, ScheduledMessagesBar } from "@revolt/app";
 import { useClient } from "@revolt/client";
+import { appLocked } from "@revolt/client/appLock";
 import { useProtectedChannelOpen } from "@revolt/client/useProtectedChannel";
 import { resolveCurrent } from "@revolt/common";
 import { Keybind, KeybindAction, createKeybind } from "@revolt/keybinds";
@@ -161,7 +162,7 @@ export function TextChannel(props: ChannelPageProps) {
       () => props.channel.unread && atEnd(),
       (unread) => {
         if (unread) {
-          if (document.hasFocus()) {
+          if (document.hasFocus() && !appLocked()) {
             // acknowledge the message
             props.channel.ack();
           } else {
@@ -178,13 +179,24 @@ export function TextChannel(props: ChannelPageProps) {
 
   // Mark as read on re-focus
   function onFocus() {
-    if (props.channel.unread && atEnd()) {
+    if (!appLocked() && props.channel.unread && atEnd()) {
       props.channel.ack();
     }
   }
 
   document.addEventListener("focus", onFocus);
   onCleanup(() => document.removeEventListener("focus", onFocus));
+
+  // Mark as read when the app lock opens
+  createEffect(
+    on(
+      appLocked,
+      (locked, was) => {
+        if (was && !locked) onFocus();
+      },
+      { defer: true },
+    ),
+  );
 
   // Register ack/jump latest
   createKeybind(KeybindAction.CHAT_JUMP_END, () => {

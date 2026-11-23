@@ -16,6 +16,7 @@ import {
 import { SlideState } from "@revolt/ui/components/navigation/SlideDrawer";
 
 import { useClientLifecycle } from ".";
+import { appLocked } from "./appLock";
 import { slimIsRoot } from "./slimRoutePolicy";
 import { useSlimMode } from "./useSlimMode";
 
@@ -115,6 +116,9 @@ export function AndroidBackWorker() {
     // pushed by this session and is ours to pop; at or below it, back leaves.
     const baseDepth = historyDepth();
 
+    const leaveApp = () =>
+      void SlogaBackNative?.exitApp().catch(() => undefined);
+
     const onBack = () => {
       // 1. Native fullscreen (the fullscreen call card). It paints a
       //    `::backdrop` over the whole document and promotes one element into
@@ -137,6 +141,13 @@ export function AndroidBackWorker() {
       //    the route, or close the app with a call still ringing. So the
       //    press is consumed and nothing happens.
       if (incomingCall()) return;
+
+      // The app lock screen is up over a signed-in session. Nothing behind
+      // it may change, so Back leaves the app.
+      if (appLocked() && state.auth.getSession()) {
+        leaveApp();
+        return;
+      }
 
       // 3. Menus, popovers and dialogs, Settings included: the first rungs
       //    of the ladder below, and nothing else (`dismissOverlay`). They

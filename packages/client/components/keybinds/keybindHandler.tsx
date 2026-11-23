@@ -11,6 +11,7 @@ import {
 
 import { ReactiveSet } from "@solid-primitives/set";
 
+import { appLocked } from "@revolt/client/appLock";
 import {
   type WindowCtx,
   MAIN_CTX,
@@ -142,11 +143,13 @@ export function bindKeybinds(ctx: WindowCtx): () => void {
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
+    if (appLocked()) return;
     source.target = event.target as HTMLElement;
     source.activeKeys.add(event.key);
   };
 
   const onKeyUp = (event: KeyboardEvent) => {
+    if (appLocked()) return;
     source.target = event.target as HTMLElement;
     source.activeKeys.delete(event.key);
   };
@@ -342,6 +345,8 @@ export function KeybindContext(props: { children: JSXElement }) {
     keyTarget: HTMLElement | null,
     bound: Record<KeybindAction, number>,
   ) {
+    if (untrack(appLocked)) return undefined;
+
     return (
       ACTION_PRIORITY
         // filter to those keybinds that are bound
@@ -417,6 +422,7 @@ export function KeybindContext(props: { children: JSXElement }) {
    * Handle key down event by adding it to active keys
    */
   function onKeyDown(event: KeyboardEvent) {
+    if (appLocked()) return;
     target = event.target as HTMLElement;
     activeKeys.add(event.key);
   }
@@ -425,12 +431,22 @@ export function KeybindContext(props: { children: JSXElement }) {
    * Handle key up event by removing it from active keys
    */
   function onKeyUp(event: KeyboardEvent) {
+    if (appLocked()) return;
     target = event.target as HTMLElement;
     activeKeys.delete(event.key);
   }
 
   document.body.addEventListener("keydown", onKeyDown);
   document.body.addEventListener("keyup", onKeyUp);
+
+  // While the phone app lock is up, keys are ignored and no keybind runs, so
+  // nothing acts on the app hidden behind the lock screen. Keys held when the
+  // lock came up are dropped here, since their keyup is ignored too.
+  createEffect(() => {
+    if (!appLocked()) return;
+    activeKeys.clear();
+    for (const source of untrack(childSources)) source.activeKeys.clear();
+  });
 
   // `activeKeys` is closure-local and lives as long as this window, so any
   // `keyup` that does not reach `document.body` latches its key FOREVER —

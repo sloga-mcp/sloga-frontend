@@ -1,9 +1,20 @@
-import { createSignal } from "solid-js";
+import { Capacitor } from "@capacitor/core";
+import { Show, createEffect, createSignal, onMount } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import type { API } from "stoat.js";
 
 import { useClient } from "@revolt/client";
+import {
+  appLockAvailable,
+  appLockState,
+  disableAppLock,
+  enableAppLock,
+  refreshAppLock,
+  setAppLockHideText,
+  setAppLockTimeout,
+} from "@revolt/client/appLock";
+import { type AppLockTimeout, readCode } from "@revolt/client/appLockPolicy";
 import { useState } from "@revolt/state";
 import {
   CategoryButton,
@@ -31,6 +42,9 @@ export function PrivacySettings() {
     <Column gap="lg">
       <ProfileVisibility />
       <ActivitySharing />
+      <Show when={appLockAvailable()}>
+        <AppLockSettings />
+      </Show>
     </Column>
   );
 }
@@ -127,3 +141,175 @@ function ActivitySharing() {
     </CategoryButton.Group>
   );
 }
+
+/**
+ * App lock, phones only. The lock itself lives in native code and is kept
+ * per device, so every row here reads the native state back after a change
+ * instead of trusting what was asked for.
+ */
+function AppLockSettings() {
+  const { t } = useLingui();
+  const snackbar = useSnackbar();
+  const platform = Capacitor.getPlatform();
+  const [busy, setBusy] = createSignal(false);
+  // Native reports `autoDisabled` once and then clears it, so keep it here.
+  const [autoDisabled, setAutoDisabled] = createSignal(false);
+
+  const enabled = () => appLockState().enabled;
+
+  createEffect(() => {
+    if (appLockState().autoDisabled) setAutoDisabled(true);
+  });
+
+  onMount(() => void refreshAppLock().catch(() => undefined));
+
+  /**
+   * Run one native change, then read the state back whatever happened.
+   * @param action The change
+   * @returns Whether it went through
+   */
+  async function run(action: () => Promise<void>) {
+    if (busy()) return false;
+
+    setBusy(true);
+    try {
+      await action();
+      return true;
+    } catch (error) {
+      const code = readCode(error);
+      if (code === "NO_DEVICE_LOCK") {
+        snackbar.show({ message: t`Set a screen lock on your phone first.` });
+      } else if (code !== "CANCELLED") {
+        snackbar.show({ message: t`Could not change app lock, try again.` });
+      }
+      return false;
+    } finally {
+      await refreshAppLock().catch(() => undefined);
+      setBusy(false);
+    }
+  }
+
+  async function toggle() {
+    const turningOn = !enabled();
+    const done = await run(turningOn ? enableAppLock : disableAppLock);
+    // The old notice is stale once the lock is back on.
+    if (done && turningOn) setAutoDisabled(false);
+  }
+
+  function saveTimeout(value: string) {
+    const sec = TIMEOUTS.find((timeout) => String(timeout) === value);
+    if (sec === undefined || sec === appLockState().timeoutSec) return;
+    void run(() => setAppLockTimeout(sec));
+  }
+
+  return (
+    <Column>
+      <Show when={autoDisabled() && !enabled()}>
+        <Text class="_status" size="small">
+          <Trans>
+            App lock was turned off because this phone no longer has a screen
+            lock.
+          </Trans>
+        </Text>
+      </Show>
+      <CategoryButton.Group>
+        <CategoryButton
+          action={<Checkbox checked={enabled()} disabled={busy()} />}
+          disabled={busy()}
+          onClick={() => void toggle()}
+          icon={<Symbol>lock</Symbol>}
+          description={<Trans>This device only</Trans>}
+        >
+          <Trans>App lock</Trans>
+        </CategoryButton>
+        <Show when={enabled() && platform === "android"}>
+          <CategoryButton
+            action={
+              <Checkbox
+                checked={appLockState().hideNotificationText}
+                disabled={busy()}
+              />
+            }
+            disabled={busy()}
+            onClick={() => {
+              const hide = !appLockState().hideNotificationText;
+              void run(() => setAppLockHideText(hide));
+            }}
+            icon={<Symbol>notifications_off</Symbol>}
+          >
+            <Trans>Hide message text in notifications</Trans>
+          </CategoryButton>
+        </Show>
+      </CategoryButton.Group>
+      <Show when={enabled()}>
+        <FloatingSelect
+          label={t`Lock the app`}
+          value={String(appLockState().timeoutSec)}
+          disabled={busy()}
+          onChange={(event) => saveTimeout(event.currentTarget.value ?? "")}
+        >
+          <MenuItem value="0">
+            <Trans>Immediately</Trans>
+          </MenuItem>
+          <MenuItem value="60">
+            <Trans>After 1 minute</Trans>
+          </MenuItem>
+          <MenuItem value="900">
+            <Trans>After 15 minutes</Trans>
+          </MenuItem>
+        </FloatingSelect>
+      </Show>
+      <Show when={platform === "ios"}>
+        <Text class="_status" size="small">
+          <Trans>
+            To hide message text on the lock screen, open iPhone Settings, then
+            Notifications, Sloga, Show Previews.
+          </Trans>
+        </Text>
+      </Show>
+      <Column gap="sm">
+        <Text class="_status" size="small">
+          <Trans>
+            It stops someone holding your unlocked phone from opening Sloga and
+            reading your chats.
+          </Trans>
+        </Text>
+        <Text class="_status" size="small">
+          <Trans>It hides Sloga in the recent apps switcher.</Trans>
+        </Text>
+        <Text class="_status" size="small">
+          <Trans>
+            It is not extra encryption. Messages are stored on the phone exactly
+            as before.
+          </Trans>
+        </Text>
+        <Text class="_status" size="small">
+          <Trans>It does not stop someone who knows your phone passcode.</Trans>
+        </Text>
+        <Text class="_status" size="small">
+          <Trans>It does not hide notifications by itself.</Trans>
+        </Text>
+        <Text class="_status" size="small">
+          <Trans>A call can be answered without unlocking.</Trans>
+        </Text>
+        <Text class="_status" size="small">
+          <Trans>
+            Anyone holding the phone can press Sign out on the lock screen. That
+            signs you out. It does not let them in.
+          </Trans>
+        </Text>
+        <Text class="_status" size="small">
+          <Trans>
+            It does not protect against a hacked or rooted phone or forensic
+            tools.
+          </Trans>
+        </Text>
+        <Text class="_status" size="small">
+          <Trans>It changes nothing on your other devices.</Trans>
+        </Text>
+      </Column>
+    </Column>
+  );
+}
+
+const TIMEOUTS: readonly AppLockTimeout[] = [0, 60, 900];

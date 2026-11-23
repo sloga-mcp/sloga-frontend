@@ -2208,6 +2208,14 @@ msgstr "Close conversation with {0}?"
 msgid "Close window"
 msgstr "Close window"
 
+#: components/client/AppLockGate.tsx
+msgid "Sign out of Sloga on this device?"
+msgstr "Sign out of Sloga on this device?"
+
+#: components/client/AppLockGate.tsx
+msgid "Signing out…"
+msgstr "Signing out…"
+
 #: components/app/interface/channels/text/PollMessage.tsx
 msgid "Closing…"
 msgstr "Closing…"
@@ -8945,6 +8953,86 @@ msgstr "Share Computer Sound"
 #: components/app/interface/settings/user/Privacy.tsx
 msgid "Share Game Activity"
 msgstr "Share Game Activity"
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "Set a screen lock on your phone first."
+msgstr "Set a screen lock on your phone first."
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "Could not change app lock, try again."
+msgstr "Could not change app lock, try again."
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "App lock was turned off because this phone no longer has a screen lock."
+msgstr "App lock was turned off because this phone no longer has a screen lock."
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "This device only"
+msgstr "This device only"
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "App lock"
+msgstr "App lock"
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "Hide message text in notifications"
+msgstr "Hide message text in notifications"
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "Lock the app"
+msgstr "Lock the app"
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "Immediately"
+msgstr "Immediately"
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "After 1 minute"
+msgstr "After 1 minute"
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "After 15 minutes"
+msgstr "After 15 minutes"
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "To hide message text on the lock screen, open iPhone Settings, then Notifications, Sloga, Show Previews."
+msgstr "To hide message text on the lock screen, open iPhone Settings, then Notifications, Sloga, Show Previews."
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "It stops someone holding your unlocked phone from opening Sloga and reading your chats."
+msgstr "It stops someone holding your unlocked phone from opening Sloga and reading your chats."
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "It hides Sloga in the recent apps switcher."
+msgstr "It hides Sloga in the recent apps switcher."
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "It is not extra encryption. Messages are stored on the phone exactly as before."
+msgstr "It is not extra encryption. Messages are stored on the phone exactly as before."
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "It does not stop someone who knows your phone passcode."
+msgstr "It does not stop someone who knows your phone passcode."
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "It does not hide notifications by itself."
+msgstr "It does not hide notifications by itself."
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "A call can be answered without unlocking."
+msgstr "A call can be answered without unlocking."
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "Anyone holding the phone can press Sign out on the lock screen. That signs you out. It does not let them in."
+msgstr "Anyone holding the phone can press Sign out on the lock screen. That signs you out. It does not let them in."
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "It does not protect against a hacked or rooted phone or forensic tools."
+msgstr "It does not protect against a hacked or rooted phone or forensic tools."
+
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "It changes nothing on your other devices."
+msgstr "It changes nothing on your other devices."
 
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Your Prot wallet couldn't be loaded. Try again in a moment."

@@ -55,6 +55,7 @@ import {
   resyncPushPrefs,
   unifiedPushRegistered,
 } from "./NotificationsController";
+import { whenAppUnlocked } from "./appLock";
 import type { E2EEBridge } from "./e2ee";
 import {
   notificationPermissionGranted,
@@ -1210,7 +1211,10 @@ export function NotificationsWorker() {
       const path = action.path;
       // Only where the tap lands changes in Slim view. The call handling
       // below still reads the path the notification carried.
-      const open = () => navigate(tapTarget(path));
+      const open = () =>
+        whenAppUnlocked(() => {
+          if (mounted) navigate(tapTarget(path));
+        });
       const tappedAt = Date.now();
 
       const channelId = path.split("/").pop();
