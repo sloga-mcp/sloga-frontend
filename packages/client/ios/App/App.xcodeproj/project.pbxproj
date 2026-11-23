@@ -26,6 +26,7 @@
 		E2EE020A2EA8000000000001 /* CallPlaneRouteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE010A2EA8000000000001 /* CallPlaneRouteTests.swift */; };
 		E2EE02072EA8000000000001 /* TransferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE01072EA8000000000001 /* TransferTests.swift */; };
 		E2EE02082EA8000000000001 /* RecoverySheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE01082EA8000000000001 /* RecoverySheetTests.swift */; };
+		E2EE020B2EA8000000000001 /* AppLockPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE010B2EA8000000000001 /* AppLockPolicyTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -59,6 +60,7 @@
 		E2EE010A2EA8000000000001 /* CallPlaneRouteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallPlaneRouteTests.swift; sourceTree = "<group>"; };
 		E2EE01072EA8000000000001 /* TransferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferTests.swift; sourceTree = "<group>"; };
 		E2EE01082EA8000000000001 /* RecoverySheetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoverySheetTests.swift; sourceTree = "<group>"; };
+		E2EE010B2EA8000000000001 /* AppLockPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLockPolicyTests.swift; sourceTree = "<group>"; };
 		E2EE00102EA8000000000001 /* AppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -129,6 +131,7 @@
 				E2EE010A2EA8000000000001 /* CallPlaneRouteTests.swift */,
 				E2EE01072EA8000000000001 /* TransferTests.swift */,
 				E2EE01082EA8000000000001 /* RecoverySheetTests.swift */,
+				E2EE010B2EA8000000000001 /* AppLockPolicyTests.swift */,
 			);
 			name = AppTests;
 			path = SlogaE2ee/Tests/AppTests;
@@ -265,6 +268,7 @@
 				E2EE020A2EA8000000000001 /* CallPlaneRouteTests.swift in Sources */,
 				E2EE02072EA8000000000001 /* TransferTests.swift in Sources */,
 				E2EE02082EA8000000000001 /* RecoverySheetTests.swift in Sources */,
+				E2EE020B2EA8000000000001 /* AppLockPolicyTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

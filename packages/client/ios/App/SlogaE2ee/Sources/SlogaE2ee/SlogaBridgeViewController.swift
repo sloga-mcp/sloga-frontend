@@ -72,6 +72,12 @@ open class SlogaBridgeViewController: CAPBridgeViewController {
     open override func capacitorDidLoad() {
         super.capacitorDidLoad()
 
+        // App lock. First, and not tied to the guard or to any plugin: a
+        // locked app must be covered whatever else fails below. This runs on
+        // the main thread and before the first load (loadView, then
+        // viewDidLoad's loadWebView), so the cover is up before any page is.
+        AppLockState.shared.start()
+
         // The capability object the frontend's media E2EE predicate reads
         // (C4). A user script, not a plugin constant or method: the predicate
         // is synchronous, and every plugin call is an async round trip, so
@@ -126,6 +132,10 @@ open class SlogaBridgeViewController: CAPBridgeViewController {
                 // class name), falling back to this one.
                 KeysChangedRelay.attach(e2ee, bridge: bridge)
                 bridge.registerPluginInstance(SlogaCallAudioPlugin())
+                // Same arm-then-register rule (AppLockPlugin.arm). The lock
+                // itself was started above and does not need this plugin.
+                AppLockPlugin.arm()
+                bridge.registerPluginInstance(AppLockPlugin())
             }
         }
 
@@ -159,6 +169,16 @@ open class SlogaBridgeViewController: CAPBridgeViewController {
             RecoverySheet.teardownForNavigation()
             AttachmentTransfer.teardownForNavigation()
             SlogaCallAudioPlugin.releaseAfterPageLoss()
+            // App lock state is main-thread only, unlike the four calls
+            // above. WebKit posts this change on main, where the call runs
+            // in line; the hop is only there in case it ever does not.
+            if Thread.isMainThread {
+                AppLockState.shared.pageStarted()
+            } else {
+                DispatchQueue.main.async {
+                    AppLockState.shared.pageStarted()
+                }
+            }
         }
 
         // IndexedDB drafts and the outbox can hold E2EE plaintext; an iCloud or

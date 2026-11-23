@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Sloga uses the camera for video calls and to attach photos.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Sloga uses Face ID to unlock the app when you turn on App lock.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Sloga uses the microphone for voice chat and calls.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
