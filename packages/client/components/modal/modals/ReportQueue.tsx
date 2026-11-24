@@ -4,8 +4,11 @@ import {
   Match,
   Show,
   Switch,
+  createEffect,
+  createMemo,
   createResource,
   createSignal,
+  on,
 } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
@@ -21,6 +24,8 @@ import {
 
 import { useModals } from "..";
 import { Modals } from "../types";
+
+import { reportTargetOf, reporterCopyLabel } from "./reportProvenance";
 
 // Author id of reports the server files itself (automated anti-spam detection)
 const SYSTEM_USER_ID = "00000000000000000000000000";
@@ -137,20 +142,26 @@ export function ReportQueueModal(
   }
 
   /**
-   * Id of the user the report is about, for enforcement
+   * The user the report is about, for enforcement. The server's copy names
+   * the author; the reporter's copy only claims one. A message report waits
+   * for its own snapshots, never the previous report's.
    */
-  function reportedUserId(): string | undefined {
+  const target = createMemo(() => {
     const report = selected();
     if (!report) return undefined;
-    if (report.content.type === "User") return report.content.id;
+    const loaded = details.loading ? undefined : details();
+    const snapshots =
+      loaded?.report?._id === report._id ? loaded.snapshots : undefined;
+    if (report.content.type !== "User" && !snapshots) return undefined;
+    return reportTargetOf(report.content, snapshots ?? []);
+  });
 
-    const snapshot = details()?.snapshots.find(
-      (snapshot) =>
-        snapshot.content._type === "ReporterMessage" ||
-        snapshot.content._type === "Message",
-    );
-    return snapshot?.content.message?.author;
-  }
+  /** Id of that user */
+  const reportedUserId = () => target()?.id;
+
+  // Staff confirm before acting on a user only the reporter names
+  const [confirmClaimed, setConfirmClaimed] = createSignal(false);
+  createEffect(on(target, () => setConfirmClaimed(false)));
 
   /**
    * Open the platform suspension modal for the reported user
@@ -158,6 +169,7 @@ export function ReportQueueModal(
   async function suspendReportedUser() {
     const id = reportedUserId();
     if (!id) return;
+    setConfirmClaimed(false);
 
     try {
       const user =
@@ -202,6 +214,8 @@ export function ReportQueueModal(
   function MessageLine(lineProps: {
     message: SnapshotMessage;
     highlight?: boolean;
+    /** The line came from the reporter's app; the server never checked it */
+    supplied?: boolean;
   }) {
     return (
       <div
@@ -215,6 +229,12 @@ export function ReportQueueModal(
       >
         <Text class="label">{username(lineProps.message.author)}</Text>{" "}
         <Text>{lineProps.message.content || <i>(no text content)</i>}</Text>
+        <Show when={lineProps.supplied}>
+          {" "}
+          <Text class="label">
+            <Trans>Supplied by the reporter</Trans>
+          </Text>
+        </Show>
       </div>
     );
   }
@@ -321,77 +341,171 @@ export function ReportQueueModal(
             </Show>
 
             <For each={details()?.snapshots}>
-              {(snapshot) => (
-                <Switch>
-                  <Match when={snapshot.content._type === "ReporterMessage"}>
-                    <Text class="label">
-                      <Trans>Reported content (as seen by the reporter)</Trans>
-                    </Text>
-                    <div>
-                      <For
-                        each={(
-                          snapshot.content.context as SnapshotMessage[]
-                        ).filter(
-                          (entry) => entry.id < snapshot.content.message.id,
-                        )}
-                      >
-                        {(entry) => <MessageLine message={entry} />}
-                      </For>
+              {(snapshot) => {
+                // Whether the server holds its own copy of what was reported
+                const label = createMemo(() =>
+                  reporterCopyLabel(snapshot, details()?.snapshots ?? []),
+                );
+
+                return (
+                  <Switch>
+                    <Match when={snapshot.content._type === "ReporterMessage"}>
+                      <Text class="label">
+                        <Trans>
+                          Reported content (as seen by the reporter)
+                        </Trans>
+                      </Text>
+                      <Show when={label().unverified}>
+                        <div
+                          role="note"
+                          style={{
+                            padding: "4px 6px",
+                            "border-radius": "4px",
+                            border: "1px solid var(--md-sys-color-outline)",
+                          }}
+                        >
+                          <Text>
+                            <Trans>
+                              Unverified: this text was supplied by the
+                              reporter. Sloga has no copy of this message (it
+                              was end-to-end encrypted or deleted) and cannot
+                              confirm who sent it or what it said.
+                            </Trans>
+                          </Text>
+                          <Show when={label().markedEncrypted}>
+                            {" "}
+                            <Text>
+                              <Trans>
+                                The reporter's app marked it as end-to-end
+                                encrypted.
+                              </Trans>
+                            </Text>
+                          </Show>
+                        </div>
+                      </Show>
+                      <Show when={label().mismatch}>
+                        <div
+                          role="note"
+                          style={{
+                            padding: "4px 6px",
+                            "border-radius": "4px",
+                            border: "1px solid var(--md-sys-color-error)",
+                          }}
+                        >
+                          <Text>
+                            <Trans>Does not match the stored message</Trans>
+                          </Text>
+                        </div>
+                      </Show>
+                      <div>
+                        <For
+                          each={(
+                            snapshot.content.context as SnapshotMessage[]
+                          ).filter(
+                            (entry) => entry.id < snapshot.content.message.id,
+                          )}
+                        >
+                          {(entry) => <MessageLine message={entry} supplied />}
+                        </For>
+                        <MessageLine
+                          message={snapshot.content.message}
+                          highlight
+                        />
+                        <For
+                          each={(
+                            snapshot.content.context as SnapshotMessage[]
+                          ).filter(
+                            (entry) => entry.id > snapshot.content.message.id,
+                          )}
+                        >
+                          {(entry) => <MessageLine message={entry} supplied />}
+                        </For>
+                      </div>
+                    </Match>
+                    <Match when={snapshot.content._type === "Message"}>
+                      <Text class="label">
+                        <Trans>Reported content (server copy)</Trans>
+                      </Text>
                       <MessageLine
-                        message={snapshot.content.message}
+                        message={{
+                          id: snapshot.content.message._id,
+                          channel: snapshot.content.message.channel,
+                          author: snapshot.content.message.author,
+                          content: snapshot.content.message.content ?? "",
+                        }}
                         highlight
                       />
-                      <For
-                        each={(
-                          snapshot.content.context as SnapshotMessage[]
-                        ).filter(
-                          (entry) => entry.id > snapshot.content.message.id,
-                        )}
-                      >
-                        {(entry) => <MessageLine message={entry} />}
-                      </For>
-                    </div>
-                  </Match>
-                  <Match when={snapshot.content._type === "Message"}>
-                    <Text class="label">
-                      <Trans>Reported content (server copy)</Trans>
-                    </Text>
-                    <MessageLine
-                      message={{
-                        id: snapshot.content.message._id,
-                        channel: snapshot.content.message.channel,
-                        author: snapshot.content.message.author,
-                        content: snapshot.content.message.content ?? "",
-                      }}
-                      highlight
-                    />
-                  </Match>
-                  <Match when={snapshot.content._type === "User"}>
-                    <Text class="label">
-                      <Trans>User profile snapshot</Trans>
-                    </Text>
-                    <Text>{snapshot.content.username}</Text>
-                  </Match>
-                  <Match when={snapshot.content._type === "Server"}>
-                    <Text class="label">
-                      <Trans>Server snapshot</Trans>
-                    </Text>
-                    <Text>{snapshot.content.name}</Text>
-                  </Match>
-                </Switch>
-              )}
+                    </Match>
+                    <Match when={snapshot.content._type === "User"}>
+                      <Text class="label">
+                        <Trans>User profile snapshot</Trans>
+                      </Text>
+                      <Text>{snapshot.content.username}</Text>
+                    </Match>
+                    <Match when={snapshot.content._type === "Server"}>
+                      <Text class="label">
+                        <Trans>Server snapshot</Trans>
+                      </Text>
+                      <Text>{snapshot.content.name}</Text>
+                    </Match>
+                  </Switch>
+                );
+              }}
             </For>
 
-            <Show when={reportedUserId()}>
-              <CategoryButton
-                onClick={suspendReportedUser}
-                description={
-                  <Trans>Open platform suspension for the reported user.</Trans>
-                }
-              >
-                <Trans>Suspend {username(reportedUserId())}</Trans>
-              </CategoryButton>
-            </Show>
+            <Switch>
+              <Match when={target()?.claimedOnly === false}>
+                <CategoryButton
+                  onClick={suspendReportedUser}
+                  description={
+                    <Trans>
+                      Open platform suspension for the reported user.
+                    </Trans>
+                  }
+                >
+                  <Trans>Suspend {username(reportedUserId())}</Trans>
+                </CategoryButton>
+              </Match>
+              <Match when={target()?.claimedOnly && !confirmClaimed()}>
+                <CategoryButton
+                  onClick={() => setConfirmClaimed(true)}
+                  description={
+                    <Trans>
+                      Open platform suspension for the reported user.
+                    </Trans>
+                  }
+                >
+                  <Trans>
+                    Suspend {username(reportedUserId())} (named by the reporter)
+                  </Trans>
+                </CategoryButton>
+              </Match>
+              <Match when={target()?.claimedOnly && confirmClaimed()}>
+                <div
+                  role="alert"
+                  style={{
+                    padding: "4px 6px",
+                    "border-radius": "4px",
+                    border: "1px solid var(--md-sys-color-error)",
+                  }}
+                >
+                  <Text>
+                    <Trans>
+                      Unverified: this text was supplied by the reporter. Sloga
+                      has no copy of this message (it was end-to-end encrypted
+                      or deleted) and cannot confirm who sent it or what it
+                      said.
+                    </Trans>
+                  </Text>
+                </div>
+                <CategoryButton onClick={suspendReportedUser}>
+                  <Trans>Suspend {username(reportedUserId())} anyway</Trans>
+                </CategoryButton>
+                <CategoryButton onClick={() => setConfirmClaimed(false)}>
+                  <Trans>Cancel</Trans>
+                </CategoryButton>
+              </Match>
+            </Switch>
 
             <Form2.TextField
               name="notes"

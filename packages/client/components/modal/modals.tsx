@@ -58,6 +58,10 @@ import { EditForumPostTagsModal } from "./modals/EditForumPostTags";
 import { EditPasswordModal } from "./modals/EditPassword";
 import { EditUsernameModal } from "./modals/EditUsername";
 import { EmojiPreviewModal } from "./modals/EmojiPreview";
+import {
+  EncryptedOnlyLeaveModal,
+  EncryptedOnlyOnboardingModal,
+} from "./modals/EncryptedOnlyOnboarding";
 import { Error2Modal } from "./modals/Error2";
 import { FollowChannelModal } from "./modals/FollowChannel";
 import { ForwardMessageModal } from "./modals/ForwardMessage";
@@ -235,6 +239,10 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <E2EEEnableModal {...modalProps} />;
     case "e2ee_disable":
       return <E2EEDisableModal {...modalProps} />;
+    case "encrypted_only_onboarding":
+      return <EncryptedOnlyOnboardingModal {...modalProps} />;
+    case "encrypted_only_leave":
+      return <EncryptedOnlyLeaveModal {...modalProps} />;
     case "e2ee_reenroll":
       return <E2EEReenrollModal {...modalProps} />;
     case "e2ee_finish_setup":

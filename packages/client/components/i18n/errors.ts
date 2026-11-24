@@ -2,6 +2,11 @@ import { useLingui } from "@lingui-solid/solid/macro";
 import { i18n } from "@lingui/core";
 import { API } from "stoat.js";
 
+import {
+  FIRST_FILE_NEEDS_TEXT_SEND_ERROR,
+  sendRefusalSide,
+} from "@revolt/state/stores/draftSendError";
+
 import { databaseErrorDetail, untranslatedErrorText } from "./errorDetail";
 
 const RE_BREAK = /\s*\n\s*/g;
@@ -43,6 +48,59 @@ export function useError() {
       } catch {
         // Ignore JSON parse errors
       }
+    }
+
+    // A write refused for not being encrypted: the server's
+    // `EncryptionRequired` body, or the error the app's own guard or the
+    // encryption bridge throws before any request. Ahead of the message
+    // pass-through below, since the guard's message is only its reason.
+    // The bridge's English for each side is the same text.
+    const encryptionSide = sendRefusalSide(error);
+    if (encryptionSide) {
+      switch (encryptionSide) {
+        case "recipient":
+          return t`This person only accepts encrypted messages.`;
+        case "sender":
+          return t`You only send encrypted messages. This chat is not encrypted yet.`;
+        case "group":
+          return t`This group is encrypted. Send from a device where encryption is set up.`;
+        case "member":
+          return t`This group is encrypted. Only people with encryption turned on can be added (up to 24).`;
+        case "open-app":
+          return t`Open the Sloga app to read and send encrypted chats.`;
+        case "setup":
+          return t`Finish setting up encryption on this device to use your chats.`;
+        case "peer-changed":
+          return t`This person may no longer use Encrypted-only chats. If you send anyway, your message may not be encrypted.`;
+        default: {
+          const exhaustive: never = encryptionSide;
+          return exhaustive;
+        }
+      }
+    }
+
+    // Files that wait for a text message, thrown or stored as a marker
+    if (
+      error === FIRST_FILE_NEEDS_TEXT_SEND_ERROR ||
+      (error as { name?: unknown } | null)?.name === "FirstFileNeedsTextError"
+    ) {
+      return t`Add a message to send with your first file.`;
+    }
+
+    // The server kept another key backup than the one this app sent
+    // (`BackupNotStoredError` in the encryption bridge, matched by name so
+    // this file does not import the bridge). Its message is English for logs.
+    if ((error as { name?: unknown } | null)?.name === "BackupNotStoredError") {
+      return t`Sloga's servers kept a different backup. Delete the backup in Settings > Encryption, then make a new recovery code.`;
+    }
+
+    // A recovery code's backup upload failed for any other reason, or had
+    // no outcome in time (`BackupUploadFailedError` in the encryption
+    // bridge, matched by name likewise). Its message is English for logs.
+    if (
+      (error as { name?: unknown } | null)?.name === "BackupUploadFailedError"
+    ) {
+      return t`Your backup did not reach Sloga. Try again.`;
     }
 
     // handle Revolt API errors
