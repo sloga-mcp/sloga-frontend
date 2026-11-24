@@ -36,6 +36,16 @@ function toneOf(tone: MessageBoxTone | undefined): MessageBoxTone {
   }
 }
 
+/**
+ * A button next to the notice that replaces the editor
+ */
+export type MessageBoxBlockedAction = {
+  /** Button text, already translated */
+  label: string;
+  /** What the button does */
+  onClick: () => void;
+};
+
 interface Props {
   /**
    * Initial content
@@ -108,6 +118,12 @@ interface Props {
    * the generic no-permission text is used when unset
    */
   blockedText?: string;
+
+  /**
+   * Button shown after the notice when sending isn't allowed, for a block
+   * the user can lift from here (for example, turning on encryption)
+   */
+  blockedAction?: MessageBoxBlockedAction;
 
   /**
    * Auto complete config
@@ -287,6 +303,26 @@ const Blocked = styled(Row, {
 });
 
 /**
+ * Button after the blocked notice. A native button, so it needs no other
+ * component at module scope.
+ */
+const BlockedAction = styled("button", {
+  base: {
+    flexShrink: 0,
+    marginInlineStart: "auto",
+    padding: "4px 12px",
+    borderRadius: "var(--borderRadius-md)",
+    border: "1px solid currentColor",
+    background: "transparent",
+    color: "var(--md-sys-color-primary)",
+    font: "inherit",
+    fontWeight: 600,
+    cursor: "pointer",
+    userSelect: "none",
+  },
+});
+
+/**
  * Specific-width icon container
  */
 export const InlineIcon = styled("div", {
@@ -405,6 +441,13 @@ export function MessageBox(props: Props) {
             }
           >
             {props.blockedText}
+          </Show>
+          <Show when={props.blockedAction}>
+            {(action) => (
+              <BlockedAction type="button" onClick={() => action().onClick()}>
+                {action().label}
+              </BlockedAction>
+            )}
           </Show>
         </Blocked>
       </Match>

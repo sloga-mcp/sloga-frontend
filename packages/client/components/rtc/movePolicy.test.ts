@@ -3492,13 +3492,28 @@ test("the move's token arm connects with the event's own credentials and a bound
 
 test("the pre-connect budget actually reaches both unbounded pre-connect awaits", () => {
   // Passing the option and then not reading it is the silent half of the
-  // failure: device enumeration and the MLS registration are the only two
-  // awaits between `#connectAttempt`'s entry and `room.connect()`.
+  // failure: device enumeration and the MLS registration are the two
+  // unbounded awaits between `#connectAttempt`'s entry and `room.connect()`.
+  //
+  // Three reads since the key-status wait was added. That wait has a bound
+  // of its own (`KEY_STATUS_WAIT_MS`), but 5 s is half a move token's life,
+  // so on a move it is clamped to what is left of the budget like the other
+  // two. The count went from 2 to 3 for that read and nothing else.
   const uses = STATE_CODE.match(/preConnectBudgetLeft\(\)/g) ?? [];
   assert.equal(
     uses.length,
-    2,
-    `expected 2 budget reads (device enumeration + MLS deadline), saw ${uses.length}`,
+    3,
+    `expected 3 budget reads (device enumeration + key-status wait + MLS deadline), saw ${uses.length}`,
+  );
+  assert.ok(
+    /this\.#waitForKeyStatus\(\s*bridge,\s*gen,\s*preConnectBudgetLeft\(\),?\s*\)/.test(
+      STATE_CODE,
+    ),
+    "the key-status wait is no longer handed what is left of the move budget",
+  );
+  assert.ok(
+    /Math\.min\(\s*KEY_STATUS_WAIT_MS,\s*budgetLeftMs\s*\)/.test(STATE_CODE),
+    "the key-status wait is no longer clamped to the move budget",
   );
   assert.ok(
     /Math\.min\(\s*MLS_REQUEST_DEADLINE_MS,\s*moveBudgetLeftMs\s*\)/.test(
@@ -3515,9 +3530,10 @@ test("🔴 M3 lifts the move budget together with a dropped token, and only ther
   // left of 3 s for no reason: an E2EE call held loud on every move whose
   // token M3 dropped. So the deadline is a `let`, it is assigned exactly
   // once after its declaration, to `undefined`, in M3's `join` case beside
-  // the token drop, and that case sits between the two budget reads: after
-  // device enumeration (which runs before M3 and has to stay bounded) and
-  // before the MLS clamp (which must see the lifted budget).
+  // the token drop, and that case sits between the budget reads: after
+  // device enumeration and the key-status wait (which both run before M3,
+  // while the token is still ticking, and have to stay bounded) and before
+  // the MLS clamp (which must see the lifted budget).
   const declarations =
     STATE_CODE.match(/\blet preConnectDeadlineAt =(?!=)/g) ?? [];
   assert.equal(
@@ -3557,9 +3573,14 @@ test("🔴 M3 lifts the move budget together with a dropped token, and only ther
   const reads = [...STATE_CODE.matchAll(/preConnectBudgetLeft\(\)/g)].map(
     (m) => m.index,
   );
+  // Three reads since the key-status wait was added (see the test above):
+  // the first two are before M3, the last is the MLS clamp after its clear.
   assert.ok(
-    reads.length === 2 && reads[0] < switchAt && clearAt < reads[1],
-    "M3's budget clear is not between the device-enumeration read and the MLS clamp read",
+    reads.length === 3 &&
+      reads[0] < reads[1] &&
+      reads[1] < switchAt &&
+      clearAt < reads[2],
+    "M3's budget clear is not between the two reads before it (device enumeration, key-status wait) and the MLS clamp read",
   );
   // `isMove` answers "did this attempt START as a move" (chime suppression),
   // so it is fixed off the deadline BEFORE M3 can lift it.

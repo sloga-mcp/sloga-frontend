@@ -73,6 +73,7 @@ test("toOwnDeviceViews: this device first, the rest newest first", () => {
   assert.deepEqual(views[0], {
     deviceId: "ME",
     isThisDevice: true,
+    sessionId: null,
     sessionName: null,
     createdAt: "2026-02-01T00:00:00Z",
     lastSeenAt: "2026-10-02T00:00:00Z",
@@ -84,6 +85,31 @@ test("toOwnDeviceViews: this device first, the rest newest first", () => {
   assert.equal(views[3].neverSeen, true, "no last seen");
   assert.deepEqual(toOwnDeviceViews({}, "ME"), []);
   assert.deepEqual(toOwnDeviceViews(null, null), []);
+});
+
+test("toOwnDeviceViews: sessionId is the row's string session_id, else null (S2-D38)", () => {
+  const listing = [
+    { device_id: "A", session_id: "SESS-A", session_name: "Desktop" },
+    { device_id: "B" },
+    { device_id: "C", session_id: "" },
+    { device_id: "D", session_id: 5 },
+    { device_id: "E", session_id: { id: "SESS-E" } },
+    { device_id: "F", session_id: null },
+    { device_id: "G", session_id: ["SESS-G"] },
+  ];
+  const views = toOwnDeviceViews(listing, "A");
+  assert.deepEqual(
+    views.map((v) => [v.deviceId, v.sessionId, v.sessionName]),
+    [
+      ["A", "SESS-A", "Desktop"],
+      ["B", null, null],
+      ["C", null, null],
+      ["D", null, null],
+      ["E", null, null],
+      ["F", null, null],
+      ["G", null, null],
+    ],
+  );
 });
 
 test("sessionNameOf reads one row's session name", () => {

@@ -15,6 +15,7 @@ import {
 } from "@revolt/client";
 import {
   pushProvider,
+  resyncPushPrefs,
   unifiedPushStatus,
 } from "@revolt/client/NotificationsController";
 import {
@@ -29,6 +30,7 @@ import MdMarkUnreadChatAlt from "@material-design-icons/svg/outlined/mark_unread
 import MdNotifications from "@material-design-icons/svg/outlined/notifications.svg?component-solid";
 import MdNotificationsOff from "@material-design-icons/svg/outlined/notifications_off.svg?component-solid";
 import MdPhoneLocked from "@material-design-icons/svg/outlined/phone_locked.svg?component-solid";
+import MdRingVolume from "@material-design-icons/svg/outlined/ring_volume.svg?component-solid";
 import Sounds from "./Sounds";
 
 /** ntfy, the UnifiedPush app we point the Google-free build at */
@@ -79,6 +81,20 @@ export default function Notifications(props: { isDesktop: boolean }) {
     } finally {
       refetchUnifiedPush();
     }
+  }
+
+  // Whether this device rings for incoming calls. Only a stored false is off.
+  const ringCalls = () =>
+    settings.getValue("notifications:ring_calls") !== false;
+
+  /**
+   * Flip the ring setting, then send this device's push subscription again
+   * so the server learns the new choice. The resync never throws and has no
+   * result to show, so nothing waits for it.
+   */
+  function toggleRingCalls() {
+    settings.setValue("notifications:ring_calls", !ringCalls());
+    void resyncPushPrefs();
   }
 
   onMount(() => document.addEventListener("visibilitychange", recheckOnReturn));
@@ -166,6 +182,19 @@ export default function Notifications(props: { isDesktop: boolean }) {
               </CategoryButton>
             </Match>
           </Switch>
+          <CategoryButton
+            action={<Checkbox checked={ringCalls()} />}
+            onClick={toggleRingCalls}
+            icon={<MdRingVolume {...iconSize(22)} />}
+            description={
+              <Trans>
+                When off, this device does not ring for incoming calls. Your
+                other devices still do.
+              </Trans>
+            }
+          >
+            <Trans>Ring for calls on this device</Trans>
+          </CategoryButton>
           <Show when={callAlertsBlocked()}>
             <CategoryButton
               onClick={openFullScreenCallAlertSettings}

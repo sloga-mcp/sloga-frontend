@@ -1,6 +1,7 @@
 /**
- * Which push transport this build uses, and what the launch resync should do
- * with a UnifiedPush registration.
+ * Which push transport this build uses, what the launch resync should do
+ * with a UnifiedPush registration, and which per-device preferences ride
+ * along with a push subscription.
  *
  * Pure on purpose, and deliberately free of imports, so `node --test` can load
  * it (`pushPolicy.test.ts`). The glue that acts on these answers lives in
@@ -64,6 +65,22 @@ export function playsWebRingtone(
 }
 
 /**
+ * Whether the in-app ringtone may sound for an incoming call. False when this
+ * device is set not to ring; otherwise the `playsWebRingtone` answer.
+ *
+ * Only a stored `false` silences the device. Any other value rings as before,
+ * so a setting that failed to load cannot cost a call.
+ */
+export function webRingtoneAllowed(input: {
+  provider: PushProvider;
+  unifiedPushRegistered: boolean;
+  ringCalls: boolean;
+}): boolean {
+  if (input.ringCalls === false) return false;
+  return playsWebRingtone(input.provider, input.unifiedPushRegistered);
+}
+
+/**
  * The `/push/subscribe` body for a UnifiedPush endpoint. `kind` tells the
  * server to deliver through the distributor's endpoint rather than FCM or a
  * browser push service.
@@ -93,6 +110,63 @@ export function unifiedPushSubscribeBody(ep: {
     auth: ep.auth,
     kind: "unifiedpush",
   };
+}
+
+/**
+ * The per-device preferences a `/push/subscribe` body can carry.
+ *
+ * - `chats_only`: the server stops pushing server messages to this device.
+ * - `no_ring`: this device never rings for a call.
+ *
+ * The only value a key can have is `true`. The server reads a missing key as
+ * off, which is how a subscription from an older app already behaves, so
+ * `false` is never sent.
+ */
+export type PushPrefs = { chats_only?: true; no_ring?: true };
+
+/**
+ * The two per-device preferences sent with every `/push/subscribe` body. A key
+ * is present only when it is on. `chats_only` is sent only once the signed-in
+ * user has loaded.
+ *
+ * `chats_only` follows Slim view, and a staff account is never in Slim view.
+ * Whether the account is a staff account is known only once the user has
+ * loaded, so until then the key is left out instead of guessed. `no_ring` is
+ * sent only when ringing was switched off on this device.
+ *
+ * Each input counts only as the exact boolean that turns its key on. Anything
+ * else leaves the key out, which the server reads as the default.
+ */
+export function pushPrefs(input: {
+  slim: boolean;
+  userLoaded: boolean;
+  ringCalls: boolean;
+}): PushPrefs {
+  const prefs: PushPrefs = {};
+  if (input.slim === true && input.userLoaded === true) prefs.chats_only = true;
+  if (input.ringCalls === false) prefs.no_ring = true;
+  return prefs;
+}
+
+/**
+ * Adds the preferences to a subscribe body without touching its other fields.
+ *
+ * Returns a copy and leaves `body` as it was. The two preference keys in the
+ * result come from `prefs` alone: a key is written only when `prefs` has it as
+ * `true`, and one already on `body` is not carried over. `/push/subscribe`
+ * overwrites the stored subscription, so each post has to state the
+ * preferences as they are now.
+ */
+export function withPushPrefs<T extends object>(
+  body: T,
+  prefs: PushPrefs,
+): T & PushPrefs {
+  const out = { ...body } as T & PushPrefs;
+  delete out.chats_only;
+  delete out.no_ring;
+  if (prefs.chats_only === true) out.chats_only = true;
+  if (prefs.no_ring === true) out.no_ring = true;
+  return out;
 }
 
 /**

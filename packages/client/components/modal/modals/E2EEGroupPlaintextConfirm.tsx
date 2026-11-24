@@ -2,6 +2,7 @@ import {
   Match,
   Show,
   Switch,
+  createMemo,
   createSignal,
   onCleanup,
   onMount,
@@ -11,10 +12,15 @@ import { Trans } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
 
 import { useClient, useE2EE } from "@revolt/client";
+import { buildPlainWriteInput } from "@revolt/client/encryptedOnlyGuard";
+import { latchedForClient } from "@revolt/client/encryptedOnlyLatch";
+import { decidePlainWrite } from "@revolt/client/encryptedOnlyPolicy";
 import { useError } from "@revolt/i18n";
 import { Column, Dialog, DialogProps, Text } from "@revolt/ui";
 
 import { Modals } from "../types";
+
+import { offersPlaintextExit } from "./encryptedOnlyModals";
 
 type PromptKind = "unconfirmed" | "unestablished";
 
@@ -62,6 +68,20 @@ export function E2EEGroupPlaintextConfirmModal(
   let live = true;
   onCleanup(() => (live = false));
 
+  // Encrypted-only chats: never "allow unencrypted" under the latch, or for
+  // a group whose unencrypted sends would be refused anyway. The bridge
+  // refuses the ack too.
+  const offerPlain = createMemo(() => {
+    const channel = client().channels.get(props.channelId);
+    const plain = channel
+      ? decidePlainWrite({
+          ...buildPlainWriteInput(client(), channel),
+          encrypted: false,
+        })
+      : null;
+    return offersPlaintextExit(latchedForClient(client().user?.id), plain);
+  });
+
   // Proof first: a group the device-listing proof clears needs no ack (an
   // ack is permanent), so null closes and the next send goes through. Only
   // then the bare verdict picks the copy. Throws on native error.
@@ -84,7 +104,10 @@ export function E2EEGroupPlaintextConfirmModal(
     }
   }
 
-  onMount(() => void load());
+  // Nothing to read when nothing can be confirmed
+  onMount(() => {
+    if (offerPlain()) void load();
+  });
 
   // Returned (as a Promise) from the action onClick: Dialog closes on
   // resolve and STAYS OPEN on reject, so every path that must keep the
@@ -92,12 +115,18 @@ export function E2EEGroupPlaintextConfirmModal(
   async function confirm() {
     const expected = kind();
     if (!e2ee || !expected) throw new Error("group state not loaded");
+    if (!offerPlain()) throw new Error("unencrypted sends are refused here");
 
     setBusy(true);
     setError(undefined);
     try {
       await e2ee.acknowledgeGroupPlaintext(props.channelId, expected);
     } catch (refusal) {
+      // A `declined` refusal (the system confirm was cancelled, or the
+      // phone is locked) is the user's answer, not an error: nothing was
+      // recorded, and the prompt stays up with no error under it.
+      if ((refusal as { type?: string })?.type === "declined") throw refusal;
+
       if (!isStateChanged(refusal)) {
         setError({ value: refusal });
         throw refusal;
@@ -130,6 +159,9 @@ export function E2EEGroupPlaintextConfirmModal(
       onClose={props.onClose}
       title={
         <Switch>
+          <Match when={!offerPlain()}>
+            <Trans>Encrypted-only chats</Trans>
+          </Match>
           <Match when={kind() === "unconfirmed"}>
             <Trans>Send unencrypted?</Trans>
           </Match>
@@ -143,15 +175,27 @@ export function E2EEGroupPlaintextConfirmModal(
         {
           text: <Trans>Cancel</Trans>,
         },
-        {
-          text: <Trans>Allow unencrypted</Trans>,
-          onClick: confirm,
-          isDisabled: !kind() || busy(),
-        },
+        ...(offerPlain()
+          ? [
+              {
+                text: <Trans>Allow unencrypted</Trans>,
+                onClick: confirm,
+                isDisabled: !kind() || busy(),
+              },
+            ]
+          : []),
       ]}
     >
       <Column>
         <Switch>
+          <Match when={!offerPlain()}>
+            <Text>
+              <Trans>
+                Encrypted-only chats applies to this group, so nothing can be
+                sent to it unencrypted. Nothing has been sent.
+              </Trans>
+            </Text>
+          </Match>
           <Match when={kind() === "unconfirmed"}>
             <Text>
               <Trans>
@@ -171,7 +215,7 @@ export function E2EEGroupPlaintextConfirmModal(
           </Match>
         </Switch>
 
-        <Show when={kind()}>
+        <Show when={kind() && offerPlain()}>
           <Text>
             <Trans>
               If you allow it, messages and files you send to this group from

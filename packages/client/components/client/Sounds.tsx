@@ -1,8 +1,13 @@
 import { createContext, JSXElement, useContext } from "solid-js";
 
+// The file, not the `@revolt/rtc` barrel: the barrel pulls in the voice
+// store, which imports this package back.
+import { RING_FALLBACK_MS, ringDurationMs } from "@revolt/rtc/incomingCall";
+import { serverCallRingSecs } from "@revolt/rtc/serverRingLength";
 import { Sounds, TypeSounds, useState } from "@revolt/state";
 import { Settings } from "@revolt/state/stores/Settings";
 import { streamerModeHides } from "@revolt/state/streamer";
+
 import deafenSound from "../../scripts/assets_fallback/sounds/deafen.ogg";
 import muteSound from "../../scripts/assets_fallback/sounds/mute.ogg";
 import streamEndSound from "../../scripts/assets_fallback/sounds/stream_end.ogg";
@@ -269,19 +274,34 @@ const DISCONNECT_PRESETS: {
 
 export { DISCONNECT_PRESETS, MESSAGE_PRESETS, RINGTONE_PRESETS };
 
+/** Which call ringtone is sounding: being called, or calling */
+export type RingtoneKind = "incoming" | "outgoing";
+
+/** Length of the fade that ends a ringtone, so it does not stop on a click */
+const RINGTONE_FADE_SECS = 0.05;
+
 export class SoundController {
   readonly soundState: Sounds;
   readonly settingsState: Settings;
+  /** Reads how long a call rings, in milliseconds, when a ringtone starts */
+  readonly #ringLengthMs: () => number;
 
   node?: HTMLAudioElement;
   #audioCtx?: AudioContext;
   #ringtoneGain?: GainNode;
+  #ringtoneTimer?: ReturnType<typeof setTimeout>;
+  #ringtoneKind?: RingtoneKind;
 
   lastPlayedSound?: keyof TypeSounds;
 
-  constructor(soundState: Sounds, settingsState: Settings) {
+  constructor(
+    soundState: Sounds,
+    settingsState: Settings,
+    ringLengthMs: () => number = () => RING_FALLBACK_MS,
+  ) {
     this.soundState = soundState;
     this.settingsState = settingsState;
+    this.#ringLengthMs = ringLengthMs;
 
     this.isPlaying = this.isPlaying.bind(this);
     this.canPlay = this.canPlay.bind(this);
@@ -410,9 +430,24 @@ export class SoundController {
   }
 
   /**
+   * Which ringtone is sounding now: "incoming" (we are being called),
+   * "outgoing" (we are calling), or undefined when none is. Not reactive;
+   * read it at the moment you act, e.g. to stop only the incoming ring.
+   * @returns The kind, or undefined
+   */
+  ringtoneKind(): RingtoneKind | undefined {
+    return this.#ringtoneKind;
+  }
+
+  /**
    * Stop any currently looping ringtone
    */
   stopRingtone() {
+    this.#ringtoneKind = undefined;
+    if (this.#ringtoneTimer !== undefined) {
+      clearTimeout(this.#ringtoneTimer);
+      this.#ringtoneTimer = undefined;
+    }
     if (this.#ringtoneGain) {
       try {
         this.#ringtoneGain.disconnect();
@@ -424,21 +459,57 @@ export class SoundController {
   }
 
   /**
+   * How long a ringtone may sound, in milliseconds. A reader that throws or
+   * answers something unusable must not cost the ring itself, so that reads
+   * as the default ring length.
+   */
+  #ringMs(): number {
+    try {
+      const read = this.#ringLengthMs();
+      if (Number.isFinite(read) && read > 0) return read;
+    } catch {
+      // keep the default
+    }
+    return RING_FALLBACK_MS;
+  }
+
+  /**
    * Play a looping synthesized ringtone via Web Audio API.
    * Uses the shared (gesture-unlocked) AudioContext — a fresh context would
    * start suspended under autoplay policy and ring silently.
+   *
+   * The ringtone ends by itself at the ring length, counted from this call.
+   * No note is scheduled to start at or after that point and the output
+   * fades out just before it. A timer then drops the ringtone, which also
+   * covers an audio clock that started late because the context was still
+   * suspended.
    */
-  #playRingtone(notes: ToneNote[], interval: number, volume = 0.3): void {
+  #playRingtone(
+    kind: RingtoneKind,
+    notes: ToneNote[],
+    interval: number,
+    volume = 0.3,
+  ): void {
     this.stopRingtone();
+    const ringMs = this.#ringMs();
+    const ringSecs = ringMs / 1000;
     try {
       const ctx = this.#getCtx();
       const master = ctx.createGain();
       master.connect(ctx.destination);
       this.#ringtoneGain = master;
-      const maxRings = 30;
-      for (let ring = 0; ring < maxRings; ring++) {
+      this.#ringtoneKind = kind;
+      const endsAt = ctx.currentTime + ringSecs;
+      master.gain.setValueAtTime(1, endsAt - RINGTONE_FADE_SECS);
+      master.gain.linearRampToValueAtTime(0, endsAt);
+      this.#ringtoneTimer = setTimeout(() => this.stopRingtone(), ringMs);
+      // Every ring that starts before the ring length; none for an interval
+      // that is not a positive number.
+      const rings = interval > 0 ? Math.ceil(ringSecs / interval) : 0;
+      for (let ring = 0; ring < rings; ring++) {
         const offset = ring * interval;
         for (const { freq, startTime, duration, type } of notes) {
+          if (offset + startTime >= ringSecs) continue;
           const osc = ctx.createOscillator();
           const gain = ctx.createGain();
           osc.connect(gain);
@@ -497,13 +568,13 @@ export class SoundController {
       }
       case "ringtoneIncoming": {
         const rp = this.#getRingtonePreset();
-        this.#playRingtone(rp.incoming, rp.interval);
+        this.#playRingtone("incoming", rp.incoming, rp.interval);
         this.lastPlayedSound = sound;
         return true;
       }
       case "ringtoneOutgoing": {
         const rp = this.#getRingtonePreset();
-        this.#playRingtone(rp.outgoing, rp.interval, 0.2);
+        this.#playRingtone("outgoing", rp.outgoing, rp.interval, 0.2);
         this.lastPlayedSound = sound;
         return true;
       }
@@ -563,7 +634,11 @@ const soundContext = createContext(null! as SoundController);
 export function SoundContext(props: { children: JSXElement }) {
   const { sounds, settings } = useState();
 
-  const controller = new SoundController(sounds, settings);
+  // Read on every ring rather than once: the server's advertised length
+  // arrives after this provider mounts (see `serverRingLength.ts`).
+  const controller = new SoundController(sounds, settings, () =>
+    ringDurationMs(serverCallRingSecs()),
+  );
 
   return (
     <soundContext.Provider value={controller}>

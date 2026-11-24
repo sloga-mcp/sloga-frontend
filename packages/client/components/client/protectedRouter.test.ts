@@ -8,8 +8,14 @@
 // is off must drop indexed envelopes, not hand them to the call path
 // (RC NEW-3a); a non-indexed envelope after the index is ready is call
 // traffic (RC NEW-3b). `textSinkEnvelope` / `textEnvelopeFromCommitInfo` must
-// keep all four commit declarations (D5, F4).
+// keep all five commit declarations (D5, F4, S2 `removed_reasons`). S2: a v2
+// rejoin intent keeps its signed `generation` / `issued_at` (dropping them
+// makes native verify it over the S1 payload); one present but malformed
+// makes the envelope malformed, never the S1 shape (OR-6); an S1 intent
+// passes byte for byte.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
 
 import {
@@ -18,6 +24,7 @@ import {
   type TextSinkSource,
   TEXT_SYNTH_ID_PREFIX,
   isSynthTextEnvelopeId,
+  removedReason,
   routeMls,
   textEnvelopeFromCommitInfo,
   textSinkEnvelope,
@@ -342,6 +349,7 @@ test("[control: textSinkEnvelope drops committer] all four declarations are kept
     added: [BOB],
     removed: [CAROL],
     rejoin_intents: [INTENT],
+    removed_reasons: [],
     recipientDeviceId: OWN,
   });
 });
@@ -360,6 +368,7 @@ test("textSinkEnvelope: no event-only keys leak into the envelope", () => {
     "recipientDeviceId",
     "rejoin_intents",
     "removed",
+    "removed_reasons",
   ]);
 });
 
@@ -371,6 +380,7 @@ test("textSinkEnvelope: absent or null vectors are empty; an absent committer st
         added: missing,
         removed: missing,
         rejoin_intents: missing,
+        removed_reasons: missing,
       }),
       "mls_commit",
     );
@@ -378,6 +388,7 @@ test("textSinkEnvelope: absent or null vectors are empty; an absent committer st
     assert.deepEqual(env.added, []);
     assert.deepEqual(env.removed, []);
     assert.deepEqual(env.rejoin_intents, []);
+    assert.deepEqual(env.removed_reasons, []);
     assert.equal("committer" in env, false);
   }
 });
@@ -404,6 +415,8 @@ test("textSinkEnvelope: a malformed declaration makes the envelope malformed", (
     { rejoin_intents: {} as unknown as [] },
     { committer: [ALICE] as unknown as typeof ALICE },
     { committer: "U_ALICE" as unknown as typeof ALICE },
+    { removed_reasons: "own_user" as unknown as [] },
+    { removed_reasons: [null] as unknown as [] },
   ];
   for (const over of bad) {
     assert.equal(
@@ -473,6 +486,7 @@ test("textEnvelopeFromCommitInfo: all four declarations, synthetic id, commit as
     added: [BOB],
     removed: [CAROL],
     rejoin_intents: [INTENT],
+    removed_reasons: [],
   });
   assert.ok(env && isSynthTextEnvelopeId(env.id));
   assert.equal(env && "recipientDeviceId" in env, false);
@@ -488,6 +502,7 @@ test("textEnvelopeFromCommitInfo: absent rejoin_intents is empty; malformed is n
     removed: [],
   });
   assert.deepEqual(env?.rejoin_intents, []);
+  assert.deepEqual(env?.removed_reasons, []);
   assert.deepEqual(env?.committer, ALICE);
   assert.equal(
     textEnvelopeFromCommitInfo({
@@ -516,4 +531,295 @@ test("toWireEnvelope strips only recipientDeviceId and leaves the input intact",
   assert.equal(env.recipientDeviceId, OWN);
   const { recipientDeviceId: _r, ...rest } = env;
   assert.deepEqual(wire, rest);
+});
+
+// ---------------------------------------------------------------------------
+// S2 (L1r): v2 intent fields (OR-6) and removed_reasons
+// ---------------------------------------------------------------------------
+
+const ISSUED = 1_762_905_600_000;
+const V2_INTENT = { ...INTENT, generation: 3, issued_at: ISSUED };
+const REASON_OFF = {
+  user_id: "U_CAROL",
+  device_id: "D_CAROL",
+  reason: "off_list",
+};
+const REASON_FUTURE = {
+  user_id: "U_ERIN",
+  device_id: "D_ERIN",
+  reason: "from_the_future",
+};
+/** Present but not a safe non-negative integer (e2ee.ts uses the same set). */
+const MALFORMED_INTS: unknown[] = [
+  1.5,
+  -1,
+  "3",
+  null,
+  NaN,
+  Infinity,
+  2 ** 53,
+  {},
+  true,
+];
+
+/** A stored commit row (409 `Lost.winning`, gap refetch). */
+function commitRow(over: Record<string, unknown> = {}) {
+  return {
+    group_id: "G1",
+    epoch: 9,
+    committer: ALICE,
+    commit: "COMMIT_B64",
+    added: [BOB],
+    removed: [CAROL],
+    ...over,
+  } as Parameters<typeof textEnvelopeFromCommitInfo>[0];
+}
+
+/** Both builders, so each S2 rule holds on the live and the stored path. */
+function bothBuilders(over: Record<string, unknown>) {
+  return [
+    textSinkEnvelope(
+      commitEvent(over as Partial<TextSinkSource>),
+      "mls_commit",
+    ),
+    textEnvelopeFromCommitInfo(commitRow(over)),
+  ];
+}
+
+const label = (o: Record<string, unknown>) =>
+  Object.entries(o)
+    .map(([k, v]) => `${k}=${typeof v}:${String(v)}`)
+    .join(",");
+
+test("S2: an S1 intent passes byte for byte; an S1 envelope only gains an empty removed_reasons", () => {
+  for (const env of bothBuilders({ rejoin_intents: [INTENT] })) {
+    assert.ok(env);
+    const intent = env.rejoin_intents?.[0];
+    assert.ok(intent);
+    assert.equal(JSON.stringify(intent), JSON.stringify(INTENT));
+    assert.equal("generation" in intent, false);
+    assert.equal("issued_at" in intent, false);
+    assert.deepEqual(env.removed_reasons, []);
+  }
+  // The whole live envelope: the pre-S2 bytes, key order included, plus
+  // the empty removed_reasons (native reads it as absent).
+  const env = textSinkEnvelope(commitEvent(), "mls_commit");
+  assert.ok(env);
+  const { removed_reasons, ...s1 } = env;
+  assert.deepEqual(removed_reasons, []);
+  assert.equal(
+    JSON.stringify(s1),
+    JSON.stringify({
+      id: "ENV1",
+      content_type: "mls_commit",
+      group_id: "G1",
+      epoch: 4,
+      ciphertext: "CT",
+      added: [BOB],
+      removed: [CAROL],
+      rejoin_intents: [INTENT],
+      committer: ALICE,
+      recipientDeviceId: OWN,
+    }),
+  );
+});
+
+test("S2: a v2 intent keeps its signed generation and issued_at (live event and stored row)", () => {
+  for (const intent of [
+    V2_INTENT,
+    { ...INTENT, generation: 0, issued_at: 0 },
+    { ...INTENT, generation: 7 },
+    { ...INTENT, issued_at: Number.MAX_SAFE_INTEGER },
+  ]) {
+    for (const env of bothBuilders({ rejoin_intents: [INTENT, intent] })) {
+      assert.ok(env, JSON.stringify(intent));
+      assert.deepEqual(env.rejoin_intents, [INTENT, intent]);
+      assert.equal(
+        JSON.stringify(env.rejoin_intents?.[1]),
+        JSON.stringify(intent),
+      );
+    }
+  }
+  // Keys outside the wire shape are still dropped.
+  const env = textSinkEnvelope(
+    commitEvent({
+      rejoin_intents: [{ ...V2_INTENT, rejoin: true } as typeof V2_INTENT],
+    }),
+    "mls_commit",
+  );
+  assert.deepEqual(env?.rejoin_intents, [V2_INTENT]);
+});
+
+test("S2 OR-6: a present but malformed generation or issued_at makes the envelope null, never the S1 shape", () => {
+  const cases: Record<string, unknown>[] = [
+    { issued_at: 1.5 },
+    { generation: 1.5 },
+    { generation: -1 },
+    { generation: "3" },
+    { generation: null },
+  ];
+  for (const bad of MALFORMED_INTS) {
+    cases.push(
+      { generation: bad },
+      { issued_at: bad },
+      // One malformed field spoils a valid other one: never half an intent.
+      { generation: bad, issued_at: ISSUED },
+      { generation: 3, issued_at: bad },
+    );
+  }
+  for (const fields of cases) {
+    const intent = { ...INTENT, ...fields };
+    for (const env of bothBuilders({ rejoin_intents: [V2_INTENT, intent] })) {
+      assert.equal(env, null, label(fields));
+    }
+  }
+});
+
+/** `joinIntentSignedFields` as written in e2ee.ts (which Node cannot load). */
+function liftJoinIntentSignedFields(): (
+  e: Record<string, unknown>,
+) => Record<string, unknown> | null {
+  const src = readFileSync(new URL("./e2ee.ts", import.meta.url), "utf8");
+  const head = "\nexport function joinIntentSignedFields(";
+  const at = src.indexOf(head);
+  assert.ok(at >= 0, "joinIntentSignedFields not found in e2ee.ts");
+  assert.equal(src.indexOf(head, at + 1), -1, "declared once");
+  const end = src.indexOf("\n}\n", at);
+  assert.ok(end > at, "no closing brace");
+  const decl = src.slice(at + "\nexport ".length, end + 2);
+  return new Function(
+    `${stripTypeScriptTypes(decl)}\nreturn joinIntentSignedFields;`,
+  )();
+}
+
+test("S2 OR-6: the router's intent rule agrees with e2ee.ts joinIntentSignedFields", () => {
+  const signed = liftJoinIntentSignedFields();
+  const values: unknown[] = [
+    undefined,
+    0,
+    1,
+    3,
+    2 ** 32,
+    ISSUED,
+    Number.MAX_SAFE_INTEGER,
+    ...MALFORMED_INTS,
+  ];
+  let accepted = 0;
+  let refused = 0;
+  for (const generation of values) {
+    for (const issued_at of values) {
+      const fields: Record<string, unknown> = {};
+      if (generation !== undefined) fields.generation = generation;
+      if (issued_at !== undefined) fields.issued_at = issued_at;
+      const want = signed(fields);
+      for (const env of bothBuilders({
+        rejoin_intents: [{ ...INTENT, ...fields }],
+      })) {
+        if (want === null) {
+          assert.equal(env, null, label(fields));
+        } else {
+          assert.ok(env, label(fields));
+          assert.deepEqual(env.rejoin_intents, [{ ...INTENT, ...want }]);
+        }
+      }
+      if (want === null) refused++;
+      else accepted++;
+    }
+  }
+  // Both verdicts are exercised (16 x 16 inputs: 7 x 7 accepted).
+  assert.equal(accepted, 49);
+  assert.equal(refused, 16 * 16 - 49);
+});
+
+test("S2: removed_reasons pass verbatim, an unknown reason (from_the_future) included", () => {
+  const reasons = [
+    REASON_OFF,
+    REASON_FUTURE,
+    { user_id: "U_FRANK", device_id: "D_FRANK", reason: "" },
+  ];
+  for (const env of bothBuilders({ removed_reasons: reasons })) {
+    assert.ok(env);
+    assert.deepEqual(env.removed_reasons, reasons);
+  }
+  assert.deepEqual(removedReason(REASON_FUTURE), REASON_FUTURE);
+  // Keys outside the wire shape are dropped.
+  assert.deepEqual(
+    textEnvelopeFromCommitInfo(
+      commitRow({ removed_reasons: [{ ...REASON_FUTURE, note: "x" }] }),
+    )?.removed_reasons,
+    [REASON_FUTURE],
+  );
+  // And they reach native: toWireEnvelope keeps them.
+  const live = textSinkEnvelope(
+    commitEvent({ removed_reasons: [REASON_FUTURE] }),
+    "mls_commit",
+  );
+  assert.ok(live);
+  assert.deepEqual(toWireEnvelope(live).removed_reasons, [REASON_FUTURE]);
+});
+
+test("S2: an absent or null removed_reasons is []", () => {
+  for (const missing of [undefined, null]) {
+    for (const env of bothBuilders({ removed_reasons: missing })) {
+      assert.ok(env);
+      assert.deepEqual(env.removed_reasons, []);
+    }
+  }
+  // The key absent altogether (an S1 row and an S1 event).
+  const row = commitRow();
+  assert.equal("removed_reasons" in row, false);
+  assert.deepEqual(textEnvelopeFromCommitInfo(row)?.removed_reasons, []);
+  assert.deepEqual(
+    textSinkEnvelope(commitEvent(), "mls_commit")?.removed_reasons,
+    [],
+  );
+});
+
+test("S2: a removed reason with a non-string field makes the envelope null", () => {
+  const bad: unknown[] = [
+    { ...REASON_OFF, user_id: 7 },
+    { ...REASON_OFF, device_id: null },
+    { ...REASON_OFF, reason: 3 },
+    { ...REASON_OFF, reason: null },
+    { user_id: "U_CAROL", reason: "off_list" },
+    "off_list",
+    null,
+    [REASON_OFF],
+  ];
+  for (const b of bad) {
+    assert.equal(removedReason(b), null, JSON.stringify(b));
+    for (const env of bothBuilders({ removed_reasons: [REASON_OFF, b] })) {
+      assert.equal(env, null, JSON.stringify(b));
+    }
+  }
+  for (const env of bothBuilders({ removed_reasons: { 0: REASON_OFF } })) {
+    assert.equal(env, null, "not an array");
+  }
+});
+
+test("S2: all five declarations survive a stored row and a live event", () => {
+  const decl = {
+    committer: ALICE,
+    added: [BOB],
+    removed: [CAROL],
+    rejoin_intents: [V2_INTENT],
+    removed_reasons: [REASON_OFF, REASON_FUTURE],
+  };
+  assert.deepEqual(textEnvelopeFromCommitInfo(commitRow(decl)), {
+    id: `${TEXT_SYNTH_ID_PREFIX}G1:9`,
+    content_type: "mls_commit",
+    group_id: "G1",
+    epoch: 9,
+    ciphertext: "COMMIT_B64",
+    ...decl,
+  });
+  assert.deepEqual(textSinkEnvelope(commitEvent(decl), "mls_commit"), {
+    id: "ENV1",
+    content_type: "mls_commit",
+    group_id: "G1",
+    epoch: 4,
+    ciphertext: "CT",
+    ...decl,
+    recipientDeviceId: OWN,
+  });
 });

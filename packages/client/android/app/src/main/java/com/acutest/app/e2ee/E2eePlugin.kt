@@ -1,6 +1,7 @@
 package com.acutest.app.e2ee
 
 import android.app.AlertDialog
+import android.app.KeyguardManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -16,6 +17,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.getcapacitor.JSObject
+import com.getcapacitor.MessageHandler
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
@@ -28,6 +30,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import uniffi.acutest_e2ee.E2eeException
 import uniffi.acutest_e2ee.GroupGrowthPrompt
+import uniffi.acutest_e2ee.TextConfirm
 import uniffi.acutest_e2ee.splitConfirmCopy
 
 /**
@@ -91,6 +94,14 @@ internal val GENERIC_CALL_REFUSED: Set<String> = setOf("e2ee_split_begin")
 internal fun genericCallRefuses(name: String): Boolean = name in GENERIC_CALL_REFUSED
 
 /**
+ * Whether a keyguard reading stops a plaintext confirm. `true` is a locked
+ * phone. `null` is a reading that could not be taken (no keyguard service, or
+ * the query threw), and it stops the confirm as well: only a definite "not
+ * locked" lets one through.
+ */
+internal fun keyguardBlocks(locked: Boolean?): Boolean = locked != false
+
+/**
  * Capacitor bridge for the native E2EE layer (slice 4) — the Android analog
  * of the desktop Tauri command surface (`src-tauri/src/e2ee.rs`).
  *
@@ -114,6 +125,12 @@ internal fun genericCallRefuses(name: String): Boolean = name in GENERIC_CALL_RE
  *    `acceptIdentityChange`, the recovery-code flows `backupCreate` /
  *    `backupRotate` / `backupRestore`, and `splitBegin` (make this install
  *    a separate device; `call()` refuses `e2ee_split_begin` by name).
+ *  - The four protected-text dialog commands `textSeatListSign` /
+ *    `textOwnerConfirmChange` / `textOwnerHandoverSign` /
+ *    `textAuthoritySign` (S2), whose gate is in Rust: the native method
+ *    runs the whole flow and asks [TextConfirmDialog] only when the user
+ *    must answer.
+ *  - `textCapability`, the webview's probe of the protected-text plane.
  *  - `attachmentUpload` / `attachmentFetch` move attachment CIPHERTEXT
  *    between the Rust core and Autumn natively, so multi-megabyte payloads
  *    never transit the JS bridge (and fetched bytes go straight into the
@@ -163,6 +180,20 @@ class E2eePlugin : Plugin() {
                 rejectScrubbed(call, error)
             }
         }
+    }
+
+    /**
+     * One protected-text `call()` arm (S7 D3/D4), run inside [run]: refuse
+     * `unavailable` unless the live bridge is the main-frame-only
+     * WebMessageListener (the legacy `addJavascriptInterface` bridge takes
+     * calls from every frame of the page; S7 D9), then pass the whole call
+     * object to [command] as one JSON string and resolve the core's JSON.
+     */
+    private fun resolveText(call: PluginCall, command: (String) -> String) {
+        if (!MessageHandler.usingWebMessageListener) {
+            throw E2eeException.Failure("{\"type\":\"unavailable\"}")
+        }
+        resolveJson(call, command(call.data.toString()))
     }
 
     private fun requireString(call: PluginCall, key: String): String =
@@ -346,6 +377,14 @@ class E2eePlugin : Plugin() {
                 // unblocks. `expected` goes through the core's one strict
                 // parser; nothing is mapped here. Never provisions a store.
                 "e2ee_acknowledge_group_plaintext" -> {
+                    // No native dialog stands in front of this one, so a
+                    // locked phone is refused here, before the core is asked.
+                    // The prompt reads only two `invalid_argument` refusals as
+                    // the group having changed. `declined` is neither, so the
+                    // prompt stays up, shows an error and nothing is recorded.
+                    if (keyguardBlocksNow()) {
+                        throw E2eeException.Failure("{\"type\":\"declined\"}")
+                    }
                     engine.acknowledgeGroupPlaintext(
                         requireString(call, "conversationId"),
                         requireString(call, "expected"),
@@ -625,7 +664,48 @@ class E2eePlugin : Plugin() {
                     engine.mlsExpireKeyPackages()
                     resolveJson(call, "null")
                 }
-                // NOT here by design: e2ee_mark_verified +
+                // Which account this store belongs to (S7 D3): a JSON string,
+                // or `null` for a fresh or unprovisioned store. Quoted exactly
+                // like iOS, so the webview's store-owner check parses it
+                // unchanged; a bare id would fail JSON.parse and leave the
+                // owner UNKNOWN.
+                "e2ee_store_owner" -> {
+                    val owner = engine.storeOwner()
+                    resolveJson(call, owner?.let { org.json.JSONObject.quote(it) } ?: "null")
+                }
+                // ---- Protected channels: the text plane (S7 D3/D4) ----
+                // The 17 commands with no dialog. Each passes the whole call
+                // object as one JSON string (the core parses it into the
+                // command's argument struct; `__cmd` rides along) and resolves
+                // the core's JSON. Every arm goes through [resolveText], which
+                // refuses `unavailable` unless the bridge is the main-frame
+                // WebMessageListener. None emits `callKeysChanged`: a text
+                // outcome has the call outcome's field names, so an emit here
+                // would fire call key events for a text group.
+                "e2ee_mls_group_kind" -> resolveText(call) { engine.mlsGroupKind(it) }
+                "e2ee_text_group_create" -> resolveText(call) { engine.textGroupCreate(it) }
+                "e2ee_text_join" -> resolveText(call) { engine.textJoin(it) }
+                "e2ee_text_admit" -> resolveText(call) { engine.textAdmit(it) }
+                "e2ee_text_process" -> resolveText(call) { engine.textProcess(it) }
+                "e2ee_text_commit_won" -> resolveText(call) { engine.textCommitWon(it) }
+                "e2ee_text_commit_lost" -> resolveText(call) { engine.textCommitLost(it) }
+                "e2ee_text_pending_commit" -> resolveText(call) { engine.textPendingCommit(it) }
+                "e2ee_text_encrypt" -> resolveText(call) { engine.textEncrypt(it) }
+                "e2ee_text_decrypt" -> resolveText(call) { engine.textDecrypt(it) }
+                "e2ee_text_seat_list_verify" -> resolveText(call) { engine.textSeatListVerify(it) }
+                "e2ee_text_owner_pin_state" -> resolveText(call) { engine.textOwnerPinState(it) }
+                "e2ee_text_remove" -> resolveText(call) { engine.textRemove(it) }
+                "e2ee_text_update" -> resolveText(call) { engine.textUpdate(it) }
+                "e2ee_text_state" -> resolveText(call) { engine.textState(it) }
+                "e2ee_text_mark_left" -> resolveText(call) { engine.textMarkLeft(it) }
+                "e2ee_text_pin_own_devices" -> resolveText(call) { engine.textPinOwnDevices(it) }
+                // NOT here by design:
+                // e2ee_text_seat_list_sign, e2ee_text_owner_confirm_change,
+                // e2ee_text_owner_handover_sign and e2ee_text_authority_sign
+                // (each may need a native dialog the Rust flow asks for, and
+                // authority_sign always does: the dedicated textSeatListSign /
+                // textOwnerConfirmChange / textOwnerHandoverSign /
+                // textAuthoritySign methods below); e2ee_mark_verified +
                 // e2ee_accept_identity_change (they raise how far this device
                 // trusts a peer's keys: "verified by you", or a new key that
                 // then receives their messages; so they are native-dialog-gated
@@ -809,6 +889,49 @@ class E2eePlugin : Plugin() {
     }
 
     /**
+     * Whether the phone is locked right now, read fresh on every call. A
+     * keyguard that cannot be read (no keyguard service, or the query threw)
+     * counts as locked.
+     */
+    private fun keyguardBlocksNow(): Boolean {
+        val locked: Boolean? =
+            try {
+                (context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)
+                    ?.isKeyguardLocked
+            } catch (error: Throwable) {
+                null
+            }
+        return keyguardBlocks(locked)
+    }
+
+    /**
+     * Refuses a plaintext confirm while the phone is locked. A call can ring
+     * and be shown over the lock screen, so whoever holds a locked phone could
+     * otherwise reach the dialogs of [downgrade], [confirmPeerDowngradeAccept]
+     * and [callConfirmDowngrade] without unlocking it. Turning encryption off
+     * is a choice for the person who can unlock the phone. Each of those
+     * commands asks here first, before it reads an argument or builds a
+     * dialog, and asks again when its confirm button is pressed, because the
+     * phone can lock while the dialog is up.
+     *
+     * The rejection is the same typed `declined` error the Cancel button of
+     * the [downgrade] and [callConfirmDowngrade] dialogs gives, and it has to
+     * stay that one. The call screen reads `declined` as the user saying no
+     * and keeps the call paused. It reads any other rejection of
+     * [callConfirmDowngrade] as a dialog that could not be shown and falls
+     * back to its own in-app confirm, which would let the locked phone
+     * through after all.
+     *
+     * Returns true when the call was rejected. The caller then returns at
+     * once and does nothing else.
+     */
+    private fun rejectedWhileLocked(call: PluginCall): Boolean {
+        if (!keyguardBlocksNow()) return false
+        call.reject("{\"type\":\"declined\"}")
+        return true
+    }
+
+    /**
      * Turn off encryption for a conversation — behind a BLOCKING NATIVE
      * dialog (slice 5, design §5.2). Mirrors the desktop `e2ee_downgrade`:
      * the webview can only REQUEST; the plaintext-direction transition needs
@@ -816,6 +939,8 @@ class E2eePlugin : Plugin() {
      */
     @PluginMethod
     fun downgrade(call: PluginCall) {
+        // A locked phone is refused before anything is read or shown.
+        if (rejectedWhileLocked(call)) return
         val conversationId = call.getString("conversationId") ?: run {
             call.reject("{\"type\":\"invalid_argument\",\"field\":\"conversationId\"}")
             return
@@ -835,6 +960,9 @@ class E2eePlugin : Plugin() {
                         "this conversation?",
                 )
                 .setPositiveButton("Turn off") { _, _ ->
+                    // The phone may have locked while the dialog was up. The
+                    // press closes the dialog either way.
+                    if (rejectedWhileLocked(call)) return@setPositiveButton
                     run(call) {
                         resolveJson(call, engine().downgrade(conversationId, selfUserId, bundles))
                     }
@@ -912,10 +1040,12 @@ class E2eePlugin : Plugin() {
     // ================================================================
 
     /**
-     * One consent request in flight, prompt or not, across all FIVE consent
-     * methods: the growth pair ([enableGroup], [addGroupMember]), the
-     * trust pair ([markVerified], [acceptIdentityChange]) and [splitBegin],
-     * so their dialogs never stack (desktop `consent_in_flight`). Claimed before the preview;
+     * One consent request in flight, prompt or not, across all NINE consent
+     * methods: the growth pair ([enableGroup], [addGroupMember]), the trust
+     * pair ([markVerified], [acceptIdentityChange]), [splitBegin] and the
+     * four protected-text dialog methods ([runTextDialog]), so their
+     * dialogs never stack (desktop `consent_in_flight`). Claimed before the
+     * preview;
      * each request releases it exactly once, through its own `held` flag, so
      * a path that releases early and a catch-all that releases again can
      * never clear a LATER request's claim.
@@ -1846,14 +1976,145 @@ class E2eePlugin : Plugin() {
         // Activity teardown would remove a consent dialog's window without
         // running its listeners, leaving the request unanswered and the hold
         // taken. Dismissing it runs the dismiss listener: `declined`, hold
-        // released. At most one of the three is open (one shared hold).
+        // released. At most one of them is open (one shared hold).
         growthDialog?.dismiss()
         growthDialog = null
         identityDialog?.dismiss()
         identityDialog = null
         splitDialog?.dismiss()
         splitDialog = null
+        // Protected-text dialogs: the flag first, so a dialog runnable still
+        // queued behind this one finds it and never shows; then every open
+        // one, whose dismiss answers Declined to the worker waiting on it.
+        textDialogs.destroyed = true
+        textDialogs.dismissAll()
         super.handleOnDestroy()
+    }
+
+    // ================================================================
+    // Protected channels: the text plane's dialog commands (S7 D2/D3)
+    //
+    // `e2ee_text_seat_list_sign`, `e2ee_text_owner_confirm_change`,
+    // `e2ee_text_owner_handover_sign` and (S2) `e2ee_text_authority_sign`
+    // are gated in RUST: each native method runs the whole flow (preview,
+    // decline lockout, the core's copy, the
+    // dialog, then the commit bound to exactly that preview), and no preview
+    // or commit half is exported, so nothing here can skip the dialog. The
+    // plugin only supplies the dialog ([TextConfirmDialog]) and the threading:
+    //  1. Refuse `unavailable` unless the bridge is the main-frame-only
+    //     WebMessageListener (S7 D9).
+    //  2. Claim [consentInFlight], shared with the growth and trust methods
+    //     above, so no two consent dialogs stack; a held slot is `busy`.
+    //  3. Hop to [executor]: the Rust call blocks while the dialog is up, and
+    //     Capacitor's single plugin thread must stay free. The dialog itself
+    //     is posted to the UI thread.
+    //  4. Release the slot in a `finally` around the Rust call, before the
+    //     call settles; resolve `{json}` or reject with the core's error,
+    //     verbatim (`declined`, `busy` for a lockout, `not_enabled`, ...).
+    // A failure to reach the executor is `unavailable`; nothing was asked.
+    // ================================================================
+
+    /** The protected-text dialogs, for [handleOnDestroy]. */
+    private val textDialogs = TextDialogs()
+
+    /** The steps in the section comment above, for one dialog command. */
+    private fun runTextDialog(call: PluginCall, command: (String, TextConfirm) -> String) {
+        if (!MessageHandler.usingWebMessageListener) {
+            call.reject("{\"type\":\"unavailable\"}")
+            return
+        }
+        val argsJson = call.data.toString()
+        val dialog = TextConfirmDialog({ activity }, textDialogs)
+
+        if (!consentInFlight.compareAndSet(false, true)) {
+            call.reject("{\"type\":\"busy\"}")
+            return
+        }
+        val held = AtomicBoolean(true)
+        fun release() {
+            if (held.compareAndSet(true, false)) consentInFlight.set(false)
+        }
+
+        try {
+            executor.execute {
+                try {
+                    val json =
+                        try {
+                            command(argsJson, dialog)
+                        } finally {
+                            release()
+                        }
+                    resolveJson(call, json)
+                } catch (error: Throwable) {
+                    release()
+                    rejectScrubbed(call, error)
+                }
+            }
+        } catch (error: Throwable) {
+            release()
+            call.reject("{\"type\":\"unavailable\"}")
+        }
+    }
+
+    /**
+     * Sign a channel's seat list: `e2ee_text_seat_list_sign`. A list that
+     * seats a new user or raises the device cap needs the dialog; one that
+     * does neither is signed with none. Resolves `{json}` (`SignedSeatList`).
+     */
+    @PluginMethod
+    fun textSeatListSign(call: PluginCall) {
+        runTextDialog(call) { args, confirm -> engine().textSeatListSign(args, confirm) }
+    }
+
+    /**
+     * Accept a same-user owner device change: `e2ee_text_owner_confirm_change`.
+     * A different-user signer gets the one-button information dialog and
+     * `owner_changed{same_user:false}`, changing nothing. Resolves `{json}`.
+     */
+    @PluginMethod
+    fun textOwnerConfirmChange(call: PluginCall) {
+        runTextDialog(call) { args, confirm -> engine().textOwnerConfirmChange(args, confirm) }
+    }
+
+    /**
+     * Sign an owner handover to this user's other device:
+     * `e2ee_text_owner_handover_sign`. Always asks. Resolves `{json}`
+     * (`SignedHandover`).
+     */
+    @PluginMethod
+    fun textOwnerHandoverSign(call: PluginCall) {
+        runTextDialog(call) { args, confirm -> engine().textOwnerHandoverSign(args, confirm) }
+    }
+
+    /**
+     * Sign a channel's owner-device authority (S2): `e2ee_text_authority_sign`.
+     * Always asks. Persists nothing; the webview passes the result to
+     * `e2ee_text_seat_list_sign` as its `authority`. Resolves `{json}`
+     * (`SignedAuthority`).
+     */
+    @PluginMethod
+    fun textAuthoritySign(call: PluginCall) {
+        runTextDialog(call) { args, confirm -> engine().textAuthoritySign(args, confirm) }
+    }
+
+    /**
+     * The webview's protected-text probe (S7 D9): resolves
+     * `{protocol, listenerBridge}`, `protocol` from the core's
+     * `text_capability` JSON and `listenerBridge` from the bridge the
+     * Capacitor patch recorded. A protocol that is not an integer rejects,
+     * which the webview reads as no text plane.
+     */
+    @PluginMethod
+    fun textCapability(call: PluginCall) {
+        run(call) {
+            val protocol =
+                org.json.JSONObject(engine().textCapability()).opt("protocol") as? Int
+                    ?: throw E2eeException.Failure("{\"type\":\"crypto_failure\"}")
+            val result = JSObject()
+            result.put("protocol", protocol)
+            result.put("listenerBridge", MessageHandler.usingWebMessageListener)
+            call.resolve(result)
+        }
     }
 
     /**
@@ -1864,6 +2125,10 @@ class E2eePlugin : Plugin() {
      */
     @PluginMethod
     fun confirmPeerDowngradeAccept(call: PluginCall) {
+        // A locked phone is refused before anything is read or shown. It is a
+        // rejection and not the Keep encrypted answer below: that answer is
+        // recorded, and this refusal records nothing.
+        if (rejectedWhileLocked(call)) return
         val conversationId = call.getString("conversationId") ?: run {
             call.reject("{\"type\":\"invalid_argument\",\"field\":\"conversationId\"}")
             return
@@ -1877,6 +2142,9 @@ class E2eePlugin : Plugin() {
                         "readable by the server.\n\nSend unencrypted from now on?",
                 )
                 .setPositiveButton("Send unencrypted") { _, _ ->
+                    // The phone may have locked while the dialog was up. The
+                    // press closes the dialog either way.
+                    if (rejectedWhileLocked(call)) return@setPositiveButton
                     run(call) {
                         engine().confirmPeerDowngrade(conversationId, true)
                         resolveJson(call, "null")
@@ -1916,6 +2184,8 @@ class E2eePlugin : Plugin() {
      */
     @PluginMethod
     fun callConfirmDowngrade(call: PluginCall) {
+        // A locked phone is refused before anything is read or shown.
+        if (rejectedWhileLocked(call)) return
         val groupId = call.getString("groupId") ?: run {
             call.reject("{\"type\":\"invalid_argument\",\"field\":\"groupId\"}")
             return
@@ -1964,6 +2234,9 @@ class E2eePlugin : Plugin() {
     }
 
     private fun showConfirmDowngradeDialog(call: PluginCall, groupId: String, who: String) {
+        // The roster was computed on another thread, so the phone may have
+        // locked since the command began. Asked again here, before the dialog.
+        if (rejectedWhileLocked(call)) return
         AlertDialog.Builder(activity)
             .setTitle("Turn off call encryption")
             .setMessage(
@@ -1973,6 +2246,9 @@ class E2eePlugin : Plugin() {
                     "this call?",
             )
             .setPositiveButton("Turn off") { _, _ ->
+                // The phone may have locked while the dialog was up. The press
+                // closes the dialog either way, and nothing is armed.
+                if (rejectedWhileLocked(call)) return@setPositiveButton
                 run(call) {
                     // Only this path arms the announce gate.
                     engine().mlsCallMarkDowngradeConfirmed(groupId)

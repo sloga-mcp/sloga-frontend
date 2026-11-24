@@ -6,6 +6,9 @@ import { css } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
+import { plainGroupUnderLatch } from "@revolt/client/encryptedOnlyChat";
+import { buildPlainWriteInput } from "@revolt/client/encryptedOnlyGuard";
+import { latchedForClient } from "@revolt/client/encryptedOnlyLatch";
 import { useProtectedShield } from "@revolt/client/useProtectedChannel";
 import { useDevice } from "@revolt/common";
 import { channelNounOf } from "@revolt/common/lib/channelNoun";
@@ -77,6 +80,17 @@ export function ChannelHeader(props: Props) {
   // pinned, which keeps its header exactly as before.
   const protectedShield = useProtectedShield(() => props.channel.id);
 
+  // Encrypted-only chats. The other person's setting is public, so it is
+  // labelled for anyone. A group that is not encrypted is labelled only for
+  // an account whose latch is on: it is read-only for them. Saved Notes
+  // are exempt, and say so to that account.
+  const latched = () => latchedForClient(client().user?.id);
+  const plainGroup = createMemo(
+    () =>
+      props.channel.type === "Group" &&
+      plainGroupUnderLatch(buildPlainWriteInput(client(), props.channel)),
+  );
+
   // Tags on a forum post can be changed after posting by its author or by
   // anyone who manages the forum (the same rule delta's channel edit
   // applies); until this button there was no way to reach that.
@@ -134,6 +148,12 @@ export function ChannelHeader(props: Props) {
             <TextWithEmoji content={props.channel.name!} />
           </NonBreakingText>
           <ProtectedChannelPill channel={props.channel} />
+          <Show when={plainGroup()}>
+            <span class={`${headerLabel} ${notEncryptedTone}`}>
+              <Symbol size={14}>lock_open</Symbol>
+              <Trans>Not encrypted</Trans>
+            </span>
+          </Show>
           <Show when={layout() !== "phone" && cleanDescription()}>
             <Divider />
             <a
@@ -173,12 +193,37 @@ export function ChannelHeader(props: Props) {
             />
           </OverflowingText>
           <UserStatus status={props.channel.recipient?.presence} size="8px" />
+          <Show when={props.channel.recipient?.e2eeOnly === true}>
+            {/* The other person's setting, not this chat's state: the
+                tooltip says so. A native element so the directive binds. */}
+            <span
+              class={headerLabel}
+              use:floating={{
+                tooltip: {
+                  placement: "bottom",
+                  content: t`This person only accepts encrypted messages.`,
+                },
+              }}
+            >
+              <Trans>Encrypted-only</Trans>
+            </span>
+          </Show>
         </Match>
         <Match when={props.channel.type === "SavedMessages"}>
           <HeaderIcon>
             <Symbol>note_stack</Symbol>
           </HeaderIcon>
           <Trans>Saved Notes</Trans>
+          <Show when={latched()}>
+            <Divider />
+            <OverflowingText
+              class={typography({ class: "title", size: "small" })}
+            >
+              <Trans>
+                Stored on Sloga's servers, not end-to-end encrypted.
+              </Trans>
+            </OverflowingText>
+          </Show>
         </Match>
         <Match when={props.channel.type === "Thread"}>
           <HeaderIcon>
@@ -303,7 +348,8 @@ export function ChannelHeader(props: Props) {
         <IconButton
           isDisabled={!!voice.joinBlocked(props.channel)}
           onPress={async () => {
-            if (await voice.connect(props.channel)) await voice.toggleCamera();
+            if (await voice.connect(props.channel, undefined, { video: true }))
+              await voice.toggleCamera();
           }}
           use:floating={{
             tooltip: {
@@ -558,6 +604,30 @@ const Divider = styled("div", {
  */
 const descriptionLink = css({
   minWidth: 0,
+});
+
+/**
+ * Small label after the chat's name
+ */
+const headerLabel = css({
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "var(--gap-xs)",
+  flexShrink: 0,
+  padding: "2px var(--gap-sm)",
+  borderRadius: "var(--borderRadius-full)",
+  fontSize: "0.75rem",
+  fontWeight: 500,
+  whiteSpace: "nowrap",
+  background: "var(--md-sys-color-surface-container-high)",
+  color: "var(--md-sys-color-on-surface-variant)",
+});
+
+/**
+ * Tone of the "Not encrypted" label
+ */
+const notEncryptedTone = css({
+  color: "var(--md-sys-color-error)",
 });
 
 const mobileOverflow = css({

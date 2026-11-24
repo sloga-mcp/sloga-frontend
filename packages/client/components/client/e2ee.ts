@@ -42,10 +42,14 @@ import type {
 import {
   ProtectedChannelUnavailable,
   ProtectedFieldRefusedClient,
+  UserFlags,
 } from "stoat.js";
 
 import type { ResumeCommitRef, ResumePrefetch } from "../rtc/mlsRejoinPolicy";
+import { workerProbeResult } from "../rtc/workerProbe";
+import { ENCRYPTED_ONLY_BLOCKED_ERROR_NAME } from "./apiErrorType.ts";
 import { classifyDeviceDelete } from "./deviceDeleteClassifier.ts";
+import { nativeRejectError } from "./e2eeCallPlaneIos";
 import {
   CLAIM_RETRY_DELAY_MS,
   claimRefusal,
@@ -91,11 +95,14 @@ import {
   toOwnDeviceViews,
 } from "./e2eeOwnDevices.ts";
 import {
+  backupRefreshFocusDue,
   capacitorAttachmentUrl,
   capacitorClipboardImageInWebview,
   capacitorCouriersOrphanedRecovery,
   capacitorNativeE2EE,
+  iosMediaE2EEReady,
   mediaE2EEPlatformSupported,
+  shellRefreshesBackup,
 } from "./e2eePlatform";
 import { protectorSendErrorCopy } from "./e2eeProtectorCopy";
 import {
@@ -115,6 +122,20 @@ import {
   isTrustedId,
   trustEncryptedId,
 } from "./e2eeTrustedRow";
+import { buildPlainWriteInput, peerTurnedOff } from "./encryptedOnlyGuard.ts";
+import {
+  forgetSeen,
+  isSeen,
+  latchAccountId,
+  latchedForClient,
+  rememberSeen,
+} from "./encryptedOnlyLatch.ts";
+import {
+  type BlockReason,
+  type PlainWriteInput,
+  decidePlainWrite,
+  reasonFor,
+} from "./encryptedOnlyPolicy.ts";
 import {
   activeDeviceCount,
   claimIncludeFlight,
@@ -145,6 +166,22 @@ import {
 } from "./mlsResumeKeep";
 import { IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW } from "./popout";
 import { fetchProtectedChannelsFlag } from "./protectedChannelsFlag";
+import { type OwnListingRequest, OwnListingCache } from "./protectedOwnListing";
+import {
+  type AndroidProbe,
+  type AndroidTextCapability,
+  type FlagEvent,
+  type FlagState,
+  type ShellTransportKind,
+  type StoreOwnerCheck,
+  type StructuralInput,
+  mapTextInvokeError,
+  protectedPlatformTag,
+  reduceFlag,
+  storeOwnerAllows,
+  structuralState,
+} from "./protectedPlatform";
+import type { ResecureInputs } from "./protectedResecurePolicy";
 import {
   type TextSinkSource,
   routeMls,
@@ -161,7 +198,15 @@ import {
   encryptAndSend,
   markerForError,
 } from "./protectedTextMessages";
-import { protect, setSeats } from "./protectedTextOwner";
+import {
+  cancelPendingSeats,
+  moveOwnerKey,
+  pendingSeats,
+  protect,
+  recoverOwnership,
+  setSeats,
+  signOwnerDevices,
+} from "./protectedTextOwner";
 import {
   type ProtectedChannelInfo,
   type ProtectedChannelsFlag,
@@ -172,6 +217,7 @@ import {
   type ProtectedTextPort,
   type ProtectedToastKind,
   type ProtectedUiApi,
+  type TextApiHeaders,
   type TextApiMethod,
   type TextApiResponse,
   type TextCommand,
@@ -504,6 +550,33 @@ export class E2EEApiError extends Error {
   }
 }
 
+/**
+ * `PUT /e2ee/backup` answered with a generation other than the one sent: the
+ * server kept another blob, so this upload is not recorded as done. The
+ * message is for logs only; `components/i18n/errors.ts` matches the name
+ * and shows its own words.
+ */
+export class BackupNotStoredError extends Error {
+  constructor() {
+    super("The server did not store this backup generation");
+    this.name = "BackupNotStoredError";
+  }
+}
+
+/**
+ * A desktop create or rotate whose recovery window's upload failed for any
+ * other reason (a 413, 429 or 5xx, the network, a native take that threw),
+ * or that had no outcome within `RECOVERY_WAIT_MS`. The message is for logs
+ * only; `components/i18n/errors.ts` matches the name and shows its own
+ * words. The underlying error is not kept: it may carry a server body.
+ */
+export class BackupUploadFailedError extends Error {
+  constructor() {
+    super("The backup upload did not complete");
+    this.name = "BackupUploadFailedError";
+  }
+}
+
 /** IPC-safe attachment metadata (mirrors native `AttachmentMeta` — no keys) */
 export type E2EEAttachmentMeta = {
   local_id: string;
@@ -595,10 +668,68 @@ export class E2EESendError extends Error {
        *  unencrypted: nothing was sent; the user must confirm first. */
       | "group_unconfirmed"
       /** As above, with encrypted traffic for the group seen here. */
-      | "group_unestablished",
+      | "group_unestablished"
+      /** Refused because it would go out unencrypted
+       *  (`E2EEEncryptedOnlyError`). */
+      | "encrypted_only"
+      /** As above, for a peer that turned Encrypted-only off
+       *  (`E2EEPeerChangedError`). */
+      | "peer_changed"
+      /** Files for a chat that a text message has to encrypt first. */
+      | "first_file",
   ) {
     super(message);
     this.name = "E2EESendError";
+  }
+}
+
+/**
+ * What a send refused for not being encrypted says, by reason. The same
+ * English as `components/i18n/errors.ts`, which translates it.
+ */
+const ENCRYPTED_ONLY_COPY: Record<BlockReason, string> = {
+  sender: "You only send encrypted messages. This chat is not encrypted yet.",
+  recipient: "This person only accepts encrypted messages.",
+  group:
+    "This group is encrypted. Send from a device where encryption is set up.",
+  setup: "Finish setting up encryption on this device to use your chats.",
+  "open-app": "Open the Sloga app to read and send encrypted chats.",
+  "peer-changed":
+    "This person may no longer use Encrypted-only chats. If you send anyway, your message may not be encrypted.",
+};
+
+/**
+ * A send, an upload or a downgrade refused because the result would not be
+ * encrypted. Nothing was sent and no file left the device.
+ *
+ * Still an `E2EESendError` for `instanceof`, but its `name` is the one
+ * `apiErrorType.ts` reads (`encryptionRequiredSide`), so a failed message
+ * stores `reason` as its marker. A retry of that message runs every check
+ * again. A check for the name "E2EESendError" does not match it.
+ */
+export class E2EEEncryptedOnlyError extends E2EESendError {
+  /** Why it was refused; the failed message stores this. */
+  readonly reason: BlockReason;
+
+  constructor(
+    reason: BlockReason,
+    kind: "encrypted_only" | "peer_changed" = "encrypted_only",
+  ) {
+    super(ENCRYPTED_ONLY_COPY[reason], kind);
+    this.name = ENCRYPTED_ONLY_BLOCKED_ERROR_NAME;
+    this.reason = reason;
+  }
+}
+
+/**
+ * The peer was once Encrypted-only and no longer says so (the flag is
+ * missing, or an update said off). Nothing was sent. Its reason is
+ * `peer-changed`, never `recipient`. `confirmPeerChanged` in
+ * `encryptedOnlyLatch.ts` lets the next send be decided as for anyone else.
+ */
+export class E2EEPeerChangedError extends E2EEEncryptedOnlyError {
+  constructor() {
+    super("peer-changed", "peer_changed");
   }
 }
 
@@ -623,6 +754,12 @@ export interface MlsCreateGroupPayload {
   channel_id: string;
   device_id: string;
   supersedes?: string | null;
+  /** Protected text groups only (absent = a call group). */
+  kind?: "Text";
+  /** Text only: the group-id generation. */
+  generation?: number;
+  /** Text only: the client's text protocol (S4 floor; not from native). */
+  protocol?: number;
 }
 
 /** Result of `callCreate`: the group id + the `POST /mls/groups` body. */
@@ -636,6 +773,10 @@ export interface MlsJoinIntentPayload {
   device_id: string;
   key_package_ref: string;
   signature: string;
+  /** Text join payload only (v2 lists): the signed generation. */
+  generation?: number;
+  /** Text join payload only (v2 lists): the signed issue time (ms). */
+  issued_at?: number;
 }
 
 /** A fanned-out join intent (the `MlsJoinRequested` bonfire event). */
@@ -646,6 +787,57 @@ export interface MlsJoinRequest {
   device_id: string;
   key_package_ref: string;
   signature: string;
+  /**
+   * Text join payload only (v2 lists): the signed generation. Absent means
+   * the intent was signed over the S1 payload.
+   */
+  generation?: number;
+  /** Text join payload only (v2 lists): the signed issue time (ms). */
+  issued_at?: number;
+}
+
+/**
+ * Why the server admitted a removed device (protected channels 3.12.2,
+ * `wire::MlsRemovalReason`). ADVISORY: native decides from signed
+ * material, and maps a value it does not know to its own `Unknown`.
+ */
+export type MlsRemovalReason =
+  | "own_user"
+  | "pending_removal"
+  | "off_list"
+  | "revoked"
+  | "rejoin"
+  | "pending_device"
+  | "idle";
+
+/** One removed device's advisory reason (Text commits only, S2). */
+export interface MlsRemovedReason {
+  user_id: string;
+  device_id: string;
+  reason: MlsRemovalReason | (string & {});
+}
+
+/**
+ * The signed S2 fields of a fanned-out join intent (OR-6). Absent fields
+ * keep the S1 shape (`{}`; a Call intent never has them). A field that is
+ * present but not a safe non-negative integer (`null` included: the server
+ * omits them, never nulls them) makes the whole intent malformed: `null`,
+ * so the caller drops it instead of native verifying it over the S1 payload.
+ */
+export function joinIntentSignedFields(event: {
+  generation?: unknown;
+  issued_at?: unknown;
+}): Pick<MlsJoinRequest, "generation" | "issued_at"> | null {
+  const out: Pick<MlsJoinRequest, "generation" | "issued_at"> = {};
+  for (const key of ["generation", "issued_at"] as const) {
+    const v = event[key];
+    if (v === undefined) continue;
+    if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) {
+      return null;
+    }
+    out[key] = v;
+  }
+  return out;
 }
 
 /** A KeyPackage claimed for admission (flattened DS claim response). */
@@ -685,6 +877,8 @@ export interface MlsEnvelope {
   group_id: string;
   epoch: number;
   ciphertext: string;
+  /** Text `mls_commit` only (S2): absent = none. */
+  removed_reasons?: MlsRemovedReason[];
 }
 
 /**
@@ -813,6 +1007,8 @@ export interface MlsCommitInfo {
   commit: string;
   added: MlsMemberDevice[];
   removed: MlsMemberDevice[];
+  /** Text groups only (S2): absent = none; never on Call commits. */
+  removed_reasons?: MlsRemovedReason[];
 }
 
 /** Response to `POST /mls/groups` (an `Arbitrated` — 200 Created / 409 Conflict). */
@@ -1010,6 +1206,20 @@ export function nativeE2EEAvailable(): boolean {
   );
 }
 
+/**
+ * Whether this document is the main window. The popout and the overlay are
+ * their own documents with this flag false. Desktop chat windows are child
+ * windows of main that never load this module, so main's `window` is the
+ * one this module sees.
+ */
+const IS_MAIN_WINDOW = !IS_POPOUT_WINDOW && !IS_OVERLAY_WINDOW;
+
+/**
+ * The longest a desktop create or rotate waits for its recovery window's
+ * outcome before it returns without one.
+ */
+const RECOVERY_WAIT_MS = 15 * 60 * 1000;
+
 // ================================================================
 // Native transports
 //
@@ -1019,7 +1229,8 @@ export function nativeE2EEAvailable(): boolean {
 // desktop, a Capacitor plugin over uniffi on Android and iOS. Command names,
 // argument shapes and error payloads are identical by construction, so every
 // security decision above this seam is platform-independent. (A shell may
-// leave commands out: iOS rejects the call and MLS commands.)
+// leave commands out: iOS rejects the desktop-only ones, such as remote
+// control and the protected text plane.)
 // ================================================================
 
 interface NativeTransport {
@@ -1040,6 +1251,13 @@ interface NativeTransport {
    * has to go through the shell's own clipboard command instead.
    */
   readonly clipboardImageInWebview: boolean;
+  /**
+   * Whether the bridge refreshes the key backup by itself on this page, after
+   * each accepted claim and on main-window focus (`shellRefreshesBackup`):
+   * Electron and iOS in the main window. Never Android, and not Tauri while
+   * its backup commands run on the main thread.
+   */
+  readonly refreshesBackup: boolean;
   invoke<T>(
     command: string,
     args?: Record<string, unknown> | Uint8Array,
@@ -1135,6 +1353,11 @@ interface NativeTransport {
 class TauriTransport implements NativeTransport {
   readonly nativeBlobTransfer = false;
   readonly clipboardImageInWebview = false;
+  readonly refreshesBackup = shellRefreshesBackup({
+    shell: "tauri",
+    capacitorPlatform: Capacitor.getPlatform(),
+    mainWindow: IS_MAIN_WINDOW,
+  });
   #tauri = (window as unknown as { __TAURI__: TauriGlobal }).__TAURI__;
 
   invoke<T>(
@@ -1190,6 +1413,12 @@ export type SlogaShellGlobal = {
      * Consumed by `platformMediaE2EESupported()`.
      */
     mediaE2EE?: boolean;
+    /**
+     * Protected channels text-plane protocol (S7 D8): present, as a number,
+     * only on a Linux shell whose loaded native module backs every text
+     * command. Read by the bridge's `structuralState` input; only `1` counts.
+     */
+    protectedText?: number;
     invoke(command: string, args?: unknown): Promise<unknown>;
     /** Allowlisted event subscription; returns an unsubscribe fn */
     on(name: string, callback: (payload: unknown) => void): () => void;
@@ -1214,6 +1443,11 @@ export type SlogaShellGlobal = {
 class ElectronTransport implements NativeTransport {
   readonly nativeBlobTransfer = false;
   readonly clipboardImageInWebview = false;
+  readonly refreshesBackup = shellRefreshesBackup({
+    shell: "electron",
+    capacitorPlatform: Capacitor.getPlatform(),
+    mainWindow: IS_MAIN_WINDOW,
+  });
   #e2ee = (window as unknown as { slogaShell: Required<SlogaShellGlobal> })
     .slogaShell.e2ee;
 
@@ -1281,6 +1515,18 @@ class ElectronTransport implements NativeTransport {
   }
 }
 
+/**
+ * The one window global the iOS shell installs for the page (call E2EE
+ * phase 2, C4): `SlogaBridgeViewController` defines `__slogaIosCaps` at
+ * document start as a frozen, non-writable, non-configurable
+ * `{ mediaE2EE: <Info.plist SlogaMediaE2EE> }`. Typed here and nowhere else,
+ * with `mediaE2EE` left `unknown` so only `iosMediaE2EEReady`'s literal-true
+ * check can read it. Absent on every other platform and on a phase-1 build.
+ */
+type SlogaIosCapsWindow = {
+  readonly __slogaIosCaps?: { readonly mediaE2EE?: unknown };
+};
+
 /** Capacitor plugin surface (see android `E2eePlugin.kt`) */
 type E2eeCapacitorPlugin = {
   call(options: Record<string, unknown>): Promise<{ json: string }>;
@@ -1337,6 +1583,29 @@ type E2eeCapacitorPlugin = {
     options: Record<string, unknown>,
   ): Promise<{ json: string }>;
   /**
+   * Protected channels (S7 D3): the three text commands that show a native
+   * confirmation, as dedicated methods (the `enableGroup` pattern). Reject
+   * `declined` on cancel, `busy` while another consent dialog is open, and
+   * `unavailable` on the legacy bridge or when no prompt could be shown.
+   * S2 adds `textAuthoritySign`, the same way.
+   */
+  textSeatListSign(options: Record<string, unknown>): Promise<{ json: string }>;
+  textOwnerConfirmChange(
+    options: Record<string, unknown>,
+  ): Promise<{ json: string }>;
+  textOwnerHandoverSign(
+    options: Record<string, unknown>,
+  ): Promise<{ json: string }>;
+  textAuthoritySign(
+    options: Record<string, unknown>,
+  ): Promise<{ json: string }>;
+  /**
+   * Protected channels (S7 D9): the Android text-plane probe. Not an
+   * `e2ee_*` command. `listenerBridge` is false when the WebView fell back
+   * to the all-frames JavaScript interface; every text arm refuses then.
+   */
+  textCapability(): Promise<AndroidTextCapability>;
+  /**
    * Subscribe to native `callKeysChanged` epoch-advance pushes (the
    * desktop `e2ee:call-keys-changed` analog). The event payload is the
    * PUBLIC `{group_id, epoch}` pair — never key material.
@@ -1367,6 +1636,12 @@ class CapacitorTransport implements NativeTransport {
   readonly clipboardImageInWebview = capacitorClipboardImageInWebview(
     Capacitor.getPlatform(),
   );
+  // iOS only; Android and a plain web build read false.
+  readonly refreshesBackup = shellRefreshesBackup({
+    shell: "capacitor",
+    capacitorPlatform: Capacitor.getPlatform(),
+    mainWindow: IS_MAIN_WINDOW,
+  });
   #plugin = registerPlugin<E2eeCapacitorPlugin>("E2ee");
 
   /**
@@ -1392,19 +1667,14 @@ class CapacitorTransport implements NativeTransport {
   /**
    * Reject payloads are the core's scrubbed error JSON in the exception
    * message; parse it back so callers see the SAME typed error objects the
-   * desktop Tauri IPC rejects with.
+   * desktop Tauri IPC rejects with, `type` intact (`callConfirmDowngrade`'s
+   * `declined`, `crypto_failure`, `invalid_argument` included). A call-plane
+   * `command` rejected `protector_locked` (a locked iPhone, plan D10) is
+   * thrown as the readable `CallProtectorLockedError` instead
+   * (`e2eeCallPlaneIos.ts`).
    */
-  #rethrow(error: unknown): never {
-    const message = (error as { message?: string })?.message;
-    if (message?.startsWith("{")) {
-      try {
-        throw JSON.parse(message);
-      } catch (parsed) {
-        if (parsed && typeof parsed === "object" && "type" in parsed)
-          throw parsed;
-      }
-    }
-    throw error;
+  #rethrow(error: unknown, command?: string): never {
+    throw nativeRejectError(command, error, Capacitor.getPlatform());
   }
 
   async invoke<T>(
@@ -1483,6 +1753,35 @@ class CapacitorTransport implements NativeTransport {
         return JSON.parse(json) as T;
       }
 
+      // Protected channels (S7 D3): a seat list, an owner change and an
+      // owner handover are signed only after a tap on a native dialog the
+      // webview cannot draw → dedicated methods, never the generic `call()`.
+      // S2 adds the channel authority, the same way.
+      if (command === "e2ee_text_seat_list_sign") {
+        const { json } = await this.#plugin.textSeatListSign(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return JSON.parse(json) as T;
+      }
+      if (command === "e2ee_text_owner_confirm_change") {
+        const { json } = await this.#plugin.textOwnerConfirmChange(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return JSON.parse(json) as T;
+      }
+      if (command === "e2ee_text_owner_handover_sign") {
+        const { json } = await this.#plugin.textOwnerHandoverSign(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return JSON.parse(json) as T;
+      }
+      if (command === "e2ee_text_authority_sign") {
+        const { json } = await this.#plugin.textAuthoritySign(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return JSON.parse(json) as T;
+      }
+
       // Split step 1 → dedicated native-dialog method: a new device id is
       // announced to every contact, so it is minted only after a tap on a
       // dialog the webview cannot draw. Commit and discard are generic.
@@ -1517,7 +1816,7 @@ class CapacitorTransport implements NativeTransport {
       });
       return JSON.parse(json) as T;
     } catch (error) {
-      this.#rethrow(error);
+      this.#rethrow(error, command);
     }
   }
 
@@ -1611,13 +1910,31 @@ class CapacitorTransport implements NativeTransport {
     // A remote-webview config would reintroduce skew (new JS asserting this
     // against an old shell) and must NOT be used while media E2EE ships.
     //
-    // 🔴 iOS answers false ON PURPOSE (plan D7, media gate pin): calls on
-    // iPhone are plaintext in phase 1, and `platformMediaE2EESupported()` is
-    // TRUE there (no `slogaShell`), so this false is the only thing keeping
-    // `mediaE2EEPlatformSupported()` and `shellSupported` false and iOS calls
-    // honest. NEVER flip it to true for iOS.
+    // 🔴 iOS answers true ONLY through `iosMediaE2EEReady` (plan D6 + D8, W3
+    // MUST 1). `platformMediaE2EESupported()` is TRUE on iOS (no
+    // `slogaShell`), so this answer alone decides
+    // `mediaE2EEPlatformSupported()`, `shellSupported` and the KeyPackage
+    // prepublish there. All four terms
+    // are required and each fails closed: the build carries the call surface
+    // (the shell's frozen `__slogaIosCaps.mediaE2EE`, literal `true` only;
+    // phase-1 and Release builds say nothing or false), the E2ee plugin
+    // registered (the same check `nativeE2EEAvailable` makes: the caps flag
+    // describes the build, the plugin says the guard installed), WebKit has
+    // `RTCRtpScriptTransform` (iOS 15.0-15.3 does not), and the app-start
+    // worker probe PASSED (`"pending"` reads false like `"fail"`). Never
+    // answer true for iOS on fewer terms, and never on any other platform.
+    const platform = Capacitor.getPlatform();
     return (
-      Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android"
+      Capacitor.isNativePlatform() &&
+      (platform === "android" ||
+        (platform === "ios" &&
+          iosMediaE2EEReady({
+            capsMediaE2EE: (window as SlogaIosCapsWindow).__slogaIosCaps
+              ?.mediaE2EE,
+            pluginPresent: Capacitor.isPluginAvailable("E2ee"),
+            scriptTransform: typeof RTCRtpScriptTransform !== "undefined",
+            probe: workerProbeResult(),
+          })))
     );
   }
 
@@ -1628,6 +1945,18 @@ class CapacitorTransport implements NativeTransport {
     return () => {
       void handle.remove();
     };
+  }
+
+  /**
+   * Protected channels (S7 D9): the Android text-plane probe, asked once per
+   * bridge. Android only; the bridge never asks on iOS.
+   */
+  async textCapability(): Promise<AndroidTextCapability> {
+    try {
+      return await this.#plugin.textCapability();
+    } catch (error) {
+      this.#rethrow(error);
+    }
   }
 }
 
@@ -2022,11 +2351,30 @@ export class E2EEBridge implements E2EEAdapter {
   #splitProbed = false;
   #splitProbing = false;
 
+  /**
+   * Peers an encryption attempt found with no usable device, as
+   * "account:peer". While an entry holds, a first message with files is not
+   * split and its files are not held back for a text message, so the send
+   * goes as it did before. Not persisted. Cleared when the peer's devices
+   * change, when the chat reads as encrypted, on `ready` and on a wipe.
+   */
+  #noUsableDevice = new Set<string>();
+
   constructor(client: Client) {
     this.#client = client;
     this.#transport = createNativeTransport();
 
+    // A deleted account loses its Encrypted-only flag with the account.
+    // That is not "turned off": the peer is forgotten instead.
+    client.on("userUpdate", (user) => {
+      if ((user.flags & UserFlags.Deleted) === UserFlags.Deleted) {
+        this.#onPeerDeleted(user.id);
+      }
+    });
+
     client.on("ready", () => {
+      // Device facts about peers may be stale after any gap
+      this.#noUsableDevice.clear();
       // A new connection: its device claim has not landed yet
       this.#claimAccepted = null;
       this.#claimWaitSpent = false;
@@ -2036,7 +2384,7 @@ export class E2EEBridge implements E2EEAdapter {
       this.#clearClaimRetry();
       // A (re)connect may follow any amount of missed device traffic
       this.#invalidateProof();
-      void this.#onReady();
+      void this.#runStartup();
     });
     // The courier's view only (see `#socketDown`): `#claimAccepted` itself
     // keeps its meaning for the group proof on every shell.
@@ -2049,6 +2397,8 @@ export class E2EEBridge implements E2EEAdapter {
     // iOS: listen from the first moment, since the bundle this waits for is
     // usually kept AFTER the page has loaded and claimed. A no-op elsewhere.
     this.#watchOrphanedBackup();
+    // Desktop and iOS: re-check the backup when the main window regains focus
+    this.#watchBackupFocus();
   }
 
   /**
@@ -2254,8 +2604,9 @@ export class E2EEBridge implements E2EEAdapter {
    * A throw leaves calls and DMs as they were (UNKNOWN), but the protected
    * text plane fails closed on it (S1-final A-1): `#storeOwnerUnread` starts
    * set and keeps `protectedTextCapable()` false until a read SUCCEEDS (an
-   * owner, or no MLS row: nobody's groups). Retries run only on the Tauri
-   * main window, the one window the text plane runs in; elsewhere the text
+   * owner, or no MLS row: nobody's groups). Retries run only on a structural
+   * window (`#protectedStructural()`: the Tauri main window, and Electron or
+   * Android per S7), the windows the text plane runs in; elsewhere the text
    * plane is never capable, so a shell without the accessor stays the benign
    * case. The first successful read runs the F4 boot gate.
    */
@@ -2271,6 +2622,7 @@ export class E2EEBridge implements E2EEAdapter {
       // No accessor on this shell, or it failed (busy, storage, protector,
       // corrupt store): the server-side signals stand for calls and DMs.
       this.#storeOwnerUnread = true;
+      this.#protectedNoteStoreOwner({ state: "unknown" });
       this.#scheduleStoreOwnerRetry();
       return;
     }
@@ -2281,6 +2633,16 @@ export class E2EEBridge implements E2EEAdapter {
       clearTimeout(this.#storeOwnerRetryTimer);
       this.#storeOwnerRetryTimer = null;
     }
+    // Protected channels (S7 Step 0 fold 1): what this check found, for
+    // `protectedTextCapable()`. `null` is a store with no MLS row yet; any
+    // other non-string or empty answer is unknown, never an owner.
+    this.#protectedNoteStoreOwner(
+      owner === null
+        ? { state: "known", owner: null }
+        : typeof owner === "string" && owner !== ""
+          ? { state: "known", owner }
+          : { state: "unknown" },
+    );
 
     if (owner && owner !== userId) {
       this.#raiseStoreOwnedByAnotherAccount();
@@ -2314,7 +2676,7 @@ export class E2EEBridge implements E2EEAdapter {
    * boot-race `#ensureBootStatus`, or `enable()` on a device that was
    * unprovisioned at connect, where no read ran). The text plane asks for
    * the read instead of trusting the status: deduped, never while a backoff
-   * retry is pending, and only on the Tauri main window with an enabled
+   * retry is pending, and only on a structural window with an enabled
    * status.
    */
   #requestStoreOwnerRead(): void {
@@ -2379,6 +2741,14 @@ export class E2EEBridge implements E2EEAdapter {
 
   async #onReady(): Promise<void> {
     try {
+      // Protected channels (S7 D9): on Electron and Android, the server flag
+      // and the Android probe are settled ONCE, before anything below runs,
+      // so this connect's claim (and the mailbox drain it starts) meets a
+      // decided router; until then MLS envelopes are held, never routed.
+      // Never rejects. Null where nothing is undecided (Tauri, iOS, web).
+      const platformStart = this.#protectedPlatformStart();
+      if (platformStart) await platformStart;
+
       // A fresh/unprovisioned device must NOT open the engine on connect:
       // `refreshStatus` → `e2ee_status` → `E2ee::open` writes master.key +
       // store.db, and a provisioned store makes key-backup RESTORE unreachable
@@ -2408,6 +2778,9 @@ export class E2EEBridge implements E2EEAdapter {
         // flag can therefore never be created — self-sustaining until restart,
         // with the enrol route hidden (media-e2ee-reviewer, HIGH-3).
         this.storeOwnedByAnotherAccount.delete("state");
+        // The same holds for the text plane's owner check: a store that
+        // this session's enable or restore creates belongs to this account.
+        this.#protectedNoteStoreOwner({ state: "known", owner: null });
         // Returning user on a new device (account opted in on another device)
         // ⇒ surface the restore-vs-start-fresh choice; the engine stays
         // unopened until the user picks. A brand-new user (never opted in) is
@@ -2486,6 +2859,70 @@ export class E2EEBridge implements E2EEAdapter {
       // marks it ready (structural), then builds the manager if capable.
       void this.#protectedOnReady();
     }
+  }
+
+  /** The `#onReady` run in flight, whoever started it. */
+  #startupRun: Promise<void> | null = null;
+
+  /** The retry `retryStartupIfUnset` is running, shared by its callers. */
+  #startupRetry: Promise<void> | null = null;
+
+  /**
+   * Run `#onReady` and note it as the run in flight. A `ready` always starts
+   * a fresh run here, exactly as it did before the retry existed.
+   */
+  #runStartup(): Promise<void> {
+    const run = this.#onReady().finally(() => {
+      if (this.#startupRun === run) this.#startupRun = null;
+    });
+    this.#startupRun = run;
+    return run;
+  }
+
+  /**
+   * Whether the startup work is still owed: no status has loaded, and this
+   * bridge still serves a signed-in client (not replaced by `dispose()`, not
+   * signed out).
+   */
+  #startupStillOwed(): boolean {
+    return (
+      this.status.get("state") === undefined &&
+      !this.#disposed &&
+      !this.#ptSignedOut &&
+      !!this.#client.user
+    );
+  }
+
+  /**
+   * Run the startup work (`#onReady`: provisioning check, owner read, status
+   * load, device claim) once more if the status has still not loaded.
+   *
+   * A phone answering a call from its lock screen starts this page while it
+   * is locked. The key store cannot be opened on a locked phone (the Android
+   * Keystore wrapping key requires an unlocked device), so the status load
+   * fails, and nothing runs it again while the socket stays up. A join calls
+   * this after the unlock.
+   *
+   * Single-flight: concurrent callers share one retry. A run already in
+   * flight (a `ready`'s) is waited for first, and a new run starts only if
+   * the status is still missing after it. A no-op when the status is already
+   * there or the bridge no longer serves a signed-in client. Never rejects:
+   * `#onReady` catches its own failures and leaves the status unset, and
+   * nothing here stands a value in for a status that did not load.
+   */
+  retryStartupIfUnset(): Promise<void> {
+    if (!this.#startupStillOwed()) return Promise.resolve();
+    this.#startupRetry ??= (async () => {
+      try {
+        while (this.#startupRun) await this.#startupRun;
+        if (this.#startupStillOwed()) await this.#runStartup();
+      } catch (error) {
+        console.error("[e2ee] startup retry failed", error);
+      }
+    })().finally(() => {
+      this.#startupRetry = null;
+    });
+    return this.#startupRetry;
   }
 
   /**
@@ -2724,10 +3161,12 @@ export class E2EEBridge implements E2EEAdapter {
             event.split_from ?? null,
           );
         } else {
+          this.#forgetNoUsableDevice(event.user_id);
           void this.#onDeviceCreate(event.user_id);
         }
         break;
       case "E2EEDeviceDelete":
+        this.#forgetNoUsableDevice(event.user_id);
         void this.#onDeviceDelete(event.user_id, event.device_id);
         break;
       case "MlsJoinRequested": {
@@ -2735,6 +3174,19 @@ export class E2EEBridge implements E2EEAdapter {
         // intent to the active call session's admit scheduler. No session ⇒
         // dropped, never held: a joiner re-broadcasts on its retry timer, and
         // a late replay of a held intent could admit a joiner who has left.
+        // S2 (OR-6): a v2 Text intent's signed `generation` / `issued_at`
+        // ride along (a Call or S1 intent has neither, so its object is
+        // unchanged). One present but malformed drops the whole intent, for
+        // the call path too: never a fall back to the S1 shape. Ids only.
+        const signed = joinIntentSignedFields(event);
+        if (signed === null) {
+          console.warn("[protected] malformed join request dropped", {
+            groupId: event.group_id,
+            userId: event.user_id,
+            deviceId: event.device_id,
+          });
+          break;
+        }
         const request: MlsJoinRequest = {
           group_id: event.group_id,
           channel_id: event.channel_id,
@@ -2742,6 +3194,7 @@ export class E2EEBridge implements E2EEAdapter {
           device_id: event.device_id,
           key_package_ref: event.key_package_ref,
           signature: event.signature,
+          ...signed,
         };
         const rejoin = event.rejoin ?? false;
         // Protected channels: an indexed text group's intent goes to the
@@ -2773,6 +3226,16 @@ export class E2EEBridge implements E2EEAdapter {
           this.#protectedRouteEnvelope(event, armType, sinkEvent) === "call"
         ) {
           this.#deliverMlsEnvelope(sinkEvent);
+        }
+        break;
+      }
+      case "ProtectedChannelChanged": {
+        // Protected channels (S2, design 7.5): a refetch hint for the text
+        // manager only (no manager = no-op). Never a security input; the
+        // manager filters the scope items it knows. The call stays guarded
+        // although the method is required: a manager without it is a no-op.
+        if (typeof event.id === "string" && Array.isArray(event.scope)) {
+          this.#ptManager?.onChannelChanged?.(event.id, event.scope);
         }
         break;
       }
@@ -2983,14 +3446,14 @@ export class E2EEBridge implements E2EEAdapter {
       console.error("[e2ee] post-claim housekeeping failed", error);
     }
 
-    // iOS: upload a recovery bundle the native sheet kept for an earlier page
-    // (see `#watchOrphanedBackup`). The event is the main path; this picks
-    // up a bundle whose event arrived before this connection's claim was
-    // accepted, or while no page was listening. It cannot help after the app
-    // process died: the kept bundle lived only in memory. Outside the try so
-    // a failed reconcile does not skip it.
-    if (this.#transport.subscribeBackupBundleWaiting) {
-      await this.#courierOrphanedBackup();
+    // Refresh the backup if native says one is due, on the shells that do
+    // (`refreshesBackup`: Electron, iOS; not Tauri for now, never Android).
+    // On iOS this also uploads a recovery bundle the native sheet kept for
+    // an earlier page whose event came before this claim (see
+    // `#watchOrphanedBackup`).
+    // Outside the try so a failed reconcile does not skip it.
+    if (this.#transport.refreshesBackup) {
+      await this.#courierBackupRefresh();
     }
   }
 
@@ -3770,8 +4233,10 @@ export class E2EEBridge implements E2EEAdapter {
           "native",
         );
       }
+      this.#refusePlainFallback(channel);
       return null;
     }
+    this.#noteEncryptedOnly(channel, peerId);
 
     // The NATIVE layer is the SOLE authority for plaintext-vs-encrypt — the
     // webview never caches or second-guesses it (a stale cache is the
@@ -3790,7 +4255,7 @@ export class E2EEBridge implements E2EEAdapter {
         "native",
       );
     }
-    this.sendModes.set(peerId, this.#composerMode(verdict));
+    this.#setDmMode(peerId, this.#composerMode(verdict));
 
     if (verdict.mode === "peer_downgraded") {
       throw new E2EESendError(
@@ -3819,7 +4284,10 @@ export class E2EEBridge implements E2EEAdapter {
           "native",
         );
       }
-      if (!(await this.#shouldInitiate(peerId, data))) return null;
+      if (!(await this.#shouldInitiate(peerId, data))) {
+        this.#refusePlainFallback(channel);
+        return null;
+      }
       opportunistic = true;
     }
 
@@ -3852,7 +4320,11 @@ export class E2EEBridge implements E2EEAdapter {
     if (!result) {
       // Opportunistic establishment found no usable peer keys (stale or
       // spoofed advertisement) — nothing was pinned, the conversation is
-      // genuinely still plaintext. Fall through to the ordinary path.
+      // genuinely still plaintext. Fall through to the ordinary path,
+      // unless an unencrypted send is refused here. Kept for the page, so
+      // later first sends with files are not split for this peer.
+      this.#noteNoUsableDevice(peerId);
+      this.#refusePlainFallback(channel);
       return null;
     }
 
@@ -3953,6 +4425,7 @@ export class E2EEBridge implements E2EEAdapter {
   ): Promise<Message | null> {
     if (channel.type !== "Group") return null;
     const conversationId = channel.id;
+    this.#noteEncryptedOnly(channel);
 
     let verdict: SendModeVerdict;
     try {
@@ -4012,7 +4485,9 @@ export class E2EEBridge implements E2EEAdapter {
         );
       }
       // Never-encrypted group (proven, confirmed, or no E2EE account
-      // here): the ordinary plaintext path
+      // here): the ordinary plaintext path, unless an unencrypted send
+      // is refused here
+      this.#refusePlainFallback(channel);
       return null;
     }
 
@@ -4841,6 +5316,7 @@ export class E2EEBridge implements E2EEAdapter {
    * control message fans out and the sticky state clears.
    */
   async downgradeConversation(channel: Channel): Promise<void> {
+    this.#refusePlaintextExit(channel);
     const conversationId =
       channel.type === "Group" ? channel.id : this.#peerOf(channel);
     if (!conversationId) return;
@@ -5030,6 +5506,8 @@ export class E2EEBridge implements E2EEAdapter {
    * opens plaintext; declining keeps the conversation encrypted.
    */
   async confirmPeerDowngrade(channel: Channel, accept: boolean): Promise<void> {
+    // Declining keeps the conversation encrypted and is always allowed
+    if (accept) this.#refusePlaintextExit(channel);
     const conversationId =
       channel.type === "Group" ? channel.id : this.#peerOf(channel);
     if (!conversationId) return;
@@ -5544,6 +6022,7 @@ export class E2EEBridge implements E2EEAdapter {
     conversationId: string,
     expected: "unconfirmed" | "unestablished",
   ): Promise<void> {
+    this.#refusePlaintextExit(this.#groupChannel(conversationId));
     await this.#invoke<null>("e2ee_acknowledge_group_plaintext", {
       conversationId,
       expected,
@@ -5590,10 +6069,20 @@ export class E2EEBridge implements E2EEAdapter {
     // the draft path (guardSend saw a plaintext verdict) — upgrading now
     // would hard-error on attachments and orphan the upload. Text-only
     // sends upgrade; attachment sends keep the plaintext status quo.
+    // A first message with files no longer gets here while the chat could
+    // be encrypted: the draft path sends its text first
+    // (`willSplitFirstSend`) and `prepareDraftAttachments` refuses the
+    // upload otherwise.
     if (data.attachments?.length) return false;
 
-    // The peer must advertise opt-in (UI/discovery hint — see User docs)
-    if (!this.#client.users.get(peerId)?.e2eeEnabled) return false;
+    // The peer must advertise opt-in (UI/discovery hint — see User docs),
+    // or be Encrypted-only, which needs no hint
+    if (
+      !this.#client.users.get(peerId)?.e2eeEnabled &&
+      !this.#peerMustEncrypt(peerId)
+    ) {
+      return false;
+    }
 
     // Never opportunistically PROVISION an unprovisioned device here: the
     // status query below would open the engine and write the store, pre-empting
@@ -5833,7 +6322,7 @@ export class E2EEBridge implements E2EEAdapter {
     // Cached proof only, never a listing: opening history must not undo a
     // standing proof's "plaintext" [B1].
     if (isGroup) this.#writeGroupModeCached(conversationId, channel, verdict);
-    else this.sendModes.set(conversationId, this.#composerMode(verdict));
+    else this.#setDmMode(conversationId, this.#composerMode(verdict));
     // A group with no local record has no local transcript: its history is
     // the server's, exactly as for plaintext [B1].
     if (historySource(verdict) === "server") return null;
@@ -5915,6 +6404,207 @@ export class E2EEBridge implements E2EEAdapter {
     return [...channel.recipientIds.values()].find(
       (id) => id !== this.#client.user!.id,
     );
+  }
+
+  // ================================================================
+  // Encrypted-only chats: refusing what would go out unencrypted
+  // ================================================================
+
+  /** Whether this device can encrypt, from the status last read. */
+  #deviceReady(): boolean {
+    const status = this.status.get("state");
+    return !!status && status.enabled && status.published && !!status.device_id;
+  }
+
+  /** The account whose latch and memory this client reads. */
+  #latchAccount(): string | undefined {
+    return latchAccountId(this.#client.user?.id);
+  }
+
+  /**
+   * Whether a peer has to be written to encrypted whatever their opt-in
+   * hint says: their Encrypted-only flag is on, or this device remembers it
+   * on.
+   */
+  #peerMustEncrypt(peerId: string): boolean {
+    return (
+      this.#client.users.get(peerId)?.e2eeOnly === true ||
+      isSeen(this.#latchAccount(), peerId)
+    );
+  }
+
+  /** Remember a peer or a group whose Encrypted-only flag is on. */
+  #noteEncryptedOnly(channel: Channel, peerId?: string): void {
+    const account = this.#latchAccount();
+    if (channel.type === "Group") {
+      if (channel.e2eeOnly) rememberSeen(account, channel.id);
+    } else if (peerId && this.#client.users.get(peerId)?.e2eeOnly) {
+      rememberSeen(account, peerId);
+    }
+  }
+
+  /**
+   * A peer's account was deleted. Its flag went with the account, which says
+   * nothing about the peer's choice, so the peer is forgotten rather than
+   * read as having turned the setting off.
+   */
+  #onPeerDeleted(userId: string): void {
+    const account = this.#latchAccount();
+    if (!account || userId === account || userId === this.#client.user?.id) {
+      return;
+    }
+    forgetSeen(account, userId);
+    this.#forgetNoUsableDevice(userId);
+  }
+
+  /** The `#noUsableDevice` entry for a peer; none without an account. */
+  #noUsableDeviceKey(peerId: string): string | undefined {
+    const account = this.#latchAccount();
+    return account ? `${account}:${peerId}` : undefined;
+  }
+
+  /** An encryption attempt found no usable device for this peer. */
+  #noteNoUsableDevice(peerId: string): void {
+    const key = this.#noUsableDeviceKey(peerId);
+    if (key) this.#noUsableDevice.add(key);
+  }
+
+  /** The peer's devices changed, or the chat reads as encrypted. */
+  #forgetNoUsableDevice(peerId: string): void {
+    const key = this.#noUsableDeviceKey(peerId);
+    if (key) this.#noUsableDevice.delete(key);
+  }
+
+  /** Cache a direct message's send mode. "encrypt" ends a no-device note. */
+  #setDmMode(peerId: string, mode: ComposerE2EEMode): void {
+    this.sendModes.set(peerId, mode);
+    if (mode === "encrypt") this.#forgetNoUsableDevice(peerId);
+  }
+
+  /**
+   * The policy facts for a write that is about to go out unencrypted, so it
+   * never counts as encrypted. Built by the guard module, the one builder.
+   */
+  #plainFacts(channel: Channel): PlainWriteInput {
+    return { ...buildPlainWriteInput(this.#client, channel), encrypted: false };
+  }
+
+  /**
+   * Called at every point where a send or an upload is about to go out
+   * unencrypted. Returns when the policy allows that. Otherwise it throws
+   * and nothing is sent.
+   */
+  #refusePlainFallback(channel: Channel): void {
+    const facts = this.#plainFacts(channel);
+    const decision = decidePlainWrite(facts);
+    if (decision === "allow-plain") return;
+    const reason = reasonFor(decision, facts) ?? "sender";
+    if (decision === "confirm-peer-changed" || reason === "peer-changed") {
+      throw new E2EEPeerChangedError();
+    }
+    throw new E2EEEncryptedOnlyError(reason);
+  }
+
+  /**
+   * Under the latch nothing may turn a conversation unencrypted. Throws
+   * before any native call; without the latch it does nothing.
+   */
+  #refusePlaintextExit(channel: Channel | undefined): void {
+    if (!latchedForClient(this.#client.user?.id)) return;
+    let reason: BlockReason | null = null;
+    if (channel) {
+      const facts = this.#plainFacts(channel);
+      reason = reasonFor(decidePlainWrite(facts), facts);
+    }
+    throw new E2EEEncryptedOnlyError(reason ?? "sender");
+  }
+
+  /**
+   * Whether a text message to this peer would be the one that makes the
+   * chat encrypted: the chat is unencrypted so far, the peer has
+   * encryption on (or is Encrypted-only), this device can encrypt, and no
+   * attempt on this page found the peer without a usable device.
+   */
+  #firstSendEncryptable(
+    peerId: string,
+    mode: ComposerE2EEMode | undefined,
+  ): boolean {
+    if (mode !== "plaintext") return false;
+    const key = this.#noUsableDeviceKey(peerId);
+    if (key && this.#noUsableDevice.has(key)) return false;
+    if (
+      !this.#client.users.get(peerId)?.e2eeEnabled &&
+      !this.#peerMustEncrypt(peerId)
+    ) {
+      return false;
+    }
+    return this.#deviceReady();
+  }
+
+  /**
+   * Whether a draft with files has to be sent as two messages: its text
+   * first, then its files.
+   *
+   * True exactly when the channel is a direct message that is unencrypted
+   * so far but that a text message would make encrypted (the peer has
+   * encryption on and so does this device), and the draft has files. A
+   * chat only becomes encrypted through a text message, so files sent
+   * with that first message used to go to plain storage. Always false for
+   * groups (a group is encrypted by "enable encryption", never by a
+   * message), Saved Notes and servers, and for a draft without files.
+   * Also false while an attempt on this page found the peer with no usable
+   * device (until the peer's devices change or the chat reads as
+   * encrypted), so such a peer is sent to as before. `content` is not
+   * read: a draft with files and no text still answers true, and the
+   * caller asks for a message.
+   *
+   * It reads only what this page has cached and changes nothing, so it can
+   * be called at any time. The caller, before any upload:
+   * 1. sends the text (and the reply) alone, as its own message;
+   * 2. then calls `prepareDraftAttachments` with the files and sends them
+   *    as a second message, passing `textWentPlain` when step 1 did not go
+   *    out encrypted.
+   *
+   * What step 2 gets back:
+   * - ids: step 1 made the chat encrypted, the files went up encrypted.
+   * - `null`: step 1 found no way to encrypt (the peer was unreachable or
+   *   has no usable device) and its text went out unencrypted; the files
+   *   follow it to plain storage as before. Never for an Encrypted-only
+   *   account or peer: step 1 throws for those.
+   * - a throw: nothing was uploaded. `E2EESendError` of kind `first_file`
+   *   means no text message was tried first (the caller skipped step 1, or
+   *   this answered false from a cache that was not loaded yet; asking
+   *   again now answers true).
+   */
+  willSplitFirstSend(
+    channel: Channel,
+    draft: { content?: string; files?: readonly unknown[] },
+  ): boolean {
+    if (!draft.files?.length) return false;
+    if (channel.type !== "DirectMessage") return false;
+    const peerId = this.#peerOf(channel);
+    if (!peerId) return false;
+    return this.#firstSendEncryptable(peerId, this.sendModes.get(peerId));
+  }
+
+  /**
+   * What a direct message peer's Encrypted-only setting looks like from
+   * here, for labels and notices: `"on"`; `"turned-off"` (remembered, and
+   * an update on this page said off: the only case for the "turned off"
+   * notice); `"remembered"` (once seen on, the flag missing now); or
+   * `"none"`. In both remembered states an unencrypted send throws
+   * `E2EEPeerChangedError` until `confirmPeerChanged` (in
+   * `encryptedOnlyLatch.ts`) forgets the peer. Tracked.
+   */
+  peerEncryptedOnlyState(
+    channel: Channel,
+  ): "on" | "turned-off" | "remembered" | "none" {
+    const peerId =
+      channel.type === "DirectMessage" ? this.#peerOf(channel) : undefined;
+    if (!peerId) return "none";
+    if (this.#client.users.get(peerId)?.e2eeOnly) return "on";
+    if (!isSeen(this.#latchAccount(), peerId)) return "none";
+    return peerTurnedOff(this.#client, peerId) ? "turned-off" : "remembered";
   }
 
   /**
@@ -6182,16 +6872,26 @@ export class E2EEBridge implements E2EEAdapter {
    * the CIPHERTEXT is uploaded to the opaque-blob route, and the prepared
    * local ids are returned for `e2eeAttachments`; blocked / unverifiable ⇒
    * throws (even for text-only drafts — preserves the early gate).
+   *
+   * `textWentPlain`: these files follow a text message of the same draft
+   * that just went out unencrypted (see `willSplitFirstSend`), so they are
+   * not held back for a text message.
    */
   async prepareDraftAttachments(
     channel: Channel,
     items: E2EEDraftFile[],
+    options?: { textWentPlain?: boolean },
   ): Promise<string[] | null> {
     const isGroup = channel.type === "Group";
     if (channel.type !== "DirectMessage" && !isGroup) return null;
 
     const conversationId = isGroup ? channel.id : this.#peerOf(channel);
-    if (!conversationId) return null;
+    if (!conversationId) {
+      // No peer to encrypt to: the files would go to plain storage
+      if (items.length) this.#refusePlainFallback(channel);
+      return null;
+    }
+    this.#noteEncryptedOnly(channel, isGroup ? undefined : conversationId);
 
     let mode: "encrypt" | "blocked" | "plaintext" | "peer_downgraded";
     if (isGroup) {
@@ -6280,6 +6980,23 @@ export class E2EEBridge implements E2EEAdapter {
         "Encryption was turned off for this conversation. Choose whether to continue before sending.",
         "blocked",
       );
+    }
+    if (mode === "plaintext" && items.length) {
+      // The null below hands these files to plain storage
+      if (
+        !isGroup &&
+        options?.textWentPlain !== true &&
+        this.#firstSendEncryptable(conversationId, mode)
+      ) {
+        // A text message would make this chat encrypted, and none was
+        // tried before these files (see `willSplitFirstSend`).
+        throw new E2EESendError(
+          "Add a message to send with your first file.",
+          "first_file",
+        );
+      }
+      // Refused where an unencrypted write is not allowed
+      this.#refusePlainFallback(channel);
     }
     if (mode === "plaintext" || !items.length) return null;
 
@@ -6567,7 +7284,7 @@ export class E2EEBridge implements E2EEAdapter {
       const verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode", {
         peerUserId: peerId,
       });
-      this.sendModes.set(peerId, this.#composerMode(verdict));
+      this.#setDmMode(peerId, this.#composerMode(verdict));
     } catch {
       // Do NOT fabricate a mode on error: leave any known value untouched.
       // Fabricating "encrypt" here would show a lock the send path can't
@@ -6594,7 +7311,7 @@ export class E2EEBridge implements E2EEAdapter {
       peerUserId: peerId,
     });
     const mode = this.#composerMode(verdict);
-    this.sendModes.set(peerId, mode);
+    this.#setDmMode(peerId, mode);
     // A DM verdict never carries the group-only modes; one that did is no
     // plaintext proof, so it reads as blocked (fail closed).
     return mode === "unconfirmed" ? "blocked" : mode;
@@ -6629,7 +7346,7 @@ export class E2EEBridge implements E2EEAdapter {
         peerUserId: conversationId,
       });
       const mode = this.#composerMode(verdict);
-      this.sendModes.set(conversationId, mode);
+      this.#setDmMode(conversationId, mode);
       return mode;
     }
 
@@ -6898,6 +7615,7 @@ export class E2EEBridge implements E2EEAdapter {
     // by a post-restore reconcile, a stale open-TTL would suppress the
     // first real reconcile for 60s, and stale composer verdicts lie.
     this.#bundleNeeded.clear();
+    this.#noUsableDevice.clear();
     this.#reconciledAt.clear();
     this.#selfDevicesUnpinned = false;
     this.sendModes.clear();
@@ -6929,6 +7647,9 @@ export class E2EEBridge implements E2EEAdapter {
     // of its own kind. Leaving it set is what stranded the user in the state
     // the reset was supposed to fix (media-e2ee-reviewer, HIGH-3).
     this.storeOwnedByAnotherAccount.delete("state");
+    // So is the text plane's owner check: a store this session re-creates
+    // belongs to this account (as on the unprovisioned path of `#onReady`).
+    this.#protectedNoteStoreOwner({ state: "known", owner: null });
 
     // Multi-device signals all named the wiped device
     this.#clearClaimRetry();
@@ -7367,6 +8088,24 @@ export class E2EEBridge implements E2EEAdapter {
   #backupRefreshAgain = false;
 
   /**
+   * When the courier last got past its guard (ms), and the main-window focus
+   * listener while one is attached. A focus re-checks only once
+   * `backupRefreshFocusDue` says an hour has passed since then.
+   */
+  #backupRefreshAt: number | null = null;
+  #backupFocusListener: (() => void) | null = null;
+
+  /**
+   * Desktop create and rotate callers waiting for the recovery window's
+   * outcome (`#openRecoveryAndWait`). The next recovery-complete courier
+   * settles all of them with its failure (`#settleRecoveryWaiters`), or
+   * with null.
+   */
+  #recoveryWaiters = new Set<
+    (error: BackupNotStoredError | BackupUploadFailedError | null) => void
+  >();
+
+  /**
    * Post-restore fresh-OTK republish payload, held between a RESTORE and its
    * device claim. A restore recovers the OLD device_id, so on the server the
    * republish takes the `existing.assert_bound_session` path — it is accepted
@@ -7498,10 +8237,70 @@ export class E2EEBridge implements E2EEAdapter {
     if (!this.#transport.subscribeRecoveryComplete) return;
     this.#backupCourierReady = true;
     await this.#transport.subscribeRecoveryComplete((mode) => {
-      this.#courierRecovery(mode).catch((error) =>
-        console.error("[e2ee] backup courier failed", error),
+      this.#courierRecovery(mode).then(
+        () => this.#settleRecoveryWaiters(),
+        (error: unknown) => {
+          // The name only: a server error body may follow the message
+          console.error("[e2ee] backup courier failed:", errorName(error));
+          this.#settleRecoveryWaiters({ error });
+        },
       );
     });
+  }
+
+  /**
+   * Hand a courier's outcome to every waiting create or rotate. Every
+   * `failure` is passed on for the caller to show: a `BackupNotStoredError`
+   * as it is (it has its own words), anything else (a 413, 429 or 5xx, the
+   * network, a native take that threw, even a bare `throw null`) as a
+   * `BackupUploadFailedError`. No `failure` (success, a cancelled window, a
+   * disposed bridge) resolves them.
+   */
+  #settleRecoveryWaiters(failure?: { error: unknown }): void {
+    const waiters = [...this.#recoveryWaiters];
+    this.#recoveryWaiters.clear();
+    const shown = !failure
+      ? null
+      : failure.error instanceof BackupNotStoredError
+        ? failure.error
+        : new BackupUploadFailedError();
+    for (const settle of waiters) settle(shown);
+  }
+
+  /**
+   * Open the desktop recovery window for a create or rotate and wait for
+   * its courier, so an upload that failed reaches the caller, which shows
+   * it. A background refresh never comes here and only logs. The wait
+   * rejects with a `BackupUploadFailedError` after `RECOVERY_WAIT_MS` if no
+   * outcome arrives (the courier still runs and logs then), and resolves
+   * when the bridge is disposed.
+   */
+  async #openRecoveryAndWait(
+    mode: "create" | "rotate",
+    userId: string,
+  ): Promise<void> {
+    if (!this.#backupCourierReady) {
+      await this.#invoke("e2ee_backup_open_recovery", { mode, userId });
+      return;
+    }
+    type Outcome = BackupNotStoredError | BackupUploadFailedError | null;
+    let settle: (error: Outcome) => void = () => {};
+    const outcome = new Promise<Outcome>((resolve) => {
+      settle = resolve;
+    });
+    this.#recoveryWaiters.add(settle);
+    const timer = setTimeout(
+      () => settle(new BackupUploadFailedError()),
+      RECOVERY_WAIT_MS,
+    );
+    try {
+      await this.#invoke("e2ee_backup_open_recovery", { mode, userId });
+      const error = await outcome;
+      if (error) throw error;
+    } finally {
+      clearTimeout(timer);
+      this.#recoveryWaiters.delete(settle);
+    }
   }
 
   async #courierRecovery(mode: string): Promise<void> {
@@ -7547,19 +8346,46 @@ export class E2EEBridge implements E2EEAdapter {
     // mode "cancel" (or unknown): nothing to courier.
   }
 
-  /** PUT a backup blob for the current device, then record the upload. */
+  /**
+   * PUT a backup blob for the current device, then record the upload. The
+   * server answers a stale or equal generation with a 200 that echoes the
+   * generation it kept, so the upload counts only when the echo is the one
+   * sent. Anything else throws `BackupNotStoredError` and is not marked;
+   * nothing here retries it. Every upload goes through here, so the check
+   * holds on every transport: the desktop recovery courier, the Android and
+   * iOS create and rotate dialogs, and the background refresh (with iOS's
+   * kept bundle). On Android and iOS a create or rotate the server did not
+   * keep now rejects to its caller instead of resolving (intended).
+   */
   async #putBackup(bundle: BackupBundle): Promise<void> {
     const deviceId = this.status.get("state")?.device_id;
     if (!deviceId) return;
-    await this.#api("PUT", "/e2ee/backup", {
-      device_id: deviceId,
-      header: bundle.header,
-      ciphertext: bundle.ciphertext,
-      generation: bundle.generation,
-    });
+    const stored = await this.#api<{ generation?: unknown } | undefined>(
+      "PUT",
+      "/e2ee/backup",
+      {
+        device_id: deviceId,
+        header: bundle.header,
+        ciphertext: bundle.ciphertext,
+        generation: bundle.generation,
+      },
+    );
+    if (stored?.generation !== bundle.generation) {
+      throw new BackupNotStoredError();
+    }
     await this.#invoke("e2ee_backup_mark_uploaded", {
       generation: bundle.generation,
     });
+  }
+
+  /**
+   * Whether this bridge's native backup status and refresh commands block
+   * the shell's main thread: true on Tauri, where they are sync commands
+   * run under the engine lock (see `shellRefreshesBackup`). The
+   * Encrypted-only setup reads it to poll less often (`recoveryPollMs`).
+   */
+  get backupCommandsBlockMainThread(): boolean {
+    return this.#transport instanceof TauriTransport;
   }
 
   /**
@@ -7602,8 +8428,9 @@ export class E2EEBridge implements E2EEAdapter {
    * Refresh the backup if native says one is due (timer / message delta), and
    * upload the resulting blob. No-op when no backup exists or none is due. On
    * iOS the native arm first returns a bundle the recovery sheet kept (see
-   * `#watchOrphanedBackup`). Only `#courierOrphanedBackup` calls it, so only
-   * iOS; the other shells do not call it yet.
+   * `#watchOrphanedBackup`). Only `#courierBackupRefresh` calls it, and it
+   * also refuses by itself unless the transport `refreshesBackup` (never
+   * Android, the website or a window that is not the main one).
    *
    * Single flight per bridge: a caller arriving while a pass runs gets the
    * same promise, and the chain runs ONE more pass after the current one
@@ -7614,6 +8441,7 @@ export class E2EEBridge implements E2EEAdapter {
    * follow-up; the chain then rejects with the last failure.
    */
   refreshBackupIfDue(): Promise<void> {
+    if (!this.#transport.refreshesBackup) return Promise.resolve();
     if (this.#backupRefresh) {
       this.#backupRefreshAgain = true;
       return this.#backupRefresh;
@@ -7656,7 +8484,7 @@ export class E2EEBridge implements E2EEAdapter {
    * Whether a native backup take may run now: a live bridge, a connected
    * session with THIS connection's accepted claim (`PUT /e2ee/backup` needs
    * a device-bound session), and an enabled, published device with an id to
-   * PUT under. Shares its terms with `#courierOrphanedBackup`'s guard, and is
+   * PUT under. Shares its terms with `#courierBackupRefresh`'s guard, and is
    * re-read before every pass because a follow-up pass can run long after
    * the caller that asked for it checked.
    */
@@ -7676,11 +8504,12 @@ export class E2EEBridge implements E2EEAdapter {
   /**
    * Tear this bridge down when the Controller replaces its client (Stage 6
    * MAJOR-1). Marks it disposed, so the courier and any pending follow-up
-   * pass refuse; forgets the claim; and removes the iOS `backupBundleWaiting`
-   * listener, which is process-lifetime and would otherwise outlive the
-   * bridge. A pass already past its native take still finishes its PUT: the
-   * take cleared the kept bundle, so that PUT is its only copy. Idempotent,
-   * and never rejects. A no-op off iOS apart from the flags.
+   * pass refuse; forgets the claim; ends any desktop create or rotate wait;
+   * removes the main-window focus listener; and removes the iOS
+   * `backupBundleWaiting` listener, which is process-lifetime and would
+   * otherwise outlive the bridge. A pass already
+   * past its native take still finishes its PUT: the take cleared the kept
+   * bundle, so that PUT is its only copy. Idempotent, and never rejects.
    */
   async dispose(): Promise<void> {
     // Protected channels: stop the text manager first, ahead of the iOS-only
@@ -7693,6 +8522,12 @@ export class E2EEBridge implements E2EEAdapter {
     this.#disposed = true;
     this.#claimAccepted = null;
     this.#backupRefreshAgain = false;
+    this.#settleRecoveryWaiters();
+    const focus = this.#backupFocusListener;
+    if (focus) {
+      this.#backupFocusListener = null;
+      window.removeEventListener("focus", focus);
+    }
     const subscription = this.#backupBundleWaiting;
     if (!subscription) return;
     try {
@@ -7725,7 +8560,7 @@ export class E2EEBridge implements E2EEAdapter {
     if (!this.#transport.subscribeBackupBundleWaiting) return;
     this.#backupBundleWaiting = this.#transport
       .subscribeBackupBundleWaiting(() => {
-        void this.#courierOrphanedBackup();
+        void this.#courierBackupRefresh();
       })
       .catch((error: unknown) => {
         // The post-claim courier still runs on the next claim.
@@ -7738,22 +8573,41 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
-   * Upload a recovery bundle the iOS sheet kept (`#watchOrphanedBackup`)
-   * through `refreshBackupIfDue`. Guarded like the Encryption tab's
-   * `backupStatus()` caller: nothing reaches native unless this device is
-   * enabled and published (core's backup generics no longer provision a
-   * store since IE Stage 6, but most other engine calls still do). It also waits for THIS connection's accepted device
-   * claim: `PUT /e2ee/backup` takes only a session bound to the device
+   * Re-check the backup when the main window regains focus, at most once an
+   * hour since the courier last ran (`backupRefreshFocusDue`). Only where the
+   * transport `refreshesBackup`. `window` is the main window: a chat window
+   * is a separate child window with its own focus events. Attached once per
+   * bridge; `dispose()` removes it.
+   */
+  #watchBackupFocus(): void {
+    if (this.#backupFocusListener || !this.#transport.refreshesBackup) return;
+    const listener = () => {
+      if (!backupRefreshFocusDue(this.#backupRefreshAt, Date.now())) return;
+      void this.#courierBackupRefresh();
+    };
+    this.#backupFocusListener = listener;
+    window.addEventListener("focus", listener);
+  }
+
+  /**
+   * Run `refreshBackupIfDue` for the post-claim call, the main-window focus
+   * and the iOS kept bundle (`#watchOrphanedBackup`). Guarded like the
+   * Encryption tab's `backupStatus()` caller: nothing reaches native unless
+   * this device is enabled and published (core's backup generics no longer
+   * provision a store since IE Stage 6, but most other engine calls still
+   * do). It also waits for THIS connection's accepted device claim:
+   * `PUT /e2ee/backup` takes only a session bound to the device
    * (`assert_bound_session`), and the native take always clears the kept
    * bundle, so taking it before the claim could lose it. An event that
    * arrives first does nothing, and the post-claim call takes the bundle.
    * A disposed bridge, a dropped socket and a device with no id to PUT
    * under refuse too (Stage 6 MAJOR-1, MINOR-3); the terms match
    * `#backupTakeAllowed`, which `refreshBackupIfDue` re-reads per pass.
-   * Best effort: never throws, and logs only the error's name (never the
-   * bundle or an id).
+   * Past the guard it stamps the time the focus throttle reads. Best
+   * effort: never throws, and logs only the error's name (never the bundle
+   * or an id).
    */
-  async #courierOrphanedBackup(): Promise<void> {
+  async #courierBackupRefresh(): Promise<void> {
     const state = this.status.get("state");
     if (
       this.#disposed ||
@@ -7765,10 +8619,11 @@ export class E2EEBridge implements E2EEAdapter {
       this.#claimAccepted !== true
     )
       return;
+    this.#backupRefreshAt = Date.now();
     try {
       await this.refreshBackupIfDue();
     } catch (error) {
-      console.error("[e2ee] orphaned backup upload failed:", errorName(error));
+      console.error("[e2ee] backup refresh failed:", errorName(error));
     }
   }
 
@@ -7795,10 +8650,7 @@ export class E2EEBridge implements E2EEAdapter {
       return;
     }
     await this.#ensureBackupCourier();
-    await this.#invoke("e2ee_backup_open_recovery", {
-      mode: "create",
-      userId: selfId,
-    });
+    await this.#openRecoveryAndWait("create", selfId);
   }
 
   /** Rotate the recovery code (re-auth-gated in the UI). */
@@ -7815,10 +8667,7 @@ export class E2EEBridge implements E2EEAdapter {
       return;
     }
     await this.#ensureBackupCourier();
-    await this.#invoke("e2ee_backup_open_recovery", {
-      mode: "rotate",
-      userId: selfId,
-    });
+    await this.#openRecoveryAndWait("rotate", selfId);
   }
 
   /**
@@ -8721,9 +9570,11 @@ export class E2EEBridge implements E2EEAdapter {
    */
   readonly #ptStripped = new Set<string>();
   readonly #ptFlagState = new ReactiveMap<"state", ProtectedChannelsFlag>();
-  #ptOwnListing: { hash: string; listing: unknown[]; at: number } | null = null;
-  #ptOwnListingFlight: Promise<{ hash: string; listing: unknown[] }> | null =
-    null;
+  /** D18 own listing (F-R8); a dispose mid-flight resets `#ptLife`. */
+  readonly #ptOwnListing = new OwnListingCache(
+    () => Date.now(),
+    () => this.#ptLife,
+  );
   /** Last server KeyPackage count the text plane saw (D12). */
   #ptServerKeyPackages = 0;
   #ptReplenishing = false;
@@ -8779,35 +9630,337 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
-   * D4 `structural`: the Tauri main window. No status terms, so a Tauri
-   * device that is merely disabled or unprovisioned still routes indexed
-   * envelopes away from the call session.
+   * S7 D9 / RR-1: the server's protected-channels advert as THIS bridge
+   * knows it. Seeded and fetched once, at bridge start, and changed only
+   * through `reduceFlag`. Not consulted on Tauri.
    */
-  #protectedStructural(): boolean {
-    return (
-      this.#transport instanceof TauriTransport &&
-      !IS_POPOUT_WINDOW &&
-      !IS_OVERLAY_WINDOW
-    );
+  #ptServerFlag: FlagState = "unknown";
+  /** S7 D9 / PA-8: the Android `textCapability()` probe (read on Android). */
+  #ptProbe: AndroidProbe = { state: "pending" };
+  /**
+   * Step 0 fold 1 (A8): `#checkStoreOwner`'s last result. Unknown until it
+   * completes; on Electron and Android unknown is NOT capable.
+   */
+  #ptStoreOwner: StoreOwnerCheck = { state: "unknown" };
+  /** Bumped whenever an input above changes, so UI readers re-evaluate. */
+  readonly #ptPlatformVersion = new ReactiveMap<"state", number>();
+  /** The bridge start; undefined until asked, null when none is needed. */
+  #ptStart: Promise<void> | null | undefined = undefined;
+  #ptPlatformLogged = false;
+  /** The flag fetch and the Android probe each get this long (Final look 4). */
+  readonly #ptStartTimeoutMs = 5_000;
+
+  /** Which carrier this bridge speaks through (`structuralState` input). */
+  #protectedTransportKind(): ShellTransportKind {
+    const transport = this.#transport;
+    if (transport instanceof TauriTransport) return "tauri";
+    if (transport instanceof ElectronTransport) return "electron";
+    if (transport instanceof CapacitorTransport && Capacitor.isNativePlatform())
+      return "capacitor";
+    return "web";
+  }
+
+  /** The facts `structuralState` decides on, as this bridge holds them. */
+  #protectedPlatformInput(): StructuralInput {
+    // A tracked read: a UI memo over any reader re-runs once these settle.
+    this.#ptPlatformVersion.get("state");
+    const transport = this.#protectedTransportKind();
+    const platform = transport === "capacitor" ? Capacitor.getPlatform() : "";
+    const protocol =
+      transport === "electron"
+        ? (window as { slogaShell?: SlogaShellGlobal }).slogaShell?.e2ee
+            ?.protectedText
+        : undefined;
+    return {
+      transport,
+      platform,
+      electronProtocol: typeof protocol === "number" ? protocol : undefined,
+      androidProbe:
+        transport === "capacitor" && platform === "android"
+          ? this.#ptProbe
+          : null,
+      popout: IS_POPOUT_WINDOW,
+      overlay: IS_OVERLAY_WINDOW,
+      flag: this.#ptServerFlag,
+    };
+  }
+
+  /** `structuralState` over this bridge's current facts. */
+  #protectedPlatformState(): { structural: boolean; hold: boolean } {
+    return structuralState(this.#protectedPlatformInput());
   }
 
   /**
-   * D3: whether this window can run the text plane. Electron, Android, iOS
-   * and web are never capable; neither is a Tauri device that is not
-   * provisioned and enabled, or whose store or device belongs elsewhere.
-   * An owner check that threw is NOT an all-clear here (A-1): `e2ee_text_*`
-   * carries no user id, so a store of unknown owner could decrypt another
-   * account's channels.
+   * D4 `structural` (S7 D9): may this window run the text plane at all. The
+   * Tauri main window always (W4), Electron and Android per their native
+   * capability and the server flag, never iOS, web, popout or overlay. No
+   * status terms, so a device that is merely disabled or unprovisioned still
+   * routes indexed envelopes away from the call session.
+   */
+  #protectedStructural(): boolean {
+    return this.#protectedPlatformState().structural;
+  }
+
+  /**
+   * S7 D9 notice split: whether this window is a shell that runs the text
+   * plane once E2EE is on (`enable_e2ee`, not `not_available`).
+   */
+  structuralShell(): boolean {
+    return this.#protectedStructural();
+  }
+
+  /**
+   * D3: whether this window can run the text plane: a structural shell that
+   * is not on hold (a pending probe or an unknown flag reaches no native text
+   * command), E2EE provisioned and enabled, a signed-in user, and neither the
+   * store nor the device belonging elsewhere. An owner check that threw is
+   * NOT an all-clear here (A-1): `e2ee_text_*` carries no user id, so a
+   * store of unknown owner could decrypt another account's channels. On
+   * Electron and Android the check must also have answered this account or
+   * no owner (A8); Tauri keeps W4's latch and never holds.
    */
   protectedTextCapable(): boolean {
     const status = this.status.get("state");
+    const userId = this.#client.user?.id ?? null;
     return (
       this.#protectedStructural() &&
+      !this.#protectedPlatformState().hold &&
       status?.enabled === true &&
       !!status.device_id &&
       !this.#storeOwnerUnread &&
       !this.storeOwnedByAnotherAccount.has("state") &&
-      !this.deviceOwnedElsewhere.has("state")
+      !this.deviceOwnedElsewhere.has("state") &&
+      !!userId &&
+      storeOwnerAllows(
+        this.#protectedTransportKind(),
+        this.#ptStoreOwner,
+        userId,
+      )
+    );
+  }
+
+  /** Record `#checkStoreOwner`'s result (its own latch is unchanged). */
+  #protectedNoteStoreOwner(check: StoreOwnerCheck): void {
+    this.#ptStoreOwner = check;
+    this.#protectedPlatformChanged();
+  }
+
+  #protectedPlatformChanged(): void {
+    this.#ptPlatformVersion.set(
+      "state",
+      (this.#ptPlatformVersion.get("state") ?? 0) + 1,
+    );
+  }
+
+  /**
+   * S7 D9 bridge start, once per bridge (the first `#onReady`). Only a shell
+   * that holds while undecided (Electron with protocol 1, Android) has
+   * anything to settle; everywhere else this logs the platform tag and
+   * answers null, so Tauri's `#onReady` awaits nothing new.
+   */
+  #protectedPlatformStart(): Promise<void> | null {
+    if (this.#ptStart === undefined) {
+      const undecided = structuralState({
+        ...this.#protectedPlatformInput(),
+        flag: "unknown",
+      }).hold;
+      if (undecided) {
+        this.#ptStart = this.#protectedPlatformDecide();
+      } else {
+        this.#ptStart = null;
+        this.#protectedPlatformLog();
+      }
+    }
+    return this.#ptStart;
+  }
+
+  /**
+   * Settle the flag and the Android probe (RR-1, PA-8).
+   * - The flag is seeded from this account's last-known value. A seed
+   *   decides at once and the start does not wait for the network; only a
+   *   first run (no seed) waits for the server, at most 5 s.
+   * - The fetch always runs, independently of capability, and its answer is
+   *   routed through `#protectedFlagEvent` whenever it lands, also after the
+   *   start, so a slow first answer or a changed server value takes effect
+   *   in this session.
+   * - The Android probe is a local plugin call, awaited on every start (5 s,
+   *   then failed).
+   * - The start window then closes like a timeout: a known value stays,
+   *   unknown becomes off, so the router never holds for the bridge's life.
+   * Never rejects.
+   */
+  async #protectedPlatformDecide(): Promise<void> {
+    const userId = this.#client.user?.id ?? null;
+    const android = this.#protectedPlatformInput().androidProbe !== null;
+    try {
+      const seed = this.#protectedFlagLastKnown(userId);
+      this.#ptServerFlag = reduceFlag(this.#ptServerFlag, {
+        kind: "seed",
+        value: seed,
+      });
+      const answered = this.#protectedFlagFetch()
+        .then(({ event }) => {
+          this.#protectedFlagEvent(event);
+          return true;
+        })
+        .catch((error: unknown) => {
+          console.error("[protected] flag answer failed", errorName(error));
+          return false;
+        });
+      const [, probe] = await Promise.all([
+        seed === null ? this.#protectedWithin(answered, false) : null,
+        android ? this.#protectedAndroidProbe() : Promise.resolve(null),
+      ]);
+      this.#ptServerFlag = reduceFlag(this.#ptServerFlag, { kind: "timeout" });
+      if (probe) this.#ptProbe = probe;
+    } catch (error) {
+      console.error("[protected] platform start failed", errorName(error));
+      this.#ptServerFlag = reduceFlag(this.#ptServerFlag, { kind: "timeout" });
+      if (android) this.#ptProbe = { state: "failed" };
+    } finally {
+      this.#protectedPlatformChanged();
+      this.#protectedPlatformLog();
+    }
+  }
+
+  /**
+   * Audit fix 3: the ONE way the server flag moves after its seed. Every
+   * answer the bridge gets (the start's fetch, the boot probe, the D13
+   * refresh) is reduced here: an answer replaces the state and is
+   * remembered for this account; a failure changes nothing (sticky).
+   */
+  #protectedFlagEvent(event: FlagEvent): void {
+    const before = this.#protectedPlatformState();
+    const prev = this.#ptServerFlag;
+    this.#ptServerFlag = reduceFlag(this.#ptServerFlag, event);
+    if (event.kind === "fetch_ok") {
+      this.#protectedFlagRemember(this.#client.user?.id ?? null, event.enabled);
+    }
+    if (this.#ptServerFlag === prev) return;
+    this.#protectedPlatformChanged();
+    this.#protectedPlatformApply(before);
+  }
+
+  /**
+   * Act on a platform change once the bridge's first `#protectedOnReady`
+   * has run (before that, it settles both itself): held envelopes are
+   * re-routed; a window that stopped being structural drops its manager
+   * (D10: off is today's call path); one that became structural and is not
+   * on hold boots the manager the normal way. Never runs on Tauri, whose
+   * structural state never changes.
+   */
+  #protectedPlatformApply(before: {
+    structural: boolean;
+    hold: boolean;
+  }): void {
+    if (!this.#ptIndex.ready) return;
+    const after = this.#protectedPlatformState();
+    if (after.structural === before.structural && after.hold === before.hold)
+      return;
+    if (before.structural && !after.structural) this.#protectedDispose();
+    this.#protectedFlushPreIndex();
+    if (after.structural && !after.hold) this.#protectedBootManager();
+  }
+
+  /**
+   * `GET /` for the advert, telling a failed request (`fetch_failed`) from
+   * an answer: `protectedChannelsFlag.ts` reads a failure as off, which is
+   * NOT this input (D9). A malformed answer still parses as off. `flag` is
+   * the parsed advert as W4 reads it (off on a failure).
+   */
+  async #protectedFlagFetch(): Promise<{
+    event: FlagEvent;
+    flag: ProtectedChannelsFlag;
+  }> {
+    let failed = false;
+    const flag = await fetchProtectedChannelsFlag({
+      api: {
+        get: async (path) => {
+          try {
+            return await this.#client.api.get(path);
+          } catch (error) {
+            failed = true;
+            throw error;
+          }
+        },
+      },
+    });
+    return {
+      event: failed
+        ? { kind: "fetch_failed" }
+        : { kind: "fetch_ok", enabled: flag.enabled },
+      flag,
+    };
+  }
+
+  /** The Android probe, bounded; any failure or a timeout is `failed`. */
+  async #protectedAndroidProbe(): Promise<AndroidProbe> {
+    const transport = this.#transport;
+    if (!(transport instanceof CapacitorTransport)) return { state: "failed" };
+    return this.#protectedWithin<AndroidProbe>(
+      transport.textCapability().then(
+        (value): AndroidProbe =>
+          value && typeof value === "object"
+            ? {
+                state: "ok",
+                value: {
+                  protocol: value.protocol,
+                  listenerBridge: value.listenerBridge,
+                },
+              }
+            : { state: "failed" },
+        (): AndroidProbe => ({ state: "failed" }),
+      ),
+      { state: "failed" },
+    );
+  }
+
+  /** `work`, or `fallback` once `#ptStartTimeoutMs` passes first. */
+  #protectedWithin<T>(work: Promise<T>, fallback: T): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<T>((resolve) => {
+      timer = setTimeout(() => resolve(fallback), this.#ptStartTimeoutMs);
+    });
+    return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
+  }
+
+  /** The per-account last-known flag key (localStorage). */
+  #protectedFlagKey(userId: string): string {
+    return `protected-flag:${userId}`;
+  }
+
+  /** This account's last-known flag; null when none or unreadable. */
+  #protectedFlagLastKnown(userId: string | null): "on" | "off" | null {
+    if (!userId) return null;
+    try {
+      const value = globalThis.localStorage.getItem(
+        this.#protectedFlagKey(userId),
+      );
+      return value === "on" || value === "off" ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Persist a server answer as this account's last-known flag. */
+  #protectedFlagRemember(userId: string | null, enabled: boolean): void {
+    if (!userId) return;
+    try {
+      globalThis.localStorage.setItem(
+        this.#protectedFlagKey(userId),
+        enabled ? "on" : "off",
+      );
+    } catch {
+      // storage unavailable: the next bridge starts unknown
+    }
+  }
+
+  /** The one `[protected]` platform line per bridge (no ids, no user data). */
+  #protectedPlatformLog(): void {
+    if (this.#ptPlatformLogged) return;
+    this.#ptPlatformLogged = true;
+    console.info(
+      `[protected] ${protectedPlatformTag(this.#protectedPlatformInput())}`,
     );
   }
 
@@ -8817,6 +9970,7 @@ export class E2EEBridge implements E2EEAdapter {
       this.#ptFlagState.get("state") ?? {
         enabled: false,
         defaultDeviceCap: null,
+        formatsV2: false,
       }
     );
   }
@@ -8839,9 +9993,11 @@ export class E2EEBridge implements E2EEAdapter {
     if (contentType === "mls_ctl" || event.content_type === "mls_ctl") {
       return "call";
     }
+    // S7 D9: an undecided platform (pending probe, unknown flag) holds.
+    const platform = this.#protectedPlatformState();
     const route = routeMls({
-      structural: this.#protectedStructural(),
-      indexReady: this.#ptIndex.ready,
+      structural: platform.structural,
+      indexReady: this.#ptIndex.ready && !platform.hold,
       inIndex: this.#ptIndex.has(sinkEvent.envelope.group_id),
       managerReady: this.#protectedManagerReady(),
       kind: "envelope",
@@ -8879,9 +10035,10 @@ export class E2EEBridge implements E2EEAdapter {
     request: MlsJoinRequest,
     rejoin: boolean,
   ): "call" | "handled" {
+    const platform = this.#protectedPlatformState();
     const route = routeMls({
-      structural: this.#protectedStructural(),
-      indexReady: this.#ptIndex.ready,
+      structural: platform.structural,
+      indexReady: this.#ptIndex.ready && !platform.hold,
       inIndex: this.#ptIndex.has(request.group_id),
       managerReady: this.#protectedManagerReady(),
       kind: "join_request",
@@ -8957,6 +10114,27 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
+   * S2 (h): index one group id the manager reported for `channelId` (its
+   * own index already took it). A malformed id is logged and skipped; one this
+   * index maps elsewhere is logged without ids and never re-routed.
+   */
+  #protectedIndexReported(
+    channelId: string,
+    groupId: string,
+    generation: number,
+  ): void {
+    try {
+      this.#ptIndex.addReported(groupId, channelId, generation);
+    } catch (error) {
+      if (error instanceof RangeError) {
+        console.warn("[protected] reported group id malformed", { channelId });
+      } else {
+        console.warn("[protected] reported group id conflict");
+      }
+    }
+  }
+
+  /**
    * End of every `#onReady` (W4a audit, binding): seed the index from the
    * pins and the cache (`allSettled`: a non-ULID pin must not block the
    * rest), rebuild the manager when the account/device changed or the device
@@ -8975,17 +10153,43 @@ export class E2EEBridge implements E2EEAdapter {
       if (this.#ptManager && key !== this.#ptManagerKey) {
         this.#protectedDispose();
       }
+      // S2-D28: a manager this connect keeps (same account and device,
+      // still capable); a new one opens its channels itself.
+      const kept = this.#ptManager;
       this.#protectedBootManager();
       // L1: a manager built while seeding was in flight (enable(), a UI
       // action) missed channels indexed after it; hand them over (deduped).
       for (const channelId of this.#ptIndexed) {
         this.#protectedForward(channelId);
       }
+      if (kept !== null && kept === this.#ptManager) {
+        this.#protectedReconnected(kept);
+      }
     } catch (error) {
       console.error("[protected] startup failed", errorName(error));
     } finally {
       this.#ptIndex.markReady();
       this.#protectedFlushPreIndex();
+    }
+  }
+
+  /**
+   * S2-D28 (FX-R): a reconnect the manager survived. Each channel the UI
+   * has open and this manager was handed is refreshed once, as an early
+   * 60 s tick ("interval", one of `STORED_ADMIT_REASONS`): members admit
+   * the join requests the server stored while this socket was down. Not an
+   * open (no capacity retry, no backoff reset); the 60 s loop is left as
+   * it is. Never throws.
+   */
+  #protectedReconnected(manager: ProtectedTextManager): void {
+    for (const channelId of this.#ptOpen) {
+      if (!this.#ptForwarded.has(channelId)) continue;
+      manager.refresh(channelId, "interval").catch((error: unknown) => {
+        console.warn("[protected] reconnect refresh failed", {
+          channelId,
+          error: errorName(error),
+        });
+      });
     }
   }
 
@@ -9072,10 +10276,14 @@ export class E2EEBridge implements E2EEAdapter {
       });
       if (!answered) {
         this.#ptFlagProbeFailures++;
+        // Audit fix 3: sticky; a failure never moves the S7 flag.
+        this.#protectedFlagEvent({ kind: "fetch_failed" });
         return;
       }
       this.#ptFlagProbed = true;
       this.#ptFlagState.set("state", flag);
+      // Audit fix 3: the S7 platform flag follows this answer too.
+      this.#protectedFlagEvent({ kind: "fetch_ok", enabled: flag.enabled });
       if (flag.enabled) this.#protectedEnsureManager();
     } finally {
       this.#ptFlagProbing = false;
@@ -9121,12 +10329,26 @@ export class E2EEBridge implements E2EEAdapter {
         this.#ptServerKeyPackages = Math.max(0, this.#ptServerKeyPackages - 1);
         void this.#protectedReplenish();
       },
+      // S2 (h): a group id native or the server reported (v2, g > 63),
+      // indexed for routing before any join or process for it.
+      onGroupReported: (channelId, groupId, generation) => {
+        if (!current()) return;
+        this.#protectedIndexReported(channelId, groupId, generation);
+      },
     };
     manager = new ProtectedTextManager(
       this.#protectedPort(userId, deviceId, life.signal),
       callbacks,
       {
-        owner: { protect, setSeats },
+        owner: {
+          protect,
+          setSeats,
+          signOwnerDevices,
+          moveOwnerKey,
+          pendingSeats,
+          cancelPendingSeats,
+          recoverOwnership,
+        },
         messages: { encryptAndSend, decryptRow, markerForError },
       },
     );
@@ -9180,8 +10402,7 @@ export class E2EEBridge implements E2EEAdapter {
     this.#ptStripped.clear();
     this.#ptLife?.abort();
     this.#ptLife = null;
-    this.#ptOwnListing = null;
-    this.#ptOwnListingFlight = null;
+    this.#ptOwnListing.clear();
     this.#ptServerKeyPackages = 0;
     this.#ptPending.clear();
     if (manager) {
@@ -9311,6 +10532,8 @@ export class E2EEBridge implements E2EEAdapter {
         return this.#invoke<Out>("e2ee_text_owner_confirm_change", a);
       case "e2ee_text_owner_handover_sign":
         return this.#invoke<Out>("e2ee_text_owner_handover_sign", a);
+      case "e2ee_text_authority_sign":
+        return this.#invoke<Out>("e2ee_text_authority_sign", a);
       case "e2ee_text_remove":
         return this.#invoke<Out>("e2ee_text_remove", a);
       case "e2ee_text_update":
@@ -9335,18 +10558,26 @@ export class E2EEBridge implements E2EEAdapter {
    * D6 text courier. Never throws on a non-2xx (the manager owns the 429
    * policy); rejects only on a network failure or abort. Its own signal, no
    * call-plane 429 notifier, never `Idempotency-Key`.
+   *
+   * `headers` (S2 D40) carries only the audit-log reason, sent the way
+   * stoat.js `Server.kickUser` sends it: trimmed, a blank reason sends no
+   * header, otherwise `encodeURIComponent`. The 512-character server cap
+   * is the caller's policy, not checked here.
    */
   async textApi(
     method: TextApiMethod,
     path: string,
     body?: unknown,
     signal?: AbortSignal,
+    headers?: TextApiHeaders,
   ): Promise<TextApiResponse> {
     const [authHeader, authValue] = this.#client.authenticationHeader;
     const transportError = () =>
       Object.assign(new Error("[protected] transport error"), {
         name: "TextTransportError",
       });
+    const rawReason = headers?.["X-Audit-Log-Reason"];
+    const reason = typeof rawReason === "string" ? rawReason.trim() : "";
     let response: Response;
     let text: string;
     try {
@@ -9355,6 +10586,9 @@ export class E2EEBridge implements E2EEAdapter {
         headers: {
           [authHeader]: authValue,
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+          ...(reason
+            ? { "X-Audit-Log-Reason": encodeURIComponent(reason) }
+            : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal,
@@ -9388,12 +10622,18 @@ export class E2EEBridge implements E2EEAdapter {
     return {
       selfUserId: userId,
       selfDeviceId: deviceId,
+      // D7: a dialog command's `unavailable` reaches the manager as `busy`.
+      // Mapped at `#textInvoke`'s one caller, so its literal arms (S5, iOS
+      // G6) keep their shape.
       invoke: <C extends TextCommand>(cmd: C, args: TextCommandArgs[C]) =>
-        this.#textInvoke(cmd, args),
+        this.#textInvoke(cmd, args).catch((error: unknown) => {
+          throw mapTextInvokeError(cmd, error);
+        }),
       pinCallIdentities: (peer, targets) =>
         this.#protectedPinIdentities(peer, targets),
-      ownDeviceListing: () => this.#protectedOwnListing(),
-      api: (method, path, body) => this.textApi(method, path, body, life),
+      ownDeviceListing: (request) => this.#protectedOwnListing(request),
+      api: (method, path, body, headers) =>
+        this.textApi(method, path, body, life, headers),
       ack: async (ids) => {
         if (!life.aborted) this.ackEnvelopes(ids);
       },
@@ -9481,6 +10721,8 @@ export class E2EEBridge implements E2EEAdapter {
         if (!accessor) throw new Error("[protected] outbox keys not wired");
         return accessor();
       },
+      // S2 (j): the owner flows pick `format: 2` from the root advert.
+      formatsV2: () => this.protectedFlag().formatsV2 === true,
     };
   }
 
@@ -9528,46 +10770,31 @@ export class E2EEBridge implements E2EEAdapter {
   /**
    * D18: this user's COMPLETE signed listing, cached for 60 s and
    * single-flight (the manager asks before every `_process`). A failed
-   * refresh falls back to the last listing.
+   * refresh falls back to the last listing. F-R8: a `force` request, or
+   * one whose `want` the cache does not list, fetches afresh
+   * (`OwnListingCache`).
    */
-  #protectedOwnListing(): Promise<{ hash: string; listing: unknown[] }> {
-    const cached = this.#ptOwnListing;
-    if (cached && Date.now() - cached.at < 60_000) {
-      return Promise.resolve(cached);
-    }
-    if (this.#ptOwnListingFlight) return this.#ptOwnListingFlight;
-    // A dispose mid-flight resets `#ptLife`; a stale answer is not cached.
-    const life = this.#ptLife;
-    const flight = (async () => {
+  #protectedOwnListing(
+    request?: OwnListingRequest,
+  ): Promise<{ hash: string; listing: unknown[] }> {
+    return this.#ptOwnListing.get(async () => {
       const userId = this.#client.user?.id;
       if (!userId || !this.protectedTextCapable()) {
         throw { source: "client", reason: "not_capable" };
       }
       const report = await this.#reconcileDevices(userId);
       if (!report) throw { source: "client", reason: "not_capable" };
-      const entry = {
-        hash: JSON.stringify(report.listing),
-        listing: report.listing,
-        at: Date.now(),
-      };
-      if (this.#ptLife === life) this.#ptOwnListing = entry;
-      return entry;
-    })()
-      .catch((error: unknown) => {
-        if (cached) return cached;
-        throw error;
-      })
-      .finally(() => {
-        if (this.#ptLife === life) this.#ptOwnListingFlight = null;
-      });
-    this.#ptOwnListingFlight = flight;
-    return flight;
+      return { hash: JSON.stringify(report.listing), listing: report.listing };
+    }, request);
   }
 
   /** D13: fetch the flag; when enabled, run the D12 ready-time replenish. */
   async #protectedRefreshFlag(): Promise<void> {
-    const flag = await fetchProtectedChannelsFlag(this.#client);
+    // `flag` reads a failure as off, as before; `event` tells the two apart
+    // for the S7 platform flag (audit fix 3), where a failure is sticky.
+    const { event, flag } = await this.#protectedFlagFetch();
     this.#ptFlagState.set("state", flag);
+    this.#protectedFlagEvent(event);
     if (flag.enabled) await this.#protectedReplenish();
   }
 
@@ -9866,6 +11093,14 @@ export class E2EEBridge implements E2EEAdapter {
     this.#ptManager?.close(channelId);
   }
 
+  /**
+   * S2: one manual refresh (`ProtectedUiApi.retryNow`): straight to the
+   * current manager, never `#ptOpen` (no 60 s loop). No manager = no-op.
+   */
+  retryNow(channelId: string): void {
+    this.#ptManager?.retryNow(channelId);
+  }
+
   /** The current manager for a UI action on an indexed channel, or throw. */
   async #protectedManagerFor(channelId: string): Promise<ProtectedTextManager> {
     this.#protectedEnsureManager();
@@ -9894,9 +11129,68 @@ export class E2EEBridge implements E2EEAdapter {
     channelId: string,
     seats: string[],
     deviceCap: number,
+    reason?: string,
   ): Promise<void> {
     const manager = await this.#protectedManagerFor(channelId);
-    return manager.setSeats(channelId, seats, deviceCap);
+    return manager.setSeats(channelId, seats, deviceCap, reason);
+  }
+
+  async authoritySign(
+    channelId: string,
+    ownerDevices: string[],
+  ): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.authoritySign(channelId, ownerDevices);
+  }
+
+  /** S2-D42: same-user owner-key handover from this device (native dialog). */
+  async moveOwnerKey(channelId: string, toDeviceId: string): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.moveOwnerKey(channelId, toDeviceId);
+  }
+
+  /** S2 (design 6.3): only from this UI call, never automatic. */
+  async recoverOwnership(channelId: string): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.recoverOwnership(channelId);
+  }
+
+  /**
+   * S2 F3: the stored seat publish U8 offers to discard, or null. Reads
+   * the view map first so a UI memo re-runs on every view change (a
+   * discard re-emits the view); null while no manager exists.
+   */
+  pendingSeats(channelId: string) {
+    void this.protectedChannels.get(channelId);
+    return this.#ptManager?.pendingSeats(channelId) ?? null;
+  }
+
+  /** S2 F3: discards only a publish the server never accepted. */
+  async cancelPendingSeats(channelId: string) {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.cancelPendingSeats(channelId);
+  }
+
+  /** This device's id for comparisons (never rendered); reactive. */
+  selfDeviceId(): string | null {
+    return this.status.get("state")?.device_id ?? null;
+  }
+
+  /**
+   * S2-D36: the view plus this account's ids, for `resecureCause`. Reads
+   * the reactive view map, so a UI memo re-runs on every view change.
+   */
+  resecureInputs(channelId: string): ResecureInputs | null {
+    const view = this.protectedChannels.get(channelId);
+    const selfUserId = this.#client.user?.id;
+    const selfDeviceId = this.selfDeviceId();
+    if (!view || !selfUserId || !selfDeviceId) return null;
+    return {
+      ...view,
+      resecuringSinceMs: view.resecuringSinceMs ?? null,
+      selfUserId,
+      selfDeviceId,
+    };
   }
 
   async confirmOwnerChange(channelId: string): Promise<void> {
@@ -10015,10 +11309,10 @@ export class E2EEBridge implements E2EEAdapter {
    * the Android Capacitor key-push channel BOTH update together.
    *
    * The RTC layer folds this into `e2eeCapable` at Room-construction time. A
-   * shell that is `nativeE2EEAvailable()` but CANNOT receive key pushes (today:
-   * the Capacitor iOS shell; Android before its 6.7a `callKeysChanged`)
-   * must be built WITHOUT the LiveKit `e2ee` option — never an E2EE-capable
-   * Room whose first-key install can never arrive, which would leave the
+   * shell that is `nativeE2EEAvailable()` but CANNOT receive key pushes (an
+   * iOS build or device that fails `iosMediaE2EEReady`; Android before its
+   * 6.7a `callKeysChanged`) must be built WITHOUT the LiveKit `e2ee` option —
+   * never an E2EE-capable Room whose first-key install can never arrive, which would leave the
    * pause-publish window permanently open and publish plaintext to the SFU
    * while believing it is encrypted (invariant 1). Fail CLOSED: no key-push
    * channel ⇒ treat as a non-E2EE shell (the loud non-enrolled path).
@@ -10031,7 +11325,9 @@ export class E2EEBridge implements E2EEAdapter {
    * Tauri gates on `window.__TAURI__.event`; the Capacitor Android shell
    * returns true (its `callKeysChanged` channel landed in 6.7a). Both update
    * together there, as the 6.4 H3/NEW-4 note anticipated. The Capacitor iOS
-   * shell returns false on purpose (plan D7 media gate pin).
+   * shell returns true only when `iosMediaE2EEReady` holds (plan D6 + D8: the
+   * build's caps flag, the E2ee plugin, `RTCRtpScriptTransform` and a passed
+   * worker probe), and false on any missing term.
    */
   nativeKeyPushAvailable(): boolean {
     return this.#transport.keyPushAvailable();
@@ -10042,7 +11338,8 @@ export class E2EEBridge implements E2EEAdapter {
    * call-key pushes AND its media path is audited (`e2eePlatform.ts`). The
    * ONE predicate for that question (plan D7, audit MINOR 17):
    * `shellSupported` in rtc/state.tsx and `#prepublishMlsKeyPackages` both
-   * use it. False on iOS (see `CapacitorTransport.keyPushAvailable`).
+   * use it. On iOS it is `iosMediaE2EEReady` (see
+   * `CapacitorTransport.keyPushAvailable`).
    */
   mediaE2EEPlatformSupported(): boolean {
     return mediaE2EEPlatformSupported(this.nativeKeyPushAvailable());

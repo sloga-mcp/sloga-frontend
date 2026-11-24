@@ -173,6 +173,12 @@ export interface ConnectOptions {
   resumePrefetch?: ResumePrefetchDep;
   abortResumePrefetch?: AbortResumePrefetchDep;
   prefetchFromBridge?: boolean;
+  /**
+   * The session's `confirmFallbackAllowed` dep for this connect. Absent ⇒
+   * the world's `confirmFallbackAllowed` (`true` unless a spec says
+   * otherwise: every shell but iOS, today's routing, passed explicitly).
+   */
+  confirmFallbackAllowed?: boolean;
 }
 
 /**
@@ -1352,6 +1358,11 @@ export class World {
    * for `midInstallError`).
    */
   localKeyFailure: Error | null = null;
+  /**
+   * A scripted error the next HELD local install throws once its hold is
+   * released (`failHeldLocalKeyOnce`); the installer nulls it as it takes it.
+   */
+  heldLocalKeyFailure: Error | null = null;
   /** The Room's `Connected` state as the binding reports it. */
   connected = true;
   /**
@@ -1490,6 +1501,13 @@ export class World {
    * entry, the old key still the one installed. Set by `holdKeyInstall`.
    */
   keyInstallGate: Promise<void> | null = null;
+  /**
+   * The frame-key fetch (`callFrameKeys`) suspended before native answers.
+   * Set by `holdFrameKeys`; `frameKeysFailure` is the error the next held
+   * fetch throws as it leaves the hold (`failHeldFrameKeysOnce`).
+   */
+  frameKeysGate: Promise<void> | null = null;
+  frameKeysFailure: Error | null = null;
   /**
    * Every key install a live page's installer ENTERED, in order, held ones
    * included: the installer method and the epoch of the frame keys it was
@@ -1712,6 +1730,23 @@ export class World {
     return this.#openGate("keyInstallGate");
   }
   /**
+   * Suspend every `callFrameKeys` until the returned release: a keys-changed
+   * push parked on its fetch, before it takes the installer. Calls made while
+   * the hold is open all wait on it.
+   */
+  holdFrameKeys(): () => void {
+    return this.#openGate("frameKeysGate");
+  }
+  /** The next HELD `callFrameKeys` throws `error` as its hold is released. */
+  failHeldFrameKeysOnce(error: Error): void {
+    assert.equal(
+      this.frameKeysFailure,
+      null,
+      "a held callFrameKeys failure is already scripted",
+    );
+    this.frameKeysFailure = error;
+  }
+  /**
    * Native's keys-changed push for `epoch`, delivered NOW: the session's
    * rotation seam (`onLocalKeysChanged`) runs synchronously up to its first
    * await, and its promise is returned, as `state.tsx` drives it
@@ -1757,7 +1792,8 @@ export class World {
       | "processGate"
       | "leaveCleanupGate"
       | "gapRefetchGate"
-      | "keyInstallGate",
+      | "keyInstallGate"
+      | "frameKeysGate",
   ): () => void {
     assert.equal(this[field], null, `${field} is already held`);
     let release!: () => void;
@@ -1959,6 +1995,22 @@ export class World {
     );
     this.localKeyFailure = error;
   }
+
+  /**
+   * Script ONE `applyLocalKey` / `applyKeys` failure that fires AFTER the
+   * install's `holdKeyInstall` wait instead of at its entry: an install that
+   * was already importing when something else happened (a group reset) and
+   * then failed, as a real import or ack wait can. Only a held install on a
+   * live page takes it.
+   */
+  failHeldLocalKeyOnce(error: Error): void {
+    assert.equal(
+      this.heldLocalKeyFailure,
+      null,
+      "a held applyLocalKey failure is already scripted",
+    );
+    this.heldLocalKeyFailure = error;
+  }
   /** Every `callConfirmDowngrade` (native dialog) recorded so far. */
   confirmDowngrades(): number {
     return this.confirmDowngradeCalls.length;
@@ -2141,6 +2193,15 @@ export class World {
    * only thing separating a deferral from an invisible green.
    */
   holdsSupported = true;
+  /**
+   * What `state.tsx` passes the session as `confirmFallbackAllowed`: `true`
+   * on every shell but iOS. A spec modelling iOS sets it `false` (through
+   * `newWorld`'s options or here, before the seat boots); one modelling a
+   * caller that omits it sets it `undefined`, which the session must read as
+   * a refusal. `ConnectOptions.confirmFallbackAllowed` overrides it for one
+   * connect.
+   */
+  confirmFallbackAllowed = true;
 
   /**
    * Gate (d) — the senders whose frames the worker is currently DROPPING at an
@@ -2439,6 +2500,7 @@ export class World {
     resumePrefetch,
     abortResumePrefetch,
     prefetchFromBridge = false,
+    confirmFallbackAllowed = this.confirmFallbackAllowed,
   }: ConnectOptions): void {
     const page = this.#page;
     const bridge = this.bridge;
@@ -2464,6 +2526,7 @@ export class World {
       deviceId: this.me.device_id,
       channelId: this.channelId,
       startupWipeTokens: page.tokens,
+      confirmFallbackAllowed,
       ...(prefetch ? { resumePrefetch: prefetch } : {}),
       ...(abort ? { abortResumePrefetch: abort } : {}),
     });
@@ -2848,6 +2911,7 @@ export class World {
       channelHasOpenGroup: boolean;
       deviceNeedsSetup: boolean;
       decodeWitness: DecodeWitness;
+      pausedByServer: boolean;
     }> = {},
   ): ChipState {
     const { latch, mediaHold } = this.#replay();
@@ -2858,9 +2922,12 @@ export class World {
       channelHasOpenGroup = true,
       deviceNeedsSetup = false,
       decodeWitness = this.decodeWitness(),
+      // The iOS server switch (`iosCallSwitch`): off only where a spec says.
+      pausedByServer = false,
     } = overrides;
     return chipStateFrom({
       hasSession: () => hasSession,
+      pausedByServer: () => pausedByServer,
       sessionState: () => sessionState,
       mode: () => mode,
       mediaHold: () => mediaHold,
@@ -2951,7 +3018,9 @@ export class World {
  * A live page's install is recorded in `keyInstalls` as it enters (after
  * the scripted-failure check) and, only while `holdKeyInstall` is open,
  * waits there before posting anything. With no hold open it adds no await:
- * every install settles on exactly the microtask it always did.
+ * every install settles on exactly the microtask it always did. A held
+ * local install can throw a scripted error as it leaves the hold
+ * (`failHeldLocalKeyOnce`).
  */
 function fakeInstaller(world: World, page: Page): KeyInstaller {
   type Method = World["keyInstalls"][number]["method"];
@@ -2977,7 +3046,14 @@ function fakeInstaller(world: World, page: Page): KeyInstaller {
       throw failure;
     }
     const held = enter(method, frameKeys);
-    if (held) await held;
+    if (held) {
+      await held;
+      const late = world.heldLocalKeyFailure;
+      if (late && !page.dead) {
+        world.heldLocalKeyFailure = null;
+        throw late;
+      }
+    }
     await install();
   };
   return {
@@ -3154,6 +3230,15 @@ function bridgeFor(world: World, page: Page): E2EEBridge {
       return verifiedCallState(world, GROUP);
     }),
     callFrameKeys: record("callFrameKeys", async () => {
+      const held = world.frameKeysGate;
+      if (held) {
+        await held;
+        const failure = world.frameKeysFailure;
+        if (failure) {
+          world.frameKeysFailure = null;
+          throw failure;
+        }
+      }
       const rejected = rosterRejection(world, world.roster);
       if (rejected) throw rejected;
       return world.frameKeys();
@@ -4246,10 +4331,15 @@ export function newWorld(
   opts: {
     resumePrefetch?: ResumePrefetchDep;
     abortResumePrefetch?: AbortResumePrefetchDep;
+    /** Sets `World.confirmFallbackAllowed` for every connect of this seat. */
+    confirmFallbackAllowed?: boolean;
   } = {},
 ): World {
   installClock(t);
   const world = new World(role, channelId);
+  if (opts.confirmFallbackAllowed !== undefined) {
+    world.confirmFallbackAllowed = opts.confirmFallbackAllowed;
+  }
   seat?.(world); // seat extra members BEFORE the ladder reads the roster
   world.boot({
     resumePrefetch: opts.resumePrefetch,

@@ -3,12 +3,23 @@
 //   node --test --conditions=browser components/client/protectedShield.test.ts
 // Focus: design 9.1 precedence (every step incl. 6c/6d/6e and the 3b
 // fail-closed catch-all), "green only from verdict ok", never green with an
-// off-list or locally removed leaf, the D3 capable variants, the D14
-// presentation, the D17 notice mapping (every tag + catch-all) and D11.
+// off-list or locally removed leaf, the D3 capable variants (and, S7 D9,
+// Electron / Android capable and `not_available` rows built from lane C4's
+// real `structuralState` / `storeOwnerAllows`), the D14 presentation, the
+// D17 notice mapping (every tag + catch-all) and D11.
+// S2 (W4 lane L1s): step 3c client outdated, step 5b `capacity`, step 6d
+// as `resecuring`, `seat_list_rollback` loud as a groupError, the grey
+// `unsupported_version` marker and the S2 server types.
+// S2 OR-10 (W4-3-0 lane F1): `ownerChangeUnlisted` swaps a same-user
+// `owner_changed_review` for `owner_changed_unlisted`, withholds Review
+// (`reviewOffered`) and never changes the state.
+// S2 W4 fix FX-S: step 5b applies only off the server's current group
+// (audit LOW-1), and the manager's client refusals carry notices (LOW-3).
 // The step 3 / 6e tag lists are pinned ALWAYS against the in-repo fixture
-// `__fixtures__/protected/design-9-1-shield-lists.json`; an extra test checks
-// that fixture against the design copy in `/home/mcp/w4-notes/w4_design.md`
-// (override with `W4_NOTES_DIR`) and skips, loudly, when the copy is absent.
+// `__fixtures__/protected/design-9-1-shield-lists.json` (plus the S2 additions
+// below); an extra test checks that fixture against the design copy in
+// `/home/mcp/w4-notes/w4_design.md` (override with `W4_NOTES_DIR`) and skips,
+// loudly, when the copy is absent.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -16,6 +27,15 @@ import { test } from "node:test";
 
 import type { ProtTankStage } from "stoat.js";
 
+import {
+  type AndroidProbe,
+  type FlagState,
+  type StoreOwnerCheck,
+  type StructuralInput,
+  storeOwnerAllows,
+  structuralState,
+  TEXT_PROTOCOL,
+} from "./protectedPlatform.ts";
 import { ProtectedSendError } from "./protectedSendError.ts";
 import {
   type ProtectedAction,
@@ -30,6 +50,7 @@ import {
   explainShield,
   isProtTankFrozenRefusal,
   PROT_TANK_REFUSAL_LATCH_MS,
+  PROT_TANK_SENDING_STAGES,
   PROT_TANK_STOPPED_STAGES,
   PROTECTED_CLIENT_REASONS,
   PROTECTED_HIDDEN_ACTIONS,
@@ -85,6 +106,13 @@ const SHIELD_LISTS = JSON.parse(
   step3_group_errors: string[];
   step6e_group_errors: string[];
 };
+
+/**
+ * S2 additions to the design 9.1 step 3 `groupError` list. The S1 list in
+ * 9.1 itself is unchanged at 74390c37; the S2 shield bullet (design :5067)
+ * adds `seat_list_rollback` (the commit-AD pre-check, 3.12.3 "S2").
+ */
+const S2_STEP3_GROUP_ADDS = ["seat_list_rollback"];
 
 const GROUP = "G0";
 
@@ -162,6 +190,8 @@ function green(over: Partial<ShieldInputs> = {}): ShieldInputs {
     rosterMismatchAgeMs: 0,
     signerLeafMissingRetries: 0,
     welcomeRetriesExhausted: false,
+    capacity: null,
+    clientOutdated: null,
     ...over,
   };
 }
@@ -269,6 +299,374 @@ test("step 2 + D3 capable variants: anything but capable === true is not_availab
   expectShield(green({ tauriE2eeOff: true }), "protected", "8");
 });
 
+// ---------------------------------------------------------------------------
+// S7 D9: Electron / Android rows. `capable` is built from lane C4's REAL
+// `structuralState` / `storeOwnerAllows`, ANDed like `protectedTextCapable()`
+// (protectedSeam.scan S5 pins those terms in e2ee.ts; the wiring scan W1
+// runs them). The shield itself only ever sees the boolean.
+// ---------------------------------------------------------------------------
+
+const PROBE_OK: AndroidProbe = {
+  state: "ok",
+  value: { protocol: TEXT_PROTOCOL, listenerBridge: true },
+};
+
+/** A window's platform facts; the Tauri main window unless overridden. */
+function shell(over: Partial<StructuralInput> = {}): StructuralInput {
+  return {
+    transport: "tauri",
+    platform: "",
+    electronProtocol: undefined,
+    androidProbe: null,
+    popout: false,
+    overlay: false,
+    flag: "unknown",
+    ...over,
+  };
+}
+
+const electron = (
+  flag: FlagState = "on",
+  over: Partial<StructuralInput> = {},
+) =>
+  shell({
+    transport: "electron",
+    electronProtocol: TEXT_PROTOCOL,
+    flag,
+    ...over,
+  });
+
+const android = (
+  probe: AndroidProbe | null = PROBE_OK,
+  flag: FlagState = "on",
+  over: Partial<StructuralInput> = {},
+) =>
+  shell({
+    transport: "capacitor",
+    platform: "android",
+    androidProbe: probe,
+    flag,
+    ...over,
+  });
+
+/** The bridge's live status terms of `protectedTextCapable()`. */
+interface DeviceFacts {
+  enabled: boolean;
+  published: boolean;
+  deviceId: string | null;
+  userId: string | null;
+  owner: StoreOwnerCheck;
+  storeOwnedElsewhere: boolean;
+  deviceOwnedElsewhere: boolean;
+}
+
+const DEVICE: DeviceFacts = {
+  enabled: true,
+  published: true,
+  deviceId: "D1",
+  userId: "U1",
+  owner: { state: "known", owner: "U1" },
+  storeOwnedElsewhere: false,
+  deviceOwnedElsewhere: false,
+};
+
+/** D3 + S7 D9: `protectedTextCapable()` over C4's real functions. */
+function capableOn(p: StructuralInput, d: Partial<DeviceFacts> = {}): boolean {
+  const x = { ...DEVICE, ...d };
+  const s = structuralState(p);
+  return (
+    s.structural &&
+    !s.hold &&
+    x.enabled &&
+    !!x.deviceId &&
+    !x.storeOwnedElsewhere &&
+    !x.deviceOwnedElsewhere &&
+    !!x.userId &&
+    storeOwnerAllows(p.transport, x.owner, x.userId)
+  );
+}
+
+/**
+ * The S7 D9 notice split (the hook's `tauriE2eeOff`, its shell term now
+ * `structuralShell()`, lane C5): a structural shell whose E2EE is merely
+ * off or unpublished is told to turn it on.
+ */
+function e2eeOffOn(p: StructuralInput, d: Partial<DeviceFacts> = {}): boolean {
+  const x = { ...DEVICE, ...d };
+  return (
+    structuralState(p).structural &&
+    !capableOn(p, d) &&
+    (!x.enabled || !x.published)
+  );
+}
+
+function shieldOn(
+  p: StructuralInput,
+  d: Partial<DeviceFacts> = {},
+  over: Partial<ShieldInputs> = {},
+): ShieldInputs {
+  return green({
+    capable: capableOn(p, d),
+    tauriE2eeOff: e2eeOffOn(p, d),
+    ...over,
+  });
+}
+
+test("S7 D9: a capable Electron / Android shell runs the full 9.1 ladder and can be green", () => {
+  for (const [label, p] of [
+    ["electron protocol 2, flag on", electron("on")],
+    ["android probe ok, listener bridge, flag on", android(PROBE_OK, "on")],
+  ] as const) {
+    for (const owner of [
+      { state: "known", owner: "U1" },
+      { state: "known", owner: null }, // a fresh store
+    ] as StoreOwnerCheck[]) {
+      const why = `${label}, owner ${JSON.stringify(owner)}`;
+      assert.equal(capableOn(p, { owner }), true, why);
+      expectShield(shieldOn(p, { owner }), "protected", "8", why);
+      // capable is only step 2: steps 3-9 still decide, as on Tauri
+      expectShield(
+        shieldOn(p, { owner }, { seatListError: "bad_sig" }),
+        "unverified",
+        "3",
+        why,
+      );
+      expectShield(
+        shieldOn(p, { owner }, { native: null }),
+        "resecuring",
+        "4",
+        why,
+      );
+      expectShield(
+        shieldOn(p, { owner }, { native: nativeOk({ verdict: "not_seated" }) }),
+        "not_seated",
+        "5",
+        why,
+      );
+      assert.equal(explainShield(shieldOn(p, { owner }))?.notice, null);
+    }
+  }
+  // Tauri keeps W4: the flag is not consulted, an unknown owner is capable.
+  for (const flag of ["on", "off", "unknown"] as FlagState[]) {
+    const t = shell({ flag });
+    assert.equal(capableOn(t, { owner: { state: "unknown" } }), true, flag);
+    expectShield(
+      shieldOn(t, { owner: { state: "unknown" } }),
+      "protected",
+      "8",
+    );
+  }
+});
+
+test("S7 D9: every closed, held or foreign Electron / Android / iOS / web window is not_available", () => {
+  const rows: [string, StructuralInput, Partial<DeviceFacts>?][] = [
+    ["electron, no protocol", electron("on", { electronProtocol: undefined })],
+    [
+      "electron, protocol 1 (an S1 shell)",
+      electron("on", { electronProtocol: 1 }),
+    ],
+    ["electron, protocol 0", electron("on", { electronProtocol: 0 })],
+    ["electron, flag off", electron("off")],
+    ["electron, flag unknown (hold)", electron("unknown")],
+    [
+      "electron, owner unknown (A8)",
+      electron(),
+      { owner: { state: "unknown" } },
+    ],
+    [
+      "electron, foreign owner",
+      electron(),
+      { owner: { state: "known", owner: "U2" } },
+    ],
+    ["electron, no user", electron(), { userId: null }],
+    ["electron, no device id", electron(), { deviceId: null }],
+    ["electron, store latch", electron(), { storeOwnedElsewhere: true }],
+    ["electron, device latch", electron(), { deviceOwnedElsewhere: true }],
+    ["electron popout", electron("on", { popout: true })],
+    ["electron overlay", electron("on", { overlay: true })],
+    [
+      "android, legacy bridge",
+      android({
+        state: "ok",
+        value: { protocol: TEXT_PROTOCOL, listenerBridge: false },
+      }),
+    ],
+    [
+      "android, protocol 1 (an S1 shell)",
+      android({ state: "ok", value: { protocol: 1, listenerBridge: true } }),
+    ],
+    ["android, probe pending (hold)", android({ state: "pending" })],
+    ["android, probe failed", android({ state: "failed" })],
+    ["android, no probe", android(null)],
+    ["android, flag off", android(PROBE_OK, "off")],
+    ["android, flag unknown (hold)", android(PROBE_OK, "unknown")],
+    ["android, owner unknown (A8)", android(), { owner: { state: "unknown" } }],
+    [
+      "android, foreign owner",
+      android(),
+      { owner: { state: "known", owner: "U2" } },
+    ],
+    ["android, no user", android(), { userId: null }],
+    ["android popout", android(PROBE_OK, "on", { popout: true })],
+    ["android overlay", android(PROBE_OK, "on", { overlay: true })],
+    ["ios", android(PROBE_OK, "on", { platform: "ios" })],
+    ["web", shell({ transport: "web", flag: "on" })],
+    ["tauri popout", shell({ popout: true })],
+    [
+      "tauri, foreign owner (W4 latch)",
+      shell(),
+      { owner: { state: "known", owner: "U2" } },
+    ],
+  ];
+  for (const [label, p, d] of rows) {
+    assert.equal(capableOn(p, d), false, label);
+    expectShield(shieldOn(p, d), "not_available", "2", label);
+    // E2EE is on in every row: the notice never says "turn it on".
+    assert.equal(explainShield(shieldOn(p, d))?.notice, "not_available", label);
+    // not_available beats loud errors and loading, as on Tauri
+    expectShield(
+      shieldOn(p, d, { seatListError: "bad_sig", native: null }),
+      "not_available",
+      "2",
+      label,
+    );
+  }
+});
+
+test("S7 D9 notice split: a structural Electron / Android shell with E2EE off gets enable_e2ee", () => {
+  const off = { enabled: false };
+  for (const [label, p] of [
+    ["electron", electron("on")],
+    ["electron, flag unknown", electron("unknown")],
+    ["android", android(PROBE_OK, "on")],
+    ["android, probe pending", android({ state: "pending" })],
+    ["tauri", shell()],
+  ] as const) {
+    expectShield(shieldOn(p, off), "not_available", "2", label);
+    assert.equal(explainShield(shieldOn(p, off))?.notice, "enable_e2ee", label);
+    assert.equal(
+      shieldPresentation("not_available", {
+        tauriE2eeOff: e2eeOffOn(p, off),
+      }).notice,
+      "enable_e2ee",
+      label,
+    );
+  }
+  // Enabled but not yet published is still capable (W4: `published` is a
+  // notice term only), so it is never told to turn E2EE on.
+  for (const p of [electron("on"), android(PROBE_OK, "on")]) {
+    expectShield(shieldOn(p, { published: false }), "protected", "8");
+  }
+  // Not a text-plane shell: turning E2EE on would not help, so no such hint.
+  for (const [label, p] of [
+    ["electron, no protocol", electron("on", { electronProtocol: undefined })],
+    ["electron, flag off", electron("off")],
+    [
+      "android, legacy bridge",
+      android({
+        state: "ok",
+        value: { protocol: TEXT_PROTOCOL, listenerBridge: false },
+      }),
+    ],
+    ["android, probe failed", android({ state: "failed" })],
+    ["android, flag off", android(PROBE_OK, "off")],
+    ["ios", android(PROBE_OK, "on", { platform: "ios" })],
+    ["web", shell({ transport: "web", flag: "on" })],
+    ["electron popout", electron("on", { popout: true })],
+    ["android overlay", android(PROBE_OK, "on", { overlay: true })],
+    ["tauri popout", shell({ popout: true })],
+  ] as const) {
+    expectShield(shieldOn(p, off), "not_available", "2", label);
+    assert.equal(
+      explainShield(shieldOn(p, off))?.notice,
+      "not_available",
+      label,
+    );
+  }
+});
+
+test("S7 D9: across the platform grid, green only on a decided, owned, main-window text shell", () => {
+  const probes: (AndroidProbe | null)[] = [
+    null,
+    { state: "pending" },
+    { state: "failed" },
+    PROBE_OK,
+    { state: "ok", value: { protocol: TEXT_PROTOCOL, listenerBridge: false } },
+    { state: "ok", value: { protocol: 1, listenerBridge: true } },
+  ];
+  const owners: StoreOwnerCheck[] = [
+    { state: "unknown" },
+    { state: "known", owner: null },
+    { state: "known", owner: "U1" },
+    { state: "known", owner: "U2" },
+  ];
+  const greens = { tauri: 0, electron: 0, capacitor: 0, web: 0 };
+  let rows = 0;
+  for (const transport of ["tauri", "electron", "capacitor", "web"] as const)
+    for (const platform of ["", "android", "ios"])
+      for (const electronProtocol of [undefined, 1, 2])
+        for (const androidProbe of probes)
+          for (const flag of ["on", "off", "unknown"] as FlagState[])
+            for (const [popout, overlay] of [
+              [false, false],
+              [true, false],
+              [false, true],
+            ])
+              for (const owner of owners) {
+                rows++;
+                const p: StructuralInput = {
+                  transport,
+                  platform,
+                  electronProtocol,
+                  androidProbe,
+                  popout,
+                  overlay,
+                  flag,
+                };
+                const s = structuralState(p);
+                const got = computeShieldState(shieldOn(p, { owner }));
+                if (got !== "protected") {
+                  assert.equal(got, "not_available");
+                  continue;
+                }
+                greens[transport]++;
+                const why = JSON.stringify({ p, owner });
+                assert.ok(!popout && !overlay, `main window only: ${why}`);
+                assert.ok(s.structural && !s.hold, `decided: ${why}`);
+                assert.notEqual(transport, "web", why);
+                assert.notEqual(
+                  owner.state === "known" && owner.owner,
+                  "U2",
+                  why,
+                );
+                if (transport === "electron") {
+                  assert.equal(electronProtocol, TEXT_PROTOCOL, why);
+                  assert.equal(flag, "on", why);
+                  assert.equal(owner.state, "known", `A8: ${why}`);
+                }
+                if (transport === "capacitor") {
+                  assert.equal(platform, "android", `never iOS: ${why}`);
+                  assert.deepEqual(androidProbe, PROBE_OK, why);
+                  assert.equal(flag, "on", why);
+                  assert.equal(owner.state, "known", `A8: ${why}`);
+                }
+              }
+  assert.equal(rows, 4 * 3 * 3 * probes.length * 3 * 3 * owners.length);
+  // Not vacuous, and exactly the green rows C4 + D3 allow (C4 ignores the
+  // facts of other shells, e.g. an Electron row's probe):
+  // - tauri: main window, owner not foreign: 3 platforms x 3 protocols x
+  //   6 probes x 3 flags x 3 owners;
+  // - electron: protocol 2, flag on, owner null or self: 3 x 6 x 2;
+  // - capacitor: android, probe ok + listener, flag on, owner null or self:
+  //   3 protocols x 2.
+  assert.deepEqual(greens, {
+    tauri: 3 * 3 * 6 * 3 * 3,
+    electron: 3 * 6 * 2,
+    capacitor: 3 * 2,
+    web: 0,
+  });
+});
+
 test("step 3: every loud seat-list error is unverified, even over verdict ok / loading", () => {
   for (const tag of SHIELD_LOUD_SEAT_LIST_ERRORS) {
     expectShield(green({ seatListError: tag }), "unverified", "3", tag);
@@ -314,6 +712,11 @@ test("step 3 notices name the cause", () => {
   );
   assert.equal(
     n(green({ groupError: "seat_list_invalid" })),
+    "seat_list_failed",
+  );
+  // S2 (design :5067): the commit-AD pre-check's rollback, as a groupError
+  assert.equal(
+    n(green({ groupError: "seat_list_rollback" })),
     "seat_list_failed",
   );
   assert.equal(
@@ -558,22 +961,411 @@ test("step 6c: SignerLeafMissing budget exhausted is unverified, before step 7",
   );
 });
 
-test("step 6d: welcome retries exhausted is unverified, before step 7", () => {
+// S2 replaces S1's 6d red (design :5052-5056): a missing Welcome is
+// silence, never a verified failure.
+test("S2 step 6d: welcome retries exhausted is resecuring, waiting for a member, never unverified", () => {
+  for (const v of [
+    "joining",
+    "no_group",
+    "ok",
+    "poisoned",
+    "no_seat_list",
+  ] as const) {
+    expectShield(
+      withVerdict(v, { welcomeRetriesExhausted: true }),
+      "resecuring",
+      "6d",
+      v,
+    );
+    assert.equal(
+      explainShield(withVerdict(v, { welcomeRetriesExhausted: true }))?.notice,
+      "waiting_for_member",
+      v,
+    );
+  }
+  // never green with the budget spent, even over a consistent verdict ok
+  assert.notEqual(
+    computeShieldState(green({ welcomeRetriesExhausted: true })),
+    "protected",
+  );
+  // a verified failure still wins: step 3, step 6 past 60 s, step 6c
   expectShield(
-    withVerdict("joining", { welcomeRetriesExhausted: true }),
+    green({ welcomeRetriesExhausted: true, groupError: "bad_sig" }),
     "unverified",
-    "6d",
+    "3",
   );
   expectShield(
-    withVerdict("no_group", { welcomeRetriesExhausted: true }),
+    withVerdict("roster_mismatch", {
+      welcomeRetriesExhausted: true,
+      rosterMismatchAgeMs: 60_000,
+    }),
     "unverified",
-    "6d",
+    "6",
   );
+  expectShield(
+    withVerdict("joining", {
+      welcomeRetriesExhausted: true,
+      signerLeafMissingRetries: 3,
+    }),
+    "unverified",
+    "6c",
+  );
+  // only `true` spends the budget
+  expectShield(
+    withVerdict("joining", {
+      welcomeRetriesExhausted: "true" as unknown as boolean,
+    }),
+    "resecuring",
+    "7",
+  );
+});
+
+// Planner ruling (W4-1 r2): `clientOutdated` comes only from a server 4xx,
+// so it is decided after the step 3 / 3b reds and never masks one.
+test("S2 step 3c: client outdated is not_available, after the step 3 and 3b reds, before step 4", () => {
+  for (const min of [2, 3, 0, Number.NaN]) {
+    expectShield(
+      green({ clientOutdated: min }),
+      "not_available",
+      "3c",
+      String(min),
+    );
+    assert.equal(
+      explainShield(green({ clientOutdated: min }))?.notice,
+      "client_outdated",
+    );
+  }
+  // steps 1 and 2 still come first
+  expectShield(
+    green({ clientOutdated: 2, serverProtected: false }),
+    "unverified",
+    "1",
+  );
+  expectShield(
+    green({ clientOutdated: 2, capable: false }),
+    "not_available",
+    "2",
+  );
+  // a verified red stays red: equivocation, owner changed, rollback, ...
+  for (const over of [
+    { seatListError: "seat_list_equivocation" },
+    { groupError: "seat_list_equivocation" },
+    { seatListError: "owner_changed" },
+    { native: nativeOk({ verdict: "owner_changed" }) },
+    { groupError: "seat_list_rollback" },
+    { seatListError: "bad_sig" },
+  ] as Partial<ShieldInputs>[]) {
+    expectShield(
+      green({ clientOutdated: 2, ...over }),
+      "unverified",
+      "3",
+      JSON.stringify(over),
+    );
+  }
+  // and so does the 3b fail-closed red
+  expectShield(
+    green({ clientOutdated: 2, groupError: "unknown" }),
+    "unverified",
+    "3b",
+  );
+  // it decides before steps 4-9: loading, not seated, capacity, 6d
+  for (const over of [
+    { native: null },
+    { capacity: { reason: "device_cap" } },
+    { welcomeRetriesExhausted: true },
+    { native: nativeOk({ verdict: "not_seated" }) },
+    { groupError: "mls_epoch_gap" },
+  ] as Partial<ShieldInputs>[]) {
+    expectShield(
+      green({ clientOutdated: 2, ...over }),
+      "not_available",
+      "3c",
+      JSON.stringify(over),
+    );
+  }
+  // null (and a missing field) is not outdated
+  expectShield(green({ clientOutdated: null }), "protected", "8");
+  expectShield(
+    green({ clientOutdated: undefined as unknown as null }),
+    "protected",
+    "8",
+  );
+});
+
+/**
+ * A native state that does NOT hold the server's current group (a refused
+ * joiner never joined): step 5b applies to it (audit LOW-1). `over` may
+ * set the verdict for the precedence rows.
+ */
+function notHeld(over: Partial<TextChannelState> = {}): TextChannelState {
+  return nativeOk({ state: "none", ...over });
+}
+
+/** `i` with its native state moved off the server's current group. */
+function offGroup(i: ShieldInputs): ShieldInputs {
+  return i.native === null
+    ? i
+    : { ...i, native: { ...i.native, state: "none" } };
+}
+
+test("S2 step 5b: capacity comes after step 5 and before step 6, only from i.capacity", () => {
+  const cap = (reason: "device_cap" | "group_full") => ({ reason });
+  const refused = (over: Partial<ShieldInputs>) =>
+    green({ native: notHeld(), ...over });
+  expectShield(refused({ capacity: cap("device_cap") }), "capacity", "5b");
   assert.equal(
-    explainShield(withVerdict("joining", { welcomeRetriesExhausted: true }))
-      ?.notice,
-    "join_stalled",
+    explainShield(refused({ capacity: cap("device_cap") }))?.notice,
+    "capacity_device_cap",
   );
+  expectShield(refused({ capacity: cap("group_full") }), "capacity", "5b");
+  assert.equal(
+    explainShield(refused({ capacity: cap("group_full") }))?.notice,
+    "capacity_group_full",
+  );
+  // an unknown reason still holds the state, with the copy true for both
+  const odd = { reason: "bogus" } as unknown as ShieldInputs["capacity"];
+  expectShield(refused({ capacity: odd }), "capacity", "5b");
+  assert.equal(
+    explainShield(refused({ capacity: odd }))?.notice,
+    "capacity_device_cap",
+  );
+  // steps 1-5 win over it
+  expectShield(
+    green({ capacity: cap("device_cap"), serverProtected: false }),
+    "unverified",
+    "1",
+  );
+  expectShield(
+    green({ capacity: cap("device_cap"), capable: false }),
+    "not_available",
+    "2",
+  );
+  expectShield(
+    green({ capacity: cap("device_cap"), groupError: "bad_sig" }),
+    "unverified",
+    "3",
+  );
+  expectShield(
+    green({ capacity: cap("device_cap"), groupError: "unknown" }),
+    "unverified",
+    "3b",
+  );
+  expectShield(
+    green({ capacity: cap("group_full"), native: null }),
+    "resecuring",
+    "4",
+  );
+  expectShield(
+    withVerdict("not_seated", { capacity: cap("device_cap") }),
+    "not_seated",
+    "5",
+  );
+  expectShield(
+    green({
+      native: notHeld({ verdict: "not_seated" }),
+      capacity: cap("device_cap"),
+    }),
+    "not_seated",
+    "5",
+  );
+  // off the server's current group, it wins over steps 6-9
+  for (const [label, over] of [
+    ["6", withVerdict("roster_mismatch", { rosterMismatchAgeMs: 0 })],
+    ["6c", withVerdict("joining", { signerLeafMissingRetries: 3 })],
+    ["6d", withVerdict("joining", { welcomeRetriesExhausted: true })],
+    ["7", withVerdict("no_group")],
+    ["7 server", green({ serverGroup: serverGroup({ current_epoch: 9 }) })],
+    ["8", green()],
+    ["9", withVerdict("bogus")],
+  ] as const) {
+    expectShield(
+      { ...offGroup(over), capacity: cap("device_cap") },
+      "capacity",
+      "5b",
+      label,
+    );
+  }
+  // never from anything else: no capacity input, no capacity state
+  for (const i of [
+    green({ groupError: "text_group_full" }),
+    green({ groupError: "mls_epoch_gap" }),
+    withVerdict("joining"),
+    green({ capacity: undefined as unknown as null }),
+    green({ native: notHeld(), groupError: "text_group_full" }),
+    green({ native: notHeld(), capacity: undefined as unknown as null }),
+  ]) {
+    assert.notEqual(computeShieldState(i), "capacity");
+  }
+});
+
+test("S2 LOW-1: a device holding the server's current group never shows capacity", () => {
+  const cap = { reason: "device_cap" } as const;
+  // Held (state active, verdict not no_group, the server's group id): the
+  // recorded refusal is stale and steps 6-9 decide as without it.
+  for (const [label, over, state, step] of [
+    ["8 green", {}, "protected", "8"],
+    ["8 server group unknown", { serverGroup: null }, "protected", "8"],
+    [
+      "6 resecuring",
+      { native: nativeOk({ verdict: "roster_mismatch" }) },
+      "resecuring",
+      "6",
+    ],
+    [
+      "6 red",
+      {
+        native: nativeOk({ verdict: "roster_mismatch" }),
+        rosterMismatchAgeMs: 60_000,
+      },
+      "unverified",
+      "6",
+    ],
+    ["6c", { signerLeafMissingRetries: 3 }, "unverified", "6c"],
+    ["6d", { welcomeRetriesExhausted: true }, "resecuring", "6d"],
+    [
+      "7 joining",
+      { native: nativeOk({ verdict: "joining" }) },
+      "resecuring",
+      "7",
+    ],
+    [
+      "7 server epoch",
+      { serverGroup: serverGroup({ current_epoch: 9 }) },
+      "resecuring",
+      "7",
+    ],
+    [
+      "9 bogus",
+      { native: nativeOk({ verdict: "bogus" as TextVerdict }) },
+      "unverified",
+      "9",
+    ],
+    [
+      "9 off-list",
+      { native: nativeOk({ members: [member({ on_signed_list: false })] }) },
+      "unverified",
+      "9",
+    ],
+  ] as const) {
+    const without = explainShield(green(over));
+    assert.ok(without, label);
+    assert.equal(without.state, state, `${label} (control row)`);
+    for (const reason of ["device_cap", "group_full"] as const) {
+      const got = explainShield(green({ ...over, capacity: { reason } }));
+      assert.deepEqual(got, without, `${label} ${reason}`);
+      assert.notEqual(got?.state, "capacity", `${label} ${reason}`);
+      expectShield(
+        green({ ...over, capacity: { reason } }),
+        state,
+        step,
+        label,
+      );
+    }
+  }
+  // Not held: the refusal applies.
+  for (const [label, native, server] of [
+    ["state none", notHeld(), serverGroup()],
+    [
+      "state joining",
+      nativeOk({ state: "joining", verdict: "joining" }),
+      serverGroup(),
+    ],
+    [
+      "state left",
+      nativeOk({ state: "left", verdict: "no_group" }),
+      serverGroup(),
+    ],
+    [
+      "state poisoned",
+      nativeOk({ state: "poisoned", verdict: "poisoned" }),
+      serverGroup(),
+    ],
+    // OR-8: a superseded group stays active with verdict no_group
+    ["superseded", nativeOk({ verdict: "no_group" }), serverGroup()],
+    // the server moved to a group native has not seen yet
+    [
+      "older group id",
+      nativeOk(),
+      serverGroup({ group_id: "G1", generation: 1 }),
+    ],
+  ] as const) {
+    expectShield(
+      green({ native, serverGroup: server, capacity: cap }),
+      "capacity",
+      "5b",
+      label,
+    );
+  }
+});
+
+test("S2: capacity and client outdated are never green, and capacity only with its input", () => {
+  const caps = [
+    null,
+    { reason: "device_cap" },
+    { reason: "group_full" },
+  ] as ShieldInputs["capacity"][];
+  let seen = 0;
+  for (const verdict of [...VERDICTS, "bogus"]) {
+    for (const capable of [false, true]) {
+      for (const ge of [null, "bad_sig", "mls_epoch_gap", "unknown"] as const) {
+        for (const capacity of caps) {
+          for (const clientOutdated of [null, 2]) {
+            for (const exhausted of [false, true]) {
+              for (const groupState of ["active", "none"] as const) {
+                // LOW-1: the server's current group is held (same group id
+                // as `serverGroup()`) exactly when active and not no_group.
+                const held = groupState === "active" && verdict !== "no_group";
+                const e = explainShield(
+                  green({
+                    native: nativeOk({
+                      verdict: verdict as TextVerdict,
+                      state: groupState,
+                    }),
+                    capable,
+                    groupError: ge,
+                    capacity,
+                    clientOutdated,
+                    welcomeRetriesExhausted: exhausted,
+                  }),
+                );
+                assert.ok(e);
+                seen++;
+                if (e.state === "protected") {
+                  // a stale refusal never blocks green on a held group
+                  assert.ok(capacity === null || held);
+                  assert.equal(clientOutdated, null);
+                }
+                if (e.state === "capacity") {
+                  assert.notEqual(capacity, null);
+                  assert.equal(held, false);
+                  assert.equal(e.step, "5b");
+                }
+                // off the group, a refusal decides once steps 1-5 pass
+                const stepsOneToFivePass =
+                  capable &&
+                  (ge === null || ge === "mls_epoch_gap") &&
+                  clientOutdated === null &&
+                  verdict !== "owner_changed" &&
+                  verdict !== "not_seated";
+                if (capacity !== null && !held && stepsOneToFivePass) {
+                  assert.equal(e.step, "5b", `${verdict}/${groupState}`);
+                }
+                if (e.step === "3c") assert.notEqual(clientOutdated, null);
+                // a server-only signal never turns a red into not_available
+                if (clientOutdated !== null && ge === "bad_sig") {
+                  assert.ok(
+                    e.state === "unverified" || e.step === "2",
+                    `${verdict}/${String(capable)}`,
+                  );
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  assert.equal(seen, 9 * 2 * 4 * 3 * 2 * 2 * 2);
 });
 
 test("step 6e: own_commit_mismatch / already_member / unexpected_mls_content never unverified by themselves", () => {
@@ -757,8 +1549,12 @@ test("step 3 and 6e tag lists match the pinned design rows (9.1)", () => {
   );
   assert.deepEqual(
     sortedCopy(SHIELD_LOUD_GROUP_ERRORS),
-    sortedCopy(SHIELD_LISTS.step3_group_errors),
+    sortedCopy([...SHIELD_LISTS.step3_group_errors, ...S2_STEP3_GROUP_ADDS]),
   );
+  // the S2 additions are new, not already in the 9.1 rows
+  for (const tag of S2_STEP3_GROUP_ADDS) {
+    assert.ok(!SHIELD_LISTS.step3_group_errors.includes(tag), tag);
+  }
   assert.deepEqual(
     sortedCopy(SHIELD_FALL_THROUGH_GROUP_ERRORS),
     sortedCopy(SHIELD_LISTS.step6e_group_errors),
@@ -809,6 +1605,9 @@ test("shieldInputsFromView: loading view, roster age, backwards clock", () => {
     recreateAvailable: false,
     publishInFlight: false,
     maybeUnsent: false,
+    capacity: null,
+    clientOutdated: null,
+    ownerNotice: null,
   };
   assert.equal(
     shieldInputsFromView(view, flags, 61_000).rosterMismatchAgeMs,
@@ -841,6 +1640,314 @@ test("shieldInputsFromView: loading view, roster age, backwards clock", () => {
   );
 });
 
+test("S2 shieldInputsFromView maps capacity and clientOutdated from the view", () => {
+  const flags = { serverProtected: true, locallyPinned: true, capable: true };
+  const view: ProtectedChannelView = {
+    channelId: "C1",
+    seatListError: null,
+    groupError: null,
+    native: nativeOk(),
+    serverGroup: serverGroup(),
+    seats: null,
+    rosterMismatchSinceMs: null,
+    signerLeafMissingRetries: 0,
+    welcomeRetriesExhausted: false,
+    ownerChangePending: false,
+    recreateAvailable: false,
+    publishInFlight: false,
+    maybeUnsent: false,
+    capacity: null,
+    clientOutdated: null,
+    ownerNotice: null,
+  };
+  const at = (v: ProtectedChannelView | null) =>
+    explainShield(shieldInputsFromView(v, flags, 5));
+  assert.equal(at(view)?.state, "protected");
+  // a refused joiner: native holds no group yet
+  const capped = {
+    ...view,
+    native: notHeld({ verdict: "no_group" }),
+    capacity: { reason: "group_full" as const },
+  };
+  assert.deepEqual(shieldInputsFromView(capped, flags, 5).capacity, {
+    reason: "group_full",
+  });
+  assert.deepEqual(at(capped), {
+    state: "capacity",
+    step: "5b",
+    notice: "capacity_group_full",
+  });
+  // LOW-1: the same refusal on a device holding the current group is stale
+  assert.equal(
+    at({ ...view, capacity: { reason: "group_full" } })?.state,
+    "protected",
+  );
+  const old = { ...view, clientOutdated: 3 };
+  assert.equal(shieldInputsFromView(old, flags, 5).clientOutdated, 3);
+  assert.deepEqual(at(old), {
+    state: "not_available",
+    step: "3c",
+    notice: "client_outdated",
+  });
+  // a loading view carries neither
+  const none = shieldInputsFromView(null, flags, 5);
+  assert.equal(none.capacity, null);
+  assert.equal(none.clientOutdated, null);
+});
+
+// ---------------------------------------------------------------------------
+// S2 OR-10 (W4-3-0 F1): a same-user owner change this device confirmed that
+// stayed unsettled. Notice and Review offer only; never the state.
+// ---------------------------------------------------------------------------
+
+/** Native holding a pending owner signer (`same_user` may be malformed). */
+function pendingOwner(
+  sameUser: unknown,
+  verdict: TextVerdict = "owner_changed",
+): TextChannelState {
+  return nativeOk({
+    verdict,
+    owner_pin: {
+      ...nativeOk().owner_pin,
+      status: "changed",
+      pending_signer: {
+        user_id: "U1",
+        device_id: "D7",
+        same_user: sameUser as boolean,
+        verified: true,
+      },
+    },
+  });
+}
+
+/** Every way the shield reaches a same-user `owner_changed_review`. */
+const SAME_USER_CHANGES: [string, Partial<ShieldInputs>][] = [
+  ["native verdict", { native: pendingOwner(true) }],
+  ["parked", { native: pendingOwner(true), ownerChangePending: true }],
+  [
+    "seat list error",
+    {
+      native: pendingOwner(true, "ok"),
+      seatListError: "owner_changed",
+      ownerChangePending: true,
+    },
+  ],
+  [
+    "group error",
+    { native: pendingOwner(true, "ok"), groupError: "owner_changed" },
+  ],
+];
+
+test("S2 OR-10: an unlisted same-user owner change shows owner_changed_unlisted and offers no Review", () => {
+  for (const [label, over] of SAME_USER_CHANGES) {
+    assert.deepEqual(
+      explainShield(green({ ...over, ownerChangeUnlisted: true })),
+      {
+        state: "unverified",
+        step: "3",
+        notice: "owner_changed_unlisted",
+        reviewOffered: false,
+      },
+      label,
+    );
+  }
+});
+
+test("S2 OR-10: without the flag (absent or false) a same-user owner change shows owner_changed_review and offers Review", () => {
+  for (const [label, over] of SAME_USER_CHANGES) {
+    for (const flag of [undefined, false]) {
+      const i = green(over);
+      if (flag !== undefined) i.ownerChangeUnlisted = flag;
+      assert.ok(!(flag === undefined && "ownerChangeUnlisted" in i));
+      assert.deepEqual(
+        explainShield(i),
+        {
+          state: "unverified",
+          step: "3",
+          notice: "owner_changed_review",
+          reviewOffered: true,
+        },
+        `${label} flag=${String(flag)}`,
+      );
+    }
+  }
+  // parked with no signer named: the S1 notice, Review offered as before
+  assert.equal(
+    explainShield(
+      green({ seatListError: "owner_changed", ownerChangePending: true }),
+    )?.reviewOffered,
+    true,
+  );
+  // an owner change of unknown kind: generic notice, no Review
+  assert.deepEqual(explainShield(green({ seatListError: "owner_changed" })), {
+    state: "unverified",
+    step: "3",
+    notice: "unverified",
+    reviewOffered: false,
+  });
+  // outside a step 3 owner change the field is absent (read as not offered)
+  for (const over of [
+    {},
+    { seatListError: "bad_sig" },
+    { serverProtected: false, native: pendingOwner(true) },
+    { capable: false, native: pendingOwner(true) },
+    { native: pendingOwner(true, "ok") },
+  ] as Partial<ShieldInputs>[]) {
+    const e = explainShield(green(over));
+    assert.ok(e);
+    assert.equal("reviewOffered" in e, false, JSON.stringify(e));
+  }
+});
+
+test("S2 OR-10: the unlisted flag never changes the state or step and never masks a stronger red", () => {
+  const cases: [string, Partial<ShieldInputs>][] = [
+    ["green", {}],
+    ["step 1", { serverProtected: false, native: pendingOwner(true) }],
+    ["step 2", { capable: false, native: pendingOwner(true) }],
+    ["step 3 same user", { native: pendingOwner(true) }],
+    [
+      "step 3 same user + bad_sig",
+      { native: pendingOwner(true), seatListError: "bad_sig" },
+    ],
+    [
+      "step 3 same user + equivocation",
+      { native: pendingOwner(true), groupError: "seat_list_equivocation" },
+    ],
+    [
+      "step 3 same user + outdated + capacity",
+      {
+        native: pendingOwner(true),
+        clientOutdated: 2,
+        capacity: { reason: "device_cap" },
+      },
+    ],
+    ["step 3 different user", { native: pendingOwner(false) }],
+    ["step 3 bad_sig", { seatListError: "bad_sig" }],
+    ["step 3 rollback", { groupError: "seat_list_rollback" }],
+    ["step 3b", { groupError: "unknown" }],
+    ["step 3c", { clientOutdated: 2 }],
+    ["step 4", { native: null }],
+    ["step 5b", { native: notHeld(), capacity: { reason: "group_full" } }],
+    [
+      "step 6 red",
+      {
+        native: nativeOk({ verdict: "roster_mismatch" }),
+        rosterMismatchAgeMs: 60_000,
+      },
+    ],
+    ["step 6c", { signerLeafMissingRetries: 3 }],
+    ["step 7", { native: nativeOk({ verdict: "poisoned" }) }],
+    [
+      "step 9 off-list",
+      { native: nativeOk({ members: [member({ on_signed_list: false })] }) },
+    ],
+    ["step 9 pin changed", { native: pendingOwner(true, "ok") }],
+  ];
+  for (const [label, over] of cases) {
+    const off = explainShield(green(over));
+    const on = explainShield(green({ ...over, ownerChangeUnlisted: true }));
+    assert.ok(off && on, label);
+    assert.equal(on.state, off.state, label);
+    assert.equal(on.step, off.step, label);
+    assert.deepEqual(
+      on,
+      off.notice === "owner_changed_review"
+        ? { ...off, notice: "owner_changed_unlisted", reviewOffered: false }
+        : off,
+      label,
+    );
+  }
+  expectShield(green({ ownerChangeUnlisted: true }), "protected", "8");
+});
+
+test("S2 OR-10: a different-user or unknown-signer owner change is unaffected by the unlisted flag", () => {
+  const cases: [string, Partial<ShieldInputs>][] = [
+    ["different user", { native: pendingOwner(false) }],
+    [
+      "different user, parked",
+      { native: pendingOwner(false), ownerChangePending: true },
+    ],
+    [
+      "different user, seat list",
+      { native: pendingOwner(false, "ok"), seatListError: "owner_changed" },
+    ],
+    [
+      "no signer, parked",
+      { seatListError: "owner_changed", ownerChangePending: true },
+    ],
+    [
+      "malformed same_user, parked",
+      { native: pendingOwner("yes"), ownerChangePending: true },
+    ],
+  ];
+  for (const [label, over] of cases) {
+    assert.deepEqual(
+      explainShield(green({ ...over, ownerChangeUnlisted: true })),
+      explainShield(green(over)),
+      label,
+    );
+  }
+  assert.deepEqual(
+    explainShield(
+      green({ native: pendingOwner(false), ownerChangeUnlisted: true }),
+    ),
+    {
+      state: "unverified",
+      step: "3",
+      notice: "owner_changed_locked",
+      reviewOffered: false,
+    },
+  );
+});
+
+test("S2 OR-10: shieldInputsFromView reads ownerChangeUnlisted from the view; absent or malformed is false", () => {
+  const flags = { serverProtected: true, locallyPinned: true, capable: true };
+  const view: ProtectedChannelView = {
+    channelId: "C1",
+    seatListError: "owner_changed",
+    groupError: null,
+    native: pendingOwner(true),
+    serverGroup: serverGroup(),
+    seats: null,
+    rosterMismatchSinceMs: null,
+    signerLeafMissingRetries: 0,
+    welcomeRetriesExhausted: false,
+    ownerChangePending: true,
+    recreateAvailable: false,
+    publishInFlight: false,
+    maybeUnsent: false,
+    capacity: null,
+    clientOutdated: null,
+    ownerNotice: null,
+    ownerChangeUnlisted: true,
+  };
+  const at = (v: ProtectedChannelView | null) =>
+    explainShield(shieldInputsFromView(v, flags, 5));
+  assert.equal(shieldInputsFromView(view, flags, 5).ownerChangeUnlisted, true);
+  assert.deepEqual(at(view), {
+    state: "unverified",
+    step: "3",
+    notice: "owner_changed_unlisted",
+    reviewOffered: false,
+  });
+  const absent: ProtectedChannelView = { ...view };
+  delete absent.ownerChangeUnlisted;
+  for (const v of [
+    { ...view, ownerChangeUnlisted: false },
+    absent,
+    { ...view, ownerChangeUnlisted: "true" as unknown as boolean },
+  ]) {
+    assert.equal(shieldInputsFromView(v, flags, 5).ownerChangeUnlisted, false);
+    assert.deepEqual(at(v), {
+      state: "unverified",
+      step: "3",
+      notice: "owner_changed_review",
+      reviewOffered: true,
+    });
+  }
+  assert.equal(shieldInputsFromView(null, flags, 5).ownerChangeUnlisted, false);
+});
+
 // ---------------------------------------------------------------------------
 // Presentation (D14)
 // ---------------------------------------------------------------------------
@@ -851,6 +1958,8 @@ test("shieldPresentation: D14 glyphs, hues, tint, composer per state", () => {
       protected: ["verified_user", "--sloga-protected-ok", true, "enabled"],
       resecuring: ["shield", "--sloga-protected-resecuring", false, "disabled"],
       not_seated: ["shield", "--sloga-protected-unavailable", false, "hidden"],
+      // S2 D35: neutral, read-only, never tints
+      capacity: ["shield", "--sloga-protected-unavailable", false, "hidden"],
       not_available: [
         "remove_moderator",
         "--sloga-protected-unavailable",
@@ -880,6 +1989,11 @@ test("shieldPresentation: D14 glyphs, hues, tint, composer per state", () => {
     shieldPresentation("unverified", { tauriE2eeOff: true }).notice,
     "unverified",
   );
+  // capacity is never the alarm hue or glyph
+  const cap = shieldPresentation("capacity");
+  assert.notEqual(cap.hueVar, "--sloga-protected-alert");
+  assert.notEqual(cap.glyph, "gpp_bad");
+  assert.equal(cap.notice, "capacity_device_cap");
   assert.throws(() => shieldPresentation("bogus" as ProtectedShieldState));
 });
 
@@ -897,6 +2011,9 @@ test("every explainShield notice is a declared notice kind and matches its state
     withVerdict("joining", { welcomeRetriesExhausted: true }),
     withVerdict("poisoned"),
     withVerdict("bogus"),
+    green({ clientOutdated: 2 }),
+    green({ capacity: { reason: "device_cap" } }),
+    green({ capacity: { reason: "group_full" } }),
   ];
   for (const i of samples) {
     const e = explainShield(i);
@@ -904,6 +2021,31 @@ test("every explainShield notice is a declared notice kind and matches its state
     assert.equal(e.notice === null, e.state === "protected");
     if (e.notice !== null) assert.ok(PROTECTED_NOTICE_KINDS.includes(e.notice));
   }
+});
+
+test("S2 notice kinds are declared once each", () => {
+  for (const k of [
+    "capacity_device_cap",
+    "capacity_group_full",
+    "client_outdated",
+    "waiting_for_member",
+    "owner_device_lost",
+    "owner_account_unavailable",
+    "owner_device_dropped",
+    "owner_changed_unlisted",
+    "removal_reason_required",
+    "resecured_too_often",
+    "revoked_owner_devices",
+    "handover_target_not_joined",
+  ]) {
+    assert.equal(PROTECTED_NOTICE_KINDS.filter((x) => x === k).length, 1, k);
+  }
+  assert.equal(
+    new Set(PROTECTED_NOTICE_KINDS).size,
+    PROTECTED_NOTICE_KINDS.length,
+  );
+  // S1's stalled-join notice still exists for step 6c
+  assert.ok(PROTECTED_NOTICE_KINDS.includes("join_stalled"));
 });
 
 test("exhaustiveness scan: shieldPresentation ends in `const _x: never = state`", () => {
@@ -931,6 +2073,18 @@ const OPS: ProtectedErrorOp[] = [
 const MARKERS: ProtectedMarkerKind[] = [
   "sent_before_join",
   "unknown_key",
+  "decrypt_failed",
+  "unverified_sender",
+  "removed_sender",
+  "replay",
+  "malformed",
+  "unsupported_version",
+  "unencrypted_row",
+  "error",
+];
+
+/** Design 9.2 red markers (the grey ones: sent_before_join, unknown_key, unsupported_version). */
+const RED_MARKERS: ProtectedMarkerKind[] = [
   "decrypt_failed",
   "unverified_sender",
   "removed_sender",
@@ -1026,6 +2180,9 @@ test("D17 channel-level table (9.2)", () => {
     wrong_group_kind: "security_check_failed",
     identity_pin_required: "unverified",
     handover_target_invalid: "unverified",
+    // S2: left + rejoin (9.2); a decrypt-only tag fails closed off a row
+    catch_up_leaf_unresolvable: "resecuring",
+    unsupported_envelope_version: "unverified",
     mls_group_not_found: "resecuring",
     mls_unsolicited_welcome: "toast:unsolicited_welcome",
     mls_leaf_rejected: "invalid_change",
@@ -1072,6 +2229,55 @@ test("D17 op-dependent rows", () => {
   }
 });
 
+// S2-D42 (lane U11b): "Move ownership key" maps native
+// `handover_target_invalid` (the target holds no leaf in the active group)
+// to its own owner notice. Any other op keeps the fail-closed generic, and
+// the shield state is never derived from it.
+test("S2-D42: handover_target_invalid is handover_target_not_joined on the owner op only, never a shield state", () => {
+  const err = native("handover_target_invalid", { channel_id: "C1" });
+  const want = {
+    kind: "notice",
+    notice: "handover_target_not_joined",
+    max: null,
+    tag: "handover_target_invalid",
+  };
+  assert.deepEqual(ui(err, "owner"), want);
+  assert.deepEqual(ui({ source: "native", error: err }, "owner"), want);
+  assert.ok(PROTECTED_NOTICE_KINDS.includes("handover_target_not_joined"));
+  for (const op of ["channel", "send", "action", "transfer"] as const) {
+    assert.deepEqual(
+      ui(err, op),
+      {
+        kind: "notice",
+        notice: "unverified",
+        max: null,
+        tag: "handover_target_invalid",
+      },
+      op,
+    );
+  }
+  assert.equal(brief(ui(err, "message")), "marker:error");
+  // A server type or a client reason with the same text is not the tag.
+  assert.equal(
+    brief(ui({ type: "HandoverTargetInvalid" }, "owner")),
+    "unverified",
+  );
+  assert.equal(
+    brief(ui({ source: "client", reason: "handover_target_invalid" }, "owner")),
+    "unverified",
+  );
+  // Never a shield input: the tag as a group error stays the 3b red.
+  const e = explainShield(
+    green({
+      groupError: "handover_target_invalid" as ShieldInputs["groupError"],
+    }),
+  );
+  assert.ok(e);
+  assert.equal(e.state, "unverified");
+  assert.equal(e.notice, "unverified");
+  assert.notEqual(e.notice, "handover_target_not_joined");
+});
+
 test("D17 message rows -> markers (9.2 / 9.3)", () => {
   const m = (err: unknown, catchUpDone?: boolean) =>
     brief(ui(err, "message", catchUpDone));
@@ -1092,6 +2298,10 @@ test("D17 message rows -> markers (9.2 / 9.3)", () => {
   assert.equal(m(native("replay")), "marker:replay");
   assert.equal(m(native("malformed_text_payload")), "marker:malformed");
   assert.equal(m(native("mls_group_not_found")), "marker:unknown_key");
+  assert.equal(
+    m(native("unsupported_envelope_version", { v: 3 })),
+    "marker:unsupported_version",
+  );
   for (const tag of TEXT_NATIVE_ERROR_TAGS) {
     const u = ui(native(tag), "message");
     if (tag === "unknown_epoch") continue;
@@ -1100,6 +2310,107 @@ test("D17 message rows -> markers (9.2 / 9.3)", () => {
   // a server error or transport failure on a message row is the red marker
   assert.equal(m({ type: "NotSeated" }), "marker:error");
   assert.equal(m({ source: "transport" }), "marker:error");
+});
+
+test("S3-N0: a newer envelope version on a row is the grey unsupported_version marker, never red", () => {
+  for (const f of [{ v: 3 }, { v: 255 }, {}, { v: "x" }]) {
+    for (const err of [
+      native("unsupported_envelope_version", f),
+      { source: "native", error: native("unsupported_envelope_version", f) },
+    ]) {
+      const u = ui(err, "message");
+      assert.deepEqual(
+        u,
+        {
+          kind: "marker",
+          marker: "unsupported_version",
+          tag: "unsupported_envelope_version",
+        },
+        JSON.stringify(err),
+      );
+      assert.ok(
+        u.kind === "marker" && !RED_MARKERS.includes(u.marker),
+        "grey, never a red marker",
+      );
+    }
+  }
+  // off a row it is unexpected: fails closed, and never the marker
+  for (const op of OPS) {
+    if (op === "message") continue;
+    assert.equal(
+      brief(ui(native("unsupported_envelope_version", { v: 3 }), op)),
+      "unverified",
+      op,
+    );
+  }
+  // as a shield input it is outside every benign list: 3b, never green
+  expectShield(
+    green({ groupError: "unsupported_envelope_version" }),
+    "unverified",
+    "3b",
+  );
+});
+
+test("S2: catch_up_leaf_unresolvable is resecuring and a benign groupError, never sticky red", () => {
+  for (const op of OPS) {
+    if (op === "message") continue;
+    assert.equal(
+      brief(ui(native("catch_up_leaf_unresolvable", { epoch: 4 }), op)),
+      "resecuring",
+      op,
+    );
+  }
+  assert.ok(
+    (SHIELD_BENIGN_GROUP_ERRORS as readonly string[]).includes(
+      "catch_up_leaf_unresolvable",
+    ),
+  );
+  // the native verdict decides: left + rejoin reads as resecuring
+  expectShield(
+    withVerdict("no_group", { groupError: "catch_up_leaf_unresolvable" }),
+    "resecuring",
+    "7",
+  );
+  expectShield(
+    green({ groupError: "catch_up_leaf_unresolvable", native: null }),
+    "resecuring",
+    "4",
+  );
+});
+
+test("S2 seat_list_rollback as a groupError is loud at step 3, never green", () => {
+  assert.ok(
+    (SHIELD_LOUD_GROUP_ERRORS as readonly string[]).includes(
+      "seat_list_rollback",
+    ),
+  );
+  assert.ok(
+    !(SHIELD_BENIGN_GROUP_ERRORS as readonly string[]).includes(
+      "seat_list_rollback",
+    ),
+  );
+  for (const v of [...VERDICTS, "bogus"]) {
+    expectShield(
+      withVerdict(v, { groupError: "seat_list_rollback" }),
+      "unverified",
+      "3",
+      v,
+    );
+  }
+  expectShield(
+    green({ groupError: "seat_list_rollback", native: null }),
+    "unverified",
+    "3",
+  );
+  // capacity never hides it
+  expectShield(
+    green({
+      groupError: "seat_list_rollback",
+      capacity: { reason: "device_cap" },
+    }),
+    "unverified",
+    "3",
+  );
 });
 
 test("D17 server types (7.6 + extras)", () => {
@@ -1149,7 +2460,10 @@ test("D17 server types (7.6 + extras)", () => {
     for (const op of OPS) {
       const u = s(type, { feature: "e2ee", max: 1 }, op);
       wellFormed(u, `${type}/${op}`);
-      assert.equal(u.tag, type, `${type}/${op}`);
+      // OR-21: InSlowmode is protected only on the owner path (below)
+      const generic =
+        type === "InSlowmode" && op !== "owner" && op !== "message";
+      assert.equal(u.tag, generic ? "unknown" : type, `${type}/${op}`);
     }
   }
   // bare body and a type only on the failure
@@ -1177,6 +2491,83 @@ test("D17 server types (7.6 + extras)", () => {
     ),
     "not_seated",
   );
+});
+
+test("S2 server types: RemovalReasonRequired, ProtectedClientOutdated, InSlowmode, owner_device_lost", () => {
+  const s = (
+    type: string,
+    body: Record<string, unknown>,
+    op: ProtectedErrorOp,
+  ) => ui({ source: "server", status: 400, type, body: { type, ...body } }, op);
+  for (const op of ["owner", "action", "send", "channel"] as const) {
+    assert.deepEqual(s("RemovalReasonRequired", {}, op), {
+      kind: "notice",
+      notice: "removal_reason_required",
+      max: null,
+      tag: "RemovalReasonRequired",
+    });
+  }
+  // OR-4: never the catch-all `unverified`; `min` never read or shown
+  for (const op of ["channel", "owner", "send"] as const) {
+    for (const body of [{ min: 2 }, { min: "x" }, {}]) {
+      assert.deepEqual(
+        s("ProtectedClientOutdated", body, op),
+        {
+          kind: "notice",
+          notice: "client_outdated",
+          max: null,
+          tag: "ProtectedClientOutdated",
+        },
+        `${op} ${JSON.stringify(body)}`,
+      );
+    }
+  }
+  assert.equal(
+    brief(ui({ type: "ProtectedClientOutdated", min: 2 }, "channel")),
+    "client_outdated",
+  );
+  // OR-21: protected copy on the owner's successor create only
+  assert.deepEqual(s("InSlowmode", { retry_after: 3600 }, "owner"), {
+    kind: "notice",
+    notice: "resecured_too_often",
+    max: null,
+    tag: "InSlowmode",
+  });
+  for (const op of ["send", "channel", "action", "transfer"] as const) {
+    assert.deepEqual(
+      s("InSlowmode", { retry_after: 5 }, op),
+      { kind: "notice", notice: "unverified", max: null, tag: "unknown" },
+      op,
+    );
+  }
+  // ProtectedChannelResecuring: only the S2 reason changes the copy
+  assert.equal(
+    brief(
+      s("ProtectedChannelResecuring", { reason: "owner_device_lost" }, "send"),
+    ),
+    "owner_device_lost",
+  );
+  for (const reason of [
+    "pending_removal",
+    "stale_seat_list",
+    "OWNER_DEVICE_LOST",
+    7,
+    undefined,
+  ]) {
+    assert.equal(
+      brief(s("ProtectedChannelResecuring", { reason }, "send")),
+      "resecuring",
+      String(reason),
+    );
+  }
+  // a message row never reads any of them
+  for (const type of [
+    "RemovalReasonRequired",
+    "ProtectedClientOutdated",
+    "InSlowmode",
+  ]) {
+    assert.equal(brief(s(type, {}, "message")), "marker:error", type);
+  }
 });
 
 // W2 C1 (cross-session note 10-25): `PUT /channels/:id/seats` answers 400
@@ -1345,7 +2736,21 @@ test("D17 transport and client failures", () => {
     max: null,
     tag: "transport",
   });
+  // S2 audit LOW-3: the manager's own refusals carry a notice too
+  assert.deepEqual(
+    [...PROTECTED_CLIENT_REASONS],
+    [
+      "protect_failed",
+      "maybe_unsent",
+      "recovery_unavailable",
+      "publish_in_flight",
+      "client_outdated",
+      "invalid_reason",
+      "create_predecessor_unknown",
+    ],
+  );
   for (const reason of PROTECTED_CLIENT_REASONS) {
+    assert.ok(PROTECTED_NOTICE_KINDS.includes(reason), reason);
     assert.equal(brief(ui({ source: "client", reason }, "owner")), reason);
     assert.equal(
       brief(ui({ source: "client", reason }, "message")),
@@ -1391,7 +2796,8 @@ test("protectedActionsBlocked: D11 hide/keep lists", () => {
 // ---------------------------------------------------------------------------
 // S5b Prot tank stage (contracts 16.3 L6g, 22.1 items 3 and 6, 26 BR3)
 // Controls (20.3 L6g): `grace` composer back to "hidden" turns the D14 grace
-// test red; step 3c removed turns the step 3c frozen test red.
+// test red; step 3d removed turns the step 3d frozen test red. (The step
+// was "3c" before the S2 merge; S2's client-outdated step keeps that name.)
 // ---------------------------------------------------------------------------
 
 const TANK_STAGES: ProtTankStage[] = [
@@ -1423,8 +2829,10 @@ const NOT_GREEN: [string, ShieldInputs][] = [
   ["3", green({ seatListError: "bad_sig" })],
   ["3 owner", withVerdict("owner_changed")],
   ["3b", green({ groupError: "unknown" })],
+  ["3c", green({ clientOutdated: 2 })],
   ["4", green({ native: null })],
   ["5", withVerdict("not_seated")],
+  ["5b", green({ native: notHeld(), capacity: { reason: "group_full" } })],
   ["6 brief", withVerdict("roster_mismatch")],
   [
     "6 hostile",
@@ -1438,12 +2846,13 @@ const NOT_GREEN: [string, ShieldInputs][] = [
   ["9", green({ native: nativeOk({ self_seated: false }) })],
   ["9 bogus", withVerdict("bogus")],
 ];
-const LOUD_STEPS = ["1", "2", "3", "3b"];
+// S2's 3c (client outdated, composer hidden) also precedes the tank step.
+const LOUD_STEPS = ["1", "2", "3", "3b", "3c"];
 
-test("S5b step 3c: every stopped tank stage is frozen with its notice, over steps 4-9", () => {
+test("S5b step 3d: every stopped tank stage is frozen with its notice, over steps 4-9", () => {
   assert.deepEqual([...PROT_TANK_STOPPED_STAGES].sort(), [...STOPPED].sort());
   for (const stage of STOPPED) {
-    const want = { state: "frozen", step: "3c", notice: tankNotice(stage) };
+    const want = { state: "frozen", step: "3d", notice: tankNotice(stage) };
     assert.deepEqual(explainShield(withTank(green(), stage)), want, stage);
     let covered = 0;
     for (const [label, i] of NOT_GREEN) {
@@ -1464,7 +2873,7 @@ test("S5b step 3c: every stopped tank stage is frozen with its notice, over step
   assert.equal(p.notice, "tank_frozen");
 });
 
-test("S5b step 3c: steps 1-3b still win over a stopped tank (an alert is never hidden)", () => {
+test("S5b step 3d: steps 1-3c still win over a stopped tank (an alert is never hidden)", () => {
   let loud = 0;
   for (const [label, i] of NOT_GREEN) {
     const base = explainShield(i);
@@ -1479,7 +2888,35 @@ test("S5b step 3c: steps 1-3b still win over a stopped tank (an alert is never h
       );
     }
   }
-  assert.equal(loud, 5);
+  assert.equal(loud, 6);
+});
+
+test("S5b step 3d: an unrecognised tank stage fails closed (frozen, composer hidden)", () => {
+  assert.deepEqual(
+    [...PROT_TANK_SENDING_STAGES, ...PROT_TANK_STOPPED_STAGES].sort(),
+    [...TANK_STAGES].sort(),
+  );
+  const want = { state: "frozen", step: "3d", notice: "tank_frozen" };
+  const unknown = ["Bogus", "grace", "ACTIVE", "Frozen ", " ", 7, 0, true, {}];
+  for (const stage of unknown) {
+    const at = JSON.stringify(stage);
+    assert.deepEqual(explainShield(withTank(green(), stage)), want, at);
+    for (const [label, i] of NOT_GREEN) {
+      const base = explainShield(i);
+      assert.ok(base, label);
+      // steps 1-3c keep their answer; every later step reads frozen
+      assert.deepEqual(
+        explainShield(withTank(i, stage)),
+        LOUD_STEPS.includes(base.step) ? base : want,
+        `${at}/${label}`,
+      );
+    }
+  }
+  assert.equal(shieldPresentation("frozen").composer, "hidden");
+  // no tank: null, undefined and the empty string
+  for (const stage of [null, undefined, ""]) {
+    expectShield(withTank(green(), stage), "protected", "8", String(stage));
+  }
 });
 
 test("S5b D14: Grace over a green shield is `grace` at step 8 and the composer stays enabled", () => {
@@ -1533,14 +2970,17 @@ test("S5b never plaintext, never unprotected: no tank stage opens a composer S1 
         assert.equal(e.step, "8", at);
         assert.equal(base?.state, "protected", at);
       }
-      if (STOPPED.includes(stage as ProtTankStage)) {
+      // a stopped stage, or one this client does not recognise
+      const stops =
+        stage !== null &&
+        stage !== undefined &&
+        !["Launching", "Active", "Grace"].includes(stage as string);
+      if (stops) {
         assert.notEqual(composer, "enabled", at);
         assert.ok(e.state !== "protected" && e.state !== "grace", at);
       }
       if (e.state === "grace") assert.equal(stage, "Grace", at);
-      if (e.state === "frozen") {
-        assert.ok(STOPPED.includes(stage as ProtTankStage), at);
-      }
+      if (e.state === "frozen") assert.ok(stops, at);
       assert.equal(e.notice === null, e.state === "protected", at);
       if (e.notice !== null) {
         assert.ok(PROTECTED_NOTICE_KINDS.includes(e.notice), at);
@@ -1568,10 +3008,10 @@ test("S5b shieldInputsFromView carries flags.tankStage (null when absent)", () =
     0,
   );
   assert.equal(frozen.tankStage, "Frozen");
-  // 3c precedes step 4: a loading view of a frozen channel is frozen
+  // 3d precedes step 4: a loading view of a frozen channel is frozen
   assert.deepEqual(explainShield(frozen), {
     state: "frozen",
-    step: "3c",
+    step: "3d",
     notice: "tank_frozen",
   });
 });
@@ -1704,7 +3144,7 @@ test("S5b latch: a ProtTankFrozen refusal reads Frozen until the next tank read"
   assert.ok(latched);
   assert.deepEqual(latched, {
     state: "frozen",
-    step: "3c",
+    step: "3d",
     notice: "tank_frozen",
   });
   assert.equal(shieldPresentation(latched.state).composer, "hidden");

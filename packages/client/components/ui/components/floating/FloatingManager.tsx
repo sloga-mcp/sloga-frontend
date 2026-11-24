@@ -22,6 +22,7 @@ import { FloatingElement, floatingElements } from "../../directives";
 
 import { AutoComplete } from "./AutoComplete";
 import { contextMenuMiddleware } from "./contextMenuPosition";
+import { installLongPressMenus, needsLongPressEmulation } from "./iosLongPress";
 import { TooltipBase } from "./Tooltip";
 import { UserCard } from "./UserCard";
 
@@ -47,6 +48,15 @@ export function FloatingManager() {
 
   onMount(() => ctx.doc.addEventListener("mousemove", onMouseMove));
   onCleanup(() => ctx.doc.removeEventListener("mousemove", onMouseMove));
+
+  // iPhone and iPad: turn press-and-hold into the `contextmenu` Android
+  // sends, placed under the finger. Elsewhere this installs nothing.
+  if (needsLongPressEmulation()) {
+    onMount(() => {
+      const uninstall = installLongPressMenus(ctx.doc);
+      onCleanup(uninstall);
+    });
+  }
 
   const elements = createMemo(() =>
     floatingElements().filter((el) => el.ctxId === ctx.id),

@@ -2150,6 +2150,12 @@ function Entry(
   // call it; the open/refresh lifecycle belongs to TextChannel alone. Null
   // for a channel that is neither protected nor pinned, which leaves the
   // row exactly as it was.
+  //
+  // The row reads only the state and never branches on it: the glyph and
+  // hue come from `ProtectedShieldIcon`, the title from `shieldLabel` and
+  // the tint from `shieldPresentation`, each an exhaustive switch over the
+  // states. A new state (S2 D35 capacity: neutral shield, no tint) needs
+  // no arm here.
   const protectedShield = useProtectedShield(() => props.channel.id);
   const protectedState = () => protectedShield()?.state;
   const protectedTint = createMemo(() => {

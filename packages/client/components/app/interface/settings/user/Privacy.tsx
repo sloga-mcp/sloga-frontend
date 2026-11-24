@@ -1,9 +1,13 @@
-import { createSignal } from "solid-js";
+import { Match, Show, Switch, createSignal } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import type { API } from "stoat.js";
 
 import { useClient } from "@revolt/client";
+import { latchedForClient } from "@revolt/client/encryptedOnlyLatch";
+import { useModals } from "@revolt/modal";
+import { useOnlyAdvert } from "@revolt/modal/modals/EncryptedOnlyOnboarding";
+import { onlyCardState } from "@revolt/modal/modals/encryptedOnlySetup";
 import { useState } from "@revolt/state";
 import {
   CategoryButton,
@@ -31,7 +35,68 @@ export function PrivacySettings() {
     <Column gap="lg">
       <ProfileVisibility />
       <ActivitySharing />
+      <EncryptedOnlyStatus />
     </Column>
+  );
+}
+
+/**
+ * Encrypted-only chats status, with the way to turn it off. Shown while the
+ * setting is on (or this device is still latched) and the server advertises
+ * the feature. Works on the website, where the Encryption page is hidden:
+ * turning it off needs no encryption on this device.
+ */
+function EncryptedOnlyStatus() {
+  const client = useClient();
+  const { openModal } = useModals();
+  const advert = useOnlyAdvert();
+
+  const state = () =>
+    onlyCardState({
+      advert: advert(),
+      userKnown: !!client().user,
+      latched: latchedForClient(client().user?.id),
+      serverOn: client().user?.e2eeOnly === true,
+    });
+
+  return (
+    <Show when={state() === "on" || state() === "turned-off-elsewhere"}>
+      <CategoryButton.Group>
+        <CategoryButton
+          action={
+            <Text class="label">
+              <Trans>Turn off</Trans>
+            </Text>
+          }
+          icon={<Symbol>lock</Symbol>}
+          description={
+            <Switch>
+              <Match when={state() === "on"}>
+                <Trans>On for your account.</Trans>{" "}
+                <Trans>
+                  Other people can see that you only accept encrypted messages.
+                </Trans>
+              </Match>
+              <Match when={state() === "turned-off-elsewhere"}>
+                <Trans>Turned off on another device</Trans>.{" "}
+                <Trans>
+                  This device still only sends encrypted messages until you turn
+                  it off here too.
+                </Trans>
+              </Match>
+            </Switch>
+          }
+          onClick={() =>
+            openModal({
+              type: "encrypted_only_leave",
+              elsewhere: state() === "turned-off-elsewhere",
+            })
+          }
+        >
+          <Trans>Encrypted-only chats</Trans>
+        </CategoryButton>
+      </CategoryButton.Group>
+    </Show>
   );
 }
 

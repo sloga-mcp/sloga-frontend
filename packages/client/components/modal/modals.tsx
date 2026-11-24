@@ -30,6 +30,8 @@ import { CreateSoftResModal } from "./modals/CreateSoftRes";
 import { CreateThreadModal } from "./modals/CreateThread";
 import { CreateWebhookModal } from "./modals/CreateWebhook";
 import { CustomStatusModal } from "./modals/CustomStatus";
+import { DeleteAccountConfirmModal } from "./modals/DeleteAccountConfirm";
+import { DeleteAccountRequestedModal } from "./modals/DeleteAccountRequested";
 import { DeleteBotModal } from "./modals/DeleteBot";
 import { DeleteCategoryModal } from "./modals/DeleteCategory";
 import { DeleteChannelModal } from "./modals/DeleteChannel";
@@ -56,6 +58,10 @@ import { EditForumPostTagsModal } from "./modals/EditForumPostTags";
 import { EditPasswordModal } from "./modals/EditPassword";
 import { EditUsernameModal } from "./modals/EditUsername";
 import { EmojiPreviewModal } from "./modals/EmojiPreview";
+import {
+  EncryptedOnlyLeaveModal,
+  EncryptedOnlyOnboardingModal,
+} from "./modals/EncryptedOnlyOnboarding";
 import { Error2Modal } from "./modals/Error2";
 import { FollowChannelModal } from "./modals/FollowChannel";
 import { ForwardMessageModal } from "./modals/ForwardMessage";
@@ -79,6 +85,8 @@ import { PolicyChangeModal } from "./modals/PolicyChange";
 import { PollVotersModal } from "./modals/PollVoters";
 import { ProtContributeModal } from "./modals/ProtContribute";
 import { ProtServerGoalsModal } from "./modals/ProtServerGoals";
+import { ProtectedDeviceCapModal } from "./modals/ProtectedDeviceCap";
+import { ProtectedOwnerReviewModal } from "./modals/ProtectedOwnerReview";
 import { ProtectedSeatPickerModal } from "./modals/ProtectedSeatPicker";
 import { ProtectedTankModal } from "./modals/ProtectedTank";
 import { RemoveMemberModal } from "./modals/RemoveMember";
@@ -100,6 +108,7 @@ import { SoftResExportModal } from "./modals/SoftResExport";
 import { SoftResReserveModal } from "./modals/SoftResReserve";
 import { SupportSlogaModal } from "./modals/SupportSloga";
 import { SuspendUserModal } from "./modals/SuspendUser";
+import { TakedownQueueModal } from "./modals/TakedownQueue";
 import { TimelockComposeModal } from "./modals/TimelockCompose";
 import { TimeoutMemberModal } from "./modals/TimeoutMember";
 import { UserProfileModal } from "./modals/UserProfile";
@@ -203,6 +212,10 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <CreateWebhookModal {...modalProps} />;
     case "custom_status":
       return <CustomStatusModal {...modalProps} />;
+    case "delete_account_confirm":
+      return <DeleteAccountConfirmModal {...modalProps} />;
+    case "delete_account_requested":
+      return <DeleteAccountRequestedModal {...modalProps} />;
     case "delete_bot":
       return <DeleteBotModal {...modalProps} />;
     case "delete_channel":
@@ -229,6 +242,10 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <E2EEEnableModal {...modalProps} />;
     case "e2ee_disable":
       return <E2EEDisableModal {...modalProps} />;
+    case "encrypted_only_onboarding":
+      return <EncryptedOnlyOnboardingModal {...modalProps} />;
+    case "encrypted_only_leave":
+      return <EncryptedOnlyLeaveModal {...modalProps} />;
     case "e2ee_reenroll":
       return <E2EEReenrollModal {...modalProps} />;
     case "e2ee_finish_setup":
@@ -257,6 +274,10 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <ProtContributeModal {...modalProps} />;
     case "prot_server_goals":
       return <ProtServerGoalsModal {...modalProps} />;
+    case "protected_device_cap":
+      return <ProtectedDeviceCapModal {...modalProps} />;
+    case "protected_owner_review":
+      return <ProtectedOwnerReviewModal {...modalProps} />;
     case "image_editor":
       return <ImageEditorModal {...modalProps} />;
     case "image_viewer":
@@ -295,6 +316,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <ReportContentModal {...modalProps} />;
     case "report_queue":
       return <ReportQueueModal {...modalProps} />;
+    case "takedown_queue":
+      return <TakedownQueueModal {...modalProps} />;
     case "server_identity":
       return <ServerIdentityModal {...modalProps} />;
     case "server_info":

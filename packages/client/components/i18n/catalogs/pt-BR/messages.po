@@ -230,6 +230,28 @@ msgstr "{0} relatado ({1})"
 msgid "{0} reports awaiting review"
 msgstr ""
 
+#: src/interface/Home.tsx
+msgid "A request is due within 12 hours or overdue."
+msgstr "Um pedido vence em menos de 12 horas ou está atrasado."
+
+#: src/interface/Home.tsx
+msgid "Requests to remove intimate images shared without consent."
+msgstr "Pedidos para remover imagens íntimas compartilhadas sem consentimento."
+
+#. placeholder {0}: count()
+#: src/interface/Home.tsx
+msgid "{0} open Take It Down requests, at least one due within 12 hours"
+msgstr "{0} pedidos do Take It Down em aberto, pelo menos um vence em menos de 12 horas"
+
+#. placeholder {0}: count()
+#: src/interface/Home.tsx
+msgid "{0} open Take It Down requests"
+msgstr "{0} pedidos do Take It Down em aberto"
+
+#: src/interface/Home.tsx
+msgid "Take It Down"
+msgstr "Take It Down"
+
 #. placeholder {0}: state()?.totalReserves ?? 0
 #: components/app/interface/channels/text/SoftResMessage.tsx
 msgid "{0} reserved"
@@ -512,6 +534,138 @@ msgstr "3 dias"
 #: components/modal/modals/SuspendUser.tsx
 msgid "30 days"
 msgstr "30 dias"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Received"
+msgstr "Recebido"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Needs more information"
+msgstr "Precisa de mais informações"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Under review"
+msgstr "Em análise"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Removed"
+msgstr "Removido"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Partly removed"
+msgstr "Removido em parte"
+
+#: components/ui/components/features/voice/IncomingCallOverlay.tsx
+msgid "Declined"
+msgstr "Recusado"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Closed"
+msgstr "Encerrado"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "File"
+msgstr "Arquivo"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Emoji"
+msgstr "Emoji"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Could not be resolved"
+msgstr "Não foi possível identificar"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Overdue by {hours} h {minutes} min"
+msgstr "Atrasado em {hours} h {minutes} min"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "{hours} h {minutes} min left"
+msgstr "Faltam {hours} h {minutes} min"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Under 18 claimed"
+msgstr "Declarado menor de 18 anos"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "In-app report"
+msgstr "Denúncia pelo app"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Child safety"
+msgstr "Proteção infantil"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Throttled"
+msgstr "Limitado"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Bad-faith history"
+msgstr "Histórico de má-fé"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "{autoHidden} auto-hidden"
+msgstr "{autoHidden} ocultos automaticamente"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Another removal is running. Try again in a moment."
+msgstr "Outra remoção está em andamento. Tente de novo em instantes."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Enter a reason for the staff log."
+msgstr "Informe um motivo para o registro da equipe."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "The reason is too long. Keep it under 512 characters."
+msgstr "O motivo é longo demais. Use menos de 512 caracteres."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "The server did not accept this form. Check it and try again."
+msgstr "O servidor não aceitou este formulário. Confira e tente de novo."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Only reviewers with two-factor authentication turned on can handle these requests."
+msgstr "Só revisores com a autenticação de dois fatores ativada podem cuidar destes pedidos."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "The two-factor check failed or expired. Try again."
+msgstr "A verificação de dois fatores falhou ou expirou. Tente de novo."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Restoring files is turned off."
+msgstr "A restauração de arquivos está desativada."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "This request could not be found."
+msgstr "Não foi possível encontrar este pedido."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Too many requests. Try again later."
+msgstr "Muitas solicitações. Tente de novo mais tarde."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Nothing was removed. The copy count may have changed, or there was nothing left to remove. Reload the request and try again, or remove one target at a time."
+msgstr "Nada foi removido. O número de cópias pode ter mudado, ou não havia mais nada para remover. Recarregue o pedido e tente de novo, ou remova um alvo de cada vez."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "These files can't be shown again. Only files this request hid automatically, and that are still in place, can be."
+msgstr "Estes arquivos não podem voltar a ser exibidos. Só os arquivos que este pedido ocultou automaticamente, e que ainda estão no lugar, podem."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "This action doesn't apply to the request in its current state."
+msgstr "Esta ação não se aplica ao pedido no estado atual."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Something went wrong. Try again."
+msgstr "Algo deu errado. Tente de novo."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Removed. Files hidden: {files} (copies: {copies}). Messages deleted: {messages}. Re-upload blocks: {blocked}."
+msgstr "Removido. Arquivos ocultos: {files} (cópias: {copies}). Mensagens apagadas: {messages}. Bloqueios de reenvio: {blocked}."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Done."
+msgstr "Pronto."
 
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "30 minutes"
@@ -2705,6 +2859,259 @@ msgstr ""
 msgid "Decline"
 msgstr "Recusar"
 
+#: components/modal/modals/TakedownQueue.tsx
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Ask for more information"
+msgstr "Pedir mais informações"
+
+#: components/modal/modals/TakedownQueue.tsx
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Move to child safety"
+msgstr "Mover para proteção infantil"
+
+#: components/modal/modals/TakedownQueue.tsx
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Unhide files"
+msgstr "Voltar a exibir arquivos"
+
+#: components/modal/modals/TakedownQueue.tsx
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Restore files"
+msgstr "Restaurar arquivos"
+
+#: components/modal/modals/TakedownQueue.tsx
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Close request"
+msgstr "Encerrar pedido"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "No preview"
+msgstr "Sem prévia"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Reveal"
+msgstr "Revelar"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "The preview could not be loaded."
+msgstr "Não foi possível carregar a prévia."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Load preview (blurred)"
+msgstr "Carregar prévia (desfocada)"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Each preview you load is recorded in the staff log."
+msgstr "Cada prévia que você carrega fica no registro da equipe."
+
+#. placeholder {0}: author()
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Posted by {0}"
+msgstr "Publicado por {0}"
+
+#. placeholder {0}: created()
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Created {0}"
+msgstr "Criado em {0}"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "End-to-end encrypted: Sloga can't see this message's content."
+msgstr "Criptografia de ponta a ponta: o Sloga não consegue ver o conteúdo desta mensagem."
+
+#. placeholder {0}: unresolvable()
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Could not be resolved: {0}"
+msgstr "Não foi possível identificar: {0}"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "No files"
+msgstr "Nenhum arquivo"
+
+#. placeholder {0}: copies()
+#: components/modal/modals/TakedownQueue.tsx
+msgid "{0, plural, one {# copy elsewhere} other {# copies elsewhere}}"
+msgstr "{0, plural, one {# cópia em outro lugar} other {# cópias em outros lugares}}"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Hidden"
+msgstr "Oculto"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Hide the files of the targets you pick, take them out of their messages, profiles and servers, and email the requester and each uploader."
+msgstr "Oculta os arquivos dos alvos que você escolher, tira esses arquivos das mensagens, perfis e servidores, e envia um e-mail a quem fez o pedido e a cada pessoa que enviou os arquivos."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Delete the whole message, text included"
+msgstr "Apagar a mensagem inteira, incluindo o texto"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Also remove identical copies elsewhere on Sloga"
+msgstr "Remover também as cópias idênticas em outros lugares do Sloga"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Block re-uploads of the same image"
+msgstr "Bloquear novos envios da mesma imagem"
+
+#. placeholder {0}: copies()
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Identical copies elsewhere on Sloga: {0}"
+msgstr "Cópias idênticas em outros lugares do Sloga: {0}"
+
+#. placeholder {0}: copies()
+#: components/modal/modals/TakedownQueue.tsx
+msgid "{0, plural, one {Yes, also remove this # copy} other {Yes, also remove all # copies}}"
+msgstr "{0, plural, one {Sim, remover também esta # cópia} other {Sim, remover também todas as # cópias}}"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Reason the requester is told"
+msgstr "Motivo informado a quem fez o pedido"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Pick a reason"
+msgstr "Escolha um motivo"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Not an intimate image"
+msgstr "Não é uma imagem íntima"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Could not find it"
+msgstr "Não foi encontrada"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Not on Sloga"
+msgstr "Não está no Sloga"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Duplicate request"
+msgstr "Pedido duplicado"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Made in bad faith (the requester is told \"other\", and later requests from this address are flagged)"
+msgstr "Feito de má-fé (quem fez o pedido vê \"outro\", e os próximos pedidos deste endereço são sinalizados)"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Internal note (optional, never sent to the requester)"
+msgstr "Nota interna (opcional, nunca enviada a quem fez o pedido)"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "The requester gets an email asking them to add details from their status link."
+msgstr "Quem fez o pedido recebe um e-mail pedindo que acrescente detalhes pelo link de status."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Every file of every target is hidden now and kept on hold with no end date. The files are kept hidden, not deleted, so they stay available as evidence. Uploaders are not emailed, and unhide and restore stop working for this request."
+msgstr "Todos os arquivos de todos os alvos ficam ocultos agora e retidos sem data para terminar. Os arquivos ficam ocultos, não apagados, para continuarem disponíveis como prova. Quem enviou os arquivos não recebe e-mail, e as opções de voltar a exibir e de restaurar deixam de funcionar para este pedido."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Copies and the re-upload block still need a removal. File the CyberTipline report by hand."
+msgstr "As cópias e o bloqueio de reenvio ainda precisam de uma remoção. Faça a denúncia à CyberTipline manualmente."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Only files this request hid automatically can be shown again. Pick them below. If any file you pick was hidden another way, for example by a removal, nothing changes."
+msgstr "Só os arquivos que este pedido ocultou automaticamente podem voltar a ser exibidos. Escolha-os abaixo. Se algum arquivo escolhido tiver sido ocultado de outra forma, por exemplo por uma remoção, nada muda."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "After a successful appeal: show again the files this request hid that are still in place, and lift its re-upload blocks. Deleted messages stay deleted."
+msgstr "Depois de um recurso aceito: volta a exibir os arquivos que este pedido ocultou e que ainda estão no lugar, e retira os bloqueios de reenvio dele. As mensagens apagadas continuam apagadas."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Removed files stay hidden for the hold period, then are deleted. Files hidden automatically that no removal took are shown again."
+msgstr "Os arquivos removidos ficam ocultos durante o período de retenção e depois são apagados. Os arquivos ocultados automaticamente que nenhuma remoção levou voltam a ser exibidos."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Reason for the staff log (required)"
+msgstr "Motivo para o registro da equipe (obrigatório)"
+
+#. placeholder {0}: received()
+#: components/modal/modals/TakedownQueue.tsx
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Received {0}"
+msgstr "Recebido em {0}"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Requester"
+msgstr "Quem fez o pedido"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "The requester's details were deleted after the retention period."
+msgstr "Os dados de quem fez o pedido foram apagados depois do período de retenção."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Role"
+msgstr "Papel"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Authorized to act for the person shown"
+msgstr "Autorizado a agir em nome da pessoa retratada"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "The person shown"
+msgstr "A pessoa retratada"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "How they are authorized"
+msgstr "Como tem a autorização"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Signature"
+msgstr "Assinatura"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Description"
+msgstr "Descrição"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "More details"
+msgstr "Mais detalhes"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Added later"
+msgstr "Adicionado depois"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Where the image is (as given)"
+msgstr "Onde a imagem está (como informado)"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "No links given."
+msgstr "Nenhum link informado."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Targets"
+msgstr "Alvos"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Nothing on Sloga was found for this request yet."
+msgstr "Ainda não foi encontrado nada no Sloga para este pedido."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Linked requests"
+msgstr "Pedidos vinculados"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Staff log"
+msgstr "Registro da equipe"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Actions"
+msgstr "Ações"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Reload"
+msgstr "Recarregar"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Take It Down requests"
+msgstr "Pedidos do Take It Down"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Take It Down request"
+msgstr "Pedido do Take It Down"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "No Take It Down requests in the last 30 days."
+msgstr "Nenhum pedido do Take It Down nos últimos 30 dias."
+
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Deep"
@@ -3806,6 +4213,62 @@ msgstr ""
 #: components/modal/modals/ReportContent.tsx
 msgid "Give us some detail"
 msgstr "Dê-nos alguns detalhes"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "This also asks us to remove the image under the Take It Down Act."
+msgstr "Isso também nos pede que removamos a imagem com base no Take It Down Act."
+
+#: components/modal/modals/ReportContent.tsx
+msgid "I am the person shown"
+msgstr "Sou a pessoa que aparece na imagem"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "I am authorized to act for the person shown (for example a parent, guardian or lawyer)"
+msgstr "Tenho autorização para agir em nome da pessoa que aparece na imagem (por exemplo, um dos pais, o responsável legal ou um advogado)"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "I'm not the person shown or acting for them"
+msgstr "Não sou a pessoa que aparece na imagem nem ajo em nome dela"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "The person shown, or someone acting for them, can file a Take It Down request. The link below explains how."
+msgstr "A pessoa que aparece na imagem, ou alguém que aja em nome dela, pode fazer um pedido pelo Take It Down. O link abaixo explica como."
+
+#: components/modal/modals/ReportContent.tsx
+msgid "How are you authorized? (optional)"
+msgstr "Como você tem essa autorização? (opcional)"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Your full name (your signature)"
+msgstr "Seu nome completo (sua assinatura)"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Typing my name here counts as my signature."
+msgstr "Digitar meu nome aqui vale como minha assinatura."
+
+#: components/modal/modals/ReportContent.tsx
+msgid "The person shown has a good faith belief that the image(s) described were published without their consent."
+msgstr "A pessoa retratada acredita, de boa-fé, que a imagem ou as imagens descritas foram publicadas sem o consentimento dela."
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Contact email (optional)"
+msgstr "E-mail de contato (opcional)"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Leave empty to use your account email"
+msgstr "Deixe em branco para usar o e-mail da sua conta"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Enter a valid email address, or leave it empty."
+msgstr "Digite um endereço de e-mail válido ou deixe o campo em branco."
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Anything else that helps us understand what happened (optional)"
+msgstr "Qualquer outra informação que nos ajude a entender o que aconteceu (opcional)"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "How removal requests work"
+msgstr "Como funcionam os pedidos de remoção"
 
 #: components/app/interface/settings/user/Keybinds.tsx
 msgid "Global keybinds"
@@ -5383,6 +5846,10 @@ msgstr ""
 msgid "Not of minimum age to use the platform"
 msgstr "Não tem idade mínima para usar a plataforma"
 
+#: components/modal/modals/ReportContent.tsx
+msgid "Report sent"
+msgstr "Denúncia enviada"
+
 #: components/modal/modals/CreateSoftRes.tsx
 msgid "Note"
 msgstr "Nota"
@@ -5826,6 +6293,14 @@ msgstr "Selecione um método para autenticar sua solicitação."
 msgid "Please select a reason"
 msgstr "Selecione um motivo"
 
+#: components/modal/modals/ReportContent.tsx
+msgid "If a child is in immediate danger, contact your local emergency services."
+msgstr "Se uma criança estiver em perigo imediato, entre em contato com os serviços de emergência locais."
+
+#: components/modal/modals/ReportContent.tsx
+msgid "This message is end-to-end encrypted, so Sloga can't see it. A person reviews what you send us and can act on the sender's account, but we can't remove copies from people's devices."
+msgstr "Esta mensagem tem criptografia de ponta a ponta, então o Sloga não consegue vê-la. Uma pessoa analisa o que você nos enviar e pode tomar medidas contra a conta de quem enviou a mensagem, mas não conseguimos remover as cópias que estão nos aparelhos das pessoas."
+
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Podcast"
@@ -5889,6 +6364,10 @@ msgstr ""
 #: components/app/interface/settings/UserSettings.tsx
 msgid "Privacy Policy"
 msgstr "Política de Privacidade"
+
+#: components/app/interface/settings/UserSettings.tsx
+msgid "Remove intimate images"
+msgstr "Remover imagens íntimas"
 
 #: components/modal/modals/ScreenShareSettings.tsx
 msgid "Privacy shield — hide pop-up notifications (pixelates the corner of full-screen shares when something appears there)"
@@ -6331,6 +6810,10 @@ msgstr "Respondendo a"
 msgid "Report"
 msgstr "Relatório"
 
+#: components/modal/modals/ReportContent.tsx
+msgid "A person reviews your report within 48 hours. We'll email you to confirm we got it."
+msgstr "Uma pessoa analisa a sua denúncia em até 48 horas. Vamos enviar um e-mail para confirmar que a recebemos."
+
 #: components/app/menus/MessageContextMenu.tsx
 msgid "Report message"
 msgstr "Denunciar mensagem"
@@ -6498,6 +6981,14 @@ msgstr ""
 #: components/modal/modals/ReportContent.tsx
 msgid "Revenge or underage pornography"
 msgstr "Vingança ou pornografia de menores"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Intimate image shared without consent"
+msgstr "Imagem íntima compartilhada sem consentimento"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Child sexual abuse material"
+msgstr "Material de abuso sexual infantil"
 
 #: src/interface/Home.tsx
 msgid "Review and resolve open content reports."

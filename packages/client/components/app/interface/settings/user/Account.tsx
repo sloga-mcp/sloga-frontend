@@ -1,6 +1,7 @@
 import { Match, Show, Switch, createMemo, createSignal } from "solid-js";
 
-import { Trans } from "@lingui-solid/solid/macro";
+import { Plural, Trans, useLingui } from "@lingui-solid/solid/macro";
+import { styled } from "styled-system/jsx";
 
 import { useClient, useClientLifecycle } from "@revolt/client";
 import {
@@ -23,6 +24,12 @@ import MdVerifiedUser from "@material-design-icons/svg/outlined/verified_user.sv
 import { useSettingsNavigation } from "../Settings";
 
 import { UserSummary } from "./account/index";
+import {
+  deleteRequestStatus,
+  isOwnedServersRefusal,
+  postDeleteAccountTicketless,
+  requestAccountDeletion,
+} from "./deleteAccountRequest";
 
 /**
  * Account Page
@@ -43,6 +50,7 @@ export function MyAccount() {
       <EditAccount />
       <MultiFactorAuth />
       <ManageAccount />
+      <ProtectedOwnedWarning />
     </Column>
   );
 }
@@ -284,7 +292,8 @@ function MultiFactorAuth() {
 function ManageAccount() {
   const client = useClient();
   const mfa = createMfaResource();
-  const { mfaFlow } = useModals();
+  const { t } = useLingui();
+  const { mfaFlow, openModal, showError } = useModals();
   const { logout } = useClientLifecycle();
 
   const stillOwnServers = createMemo(
@@ -303,12 +312,56 @@ function ManageAccount() {
   }
 
   /**
-   * Delete account
+   * Send the deletion request: ticketless first, the password / MFA prompt
+   * only if the server asks for it (see `./deleteAccountRequest.ts`).
+   *
+   * No `logout()` here: the "check your email" notice signs this device out
+   * when it closes. A cancelled prompt sends nothing and shows nothing.
+   */
+  async function requestDeletion() {
+    try {
+      const outcome = await requestAccountDeletion({
+        ticketless: () => {
+          // Plain fetch with the client's own session headers, so the
+          // status survives (the API client throws only the body).
+          const { baseURL, headers } = client().api.config;
+          return postDeleteAccountTicketless(
+            fetch,
+            baseURL!,
+            (headers ?? {}) as Record<string, string>,
+          );
+        },
+        withTicket: async () => {
+          const ticket = await mfaFlow(
+            mfa.data ?? (await client().account.mfa()),
+          );
+          if (!ticket) return false;
+          await ticket.deleteAccount();
+          return true;
+        },
+        statusOf: deleteRequestStatus,
+      });
+
+      if (outcome === "requested") {
+        openModal({ type: "delete_account_requested" });
+      }
+    } catch (error) {
+      showError(
+        isOwnedServersRefusal(error)
+          ? // Same text as the lock below: the server list here was stale.
+            new Error(
+              t`Transfer or delete the servers you own first, then come back here.`,
+            )
+          : error,
+      );
+    }
+  }
+
+  /**
+   * Delete account: confirm first, then request the emailed link
    */
   function deleteAccount() {
-    mfaFlow(mfa.data!).then((ticket) =>
-      ticket?.deleteAccount().then(() => logout()),
-    );
+    openModal({ type: "delete_account_confirm", onConfirm: requestDeletion });
   }
 
   return (
@@ -333,21 +386,99 @@ function ManageAccount() {
         onClick={deleteAccount}
         icon={<MdDelete {...iconSize(22)} fill="var(--md-sys-color-error)" />}
         description={
-          <Trans>
-            Your account and all of your data (including your messages and
-            friends list) will be queued for deletion. A confirmation email will
-            be sent - you can cancel this within 7 days by contacting support.
-          </Trans>
+          <Switch
+            fallback={
+              <Trans>
+                We'll email you a link. Once you confirm from that email, your
+                account and data are deleted right away. This can't be undone.
+                Changed your mind? Just sign in again before using the link.
+              </Trans>
+            }
+          >
+            <Match when={stillOwnServers()}>
+              <Trans>
+                Transfer or delete the servers you own first, then come back
+                here.
+              </Trans>
+            </Match>
+          </Switch>
         }
       >
-        <Switch fallback={<Trans>Delete Account</Trans>}>
-          <Match when={stillOwnServers()}>
-            <Trans>
-              Cannot delete account until servers are deleted or transferred
-            </Trans>
-          </Match>
-        </Switch>
+        <Trans>Delete Account</Trans>
       </CategoryButton>
     </CategoryButton.Group>
   );
 }
+
+/**
+ * S2-D43: tell an owner how many of their servers have a protected channel,
+ * worded to match the `stillOwnServers` gate above (delete or transfer
+ * first). A count only (no names, no ids); hidden at 0.
+ */
+function ProtectedOwnedWarning() {
+  const client = useClient();
+
+  // Client cache only (no request); this device's pins count too.
+  const protectedOwned = createMemo(() =>
+    ownedProtectedServerCount(
+      client().servers.toList(),
+      client().user?.id,
+      (channelId) => client().isProtectedChannel(channelId),
+    ),
+  );
+
+  return (
+    <Show when={protectedOwned() > 0}>
+      <ProtectedOwnedNote role="note">
+        <Plural
+          value={protectedOwned()}
+          one="You own # server with protected channels. Delete it or transfer it before deleting your account. Deleting a server deletes its protected channels for everyone."
+          other="You own # servers with protected channels. Delete or transfer them before deleting your account. Deleting a server deletes its protected channels for everyone."
+        />
+      </ProtectedOwnedNote>
+    </Show>
+  );
+}
+
+const ProtectedOwnedNote = styled("div", {
+  base: {
+    color: "var(--md-sys-color-error)",
+    fontSize: "14px",
+    lineHeight: "20px",
+  },
+});
+
+// protected-pure:begin (no imports: account.scan.test.ts runs this region
+// under Node)
+
+/** The fields of a cached server the count reads. */
+type OwnedServerView = {
+  readonly ownerId: unknown;
+  readonly channelIds?: Iterable<string> | null;
+};
+
+/**
+ * How many servers `selfId` owns that have at least one protected channel.
+ * Each server counts once, however many of its channels are protected. An
+ * unknown self counts nothing (an absent owner id never matches).
+ */
+function ownedProtectedServerCount(
+  servers: Iterable<OwnedServerView>,
+  selfId: unknown,
+  isProtected: (channelId: string) => boolean,
+): number {
+  if (typeof selfId !== "string" || selfId === "") return 0;
+  let count = 0;
+  for (const server of servers) {
+    if (server.ownerId !== selfId) continue;
+    for (const channelId of server.channelIds ?? []) {
+      if (isProtected(channelId) === true) {
+        count += 1;
+        break;
+      }
+    }
+  }
+  return count;
+}
+
+// protected-pure:end

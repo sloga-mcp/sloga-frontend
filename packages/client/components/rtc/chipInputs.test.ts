@@ -66,6 +66,7 @@ const sources = (over: Partial<ChipSources> = {}): ChipSources => ({
   deviceNeedsSetup: () => false,
   peerCouldEncrypt: () => true,
   decodeWitness: () => ({ available: true, dropping: [], live: [] }),
+  pausedByServer: () => false,
   room: () => room(),
   observedEncryption: (identity) =>
     identity === ME || identity === BOB ? true : undefined,
@@ -890,6 +891,7 @@ test("every accessor is called exactly once per assembly", () => {
       dropping: [],
       live: [],
     }),
+    pausedByServer: count("pausedByServer", false),
     room: count("room", room()),
     observedEncryption: () => true,
   });
@@ -904,6 +906,7 @@ test("every accessor is called exactly once per assembly", () => {
     deviceNeedsSetup: 1,
     peerCouldEncrypt: 1,
     decodeWitness: 1,
+    pausedByServer: 1,
     room: 1,
   });
 });
@@ -923,4 +926,47 @@ test("🔴 an already-resecuring session short-circuits the media-hold read", ()
     }),
   );
   assert.equal(holdReads, 0);
+});
+
+// --- fix round F: the paused seat and the presence the time bound reads ------
+
+test("🔴 a paused device in a call is red through its accessor, with no group, no setup and no peer that could encrypt (B2)", () => {
+  // The iPhone-to-iPhone call with the server switch off, and the one that
+  // joined before the group opened: every no-session term says nothing.
+  const seat = (paused: boolean) =>
+    noSession({
+      channelHasOpenGroup: () => false,
+      deviceNeedsSetup: () => false,
+      peerCouldEncrypt: () => false,
+      pausedByServer: () => paused,
+    });
+  assert.equal(seat(true), "not_encrypted");
+  assert.equal(seat(false), "none");
+  assert.equal(
+    chipInputsFrom(sources({ pausedByServer: () => true })).pausedByServer,
+    true,
+  );
+});
+
+test("🔴 presentIdentities is EVERY SFU participant, trackless ones and legs included, and empty with no room", () => {
+  const LEG = "bob:d1:screen";
+  const inputs = chipInputsFrom(
+    sources({
+      room: () =>
+        room({
+          participants: [
+            { identity: ME, publicationCount: 1 },
+            { identity: BOB, publicationCount: 0 },
+            { identity: LEG, publicationCount: 1 },
+          ],
+        }),
+    }),
+  );
+  assert.deepEqual(inputs.presentIdentities, [ME, BOB, LEG]);
+  // ...where gate (b) only judges the publishers.
+  assert.deepEqual(inputs.publishingIdentities, [ME, LEG]);
+  assert.deepEqual(
+    chipInputsFrom(sources({ room: () => undefined })).presentIdentities,
+    [],
+  );
 });

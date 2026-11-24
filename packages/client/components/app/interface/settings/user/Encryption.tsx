@@ -1,18 +1,42 @@
+import { Capacitor } from "@capacitor/core";
 import { Match, Show, Switch, createSignal, onMount } from "solid-js";
 
-import { Trans } from "@lingui-solid/solid/macro";
+import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
+import {
+  browserShareDeps,
+  cardOffersInvite,
+  desktopShell,
+  inviteOutcomeShown,
+  shareInviteText,
+} from "@revolt/app/interface/channels/text/encryptedOnlyInvite";
 import type { BackupStatusView } from "@revolt/client";
 import { useClient, useE2EE } from "@revolt/client";
+import { latchedForClient } from "@revolt/client/encryptedOnlyLatch";
 import { useModals } from "@revolt/modal";
 import { useE2EESplit } from "@revolt/modal/modals/E2EEDeviceShared";
 import { E2EEOwnDeviceList } from "@revolt/modal/modals/E2EERemoveDevice";
+import { useOnlyAdvert } from "@revolt/modal/modals/EncryptedOnlyOnboarding";
+import { onlyCardState } from "@revolt/modal/modals/encryptedOnlySetup";
 import { platformMediaE2EESupported } from "@revolt/rtc";
-import { CategoryButton, Checkbox, Column, Text, iconSize } from "@revolt/ui";
+import {
+  callMediaE2EEOffered,
+  fetchIosCallSwitchValue,
+  iosCallSwitch,
+} from "@revolt/rtc/iosCallSwitch";
+import {
+  CategoryButton,
+  Checkbox,
+  Column,
+  Text,
+  iconSize,
+  useSnackbar,
+} from "@revolt/ui";
 
 import MdDevices from "@material-design-icons/svg/outlined/devices.svg?component-solid";
 import MdKey from "@material-design-icons/svg/outlined/key.svg?component-solid";
 import MdLock from "@material-design-icons/svg/outlined/lock.svg?component-solid";
+import MdShare from "@material-design-icons/svg/outlined/share.svg?component-solid";
 import MdVideocam from "@material-design-icons/svg/outlined/videocam.svg?component-solid";
 import MdWarning from "@material-design-icons/svg/outlined/warning.svg?component-solid";
 
@@ -33,6 +57,7 @@ export function EncryptionSettings() {
     <Column gap="lg">
       <DeviceStateCards />
       <EncryptionCard />
+      <EncryptedOnlyCard />
       <CallEncryptionCard />
       <RecoveryBackupCard />
       <OwnDevicesCard />
@@ -170,10 +195,12 @@ function OwnDevicesCard() {
  * flow first when off. Gated on MEDIA capability (`nativeKeyPushAvailable`, not
  * merely `useE2EE`): on Android (E2EE-enrolled but media-fail-closed until 6.7)
  * the card renders DISABLED with explanatory copy so a user can't believe their
- * calls are encrypted when they are not (FE-6).
+ * calls are encrypted when they are not (FE-6). The same holds on iPhone while
+ * the server's kill switch is off (plan D14), with its own copy.
  */
 function CallEncryptionCard() {
   const e2ee = useE2EE();
+  const client = useClient();
   const { openModal } = useModals();
 
   if (!e2ee) return null;
@@ -185,6 +212,31 @@ function CallEncryptionCard() {
 
   // Media E2EE requires a native key-push channel (desktop today; Android 6.7).
   const mediaCapable = () => e2ee.nativeKeyPushAvailable();
+  // The server's iPhone kill switch (plan D14), fetched from `GET /` because
+  // `client.configuration` is a local stub that never carries it (Stage 5
+  // B1). The RAW value goes to `iosCallSwitch`: absent or unreachable reads
+  // ON, only a strict `false` pauses. Off iOS nothing is fetched and the
+  // switch always answers "on", so this card is unchanged there. On iOS the
+  // card waits for the (bounded) answer rather than claim "Always on" first.
+  const platform = Capacitor.getPlatform();
+  const [switchRead, setSwitchRead] = createSignal<{ serverValue: unknown }>();
+  onMount(() => {
+    if (platform !== "ios") return;
+    void fetchIosCallSwitchValue({
+      fetchRoot: () => client().api.get("/"),
+      setTimeout,
+      clearTimeout,
+    }).then((serverValue) => setSwitchRead({ serverValue }));
+  });
+  const switchKnown = () => platform !== "ios" || switchRead() !== undefined;
+  const offered = () =>
+    callMediaE2EEOffered(
+      mediaCapable(),
+      iosCallSwitch({ platform, serverValue: switchRead()?.serverValue }),
+    );
+  // This device could encrypt, but the server has paused it: not "not
+  // available on this device", which would be false (iosCallSwitch rule 6).
+  const pausedByServer = () => mediaCapable() && !offered();
   const textEnrolled = () => {
     const s = e2ee.status.get("state");
     return !!s?.enabled && !!s?.published;
@@ -199,67 +251,80 @@ function CallEncryptionCard() {
   // encryption the gate will not deliver (FE-6). For them the row shows an
   // unchecked box and routes into the enrolment flow, which is the one
   // remaining click here.
-  const enabled = () => mediaCapable() && textEnrolled();
+  const enabled = () => offered() && textEnrolled();
 
   const onClick = () => {
-    if (!mediaCapable()) return; // unsupported shell — no-op
+    if (!offered()) return; // unsupported shell or paused by the server — no-op
     openModal({ type: "e2ee_enable" });
   };
 
   return (
-    <CategoryButton.Group>
-      <CategoryButton
-        // Greyed out only when this device cannot encrypt at all. The
-        // always-on state is informational rather than disabled: it has no
-        // click handler, so it renders without the link cursor.
-        disabled={!mediaCapable()}
-        action={
-          <Show
-            when={enabled()}
-            fallback={
-              <span style={{ "pointer-events": "none", display: "flex" }}>
-                <Checkbox checked={false} />
-              </span>
-            }
-          >
-            <MdLock {...iconSize(20)} />
-          </Show>
-        }
-        icon={<MdVideocam {...iconSize(24)} />}
-        description={
-          <Show
-            when={mediaCapable()}
-            fallback={
-              <Trans>
-                Encrypted calls aren't available on this device yet.
-              </Trans>
-            }
-          >
+    <Show when={switchKnown()}>
+      <CategoryButton.Group>
+        <CategoryButton
+          // Greyed out only when this device cannot encrypt at all (or the
+          // server has paused it). The always-on state is informational rather
+          // than disabled: it has no click handler, so it renders without the
+          // link cursor.
+          disabled={!offered()}
+          action={
             <Show
               when={enabled()}
               fallback={
-                <Trans>
-                  Set up secure device keys to encrypt your calls. Web
-                  participants can't join encrypted calls, and server features
-                  that need the raw audio or video (recording, transcoding) are
-                  turned off in encrypted calls.
-                </Trans>
+                <span style={{ "pointer-events": "none", display: "flex" }}>
+                  <Checkbox checked={false} />
+                </span>
               }
             >
-              <Trans>
-                Always on. Your voice and video are end-to-end encrypted on this
-                device whenever everyone in the call supports it.
-              </Trans>
+              <MdLock {...iconSize(20)} />
             </Show>
+          }
+          icon={<MdVideocam {...iconSize(24)} />}
+          description={
+            <Show
+              when={offered()}
+              fallback={
+                <Show
+                  when={pausedByServer()}
+                  fallback={
+                    <Trans>
+                      Encrypted calls aren't available on this device yet.
+                    </Trans>
+                  }
+                >
+                  <Trans>
+                    Encrypted calls on iPhone are paused right now. Calls on
+                    this device are not encrypted.
+                  </Trans>
+                </Show>
+              }
+            >
+              <Show
+                when={enabled()}
+                fallback={
+                  <Trans>
+                    Set up secure device keys to encrypt your calls. Web
+                    participants can't join encrypted calls, and server features
+                    that need the raw audio or video (recording, transcoding)
+                    are turned off in encrypted calls.
+                  </Trans>
+                }
+              >
+                <Trans>
+                  Always on. Your voice and video are end-to-end encrypted on
+                  this device whenever everyone in the call supports it.
+                </Trans>
+              </Show>
+            </Show>
+          }
+          onClick={enabled() ? undefined : onClick}
+        >
+          <Show when={enabled()} fallback={<Trans>Encrypt my calls</Trans>}>
+            <Trans>Calls are end-to-end encrypted</Trans>
           </Show>
-        }
-        onClick={enabled() ? undefined : onClick}
-      >
-        <Show when={enabled()} fallback={<Trans>Encrypt my calls</Trans>}>
-          <Trans>Calls are end-to-end encrypted</Trans>
-        </Show>
-      </CategoryButton>
-    </CategoryButton.Group>
+        </CategoryButton>
+      </CategoryButton.Group>
+    </Show>
   );
 }
 
@@ -323,6 +388,155 @@ function EncryptionCard() {
         </Switch>
       </CategoryButton>
     </CategoryButton.Group>
+  );
+}
+
+/**
+ * Encrypted-only chats, an account setting. Shown only while the server
+ * advertises it. Off: the row opens the guided setup (disabled while the
+ * server does not offer it). On: the row opens the leave flow. A device
+ * still latched after the setting was turned off elsewhere offers to turn
+ * it off here too, or on again.
+ */
+function EncryptedOnlyCard() {
+  const { t } = useLingui();
+  const client = useClient();
+  const snackbar = useSnackbar();
+  const { openModal, isOpen } = useModals();
+  const advert = useOnlyAdvert();
+  // The servers' refusal is stated only while they enforce it
+  const enforced = () => advert()?.enforced === true;
+
+  const state = () =>
+    onlyCardState({
+      advert: advert(),
+      userKnown: !!client().user,
+      latched: latchedForClient(client().user?.id),
+      serverOn: client().user?.e2eeOnly === true,
+      // The setup latches before the server answers
+      settingUp: isOpen("encrypted_only_onboarding"),
+    });
+
+  /**
+   * Share the invite to turn on encryption: the share sheet, or else the
+   * clipboard with a toast. A desktop shell always copies. Settings render
+   * in the main window, where the snackbar is.
+   */
+  async function shareInvite() {
+    const outcome = await shareInviteText(
+      t`Sloga's servers refuse unencrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption.`,
+      browserShareDeps(desktopShell()),
+    );
+    const shown = inviteOutcomeShown(outcome, true);
+    if (!shown) return;
+    snackbar.show({
+      message:
+        shown.kind === "copied"
+          ? t`Invite copied to the clipboard.`
+          : t`Could not copy to the clipboard.`,
+      placement: "bottom",
+      closeable: true,
+    });
+  }
+
+  return (
+    <Show when={state() !== "hidden"}>
+      <CategoryButton.Group>
+        <CategoryButton
+          disabled={state() === "unavailable"}
+          action={
+            <span style={{ "pointer-events": "none", display: "flex" }}>
+              <Checkbox checked={state() === "on"} />
+            </span>
+          }
+          icon={<MdLock {...iconSize(24)} />}
+          description={
+            <Switch>
+              <Match when={state() === "on"}>
+                <Trans>On for your account.</Trans>{" "}
+                <Show when={enforced()}>
+                  <Trans>
+                    Sloga's servers refuse unencrypted direct messages to you,
+                    and nobody can add you to an unencrypted group.
+                  </Trans>{" "}
+                </Show>
+                <Trans>
+                  Other people can see that you only accept encrypted messages.
+                </Trans>
+              </Match>
+              <Match when={state() === "turned-off-elsewhere"}>
+                <Trans>Turned off on another device</Trans>.{" "}
+                <Trans>
+                  This device still only sends encrypted messages. Turn it off
+                  here too, or turn it on again for your account.
+                </Trans>
+              </Match>
+              <Match when={state() === "unavailable"}>
+                <Trans>Not available on this server yet.</Trans>
+              </Match>
+              <Match when={state() === "off"}>
+                <Trans>
+                  Only send encrypted direct messages and group messages from
+                  this account.
+                </Trans>
+                <Show when={enforced()}>
+                  {" "}
+                  <Trans>
+                    Sloga's servers refuse unencrypted direct messages to you,
+                    and nobody can add you to an unencrypted group.
+                  </Trans>
+                </Show>
+              </Match>
+            </Switch>
+          }
+          onClick={() => {
+            const current = state();
+            if (current === "on") {
+              openModal({ type: "encrypted_only_leave" });
+            } else if (current === "off") {
+              openModal({ type: "encrypted_only_onboarding" });
+            }
+          }}
+        >
+          <Trans>Encrypted-only chats</Trans>
+        </CategoryButton>
+
+        <Show when={state() === "turned-off-elsewhere"}>
+          <CategoryButton
+            icon={<MdWarning {...iconSize(24)} />}
+            action="chevron"
+            onClick={() =>
+              openModal({ type: "encrypted_only_leave", elsewhere: true })
+            }
+          >
+            <Trans>Turn off on this device too</Trans>
+          </CategoryButton>
+          <CategoryButton
+            icon="blank"
+            action="chevron"
+            onClick={() => openModal({ type: "encrypted_only_onboarding" })}
+          >
+            <Trans>Turn on again</Trans>
+          </CategoryButton>
+        </Show>
+
+        <Show when={cardOffersInvite(state(), advert())}>
+          <CategoryButton
+            icon={<MdShare {...iconSize(24)} />}
+            action="chevron"
+            onClick={() => void shareInvite()}
+          >
+            <Trans>Share invite</Trans>
+          </CategoryButton>
+        </Show>
+      </CategoryButton.Group>
+      <Text class="label">
+        <Trans>
+          A device restored from a recovery code has no backup of its own until
+          you make a new recovery code.
+        </Trans>
+      </Text>
+    </Show>
   );
 }
 

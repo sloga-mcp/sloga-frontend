@@ -23,7 +23,7 @@ import {
   chatWindowsMode,
   routeConversation,
 } from "../chatWindows/openConversation";
-import { apiErrorType } from "./apiErrorType";
+import { apiErrorType, encryptionRequiredSide } from "./apiErrorType";
 import * as chatShell from "./chatShell";
 import { type PopoutAction } from "./shellToMain";
 import { useWindowCtx } from "./windowCtx";
@@ -70,14 +70,16 @@ export function useUserActions(): {
   /**
    * Surface an openDM failure — otherwise a denied DM reads as a dead button.
    * Paused DMs (the account is under anti-spam review) get the errors
-   * mapper's explanation; anything else keeps the generic message rather
-   * than a raw server string.
+   * mapper's explanation, and so does a write refused for not being
+   * encrypted (by the server or by the app's own guard); anything else keeps
+   * the generic message rather than a raw server string.
    */
   function dmFailed(err: unknown) {
     console.error(err);
     snackbar.show({
       message:
-        apiErrorType(err) === "DirectMessagesPaused"
+        apiErrorType(err) === "DirectMessagesPaused" ||
+        encryptionRequiredSide(err) !== undefined
           ? describeError(err)
           : t`Couldn't open a conversation with this user.`,
     });
@@ -138,7 +140,8 @@ export function useUserActions(): {
           await voice.connect(channel);
           return;
         case "video":
-          if (await voice.connect(channel)) await voice.toggleCamera();
+          if (await voice.connect(channel, undefined, { video: true }))
+            await voice.toggleCamera();
           return;
         case "screenshare":
           if (await voice.connect(channel)) await voice.toggleScreenshare();

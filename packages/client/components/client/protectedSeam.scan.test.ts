@@ -9,9 +9,13 @@
 //  S3  the pre-index buffer is cleared at every `#mlsBuffer.clear()` site;
 //  S4  protected ids never enter `#encryptedIds`;
 //  S5  `textInvoke` is the only text-command path and refuses unless
-//      `protectedTextCapable()` (and outside `TEXT_COMMANDS`);
-//  S6  no edit to `NativeTransport` or any transport class (the region is
-//      byte-identical to origin/main 1dcdd1b4);
+//      `protectedTextCapable()` (and outside `TEXT_COMMANDS`). S7 D9 / PA-7
+//      amendment: the ONLY other text-command literals are the 3 dialog
+//      routes in `CapacitorTransport.invoke` (each to its own plugin
+//      method). Capability is `structuralState` (lane C4) over the bridge's
+//      facts, ANDed with every W4 term plus C4's hold and `storeOwnerAllows`;
+//  S6  no edit to `NativeTransport` or any transport class beyond the S7
+//      additions (the region is byte-identical to the pinned S7 region);
 //  S7  `markReady()` runs on EVERY `#onReady`, capable or not (W4a audit);
 //  S8  the manager is built only once `status.device_id` is known; seeding
 //      uses `Promise.allSettled`; `port.sleep` rejects after dispose;
@@ -28,7 +32,8 @@
 //
 // Run: node --test --conditions=browser components/client/protectedSeam.scan.test.ts
 // `PROTECTED_SEAM_TS=<path>` scans another copy (named controls; the
-// 4363b406 e2ee.ts is the known-bad baseline and fails S1-S8).
+// 4363b406 e2ee.ts is the known-bad baseline and fails S1-S8; the W4 tip
+// 5b61eef1 e2ee.ts fails the S7 S5 capability tests and S6).
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -37,6 +42,13 @@ import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
 
 import { fetchProtectedChannelsFlag } from "./protectedChannelsFlag.ts";
+import {
+  type ShellTransportKind,
+  type StructuralInput,
+  storeOwnerAllows,
+  structuralState,
+  TEXT_PROTOCOL,
+} from "./protectedPlatform.ts";
 import {
   isProtectedSendError,
   ProtectedSendError,
@@ -50,16 +62,80 @@ const SRC = readFileSync(FILE, "utf8");
 
 /**
  * sha256 of the transport region (`interface NativeTransport` up to
- * `function resumeRecordStorage`) in `git show origin/main:<this file>` at
- * origin/main 1dcdd1b4 (v0.69.1). W4 never edits it, so the working copy
- * must match main byte for byte. Re-pinned after the main merge: main's iOS
- * work changed the region, so the W4a checkpoint 4363b406 value
- * (f34aa475...) no longer applies. Re-pin it ONLY from main, never from
- * this branch.
+ * `function resumeRecordStorage`).
+ *
+ * W4 pinned it to origin/main 1dcdd1b4 (f1d615df...; before that the W4a
+ * checkpoint 4363b406 value f34aa475...) and never edited it. S7 (plan D9,
+ * PA-7) edits it ON PURPOSE, and this is the S7 lane C3 region (e2ee.ts
+ * sha256 3b5b1b3c...). Against f1d615df... it only ADDS lines:
+ * - `SlogaShellGlobal.e2ee.protectedText?: number` (the Electron D8 flag);
+ * - the `E2eeCapacitorPlugin` entries `textSeatListSign`,
+ *   `textOwnerConfirmChange`, `textOwnerHandoverSign` and `textCapability`;
+ * - the 3 dialog routes in `CapacitorTransport.invoke` (S5 below);
+ * - `CapacitorTransport.textCapability()` (the Android probe).
+ * Any other change to the region is still a defect. Re-pin it only from a
+ * reviewed change that states its reason here, or from main once S7 lands.
+ *
+ * Re-verified on the S7 x W4-final merge (S7 checkpoint 2c1b064c + W4
+ * 19b5a693, which carries main v0.70.0): the value is unchanged, because
+ * neither W4's S1-final fixes (0cdb58ce, 19b5a693) nor main touch the
+ * region (W4's own region is still f1d615df...), so the merged region is
+ * exactly the S7 one.
+ *
+ * Re-pinned on the S7 re-land over main v0.71.0 (S7 665b1ee8 + main
+ * 4b9de141): main's add-device changed the region on its own
+ * (e8145d68...: the `splitBegin` plugin entry and its `CapacitorTransport`
+ * route, the restore-dialog `RestoreReport` docs, `SPLIT_COMMIT_ATTEMPTS`
+ * and `isMissingCommandError`). The merged region is exactly the union of
+ * that and the S7 additions above, nothing else.
+ *
+ * Re-pinned for protected channels S2 (lane L0T, W4-0; was 88e76b2a...):
+ * the region gains exactly the `textAuthoritySign` plugin entry, its
+ * `CapacitorTransport.invoke` dialog route (the S5 pattern above) and one
+ * comment line beside each (S2 value 2817d5fc...).
+ *
+ * iOS call E2EE phase 2 (feat/ios-call-e2ee) edits the region on purpose
+ * too: `CapacitorTransport.keyPushAvailable` answers for iOS (plan D6) and
+ * `#rethrow` maps a call-plane `protector_locked` to a typed error (D10)
+ * (main be9c013c value 8814ad34...).
+ *
+ * Re-pinned on the S2 re-merge over main be9c013c (2026-11-21): the merged
+ * region is byte-identical to `git merge-file` of (S2 43d293c3, base
+ * 68653961, main be9c013c), i.e. the union of the two changes above and
+ * nothing else.
+ *
+ * Re-pinned for the desktop backup refresh, which edits the region on
+ * purpose: `NativeTransport.refreshesBackup` and one
+ * `readonly refreshesBackup = shellRefreshesBackup({...})` member in each of
+ * TauriTransport, ElectronTransport and CapacitorTransport. Against the
+ * 099e8c89 region (8814ad34...) it only ADDS those lines.
+ *
+ * Re-pinned when Tauri was taken out of the backup refresh (M3 final audit
+ * B: its backup commands are sync and block the main thread): only the
+ * `NativeTransport.refreshesBackup` doc comment changed, to say so.
+ * (main 6b7ad149 value dd95a025...).
+ *
+ * Re-pinned on the S2 re-merge over main 6b7ad149 (2026-11-23): the merged
+ * region is byte-identical to `git merge-file` of (S2 merge 2876a0db, base
+ * fb158977, main 6b7ad149), i.e. the S2 value above (c38661cf...) plus the
+ * backup refresh lines, nothing else.
  */
-// Re-pinned from feat/e2ee-add-device: multi-device W3 adds splitBegin.
 const TRANSPORT_REGION_SHA256 =
-  "e8145d6871ec19009e3c6fd2fc3555553725f5bf95314706add86bbd899c56d0";
+  "7d8490df43e7fcec5481be1fe0ac1dfe3b7fc47f9715ed71ed735e8c17913835";
+
+/**
+ * S7 D9 / PA-7: the text commands Android signs only after a tap on a native
+ * dialog, each routed by `CapacitorTransport.invoke` to its own
+ * `E2eeCapacitorPlugin` method (the `enableGroup` pattern, lanes C3 / C12).
+ * They are the only text-command literals S5 allows outside `textInvoke`.
+ */
+const CAPACITOR_DIALOG_ROUTES: Readonly<Record<string, string>> = {
+  e2ee_text_seat_list_sign: "textSeatListSign",
+  e2ee_text_owner_confirm_change: "textOwnerConfirmChange",
+  e2ee_text_owner_handover_sign: "textOwnerHandoverSign",
+  // S2: the channel authority (lane L0T).
+  e2ee_text_authority_sign: "textAuthoritySign",
+};
 
 /**
  * `#encryptedIds.add(` call sites at 4363b406 and at origin/main 1dcdd1b4;
@@ -317,13 +393,19 @@ test("S5: textInvoke is allow-listed and refuses unless protectedTextCapable()",
   // W4d L-IOSGATE: the names are literals now (iOS gate G6-fe-dynamic), but
   // only inside textInvoke's dispatch: each one is a case label plus its own
   // #invoke.
+  // S7 D9 / PA-7 amendment (was: zero literals outside the dispatch): Android
+  // shows the 3 dialog commands' prompts from dedicated plugin methods, so
+  // `CapacitorTransport.invoke` names exactly those (S5 test below). They
+  // are reached only through the dispatch's own arms (`this.#invoke`).
   const textLit = /"e2ee_text_\w+"|"e2ee_mls_group_kind"/g;
   const raw = member(SRC, /\n {2}#protectedTextDispatch</);
   assert.ok(SRC.includes(raw), "dispatch lifted verbatim");
   assert.equal(
-    [...SRC.replace(raw, "").matchAll(textLit)].length,
+    [...SRC.replace(raw, "").matchAll(textLit)].filter(
+      (m) => !Object.hasOwn(CAPACITOR_DIALOG_ROUTES, m[0].slice(1, -1)),
+    ).length,
     0,
-    "no text command named outside the dispatch",
+    "no text command named outside the dispatch but a Capacitor dialog route",
   );
   const dispatch = stripComments(raw);
   assert.equal(
@@ -349,28 +431,187 @@ test("S5: textInvoke is allow-listed and refuses unless protectedTextCapable()",
   );
 });
 
-test("S5: protectedTextCapable is the Tauri main window with live status (D3)", () => {
-  const structural = member(SRC, /\n {2}#protectedStructural\(\)/);
-  assert.match(structural, /this\.#transport instanceof TauriTransport/);
-  assert.match(structural, /!IS_POPOUT_WINDOW/);
-  assert.match(structural, /!IS_OVERLAY_WINDOW/);
-  assert.doesNotMatch(structural, /status/, "structural has no status terms");
-  const capable = member(SRC, /\n {2}protectedTextCapable\(\): boolean /);
+test("S5 (S7 D9): outside textInvoke's dispatch, only CapacitorTransport.invoke names a text command, as a dialog route", () => {
+  const textLit = /"e2ee_text_\w+"|"e2ee_mls_group_kind"/g;
+  // S1-final A-1 moved the literal arms into `#protectedTextDispatch`.
+  const raw = member(SRC, /\n {2}#protectedTextDispatch</);
+  const tiAt = SRC.indexOf(raw);
+  assert.ok(tiAt >= 0 && SRC.indexOf(raw, tiAt + 1) < 0, "one dispatch");
+  const capInvoke = member(
+    member(SRC, /\nclass CapacitorTransport implements NativeTransport /),
+    /\n {2}async invoke<T>\(/,
+  );
+  const capAt = SRC.indexOf(capInvoke);
+  assert.ok(capAt >= 0 && SRC.indexOf(capInvoke, capAt + 1) < 0);
+  const outside = [...SRC.matchAll(textLit)].filter(
+    (m) => m.index! < tiAt || m.index! >= tiAt + raw.length,
+  );
+  for (const m of outside) {
+    const name = m[0].slice(1, -1);
+    assert.ok(
+      Object.hasOwn(CAPACITOR_DIALOG_ROUTES, name),
+      `${name} named outside the dispatch (offset ${m.index}): only a dialog command may be`,
+    );
+    assert.ok(
+      m.index! > capAt && m.index! < capAt + capInvoke.length,
+      `${name} named outside CapacitorTransport.invoke (offset ${m.index})`,
+    );
+  }
+  for (const [name, method] of Object.entries(CAPACITOR_DIALOG_ROUTES)) {
+    assert.ok(
+      (TEXT_COMMANDS as readonly string[]).includes(name),
+      `${name} is a text command`,
+    );
+    const named = outside.filter((m) => m[0] === `"${name}"`).length;
+    assert.ok(named <= 1, `${name}: at most one route`);
+    // Present or absent (C3's wiring scan and S6 pin presence), every
+    // literal is the route to its OWN method, args passed as-is.
+    const route = new RegExp(
+      String.raw`if \(command === "${name}"\) \{\s*const \{ json \} = await this\.#plugin\.${method}\(\s*\(args as Record<string, unknown>\) \?\? \{\},\s*\);\s*return JSON\.parse\(json\) as T;\s*\}`,
+      "g",
+    );
+    assert.equal(
+      [...capInvoke.matchAll(route)].length,
+      named,
+      `${name}: each literal is a route to this.#plugin.${method}`,
+    );
+  }
+  // No prefix or pattern dispatch of text commands in the transport.
+  assert.equal(
+    count(stripComments(capInvoke), "e2ee_text_"),
+    outside.length,
+    "CapacitorTransport.invoke names e2ee_text_ only in the routes",
+  );
+  assert.equal(count(stripComments(capInvoke), "e2ee_mls_group_kind"), 0);
+});
+
+test("S5 (S7 D9): #protectedStructural is structuralState over the bridge's facts, popout/overlay included", () => {
+  const norm = (s: string) => stripComments(s).replace(/\s+/g, " ").trim();
+  const structural = member(SRC, /\n {2}#protectedStructural\(\): boolean /);
+  assert.equal(
+    norm(structural),
+    "{ return this.#protectedPlatformState().structural; }",
+  );
+  const state = member(
+    SRC,
+    /\n {2}#protectedPlatformState\(\): \{ structural: boolean; hold: boolean \} /,
+  );
+  assert.equal(
+    norm(state),
+    "{ return structuralState(this.#protectedPlatformInput()); }",
+  );
+  const input = stripComments(
+    member(SRC, /\n {2}#protectedPlatformInput\(\): StructuralInput /),
+  );
+  // W4's `!IS_POPOUT_WINDOW && !IS_OVERLAY_WINDOW`, now C4 inputs.
+  assert.match(input, /\n\s*popout: IS_POPOUT_WINDOW,\n/);
+  assert.match(input, /\n\s*overlay: IS_OVERLAY_WINDOW,\n/);
+  assert.match(input, /const transport = this\.#protectedTransportKind\(\);/);
+  assert.match(input, /return \{\s*transport,\n/);
+  const kind = stripComments(
+    member(SRC, /\n {2}#protectedTransportKind\(\): ShellTransportKind /),
+  );
+  // W4's `this.#transport instanceof TauriTransport`, now the "tauri" kind.
+  assert.match(
+    kind,
+    /^\{\s*const transport = this\.#transport;\s*if \(transport instanceof TauriTransport\) return "tauri";/,
+  );
+  assert.match(
+    kind,
+    /if \(transport instanceof ElectronTransport\) return "electron";/,
+  );
+  assert.match(
+    kind,
+    /if \(\s*transport instanceof CapacitorTransport &&\s*Capacitor\.isNativePlatform\(\)\s*\)\s*return "capacitor";/,
+  );
+  assert.match(kind, /return "web";\s*\}$/, "anything else is web (closed)");
+  for (const [label, body] of [
+    ["structural", structural],
+    ["state", state],
+    ["input", input],
+    ["kind", kind],
+  ]) {
+    assert.doesNotMatch(body, /status/, `${label}: no status terms`);
+  }
+  assert.match(
+    SRC,
+    /^import \{ IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW \} from "\.\/popout";$/m,
+  );
+  assert.match(
+    SRC,
+    /\n {2}structuralState,\n[\s\S]*?\} from "\.\/protectedPlatform";/,
+    "C4's structuralState, imported",
+  );
+  assert.equal(count(SRC, "function structuralState"), 0, "not redefined");
+  // And C4 closes a popout or overlay on every transport, whatever else.
+  const open: StructuralInput[] = (
+    ["tauri", "electron", "capacitor", "web"] as ShellTransportKind[]
+  ).map((transport) => ({
+    transport,
+    platform: transport === "capacitor" ? "android" : "",
+    electronProtocol: TEXT_PROTOCOL,
+    androidProbe: {
+      state: "ok",
+      value: { protocol: TEXT_PROTOCOL, listenerBridge: true },
+    },
+    popout: false,
+    overlay: false,
+    flag: "on",
+  }));
+  for (const i of open) {
+    for (const over of [{ popout: true }, { overlay: true }]) {
+      assert.deepEqual(
+        structuralState({ ...i, ...over }),
+        { structural: false, hold: false },
+        `${i.transport} ${JSON.stringify(over)}`,
+      );
+    }
+  }
+});
+
+test("S5: protectedTextCapable ANDs every W4 term with C4's hold and storeOwnerAllows (D3, S7 D9)", () => {
+  const capable = stripComments(
+    member(SRC, /\n {2}protectedTextCapable\(\): boolean /),
+  );
+  assert.match(capable, /const status = this\.status\.get\("state"\);/);
+  assert.match(capable, /const userId = this\.#client\.user\?\.id \?\? null;/);
+  const ret = /return \(([\s\S]*)\);\s*\}$/.exec(capable);
+  assert.ok(ret, "one parenthesised return");
+  const expr = ret[1];
+  assert.doesNotMatch(expr, /\|\||\?\?|\?\s/, "a pure conjunction");
+  assert.doesNotMatch(expr, /\breturn\b/);
+  const terms = expr
+    .split("&&")
+    .map((t) =>
+      t.replace(/\s+/g, " ").replace(/\( /g, "(").replace(/,? \)/g, ")").trim(),
+    );
   for (const term of [
+    // W4 D3
     "this.#protectedStructural()",
     "status?.enabled === true",
-    "status.device_id",
-    'this.storeOwnedByAnotherAccount.has("state")',
-    'this.deviceOwnedElsewhere.has("state")',
+    "!!status.device_id",
+    '!this.storeOwnedByAnotherAccount.has("state")',
+    '!this.deviceOwnedElsewhere.has("state")',
     "!this.#storeOwnerUnread", // S1-final A-1
+    // S7 D9: a pending probe / unknown flag reaches no native text command
+    "!this.#protectedPlatformState().hold",
+    // S7 Step 0 fold 1 (A8): a signed-in user and C4's store-owner rule
+    "!!userId",
+    "storeOwnerAllows(this.#protectedTransportKind(), this.#ptStoreOwner, userId)",
   ]) {
-    assert.ok(capable.includes(term), `capable reads ${term}`);
+    assert.ok(terms.includes(term), `capable ANDs ${term}`);
   }
+  assert.match(
+    SRC,
+    /\n {2}storeOwnerAllows,\n[\s\S]*?\} from "\.\/protectedPlatform";/,
+    "C4's storeOwnerAllows, imported",
+  );
+  assert.equal(count(SRC, "function storeOwnerAllows"), 0, "not redefined");
 });
 
 // ---- S6 transports untouched ----------------------------------------------------
 
-test("S6: NativeTransport and the transport classes are unchanged", () => {
+test("S6: NativeTransport and the transport classes carry only the S7 additions", () => {
   const start = SRC.indexOf("interface NativeTransport {");
   const end = SRC.indexOf("function resumeRecordStorage");
   assert.ok(start >= 0 && end > start, "transport region present");
@@ -378,7 +619,7 @@ test("S6: NativeTransport and the transport classes are unchanged", () => {
   assert.equal(
     sha,
     TRANSPORT_REGION_SHA256,
-    "transport region byte-identical to origin/main 1dcdd1b4",
+    "transport region byte-identical to the pinned S7 + add-device region",
   );
 });
 
@@ -432,11 +673,63 @@ test("S8: the manager is built only once status.device_id is known (and capable)
     ensure,
     /if \(!key \|\| !userId \|\| !deviceId\) return;[\s\S]*new ProtectedTextManager\(/,
   );
-  assert.match(ensure, /owner: \{ protect, setSeats \}/);
+  // S2 F3: the owner flows also read / discard the stored seat publish;
+  // F5: and hand the owner key over (S2-D42); FX-R: and publish the
+  // recovery list as a stored publish.
+  assert.match(
+    ensure,
+    /owner: \{\s*protect,\s*setSeats,\s*signOwnerDevices,\s*moveOwnerKey,\s*pendingSeats,\s*cancelPendingSeats,\s*recoverOwnership,\s*\}/,
+  );
   assert.match(
     ensure,
     /messages: \{ encryptAndSend, decryptRow, markerForError \}/,
   );
+});
+
+test("S2 F3: pendingSeats / cancelPendingSeats are bridge pass-throughs to the current manager, inside the block", () => {
+  const block = seamBlock();
+  const pending = stripComments(
+    member(block, /\n {2}pendingSeats\(channelId: string\)/),
+  );
+  assert.match(pending, /void this\.protectedChannels\.get\(channelId\);/);
+  assert.match(
+    pending,
+    /return this\.#ptManager\?\.pendingSeats\(channelId\) \?\? null;/,
+  );
+  const cancel = stripComments(
+    member(block, /\n {2}async cancelPendingSeats\(channelId: string\)/),
+  );
+  assert.match(
+    cancel,
+    /^\{\s*const manager = await this\.#protectedManagerFor\(channelId\);\s*return manager\.cancelPendingSeats\(channelId\);\s*\}$/,
+  );
+});
+
+test("S2 retryNow: a bridge pass-through to the current manager, inside the block, never the open set", () => {
+  const block = seamBlock();
+  const body = stripComments(
+    member(block, /\n {2}retryNow\(channelId: string\): void /),
+  );
+  assert.match(body, /^\{\s*this\.#ptManager\?\.retryNow\(channelId\);\s*\}$/);
+  // a retry never joins the open lifecycle (no 60 s loop) nor builds a
+  // manager
+  assert.doesNotMatch(body, /#ptOpen|protectedOpen|#protectedEnsureManager/);
+  assert.equal(count(SRC, "\n  retryNow(channelId: string): void {"), 1);
+});
+
+test("S2 F5: moveOwnerKey is a bridge pass-through to the current manager, inside the block, with the channel and the target as given", () => {
+  const block = seamBlock();
+  const body = stripComments(
+    member(
+      block,
+      /\n {2}async moveOwnerKey\(channelId: string, toDeviceId: string\)/,
+    ),
+  );
+  assert.match(
+    body,
+    /^\{\s*const manager = await this\.#protectedManagerFor\(channelId\);\s*return manager\.moveOwnerKey\(channelId, toDeviceId\);\s*\}$/,
+  );
+  assert.equal(count(SRC, "\n  async moveOwnerKey("), 1);
 });
 
 test("S8: port.sleep rejects on the manager's lifetime; dispose aborts it", () => {
@@ -460,6 +753,27 @@ test("S8: port.sleep rejects on the manager's lifetime; dispose aborts it", () =
   assert.match(
     member(SRC, /\n {2}#noteDevicePresence\(/),
     /this\.#protectedDispose\(\);/,
+  );
+});
+
+test("F-R8: the port hands the manager's own-listing request (force, want) to the bridge's OwnListingCache, which a dispose clears", () => {
+  const port = stripComments(member(SRC, /\n {2}#protectedPort\(/));
+  assert.match(
+    port,
+    /ownDeviceListing: \(request\) => this\.#protectedOwnListing\(request\),/,
+  );
+  // Its return type holds a brace, so the method is matched whole here.
+  assert.match(
+    stripComments(SRC),
+    /\n {2}#protectedOwnListing\(\s*request\?: OwnListingRequest,\s*\): Promise<\{ hash: string; listing: unknown\[\] \}> \{\s*return this\.#ptOwnListing\.get\(async \(\) => \{[\s\S]*?\n {4}\}, request\);\n {2}\}\n/,
+  );
+  assert.match(
+    stripComments(SRC),
+    /readonly #ptOwnListing = new OwnListingCache\(\s*\(\) => Date\.now\(\),\s*\(\) => this\.#ptLife,\s*\);/,
+  );
+  assert.match(
+    member(SRC, /\n {2}#protectedDispose\(\): void /),
+    /this\.#ptOwnListing\.clear\(\);/,
   );
 });
 
@@ -790,7 +1104,7 @@ test("S10: replay hands every held request over in arrival order", () => {
 test("S10: a non-capable shell holds nothing; neither does a signed-out bridge", () => {
   const h = harness();
   h.onProtectedMessage(msg("a"));
-  h.setStructural(false); // web / Electron / Android / iOS / popout
+  h.setStructural(false); // web / iOS / popout, or a closed Electron / Android
   h.onProtectedMessage(msg("b"));
   h.decryptProtectedHistory({ id: "C1" }, [msg("c")]);
   assert.deepEqual(h.pending(), [], "nothing held, the old entry cleared");
@@ -1137,6 +1451,8 @@ function bootHarness(): BootHarness {
     this.builds++;
     this.#ptManager = {};
   }
+  // S7 audit fix 3: the probe routes its answer to the S7 flag (C3's scan).
+  #protectedFlagEvent() {}
   signOut() { this.#ptSignedOut = true; }
   boot() { this.#protectedBootManager(); }
   flag() { return this.protectedFlag(); }
@@ -1250,7 +1566,8 @@ test("S12 (F4): a probe with no response is retried on the next boot, bounded", 
 
 test("S12 (F4): the boot paths go through the gate; the hooks boot with no manager", async () => {
   // onReady (S9 pins its shape), the owner re-check and the two SDK hooks.
-  assert.equal(count(SRC, "this.#protectedBootManager();"), 4);
+  // + the S7 platform flag flip (audit fix 3, #protectedPlatformApply).
+  assert.equal(count(SRC, "this.#protectedBootManager();"), 5);
   const ready = stripComments(
     member(SRC, /\n {2}async #protectedOnReady\(\): Promise<void> /),
   );
@@ -1340,6 +1657,12 @@ function ownerHarness(): OwnerHarness {
   disposes = 0;
   timers = [];
   #protectedStructural() { return this.structural; }
+  // S7 (merge re-anchor): the Tauri main window, never on hold; the A8
+  // owner record and C4's real \`storeOwnerAllows\` (W4's latch on Tauri).
+  #ptStoreOwner = { state: "unknown" };
+  #protectedNoteStoreOwner(check) { this.#ptStoreOwner = check; }
+  #protectedPlatformState() { return { structural: this.structural, hold: false }; }
+  #protectedTransportKind() { return "tauri"; }
   #protectedBootManager() { this.boots++; }
   #protectedDispose() { this.disposes++; }
   #invoke(command) {
@@ -1369,11 +1692,18 @@ function ownerHarness(): OwnerHarness {
     "setTimeout",
     "clearTimeout",
     "console",
+    "storeOwnerAllows",
     `${stripTypeScriptTypes(ts)}\nreturn OwnerHarness;`,
-  )(TEXT_COMMANDS, setTimeoutFake, clearTimeoutFake, {
-    error: () => {},
-    warn: () => {},
-  });
+  )(
+    TEXT_COMMANDS,
+    setTimeoutFake,
+    clearTimeoutFake,
+    {
+      error: () => {},
+      warn: () => {},
+    },
+    storeOwnerAllows,
+  );
   self.push(new Cls() as OwnerHarness);
   return self[0];
 }

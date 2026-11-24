@@ -1,12 +1,17 @@
-import { createSignal } from "solid-js";
+import { Show, createMemo, createSignal } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 
 import { useClient, useE2EE } from "@revolt/client";
+import { buildPlainWriteInput } from "@revolt/client/encryptedOnlyGuard";
+import { latchedForClient } from "@revolt/client/encryptedOnlyLatch";
+import { decidePlainWrite } from "@revolt/client/encryptedOnlyPolicy";
 import { Column, Dialog, DialogProps, Text } from "@revolt/ui";
 
 import { useModals } from "..";
 import { Modals } from "../types";
+
+import { offersPlaintextExit } from "./encryptedOnlyModals";
 
 /**
  * Receive-side peer-downgrade prompt (design §5.2 [G2: 1]; gate-sitting
@@ -32,6 +37,19 @@ export function E2EEPeerDowngradeModal(
 
   const channel = () => client().channels.get(props.channelId);
 
+  // Encrypted-only chats: no "send unencrypted" under the latch, or where
+  // an unencrypted send would be refused anyway. The bridge refuses it too.
+  const offerPlain = createMemo(() => {
+    const target = channel();
+    const plain = target
+      ? decidePlainWrite({
+          ...buildPlainWriteInput(client(), target),
+          encrypted: false,
+        })
+      : null;
+    return offersPlaintextExit(latchedForClient(client().user?.id), plain);
+  });
+
   // Returned (as a Promise) from the action onClick: Dialog closes on
   // resolve and STAYS OPEN on reject — do not call onClose here, and do
   // not swallow the error (Dialog's .catch keeps the modal up so the
@@ -44,7 +62,10 @@ export function E2EEPeerDowngradeModal(
     try {
       await e2ee.confirmPeerDowngrade(target, accept);
     } catch (error) {
-      showError(error);
+      // A `declined` refusal (the system confirm was cancelled, or the
+      // phone is locked) is the user's answer, not an error: nothing was
+      // recorded, and the prompt stays up without an error dialog.
+      if ((error as { type?: string })?.type !== "declined") showError(error);
       throw error;
     } finally {
       setBusy(false);
@@ -62,10 +83,14 @@ export function E2EEPeerDowngradeModal(
           text: <Trans>Keep encrypted</Trans>,
           onClick: () => resolve(false),
         },
-        {
-          text: <Trans>Send unencrypted</Trans>,
-          onClick: () => resolve(true),
-        },
+        ...(offerPlain()
+          ? [
+              {
+                text: <Trans>Send unencrypted</Trans>,
+                onClick: () => resolve(true),
+              },
+            ]
+          : []),
       ]}
     >
       <Column>
@@ -75,13 +100,25 @@ export function E2EEPeerDowngradeModal(
             conversation.
           </Trans>
         </Text>
-        <Text>
-          <Trans>
-            Continue unencrypted — new messages will be readable by the
-            server — or keep the conversation encrypted on your side. Your
-            encrypted history is unaffected either way.
-          </Trans>
-        </Text>
+        <Show
+          when={offerPlain()}
+          fallback={
+            <Text>
+              <Trans>
+                Encrypted-only chats applies to this conversation, so it can't
+                continue unencrypted. Keep it encrypted on your side.
+              </Trans>
+            </Text>
+          }
+        >
+          <Text>
+            <Trans>
+              Continue unencrypted — new messages will be readable by the server
+              — or keep the conversation encrypted on your side. Your encrypted
+              history is unaffected either way.
+            </Trans>
+          </Text>
+        </Show>
       </Column>
     </Dialog>
   );
