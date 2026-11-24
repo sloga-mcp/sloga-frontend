@@ -351,10 +351,12 @@ export default function FlowCreatePasskey() {
       session.ensureFree();
 
       const friendlyName = session.friendlyName();
-      const reply = await client.passkeySignupFinish(
-        challenge.challenge_id,
-        credential as Record<string, unknown>,
-        friendlyName,
+      const reply = await session.finish(() =>
+        client.passkeySignupFinish(
+          challenge.challenge_id,
+          credential as Record<string, unknown>,
+          friendlyName,
+        ),
       );
 
       await session.adopt(reply, friendlyName);

@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/browser";
 
 import { version } from "../../../package.json";
+import { scrubBreadcrumb, scrubEvent } from "./sentryScrub";
 
 if (import.meta.env.PROD && import.meta.env.VITE_SENTRY_DSN) {
   Sentry.init({
@@ -15,7 +16,9 @@ if (import.meta.env.PROD && import.meta.env.VITE_SENTRY_DSN) {
     // No key material is ever logged; this is about the metadata around it.
     // Drop them at the boundary rather than auditing every call site.
     beforeBreadcrumb: (breadcrumb) => {
-      if (breadcrumb.category !== "console") return breadcrumb;
+      // Every crumb that is kept goes out with the one-time tokens taken
+      // from its addresses (navigation `from`/`to`, request `url`)
+      if (breadcrumb.category !== "console") return scrubBreadcrumb(breadcrumb);
       const message = breadcrumb.message;
       if (typeof message !== "string") return breadcrumb;
       // Our own lines...
@@ -47,8 +50,13 @@ if (import.meta.env.PROD && import.meta.env.VITE_SENTRY_DSN) {
       // participant X" carry the same pair. Matched on shape, because a
       // prefix filter cannot see them.
       if (/^(MissingKey|InvalidKey|InternalError):/.test(message)) return null;
-      return breadcrumb;
+      return scrubBreadcrumb(breadcrumb);
     },
+    // The page address of an event (`request.url`), its referrer, its
+    // message, the text and stack frames of its exceptions and the crumbs
+    // already on it: links such as `/login/reset/<token>` carry a one-time
+    // token in the path, and an error message can quote the address
+    beforeSend: (event) => scrubEvent(event),
     // tracing:
     // integrations: [Sentry.browserTracingIntegration()],
     // tracesSampleRate: 0.1,

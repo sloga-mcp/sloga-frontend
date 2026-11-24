@@ -642,6 +642,26 @@ export async function responseError(response: Response): Promise<unknown> {
     : new Error(`${response.status} ${response.statusText}`.trim());
 }
 
+/**
+ * Whether a refused request means the account has no confirmed email: none
+ * at all, or (at the Cipher checkout) one that is not confirmed yet. The
+ * two cases arrive as the same error, so the checkout's text covers both.
+ *
+ * Read from the API error body the Cipher checkout and the supporter claim
+ * answer with. Each of those two routes gives `InvalidOperation` for that
+ * one reason only, so the page can say what to do about it. Not for any
+ * other route: elsewhere the same type means other things.
+ * @param error Thrown value, as {@link responseError} builds it
+ */
+export function checkoutNeedsEmail(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    !(error instanceof Error) &&
+    (error as { type?: unknown }).type === "InvalidOperation"
+  );
+}
+
 export type CipherApi = {
   fetch: (url: string, init?: RequestInit) => Promise<Response>;
   /** API base the client already uses, without a trailing slash */

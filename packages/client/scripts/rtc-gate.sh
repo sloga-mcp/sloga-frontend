@@ -310,6 +310,15 @@ EXPECTED=(
   # which two `settings-*` mutations survived until then. 220 -> 245: the
   # backup courier pins re-stated for Tauri, Electron and iOS (R4-R9).
   "components/client/e2eeIosGate.test.ts 245 0"
+  # Passkey hardening. None of the three ran in this gate before; each row
+  # is its first measurement here. The crash-report scrubber (one-time
+  # tokens out of addresses, messages, exception text and stack frames);
+  # the rules of the signed-out passkey screens, with what a refused last
+  # request of a sign-in means; and the Cipher checkout's decisions, with
+  # the "add and confirm an email" refusal text.
+  "src/sentryScrub.test.ts 17 0"
+  "components/auth/src/flows/passkeySignup.test.ts 34 0"
+  "components/app/interface/settings/user/cipherCheckout.test.ts 72 0"
 )
 
 # --- skips -------------------------------------------------------------------
@@ -578,7 +587,13 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   # and the probe.
   components/client/e2eePlatform.test.ts
   components/client/e2eeCallPlaneIos.test.ts
-  components/client/e2eeIosGate.test.ts)
+  components/client/e2eeIosGate.test.ts
+  # Outside components/rtc, so no glob reaches them: the crash-report
+  # scrubber, the passkey screens' rules and the Cipher checkout's
+  # decisions. Without these literals each EXPECTED row trips "never ran".
+  src/sentryScrub.test.ts
+  components/auth/src/flows/passkeySignup.test.ts
+  components/app/interface/settings/user/cipherCheckout.test.ts)
 # 🔴 Arguments ADD to that set; they do not replace it. They used to replace
 # it, so the natural invocation for this branch —
 #   rtc-gate.sh components/rtc/mls*.test.ts
@@ -628,7 +643,7 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/decodeWitnessListener.ts
   components/rtc/decodeWitnessListener.test.ts
   components/rtc/chipInputs.ts
-  components/rtc/chipInputs.test.ts src/sentry.ts
+  components/rtc/chipInputs.test.ts src/sentry.ts src/sentryScrub.ts
   components/rtc/mlsCallSession.escape.test.ts
   components/rtc/screenAudioWire.ts components/rtc/screenAudioWire.test.ts
   components/rtc/screenAudioNativeWin.ts

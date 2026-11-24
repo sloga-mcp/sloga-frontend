@@ -2743,6 +2743,10 @@ msgstr "You are signed in on this device. Sign out first, then open the link aga
 msgid "This device is already signed in, so the new sign-in was not kept. Sign out, then sign in with your passkey."
 msgstr "This device is already signed in, so the new sign-in was not kept. Sign out, then sign in with your passkey."
 
+#: components/auth/src/flows/FlowLogin.tsx
+msgid "Something went wrong. Try again."
+msgstr "Something went wrong. Try again."
+
 #: components/auth/src/flows/FlowPasskeyRecover.tsx
 msgid "Create a new passkey"
 msgstr "Create a new passkey"
@@ -9637,6 +9641,14 @@ msgstr "Slow down — try again in a moment"
 #: components/app/interface/settings/user/CipherSettings.tsx
 msgid "Checkout couldn't be started. Try again in a moment."
 msgstr "Checkout couldn't be started. Try again in a moment."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Add and confirm an email address on your account first (Settings > Account)."
+msgstr "Add and confirm an email address on your account first (Settings > Account)."
+
+#: components/app/interface/settings/user/Supporter.tsx
+msgid "Add an email address to your account first (Settings > Account)."
+msgstr "Add an email address to your account first (Settings > Account)."
 
 #: components/app/interface/settings/user/CipherSettings.tsx
 msgid "Cipher {label}"

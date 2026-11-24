@@ -27,6 +27,8 @@ import {
 } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { checkoutNeedsEmail } from "./cipherCheckout";
+
 /** Longest transaction id the server accepts */
 const MAX_TRANSACTION_ID = 64;
 
@@ -232,10 +234,14 @@ function SupporterPage() {
     } catch (error) {
       // Ko-fi hasn't told the server about this payment (yet)
       const notFound = (error as { type?: unknown })?.type === "NotFound";
+      // A claim is matched on the account's email: with none, say so
+      const needsEmail = !notFound && checkoutNeedsEmail(error);
       snackbar.show({
         message: notFound
           ? t`We haven't received that transaction yet. Try again in a few minutes.`
-          : err(error),
+          : needsEmail
+            ? t`Add an email address to your account first (Settings > Account).`
+            : err(error),
       });
     } finally {
       setClaiming(false);

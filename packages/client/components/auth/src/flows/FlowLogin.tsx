@@ -40,7 +40,8 @@ import { styled } from "styled-system/jsx";
 import { FlowTitle } from "./Flow";
 import { Fields, Form, FormError } from "./Form";
 import hopOnSloga from "./hop-on-sloga.mp4";
-import { passkeyRecoveryOffered } from "./passkeySignup";
+import { usePasskeySession } from "./passkeySession";
+import { passkeyRecoveryOffered, sessionFailureLine } from "./passkeySignup";
 
 /**
  * Outcome of checking a referral code against the server
@@ -401,6 +402,7 @@ export default function FlowLogin() {
   const { t } = useLingui();
   const { lifecycle, isLoggedIn, isError, login, passkeyLogin } =
     useClientLifecycle();
+  const passkeySession = usePasskeySession();
 
   const [keepLoggedIn, setKeepLoggedIn] = createSignal(true);
   const [oauthGoogle] = createResource(fetchOauthGoogleEnabled);
@@ -427,6 +429,17 @@ export default function FlowLogin() {
    * @param error Thrown value
    */
   function passkeyLoginError(error: unknown): unknown {
+    // Which line each gets is decided in passkeySignup.ts, where it is tested
+    switch (sessionFailureLine(error)) {
+      // The new session was not kept: this page already has one in use
+      case "in_use":
+        return passkeySession.inUse();
+      // The client held a session nobody was signed in with, and dropped
+      // it. There is nothing to sign out of, so no "already signed in".
+      case "try_again":
+        return new Error(t`Something went wrong. Try again.`);
+    }
+
     if (error instanceof PasskeyError) {
       switch (error.code) {
         // The user closed the prompt, or it never appeared: the quiet line

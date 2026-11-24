@@ -5,6 +5,11 @@ import { detect } from "detect-browser";
 import { API, Client, ConnectionState } from "stoat.js";
 import { ProtocolV1 } from "stoat.js/lib/events/v1";
 
+import {
+  KEPT_SESSION_DROPPED,
+  SESSION_IN_USE,
+  passkeyFinishRefusal,
+} from "@revolt/auth/src/flows/passkeySignup";
 import { CONFIGURATION } from "@revolt/common";
 import { ModalControllerExtended } from "@revolt/modal";
 import { loadServerCallRingSecs } from "@revolt/rtc/serverRingLength";
@@ -846,7 +851,19 @@ export function sessionFriendlyName(): string {
 export class SessionInUseError extends Error {
   constructor() {
     super("This page already has a session in use");
-    this.name = "SessionInUseError";
+    this.name = SESSION_IN_USE;
+  }
+}
+
+/**
+ * Thrown by `passkeyLogin` when the client held a session that an earlier
+ * attempt kept and never stored, and dropped it. Nobody is signed in: the
+ * page shows a plain failure, and the next attempt starts clean.
+ */
+export class KeptSessionDroppedError extends Error {
+  constructor() {
+    super("A session that was kept and never stored was dropped");
+    this.name = KEPT_SESSION_DROPPED;
   }
 }
 
@@ -975,13 +992,42 @@ export default class ClientController {
     // and no second one is asked for
     if (this.lifecycle.state() !== State.Ready) return;
 
-    const session = await client.passkeyLoginFinish(
-      challenge.challenge_id,
-      credential as Record<string, unknown>,
-      friendly_name,
-    );
+    let session;
+    try {
+      session = await client.passkeyLoginFinish(
+        challenge.challenge_id,
+        credential as Record<string, unknown>,
+        friendly_name,
+      );
+    } catch (error) {
+      // The SDK client never replaces a session it holds: it throws instead.
+      // What that means here is decided in passkeySignup.ts, where it is
+      // tested.
+      const refusal = passkeyFinishRefusal(
+        error,
+        this.lifecycle.state() === State.Ready,
+      );
+      switch (refusal) {
+        case "rethrow":
+          throw error;
+        // A login that finished during the request above: its session stands
+        case "stands":
+          return;
+        // No login is under way, yet the client holds a session: one that an
+        // earlier attempt kept and never stored (see `storeKept`). Never
+        // quiet: drop it and report a failure, and the next attempt starts
+        // clean. Not "already signed in": nobody is.
+        case "drop":
+          this.dropKeptSession();
+          throw new KeptSessionDroppedError();
+        default: {
+          const exhaustive: never = refusal;
+          throw exhaustive;
+        }
+      }
+    }
 
-    // The same, for a login that finished during the request above. A
+    // The same, for a login that got in between the reply and here. A
     // disabled account is still reported.
     if (
       session.result !== "Disabled" &&
@@ -990,7 +1036,55 @@ export default class ClientController {
       return;
     }
 
-    await this.completeLoginResponse(session, modals, friendly_name);
+    await this.storeKept(session, () =>
+      this.completeLoginResponse(session, modals, friendly_name),
+    );
+  }
+
+  /**
+   * Run the step that stores a session the SDK client already keeps: the
+   * last request of a passkey flow keeps its session the moment the server
+   * answers. If the step throws while the lifecycle is still `Ready`,
+   * nothing owns the token the client holds, and the client would refuse
+   * every later passkey attempt on this page until a reload. So the client
+   * is replaced, and the error is thrown on as it is.
+   * @param session Reply the client kept
+   * @param store The step
+   * @returns What the step returns
+   */
+  private async storeKept<T>(
+    session: API.ResponseLogin,
+    store: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await store();
+    } catch (error) {
+      // Only a session reply was kept, and only `Ready` has no owner for it
+      if (
+        session.result === "Success" &&
+        this.lifecycle.state() === State.Ready
+      ) {
+        this.dropKeptSession();
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Replace a client that holds a session no lifecycle state owns. Only for
+   * `Ready`, where no login is under way. The session stays on the server,
+   * unused, like any session of a device that never came back.
+   *
+   * The encrypted-only latch needs no unbinding: `Ready` never has an
+   * account bound. It is bound only on the way out of `Ready` (a login
+   * transition, which leaves the state in the same call) and unbound in
+   * `Dispose`, before `Ready` is entered again.
+   */
+  private dropKeptSession() {
+    if (this.lifecycle.state() !== State.Ready) return;
+
+    this.dispose();
   }
 
   /**
@@ -1043,9 +1137,13 @@ export default class ClientController {
       throw new SessionInUseError();
     }
 
-    this.state.auth.setRemember(true);
+    // The SDK client kept this session when the server answered
+    const stored = await this.storeKept(session, async () => {
+      this.state.auth.setRemember(true);
+      return this.completeLoginResponse(session, modals, friendly_name);
+    });
 
-    if (!(await this.completeLoginResponse(session, modals, friendly_name))) {
+    if (!stored) {
       throw new SessionInUseError();
     }
   }

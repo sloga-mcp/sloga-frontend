@@ -46,6 +46,7 @@ import {
   type StandingState,
   CipherClientError,
   INTENT_KEY,
+  checkoutNeedsEmail,
   createCipherStanding,
   encodeIntent,
   fetchCipherMe,
@@ -296,6 +297,16 @@ function CipherPage(props: { context?: unknown }) {
     return err(error);
   }
 
+  /** As `describe`, for a refused checkout */
+  function describeCheckout(error: unknown): string {
+    // An account with no email, or with one that is not confirmed yet,
+    // cannot buy: say what to do about it
+    if (checkoutNeedsEmail(error)) {
+      return t`Add and confirm an email address on your account first (Settings > Account).`;
+    }
+    return describe(error);
+  }
+
   // Re-enables the buttons if a navigation to Stripe never happens
   let leavingTimer: ReturnType<typeof setTimeout> | undefined;
   // Set once the page is gone: a checkout answer that arrives after that
@@ -331,7 +342,7 @@ function CipherPage(props: { context?: unknown }) {
       // The shell stays on this page: show the open checkout
       if (native) controller.refresh();
     } catch (error) {
-      snackbar.show({ message: describe(error) });
+      snackbar.show({ message: describeCheckout(error) });
       // Another checkout is open (another device or tab): show it
       if (
         (error as { type?: unknown } | undefined)?.type === "PaymentPending"

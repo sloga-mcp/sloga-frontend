@@ -1,12 +1,13 @@
 // Run from packages/client:
 //   node --test --conditions=browser components/auth/src/flows/passkeySignup.test.ts
-// Declared test count: 26 (the runner exits 0 when it finds no tests at all,
+// Declared test count: 34 (the runner exits 0 when it finds no tests at all,
 // so compare this against its pass count).
 //
 // Known-bad control: set PASSKEY_SIGNUP_UNDER_TEST to the path of a changed
 // copy of passkeySignup.ts (for example one whose passkeySignupGate ignores
 // `signup`) and the matching specs fail.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
 
@@ -17,7 +18,12 @@ const underTest: typeof import("./passkeySignup.ts") = await import(
 );
 
 const {
+  KEPT_SESSION_DROPPED,
+  SESSION_ALREADY_PRESENT,
+  SESSION_IN_USE,
   SIGNUP_RESEND_WAIT_MS,
+  isSessionAlreadyPresent,
+  passkeyFinishRefusal,
   passkeyRecoverLookupFailure,
   passkeyRecoverProblem,
   passkeyRecoveryOffered,
@@ -26,6 +32,7 @@ const {
   recoverStartsAgain,
   resendWaitSeconds,
   secondFactorFrom,
+  sessionFailureLine,
   signupCodeFrom,
   signupStartsAgain,
 } = underTest;
@@ -432,4 +439,157 @@ it("a server without the recovery route reads as switched off", () => {
   // recovery route, instead of leaving like it does when the switch is off
   assert.equal(passkeyRecoverProblem("NotFound", "start", false), "off");
   assert.equal(passkeyRecoverProblem("NotFound", "finish", false), undefined);
+});
+
+describe("isSessionAlreadyPresent", () => {
+  /** Built like stoat.js builds its error */
+  class SessionAlreadyPresentError extends Error {
+    constructor() {
+      super("This client already has a session; the new one was not kept");
+      this.name = "SessionAlreadyPresentError";
+    }
+  }
+
+  // Fails if: the SDK's refusal to replace a session is not recognised, so
+  // the sign-up, recovery and sign-in pages show a raw error instead of
+  // "already signed in"
+  it("knows the SDK error by its name", () => {
+    assert.equal(SESSION_ALREADY_PRESENT, "SessionAlreadyPresentError");
+    assert.equal(
+      isSessionAlreadyPresent(new SessionAlreadyPresentError()),
+      true,
+    );
+    // A copy from another bundle of the SDK is not the same class
+    assert.equal(
+      isSessionAlreadyPresent({ name: "SessionAlreadyPresentError" }),
+      true,
+    );
+  });
+
+  // Fails if: an ordinary failure (an API error body, a network error, the
+  // app's own SessionInUseError, a cancelled prompt) reads as "already
+  // signed in" and hides what really went wrong
+  it("is false for everything else", () => {
+    const inUse = new Error("This page already has a session in use");
+    inUse.name = "SessionInUseError";
+
+    for (const other of [
+      undefined,
+      null,
+      "SessionAlreadyPresentError",
+      "Cancelled",
+      new Error("SessionAlreadyPresentError"),
+      new TypeError("Failed to fetch"),
+      inUse,
+      { type: "InvalidCredentials" },
+      { type: "SessionAlreadyPresentError" },
+      { name: "sessionalreadypresenterror" },
+    ]) {
+      assert.equal(isSessionAlreadyPresent(other), false, String(other));
+    }
+  });
+});
+
+/** An error with a given `name`, as the SDK and the app build theirs */
+function named(name: string): Error {
+  const error = new Error("for the test");
+  error.name = name;
+  return error;
+}
+
+describe("passkeyFinishRefusal", () => {
+  // Fails if: an ordinary failure of the last request (wrong passkey, no
+  // network) is swallowed, or drops a client that holds nothing
+  it("throws every other failure on, whatever the lifecycle state", () => {
+    for (const ready of [true, false]) {
+      for (const other of [
+        undefined,
+        new TypeError("Failed to fetch"),
+        { type: "InvalidCredentials" },
+        named(SESSION_IN_USE),
+        named(KEPT_SESSION_DROPPED),
+      ]) {
+        assert.equal(passkeyFinishRefusal(other, ready), "rethrow");
+      }
+    }
+  });
+
+  // Fails if: a login that finished while the request was on its way has
+  // its client dropped, or the attempt shows an error over a working login
+  it("lets the session of a login that got there first stand", () => {
+    assert.equal(
+      passkeyFinishRefusal(named(SESSION_ALREADY_PRESENT), false),
+      "stands",
+    );
+  });
+
+  // Fails if: a session that was kept and never stored stays on the client
+  // while nobody is signed in, so every later passkey attempt is refused
+  // until a reload; or the attempt ends without a word
+  it("drops a kept session when no login is under way", () => {
+    assert.equal(
+      passkeyFinishRefusal(named(SESSION_ALREADY_PRESENT), true),
+      "drop",
+    );
+  });
+});
+
+describe("sessionFailureLine", () => {
+  // Fails if: a person who is NOT signed in (the kept session was dropped)
+  // is told "already signed in, sign out", or one who is signed in gets
+  // the plain failure line
+  it("tells a session in use from a dropped one", () => {
+    assert.equal(SESSION_IN_USE, "SessionInUseError");
+    assert.equal(KEPT_SESSION_DROPPED, "KeptSessionDroppedError");
+    assert.equal(sessionFailureLine(named(SESSION_IN_USE)), "in_use");
+    assert.equal(sessionFailureLine(named(KEPT_SESSION_DROPPED)), "try_again");
+  });
+
+  // Fails if: any other failure (the SDK's own refusal, an API error body,
+  // a cancelled prompt) is replaced by one of the two session lines
+  it("has no line for anything else", () => {
+    for (const other of [
+      undefined,
+      null,
+      "SessionInUseError",
+      "KeptSessionDroppedError",
+      new Error("SessionInUseError"),
+      new TypeError("Failed to fetch"),
+      named(SESSION_ALREADY_PRESENT),
+      { type: "SessionInUseError" },
+      { type: "InvalidCredentials" },
+      { name: "keptsessiondroppederror" },
+    ]) {
+      assert.equal(sessionFailureLine(other), undefined, String(other));
+    }
+  });
+
+  // Fails if: the sign-in page or the controller stops using the decisions
+  // above (source level: neither file can be loaded here), the dropped
+  // session is reported as "in use" again, or the plain line is missing
+  // from the catalog (a missing msgid renders as its hash)
+  it("is what the controller and the sign-in page go by", () => {
+    const read = (path: string) =>
+      readFileSync(new URL(path, import.meta.url), "utf8");
+    const flat = (source: string) => source.replace(/\s+/g, " ");
+
+    const controller = flat(read("../../../client/Controller.ts"));
+    assert.ok(controller.includes("this.name = SESSION_IN_USE;"));
+    assert.ok(controller.includes("this.name = KEPT_SESSION_DROPPED;"));
+    assert.match(
+      controller,
+      /case "drop": this\.dropKeptSession\(\); throw new KeptSessionDroppedError\(\);/,
+    );
+    assert.equal(controller.match(/passkeyFinishRefusal\(/g)?.length, 1);
+
+    const copy = "Something went wrong. Try again.";
+    const page = flat(read("./FlowLogin.tsx"));
+    assert.ok(
+      page.includes(`case "try_again": return new Error(t\`${copy}\`);`),
+    );
+    assert.ok(page.includes('case "in_use": return passkeySession.inUse();'));
+
+    const en = read("../../../i18n/catalogs/en/messages.po");
+    assert.ok(en.includes(`msgid "${copy}"\nmsgstr "${copy}"\n`));
+  });
 });

@@ -220,11 +220,13 @@ export default function FlowPasskeyRecover() {
       // Again: the prompt can stay open for a long time
       session.ensureFree();
 
-      const reply = await client.passkeyRecoverFinish(
-        token,
-        challenge.challenge_id,
-        credential as Record<string, unknown>,
-        factor,
+      const reply = await session.finish(() =>
+        client.passkeyRecoverFinish(
+          token,
+          challenge.challenge_id,
+          credential as Record<string, unknown>,
+          factor,
+        ),
       );
 
       await session.adopt(reply);

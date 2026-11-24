@@ -45,6 +45,7 @@ import {
   POLL_INTERVAL_MS,
   POLL_TIMEOUT_MS,
   checkoutHref,
+  checkoutNeedsEmail,
   checkoutReturnTo,
   checkoutSettled,
   cipherOffers,
@@ -69,6 +70,7 @@ import {
   pollNote,
   postCheckout,
   readIntent,
+  responseError,
   saleStatus,
   thankedMembership,
   tierRank,
@@ -921,6 +923,82 @@ describe("a quiet poll with this tab's intent stored outlasts the paid order", (
     await h.advance(60_000);
     assert.equal(h.reads.length, 1);
     assert.equal(h.last()?.poll, "idle");
+  });
+});
+
+describe("a refusal for an account with no confirmed email is told apart", () => {
+  // Fails if: the checkout text tells an account whose email is only not
+  // confirmed yet to "add" one it already has, the supporter claim's text
+  // changes, or either text is missing from the catalog (a missing msgid
+  // renders as its hash)
+  it("the checkout says add and confirm; the supporter claim says add", () => {
+    const read = (path: string) =>
+      readFileSync(new URL(path, import.meta.url), "utf8");
+    const checkout =
+      "Add and confirm an email address on your account first (Settings > Account).";
+    const claim =
+      "Add an email address to your account first (Settings > Account).";
+
+    const page = read("./CipherSettings.tsx");
+    assert.ok(page.includes(`t\`${checkout}\``), "checkout text");
+    assert.ok(!page.includes(claim), "the old text is gone from checkout");
+    assert.ok(read("./Supporter.tsx").includes(`t\`${claim}\``), "claim text");
+
+    const en = read("../../../../i18n/catalogs/en/messages.po");
+    for (const copy of [checkout, claim]) {
+      assert.ok(en.includes(`msgid "${copy}"\nmsgstr "${copy}"\n`), copy);
+    }
+  });
+
+  // Fails if: the checkout or the supporter claim of an account with no
+  // confirmed email shows a bare "invalid operation" instead of what to do
+  it("reads InvalidOperation from the API error body", () => {
+    assert.equal(checkoutNeedsEmail({ type: "InvalidOperation" }), true);
+    assert.equal(
+      checkoutNeedsEmail({ type: "InvalidOperation", location: "x" }),
+      true,
+    );
+  });
+
+  // Fails if: another refusal (sale closed, region, a pending order, rate
+  // limit, a network failure) tells the buyer to add an email they have
+  it("is false for every other failure", () => {
+    for (const other of [
+      undefined,
+      null,
+      "InvalidOperation",
+      {},
+      { type: "PaymentPending" },
+      { type: "CipherRegionUnavailable" },
+      { type: "NotFound" },
+      { type: "invalidoperation" },
+      { type: ["InvalidOperation"] },
+      new Error("InvalidOperation"),
+      Object.assign(new Error("400 Bad Request"), { type: "InvalidOperation" }),
+      new CipherClientError("rateLimited", 1000),
+      new CipherClientError("badResponse"),
+    ]) {
+      assert.equal(checkoutNeedsEmail(other), false, String(other));
+    }
+  });
+
+  // Fails if: the body `responseError` hands the page stops being the
+  // shape this reads, so a real 400 from the server is not recognised
+  it("recognises the error a refused request is turned into", async () => {
+    const refused = await responseError(
+      new Response(JSON.stringify({ type: "InvalidOperation" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    assert.equal(checkoutNeedsEmail(refused), true);
+
+    const limited = await responseError(
+      new Response(JSON.stringify({ type: "InvalidOperation" }), {
+        status: 429,
+      }),
+    );
+    assert.equal(checkoutNeedsEmail(limited), false);
   });
 });
 

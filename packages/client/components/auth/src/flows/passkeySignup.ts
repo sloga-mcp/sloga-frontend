@@ -300,3 +300,89 @@ export function secondFactorFrom(
 
   return { recovery_code: value };
 }
+
+/**
+ * `name` of the error the SDK client throws from the last request of a
+ * passkey flow (sign-in, sign-up, recovery) when it already holds a session:
+ * stoat.js `SessionAlreadyPresentError`. The session it holds is kept and
+ * the new one is not.
+ */
+export const SESSION_ALREADY_PRESENT = "SessionAlreadyPresentError";
+
+/**
+ * Whether a thrown value is the SDK's "this client already has a session".
+ * Read by `name`, not by class: an API error body is a plain object and
+ * never has this name, and the check stays in a module with no SDK import.
+ * @param error Thrown value
+ */
+export function isSessionAlreadyPresent(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { name?: unknown }).name === SESSION_ALREADY_PRESENT
+  );
+}
+
+/**
+ * What a passkey sign-in does after its last request failed:
+ * - `rethrow`: not the SDK's refusal; the error is thrown on as it is
+ * - `stands`: another login finished meanwhile and its session stands, so
+ *   the attempt ends without a word
+ * - `drop`: no login is under way, yet the client holds a session: one an
+ *   earlier attempt kept and never stored. Nobody is signed in with it. It
+ *   is dropped, and the attempt reads as a plain failure.
+ */
+export type FinishRefusal = "rethrow" | "stands" | "drop";
+
+/**
+ * Decide what a failed last request of a passkey sign-in means
+ * @param error Thrown value
+ * @param ready Whether the lifecycle is `Ready` (no login under way, nobody signed in)
+ */
+export function passkeyFinishRefusal(
+  error: unknown,
+  ready: boolean,
+): FinishRefusal {
+  if (!isSessionAlreadyPresent(error)) return "rethrow";
+  return ready ? "drop" : "stands";
+}
+
+/**
+ * `name` of the app's error for a page that cannot take a new session
+ * because one is in use (`SessionInUseError` in client/Controller.ts)
+ */
+export const SESSION_IN_USE = "SessionInUseError";
+
+/**
+ * `name` of the app's error for a sign-in that found a kept, never stored
+ * session and dropped it (`KeptSessionDroppedError` in client/Controller.ts)
+ */
+export const KEPT_SESSION_DROPPED = "KeptSessionDroppedError";
+
+/**
+ * The line a page shows for one of the two errors above:
+ * - `in_use`: the person is signed in here; "already signed in, sign out"
+ * - `try_again`: the person is not signed in, so there is nothing to sign
+ *   out of; a plain "something went wrong, try again"
+ */
+export type SessionFailureLine = "in_use" | "try_again";
+
+/**
+ * Which line a thrown value gets, read by `name` as above
+ * @param error Thrown value
+ * @returns The line, or undefined for any other error
+ */
+export function sessionFailureLine(
+  error: unknown,
+): SessionFailureLine | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+
+  switch ((error as { name?: unknown }).name) {
+    case SESSION_IN_USE:
+      return "in_use";
+    case KEPT_SESSION_DROPPED:
+      return "try_again";
+    default:
+      return undefined;
+  }
+}
