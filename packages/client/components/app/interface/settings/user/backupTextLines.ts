@@ -42,17 +42,21 @@ function bundleLine(truncated: unknown): BackupTextKind | null {
 }
 
 /**
- * The restore's line, from `skipped` alone: `epochs` is never counted and
- * `truncated` describes the bundle that was restored, not the restore. A
- * `skipped` this build does not know says some history may be missing.
+ * The restore's line (R-W4-12). What the restore could not bring back
+ * comes first: `skipped` picks its line, and a `skipped` this build does
+ * not know says some history may be missing. Otherwise the report's
+ * `truncated` says what the restored backup itself had left out, with the
+ * two lines the bundle uses (`oldest`, `all`). `epochs` is never counted.
+ * A report that says neither gets no line.
  */
 function restoreLine(restore: unknown): BackupTextKind | null {
   if (typeof restore !== "object" || restore === null) return null;
-  const skipped = (restore as Record<string, unknown>).skipped;
-  if (skipped === undefined || skipped === null) return null;
-  if (skipped === "none") return null;
-  if (skipped === "all") return "skipped_all";
-  return "skipped_partial";
+  const report = restore as Record<string, unknown>;
+  const skipped = report.skipped;
+  if (skipped !== undefined && skipped !== null && skipped !== "none") {
+    return skipped === "all" ? "skipped_all" : "skipped_partial";
+  }
+  return bundleLine(report.truncated);
 }
 
 // The restore runs in the enable dialog, which closes as soon as it worked,

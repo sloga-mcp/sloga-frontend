@@ -164,10 +164,17 @@ function ownerCopy(failure: unknown): string | null {
 
 test("authority_needs_v2: the owner UI shows its own copy, not the catch-all", () => {
   // U11b added the four `moveOwnerKey` refusals (spec'd below); S4 added
-  // `protect_busy` (spec'd with the S4 copy).
+  // `protect_busy`, and the W4 fix round the two "protected, with something
+  // left out" reasons (all spec'd with the S4 copy).
   assert.deepEqual(
     [...CLIENT_REASONS_WITH_COPY],
-    ["authority_needs_v2", ...Object.keys(MOVE_REFUSALS), "protect_busy"],
+    [
+      "authority_needs_v2",
+      ...Object.keys(MOVE_REFUSALS),
+      "protect_busy",
+      "protected_members_pending",
+      "wipe_not_done",
+    ],
   );
   const text = ownerCopy(authorityFailure);
   assert.equal(text, AUTHORITY_NEEDS_V2);
@@ -698,7 +705,8 @@ const ROW_NOTES = {
 } as const;
 
 const DIVIDER_KEPT = "Messages above weren't protected";
-const DIVIDER_WIPED = "Earlier unprotected messages were deleted.";
+const DIVIDER_WIPED =
+  "Earlier unprotected messages were removed from this channel.";
 
 const BACKUP_TEXT = {
   oldest:
@@ -739,6 +747,12 @@ const SETTINGS_S1: Record<string, string> = {
 const SETTINGS_S4: Record<string, string> = {
   protectWithHistory:
     "Messages already in #general stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted.",
+  protectOrder:
+    "The channel is protected first, with only you in it. The members you pick are added right after.",
+  membersPending:
+    "This channel is now protected, with only you in it. The members you picked weren't added yet. You can add them below.",
+  wipeNotDone:
+    "This channel is now protected, but the earlier messages were not deleted.",
   deleteEarlierOption: "Also delete the earlier messages",
   wipeDescription:
     "Earlier messages and their files will be deleted from Sloga's servers. This can't be undone. Copies on people's devices, forwards, crossposts and reports may remain.",
@@ -748,7 +762,7 @@ const SETTINGS_S4: Record<string, string> = {
   historyHiddenDescription:
     "New members only see messages sent after they join.",
   historyRemovalNote:
-    "If you're removed from this channel, you keep what you've already read on this device. Signing out without a key backup loses it.",
+    "Removing someone doesn't take back what they already read. It stays on their devices.",
   wipeButton: "Delete the earlier unprotected messages",
   wipeRequested: "The earlier messages are being deleted from Sloga's servers.",
   wipeDone: "Earlier messages deleted from Sloga's servers: 7",
@@ -761,8 +775,12 @@ const SETTINGS_ERRORS = {
     "This channel is too busy to protect right now. Try again in a quiet moment.",
   wipe_refused: "Earlier messages couldn't be deleted right now.",
   clock_behind:
-    "This device's clock is behind the newest message. Check the date and time settings and try again.",
+    "The newest message's time is ahead of this device's clock. Check the date and time settings, or try again in a few minutes.",
 } as const;
+
+/** Under the toggle while hidden, with the earlier messages kept. */
+const HIDDEN_EARLIER_KEPT =
+  "New members only see protected messages sent after they join. Messages from before this channel was protected stay readable to everyone in it.";
 
 const WIPE_DONE_NO_COUNT =
   "Earlier messages were deleted from Sloga's servers.";
@@ -773,6 +791,15 @@ const AUDIT = {
     "Ann protected the channel general and chose to delete its earlier messages",
   wipeRequest: "Ann started deleting the earlier messages in general",
   wipeDone: "The earlier messages in general were deleted (7)",
+} as const;
+
+/** The same four sentences for a channel the caller cannot name. */
+const AUDIT_UNNAMED = {
+  protect: "Ann protected a channel",
+  protectWiped:
+    "Ann protected a channel and chose to delete its earlier messages",
+  wipeRequest: "Ann started deleting the earlier messages in a channel",
+  wipeDone: "The earlier messages in a channel were deleted (7)",
 } as const;
 
 /** A history floor marker as the manager records it (`TimelineMarker`). */
@@ -816,11 +843,14 @@ function settingsNow(): Record<string, string> {
     seatsSaved: settingsCopy.seatsSaved(),
     typeTogglesHidden: settingsCopy.typeTogglesHidden(),
     protectWithHistory: settingsCopy.protectWithHistory("general"),
+    protectOrder: settingsCopy.protectOrder(),
+    membersPending: settingsCopy.membersPending(),
+    wipeNotDone: settingsCopy.wipeNotDone(),
     deleteEarlierOption: settingsCopy.deleteEarlierOption(),
     wipeDescription: settingsCopy.wipeDescription(),
     historyToggle: settingsCopy.historyToggle(),
     historyVisibleDescription: settingsCopy.historyVisibleDescription(),
-    historyHiddenDescription: settingsCopy.historyHiddenDescription(),
+    historyHiddenDescription: settingsCopy.historyHiddenDescription(false),
     historyRemovalNote: settingsCopy.historyRemovalNote(),
     wipeButton: settingsCopy.wipeButton(),
     wipeRequested: settingsCopy.wipeRequested(),
@@ -978,10 +1008,12 @@ test("S4 row state: checking has its own line", () => {
   assert.notEqual(rowStateCopy("checking"), markerCopy("unencrypted_row"));
 });
 
-test("S4 divider: kept says the messages above weren't protected, wiped that they were deleted", () => {
+test("S4 divider: kept says the messages above weren't protected, wiped that they were removed from this channel", () => {
   assert.equal(dividerCopy("kept"), DIVIDER_KEPT);
   assert.equal(dividerCopy("wiped"), DIVIDER_WIPED);
   assert.notEqual(dividerCopy("kept"), dividerCopy("wiped"));
+  // R-W4-36: the signed line proves the request, not a finished deletion.
+  assert.doesNotMatch(dividerCopy("wiped"), /deleted/i);
 });
 
 test("S4 settings: the S1 strings are unchanged and the page has exactly these keys", () => {
@@ -1012,8 +1044,87 @@ test("S4 settings: each history string has its own text", () => {
   // The two toggle descriptions say opposite things.
   assert.notEqual(
     settingsCopy.historyVisibleDescription(),
-    settingsCopy.historyHiddenDescription(),
+    settingsCopy.historyHiddenDescription(false),
   );
+});
+
+test("FXO B3: hidden history with the earlier messages kept says those stay readable to everyone", () => {
+  assert.equal(
+    settingsCopy.historyHiddenDescription(true),
+    HIDDEN_EARLIER_KEPT,
+  );
+  assert.equal(
+    settingsCopy.historyHiddenDescription(false),
+    SETTINGS_S4.historyHiddenDescription,
+  );
+  // Only a literal true picks the kept line.
+  for (const loose of ["true", 1, {}, null, undefined]) {
+    assert.equal(
+      settingsCopy.historyHiddenDescription(loose as never),
+      SETTINGS_S4.historyHiddenDescription,
+      String(loose),
+    );
+  }
+  assert.match(HIDDEN_EARLIER_KEPT, /stay readable to everyone/);
+  // The plain line would be false there: it promises new members see
+  // nothing from before they joined.
+  assert.doesNotMatch(HIDDEN_EARLIER_KEPT, /only see messages sent/);
+});
+
+test("FXO B12: the clock line blames neither side, and the removal note speaks about members, not the reader", () => {
+  const clock = settingsCopy.historyError("clock_behind");
+  assert.doesNotMatch(clock, /clock is behind/);
+  assert.match(clock, /or try again/);
+  assert.doesNotMatch(settingsCopy.historyRemovalNote(), /\byou\b/i);
+});
+
+test("FXO B2 B7: protected with the members or the ticked wipe left out reads its own line through the owner UI, never the fail-closed one", () => {
+  const pending = { source: "client", reason: "protected_members_pending" };
+  const missed = { source: "client", reason: "wipe_not_done" };
+  assert.equal(ownerCopy(pending), SETTINGS_S4.membersPending);
+  assert.equal(ownerCopy(missed), SETTINGS_S4.wipeNotDone);
+  assert.equal(
+    clientReasonCopy("protected_members_pending"),
+    settingsCopy.membersPending(),
+  );
+  assert.equal(clientReasonCopy("wipe_not_done"), settingsCopy.wipeNotDone());
+  for (const text of [SETTINGS_S4.membersPending, SETTINGS_S4.wipeNotDone]) {
+    assert.notEqual(text, CATCH_ALL);
+    assert.notEqual(text, noticeCopy("protect_failed"));
+    // Both say the channel IS protected; neither reads as a failed protect.
+    assert.match(text, /^This channel is now protected/);
+    assert.doesNotMatch(text, /couldn't|failed|error/i);
+  }
+  // What each proves and no more: the wipe line says nothing about members
+  // or how to delete later; the members line nothing about deleting.
+  assert.match(SETTINGS_S4.wipeNotDone, /were not deleted\.$/);
+  assert.doesNotMatch(SETTINGS_S4.wipeNotDone, /member|below/);
+  assert.doesNotMatch(SETTINGS_S4.membersPending, /delet/);
+  // Only a client failure: the same reason from elsewhere keeps its mapping.
+  for (const reason of ["protected_members_pending", "wipe_not_done"]) {
+    for (const other of [
+      { source: "native", reason },
+      { source: "server", reason },
+      { reason },
+    ]) {
+      assert.equal(ownerCopy(other), CATCH_ALL, JSON.stringify(other));
+    }
+  }
+});
+
+test("FXO safety: a client reason this build does not know still reads the fail-closed line", () => {
+  for (const reason of [
+    "protected_members_pendin",
+    "wipe_not_done_",
+    "WIPE_NOT_DONE",
+    "wipe_done",
+    "later_reason",
+    "",
+  ]) {
+    assert.equal(ownerCopy({ source: "client", reason }), CATCH_ALL, reason);
+  }
+  assert.equal(ownerCopy({ source: "client" }), CATCH_ALL);
+  assert.equal(ownerCopy(new Error("x")), CATCH_ALL);
 });
 
 test("S4 settings: protect with history names the channel only when it has a name", () => {
@@ -1139,11 +1250,54 @@ test("S4 audit: the protect and wipe sentences and the two filter labels", () =>
     "The earlier messages in general were deleted (0)",
   );
   assert.equal(new Set(Object.values(AUDIT)).size, 4);
+  // A channel name is passed through as it was given.
+  assert.equal(
+    auditCopy("channel_protect", { actor: "Ann", channel: " #general " }),
+    "Ann protected the channel  #general ",
+  );
   assert.equal(auditActionLabel("channel_protect"), "Protect channel");
   assert.equal(
     auditActionLabel("channel_history_wipe"),
     "Delete earlier messages",
   );
+});
+
+test("FXO C13: without a channel name the audit sentence keeps the protect or wipe fact and names no channel", () => {
+  for (const channel of [null, "", "   ", undefined]) {
+    const who = { actor: "Ann", channel: channel as never };
+    assert.equal(auditCopy("channel_protect", who), AUDIT_UNNAMED.protect);
+    assert.equal(
+      auditCopy("channel_protect", { ...who, wiped: true }),
+      AUDIT_UNNAMED.protectWiped,
+    );
+    assert.equal(
+      auditCopy("channel_history_wipe", who),
+      AUDIT_UNNAMED.wipeRequest,
+    );
+    assert.equal(
+      auditCopy("channel_history_wipe", { ...who, count: 7 }),
+      AUDIT_UNNAMED.wipeDone,
+    );
+    // The same strictness as with a name.
+    assert.equal(
+      auditCopy("channel_protect", { ...who, wiped: "true" as never }),
+      AUDIT_UNNAMED.protect,
+    );
+    assert.equal(
+      auditCopy("channel_history_wipe", { ...who, count: "7" as never }),
+      AUDIT_UNNAMED.wipeRequest,
+    );
+  }
+  const named = Object.values(AUDIT) as string[];
+  const unnamed = Object.values(AUDIT_UNNAMED) as string[];
+  assert.equal(new Set([...named, ...unnamed]).size, 8);
+  for (const text of unnamed) {
+    // Never the generic sentence, and nothing shaped like an id or a
+    // placeholder where the name would be.
+    assert.notEqual(text, "Ann performed an action");
+    assert.match(text, / a channel\b/);
+    assert.doesNotMatch(text, /null|undefined|#|[0-9A-HJKMNP-TV-Z]{26}/);
+  }
 });
 
 test("S4 audit: only a literal true is a wipe and only a whole count is shown", () => {
@@ -1200,6 +1354,10 @@ test("S4 copy: every string is its own, plain ASCII, and carries no placeholder,
       "",
     ],
     "settings.wipeDoneNoCount": [settingsCopy.wipeDone(null), ""],
+    "settings.historyHiddenEarlierKept": [
+      settingsCopy.historyHiddenDescription(true),
+      "",
+    ],
     "backup.replacesOldDevice": [backupNoteCopy.replacesOldDevice(), ""],
     "backup.textBudget": [backupNoteCopy.textBudget(), "2"],
     "audit.label.protect": [auditActionLabel("channel_protect"), ""],
@@ -1208,6 +1366,10 @@ test("S4 copy: every string is its own, plain ASCII, and carries no placeholder,
     "audit.protectWiped": [AUDIT.protectWiped, ""],
     "audit.wipeRequest": [AUDIT.wipeRequest, ""],
     "audit.wipeDone": [AUDIT.wipeDone, "7"],
+    "audit.unnamed.protect": [AUDIT_UNNAMED.protect, ""],
+    "audit.unnamed.protectWiped": [AUDIT_UNNAMED.protectWiped, ""],
+    "audit.unnamed.wipeRequest": [AUDIT_UNNAMED.wipeRequest, ""],
+    "audit.unnamed.wipeDone": [AUDIT_UNNAMED.wipeDone, "7"],
   };
   const now = settingsNow();
   for (const key of Object.keys(SETTINGS_S4)) {
@@ -1227,7 +1389,9 @@ test("S4 copy: every string is its own, plain ASCII, and carries no placeholder,
   }
   // `rowStateCopy("checking")` is not here: it reuses a msgid the catalog
   // already had, ellipsis character included.
-  assert.equal(Object.keys(all).length, 41);
+  // 41 from the lanes, 8 from the W4 fix round: three settings lines, the
+  // kept variant of the hidden description, four unnamed audit sentences.
+  assert.equal(Object.keys(all).length, 49);
 
   const seen = new Map<string, string>();
   // The strings that were there before S4 count too.

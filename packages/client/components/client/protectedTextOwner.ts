@@ -61,8 +61,13 @@
  *   when it did not land.
  * - `setHistory` signs the next list with the `history` line changed and
  *   publishes it as any seat list. `wipeHistory` signs the one-change wipe
- *   list and POSTs it; only another `wipeHistory` re-sends those bytes, and
- *   any other owner flow drops them when they are not on the server.
+ *   list and POSTs it. A stored wipe list is never sent again by a later
+ *   call (R-W4-34): on the server it is finished, otherwise it is dropped,
+ *   and a later `wipeHistory` signs afresh behind native's dialog.
+ * - Fix round W4 (R-W4-35, audit B7): once the boundary genesis has landed,
+ *   a failed member step rejects `protected_members_pending`, and a wipe
+ *   the caller asked for that the landed list does not carry rejects
+ *   `wipe_not_done`. Both mean "protected, with something left out".
  * - All three are refused while `history_setting` is off. Without `opts`,
  *   `protect` is the S2 flow, request for request.
  *
@@ -953,7 +958,7 @@ function carriesReason(e: StoredPublish): boolean {
  * resolved, or null. `reason` rides on a stored plain seat publish's
  * re-PUT only (`carriesReason`). S4: a stored boundary protect that landed
  * answers as a protect entry; a stored wipe list is finished or dropped
- * (`settleStoredWipe`) and never answers as an entry.
+ * (`settleStoredWipe`), never sent, and never answers as an entry.
  */
 async function resumeStored(
   ctx: Ctx,
@@ -966,7 +971,7 @@ async function resumeStored(
     return landed === null ? null : { v: 1, op: "protect", signed: landed };
   }
   if (history !== null) {
-    await settleStoredWipe(ctx, history, false);
+    await settleStoredWipe(ctx, history);
     return null;
   }
   const stored = readStored(ctx);
@@ -1569,29 +1574,26 @@ async function postWipe(ctx: Ctx, entry: StoredWipe): Promise<void> {
 }
 
 /**
- * A stored wipe list, GET first (D7c). On the server already: finish.
- * Overtaken: dropped as refused. Not landed yet:
- * - `resend` (`wipeHistory` only): the SAME bytes go out again; no dialog,
- *   nothing signed;
- * - any other flow never sends a wipe the caller did not ask for now, and
- *   is never held up by one (R-W4-28: an unseat must not wait behind a wipe
- *   whose answer was lost). The bytes are dropped and the flow signs its
- *   own list over what the server holds. That is a clean continue because
- *   native keeps nothing from a sign (a list is held only once verify
- *   accepts the read-back), so the next sign builds on the server's list.
- *   Re-sending instead is not an option: the seat route refuses a list
- *   that moves `kept` to `wiped`, and the wipe route would start the wipe.
- *   The cost, unlike a plain seat publish (F3): if the lost request still
- *   arrives, two lists of this device exist at one version. Arriving after
- *   the new list it is refused as stale; arriving before it, the wipe the
- *   owner confirmed lands, the new list is refused once, and the next flow
- *   builds on the wiped list.
+ * A stored wipe list from an earlier call, GET first (D7c). Nothing is
+ * signed or sent here, whoever calls (R-W4-34): a wipe request goes out
+ * only in the call that showed native's dialog for it.
+ * - On the server already: finish it (verify, removals). Returns true.
+ * - Anything else (not landed yet, or overtaken by another list): the bytes
+ *   are dropped and the caller carries on over what the server holds.
+ *   Returns false. No flow is held up by one (R-W4-28: an unseat must not
+ *   wait behind a wipe whose answer was lost), and an overtaken one fails
+ *   nothing: the caller reads the server's list itself.
+ * Dropping is a clean continue because native keeps nothing from a sign (a
+ * list is held only once verify accepts the read-back), so the next sign
+ * builds on the server's list. Re-sending instead is not an option: the
+ * seat route refuses a list that moves `kept` to `wiped`, and the wipe
+ * route would start a wipe nobody confirmed in this call. The cost, unlike
+ * a plain seat publish (F3): if the lost request still arrives, two lists
+ * of this device exist at one version. Arriving after the new list it is
+ * refused as stale; arriving before it, the wipe the owner confirmed lands,
+ * the new list is refused once, and the next flow builds on the wiped list.
  */
-async function settleStoredWipe(
-  ctx: Ctx,
-  entry: StoredWipe,
-  resend: boolean,
-): Promise<void> {
+async function settleStoredWipe(ctx: Ctx, entry: StoredWipe): Promise<boolean> {
   const { signed } = entry;
   const l = (await readSeats(ctx)).list;
   if (
@@ -1602,15 +1604,7 @@ async function settleStoredWipe(
   ) {
     clearStored(ctx);
     await finishSeats(ctx);
-    return;
-  }
-  if (l === null || l.version !== signed.version - 1) {
-    clearStored(ctx);
-    throw clientFailure("publish_refused");
-  }
-  if (resend) {
-    await postWipe(ctx, entry);
-    return;
+    return true;
   }
   clearStored(ctx);
   ctx.port.log(
@@ -1618,6 +1612,27 @@ async function settleStoredWipe(
     "[protected] history wipe not on the server: dropped",
     { channelId: ctx.channelId, sent: entry.sent },
   );
+  return false;
+}
+
+/** Whether a signed body says the earlier messages are wiped. */
+function signedWiped(list: { body: string }): boolean {
+  return bodyLine(list.body, "pre_history") === "wiped";
+}
+
+/** What a rejection was, for a log line: its source and tag (D16). */
+function failureTag(e: unknown): { source: string; tag: string | null } {
+  const f = toFailure(e);
+  switch (f.source) {
+    case "client":
+      return { source: f.source, tag: f.reason };
+    case "native":
+      return { source: f.source, tag: f.error.type };
+    case "server":
+      return { source: f.source, tag: f.type };
+    default:
+      return { source: f.source, tag: null };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1633,12 +1648,20 @@ async function settleStoredWipe(
  * above. `withHistory: true` protects a channel that already has messages
  * (refused while `history_setting` is off): an owner-only genesis over the
  * newest message (`protectFromBoundary`), then `seats` through `setSeats`
- * with its own growth dialog. If that second step fails the channel stays
- * protected with the owner alone and this rejects with the seat failure;
- * nothing is rolled back. A channel that turns out to have no message is
- * protected by the flow above (no boundary, and no wipe: there is nothing
- * to delete). `wipe: true` signs the genesis `pre_history: "wiped"` behind
- * native's dialog and is valid only with `withHistory`.
+ * with its own growth dialog. If that second step fails for any reason (a
+ * declined dialog included) the channel stays protected with the owner
+ * alone and this rejects `protected_members_pending` (R-W4-35); nothing is
+ * rolled back. A channel that turns out to have no message is protected by
+ * the flow above (no boundary, and no wipe: there is nothing to delete).
+ * `wipe: true` signs the genesis `pre_history: "wiped"` behind native's
+ * dialog and is valid only with `withHistory`.
+ *
+ * `wipe_not_done` (audit B7): the caller asked for the wipe, but the list
+ * that protects the channel was signed by an earlier call (a stored entry
+ * that resumed, or this device's genesis found on the server) and does not
+ * say `wiped`. Nothing is signed to change that here: the channel is
+ * protected, the earlier messages are still there, and the caller is told.
+ * It is reported after the member step and wins over a failed one.
  */
 export async function protect(
   ops: GroupOps,
@@ -1660,12 +1683,16 @@ export async function protect(
   // S4: the genesis that landed seats the owner alone, so the picked
   // members still need a seat list of their own.
   let ownerOnly = false;
+  // B7: the list that landed is one an earlier call signed, without the
+  // wipe this call asked for.
+  let wipeMissed = false;
   await run(ops, port, channelId, async (ctx) => {
     const boundaryEntry = readHistoryEntry(ctx)?.op === "protect";
     const resumed = await resumeStored(ctx, null);
     if (resumed?.op === "protect") {
       ownerOnly =
         (withHistory || boundaryEntry) && seatsOnly(resumed.signed, self);
+      wipeMissed = wipe && !signedWiped(resumed.signed);
       return;
     }
     assertSignAllowed(ctx);
@@ -1682,6 +1709,7 @@ export async function protect(
           snap.asOfGeneration,
         );
         ownerOnly = withHistory && seatsOnly(snap.list, self);
+        wipeMissed = wipe && !signedWiped(snap.list);
         return;
       }
       throw clientFailure("protect_failed");
@@ -1717,9 +1745,29 @@ export async function protect(
     persist(ctx, { v: 1, op: "protect", signed });
     await publishProtect(ctx, signed);
   });
+  let membersPending = false;
   if (ownerOnly && unique.length > 1) {
-    await setSeats(ops, port, channelId, unique, deviceCap);
+    try {
+      await setSeats(ops, port, channelId, unique, deviceCap);
+    } catch (e) {
+      // R-W4-35: the protect itself went through. Whatever stopped the
+      // member list (a declined dialog included), the caller hears that the
+      // members are still to be added, not that protecting failed.
+      membersPending = true;
+      port.log("warn", "[protected] protected, members not added", {
+        channelId,
+        ...failureTag(e),
+      });
+    }
   }
+  if (wipeMissed) {
+    port.log("warn", "[protected] protected, the wipe asked for was not done", {
+      channelId,
+      membersPending,
+    });
+    throw clientFailure("wipe_not_done");
+  }
+  if (membersPending) throw clientFailure("protected_members_pending");
 }
 
 /**
@@ -2182,8 +2230,10 @@ export async function setHistory(
  * `pre_history: "wiped"`; native's dialog is the only confirmation and
  * `declined` signs nothing), stores it, then
  * `POST /channels/:id/history_wipe`.
- * - A stored wipe list is settled FIRST: on the server = done; else the
- *   SAME bytes are sent again. Never a second dialog or signature.
+ * - A stored wipe list is settled FIRST (R-W4-34): on the server = done,
+ *   nothing signed or sent. Otherwise it is dropped, however old, and this
+ *   call signs a new list behind native's dialog: stored wipe bytes are
+ *   never POSTed by a later call.
  * - Already wiped (the verified list says so, or native answers
  *   `seat_list_rollback`): done, nothing signed or sent.
  * - Refused while `history_setting` is off.
@@ -2197,10 +2247,10 @@ export async function wipeHistory(
   await run(ops, port, channelId, async (ctx) => {
     const stored = readHistoryEntry(ctx);
     if (stored !== null && stored.op === "wipe") {
-      await settleStoredWipe(ctx, stored, true);
-      return;
+      if (await settleStoredWipe(ctx, stored)) return;
+    } else {
+      await resumeStored(ctx, null);
     }
-    await resumeStored(ctx, null);
     assertSignAllowed(ctx);
     const snap = await readSeats(ctx);
     if (snap.list === null) throw clientFailure("not_protected");
@@ -2211,7 +2261,7 @@ export async function wipeHistory(
       snap.asOfGroupId,
       snap.asOfGeneration,
     );
-    if (bodyLine(snap.list.body, "pre_history") === "wiped") return;
+    if (signedWiped(snap.list)) return;
     let raw: unknown;
     try {
       raw = await signHistoryList(
@@ -2234,7 +2284,7 @@ export async function wipeHistory(
       signed === null ||
       signed.version !== snap.list.version + 1 ||
       !isOwn(ctx, signed) ||
-      bodyLine(signed.body, "pre_history") !== "wiped"
+      !signedWiped(signed)
     ) {
       throw clientFailure("publish_refused");
     }

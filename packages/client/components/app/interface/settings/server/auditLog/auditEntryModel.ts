@@ -300,8 +300,11 @@ function readProtectedDetail(
 /**
  * What to pass to `auditCopy` for a protected channel entry, or null when
  * the page must show the generic sentence instead: the entry could not be
- * read, or the channel has no name the client can resolve (the channel id
- * is never passed as a name).
+ * read, or there is no actor name.
+ *
+ * A channel the client cannot name (it was deleted, say) keeps the entry's
+ * fact: `channel` is passed as null and the copy names no channel. The
+ * channel id is never passed as a name.
  *
  * `wiped` is passed for the protect entry only and `count` for the wipe
  * entry only.
@@ -312,10 +315,12 @@ export function protectedAuditCopyArgs(
 ): { action: AuditCopyAction; detail: AuditCopyDetail } | null {
   if (!detail) return null;
   const actor = names.actor;
-  const channel = names.channel;
   if (typeof actor !== "string" || actor === "") return null;
-  if (typeof channel !== "string" || channel === "") return null;
-  if (channel === detail.channel) return null;
+  const named =
+    typeof names.channel === "string" &&
+    names.channel.trim() !== "" &&
+    names.channel !== detail.channel;
+  const channel = named ? (names.channel as string) : null;
 
   switch (detail.action) {
     case "channel_protect":

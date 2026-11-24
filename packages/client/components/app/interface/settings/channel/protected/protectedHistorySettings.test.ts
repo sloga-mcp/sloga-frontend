@@ -4,20 +4,26 @@
 //   node --conditions=browser --test components/app/interface/settings/channel/protected/protectedHistorySettings.test.ts
 //
 // The page's wiring to these rules is scanned by
-// `protectedSettings.scan.test.ts` (S28 to S31).
+// `protectedSettings.scan.test.ts` (S28 to S35).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
   type HistorySectionInput,
   type HistorySectionModel,
+  type HistoryVerifyAsks,
+  type HistoryVerifyInput,
   type ProtectDraft,
+  HISTORY_CHECK_LINE_MS,
+  historyCheckingShown,
   historyFailureKind,
   historySectionModel,
   historyToggleClick,
+  historyVerifyStep,
   newProtectDraft,
   protectDraftStep,
   protectOpts,
+  protectOutcomeKind,
   wipeClickAllowed,
   wipeProgress,
 } from "./protectedHistorySettings.ts";
@@ -419,10 +425,20 @@ test("U5: wipe progress text is chosen from the server's wipe state", () => {
   for (const raw of [undefined, null, "done", 5, {}, { state: "running" }]) {
     assert.deepEqual(wipeProgress(raw), { kind: "none" });
   }
-  // In the section: shown beside native's state, kept or wiped.
-  assert.deepEqual(owner({ serverWipe: { state: "requested" } }).progress, {
-    kind: "requested",
-  });
+  // In the section: only once native says wiped (audit B8).
+  for (const serverWipe of [
+    { state: "requested" },
+    { state: "done", count: 7 },
+  ]) {
+    assert.deepEqual(owner({ serverWipe }).progress, { kind: "none" });
+  }
+  assert.deepEqual(
+    owner({
+      native: native({ preHistory: "wiped" }),
+      serverWipe: { state: "requested" },
+    }).progress,
+    { kind: "requested" },
+  );
   assert.deepEqual(
     owner({
       native: native({ preHistory: "wiped" }),
@@ -475,4 +491,264 @@ test("U5: only the three history failures have a line of their own", () => {
   for (const err of [null, undefined, "protect_busy", 5, new Error("x")]) {
     assert.equal(historyFailureKind(err), null);
   }
+});
+
+test("FXO B8: the wipe progress and the wipe button never show together", () => {
+  const states = [
+    undefined,
+    { state: "none" },
+    { state: "requested" },
+    { state: "done", count: 3 },
+  ];
+  let progressShown = 0;
+  for (const preHistory of ["kept", "wiped", null, undefined, "KEPT"]) {
+    for (const boundary of [BOUNDARY, null, ""]) {
+      for (const serverWipe of states) {
+        const m = owner({
+          native: native({ preHistory, boundary }),
+          serverWipe,
+        });
+        const label = [preHistory, boundary, JSON.stringify(serverWipe)].join();
+        const progress = m.progress.kind !== "none";
+        assert.equal(m.wipe.offered && progress, false, label);
+        // Progress needs native's wiped line and a boundary.
+        if (progress) {
+          progressShown++;
+          assert.equal(preHistory, "wiped", label);
+          assert.equal(boundary, BOUNDARY, label);
+        }
+      }
+    }
+  }
+  assert.equal(progressShown, 2, "requested and done, under wiped only");
+});
+
+test("FXO B3: the model says when the earlier messages are kept behind a boundary", () => {
+  assert.equal(owner().earlierKept, true);
+  assert.equal(
+    owner({ native: native({ historySetting: "visible" }) }).earlierKept,
+    true,
+  );
+  assert.equal(
+    owner({ native: native({ preHistory: "wiped" }) }).earlierKept,
+    false,
+  );
+  for (const boundary of [null, undefined, "", 5]) {
+    assert.equal(
+      owner({ native: native({ boundary }) }).earlierKept,
+      false,
+      `boundary ${String(boundary)}`,
+    );
+  }
+  for (const preHistory of [null, undefined, "", "KEPT", true]) {
+    assert.equal(
+      owner({ native: native({ preHistory }) }).earlierKept,
+      false,
+      `pre_history ${String(preHistory)}`,
+    );
+  }
+  // Never from the server's object.
+  assert.equal(
+    owner({
+      native: native({ preHistory: null }),
+      serverWipe: { state: "none", pre_history: "kept", preHistory: "kept" },
+    }).earlierKept,
+    false,
+  );
+});
+
+test("FXO B2 B7: only the two exact client reasons are a protect that went through", () => {
+  assert.equal(
+    protectOutcomeKind({
+      source: "client",
+      reason: "protected_members_pending",
+    }),
+    "members_pending",
+  );
+  assert.equal(
+    protectOutcomeKind({ source: "client", reason: "wipe_not_done" }),
+    "wipe_not_done",
+  );
+});
+
+test("FXO safety: any other rejection is a failed protect and gets the page's ordinary failure text", () => {
+  for (const reason of [
+    "protect_failed",
+    "protect_busy",
+    "publish_in_flight",
+    "publish_refused",
+    "declined",
+    "protected_members_pendin",
+    "PROTECTED_MEMBERS_PENDING",
+    "wipe_not_done ",
+    "wipe_refused",
+    "toString",
+    "",
+    5,
+    null,
+    undefined,
+    true,
+  ]) {
+    assert.equal(
+      protectOutcomeKind({ source: "client", reason }),
+      null,
+      String(reason),
+    );
+  }
+  // Only the bridge's own client failures.
+  for (const source of ["native", "server", "transport", undefined, 1]) {
+    for (const reason of ["protected_members_pending", "wipe_not_done"]) {
+      assert.equal(protectOutcomeKind({ source, reason }), null);
+    }
+  }
+  assert.equal(
+    protectOutcomeKind({ source: "native", error: { type: "declined" } }),
+    null,
+  );
+  for (const err of [null, undefined, "wipe_not_done", 5, new Error("x")]) {
+    assert.equal(protectOutcomeKind(err), null);
+  }
+  // Neither is one of the inline history errors.
+  assert.equal(
+    historyFailureKind({ source: "client", reason: "wipe_not_done" }),
+    null,
+  );
+  assert.equal(
+    historyFailureKind({
+      source: "client",
+      reason: "protected_members_pending",
+    }),
+    null,
+  );
+});
+
+const CH_A = "01JCHANNELA000000000000000";
+const CH_B = "01JCHANNELB000000000000000";
+
+/** The owner's page on a protected channel with no verified state yet. */
+const UNVERIFIED: HistoryVerifyInput = {
+  channelId: CH_A,
+  isOwner: true,
+  flag: true,
+  canAct: true,
+  modelKind: "none",
+  nativeLoaded: false,
+  now: 1_000,
+};
+
+const NO_ASKS: HistoryVerifyAsks = new Map();
+
+test("FXO C6: the page asks for a verify when the history section could show but has no model", () => {
+  const step = historyVerifyStep(NO_ASKS, UNVERIFIED);
+  assert.equal(step.ask, true);
+  assert.deepEqual([...step.asks], [[CH_A, 1_000]]);
+  assert.equal(NO_ASKS.size, 0, "the caller's map is not written");
+  // Loaded but unverified is asked for too: one refresh may verify it.
+  assert.equal(
+    historyVerifyStep(NO_ASKS, { ...UNVERIFIED, nativeLoaded: true }).ask,
+    true,
+  );
+  // An unreadable clock still asks; the line then simply does not show.
+  const odd = historyVerifyStep(NO_ASKS, { ...UNVERIFIED, now: "soon" });
+  assert.equal(odd.ask, true);
+  assert.deepEqual([...odd.asks], [[CH_A, 0]]);
+});
+
+test("FXO C6: never asks with the history flag off, for anyone but the owner, off a protected channel, or once the section shows", () => {
+  const never: Partial<HistoryVerifyInput>[] = [
+    { flag: false },
+    { flag: undefined },
+    { flag: "true" },
+    { flag: 1 },
+    { isOwner: false },
+    { isOwner: undefined },
+    { canAct: false },
+    { canAct: "true" },
+    { modelKind: "owner" },
+    { modelKind: undefined },
+    { channelId: "" },
+    { channelId: undefined },
+    { channelId: 5 },
+  ];
+  for (const over of never) {
+    const step = historyVerifyStep(NO_ASKS, { ...UNVERIFIED, ...over });
+    assert.equal(step.ask, false, JSON.stringify(over));
+    assert.equal(step.asks, NO_ASKS, "nothing is remembered either");
+    assert.equal(
+      historyCheckingShown(new Map([[CH_A, 1_000]]), {
+        ...UNVERIFIED,
+        ...over,
+      }),
+      false,
+      `no line: ${JSON.stringify(over)}`,
+    );
+  }
+});
+
+test("FXO C6: one ask per channel for as long as the page is mounted, never a loop", () => {
+  let asks: HistoryVerifyAsks = NO_ASKS;
+  let asked = 0;
+  const run = (over: Partial<HistoryVerifyInput>) => {
+    const step = historyVerifyStep(asks, { ...UNVERIFIED, ...over });
+    asks = step.asks;
+    if (step.ask) asked++;
+    return step.ask;
+  };
+  // The effect runs again and again while nothing changes: one ask.
+  for (let i = 0; i < 50; i++) run({ now: 1_000 + i * 1_000 });
+  assert.equal(asked, 1);
+  // The state loads but stays unverified, time passes: still one.
+  for (let i = 0; i < 50; i++) run({ nativeLoaded: true, now: 1e6 + i });
+  assert.equal(asked, 1);
+  // The section shows, then goes away again: no second ask.
+  assert.equal(run({ modelKind: "owner" }), false);
+  assert.equal(run({ modelKind: "none", now: 2e6 }), false);
+  assert.equal(asked, 1);
+  // Another channel in the same page: its own single ask.
+  assert.equal(run({ channelId: CH_B, now: 3e6 }), true);
+  for (let i = 0; i < 10; i++) run({ channelId: CH_B, now: 3e6 + i });
+  assert.equal(asked, 2);
+  // Back on the first channel: not again.
+  for (let i = 0; i < 10; i++) run({ channelId: CH_A, now: 4e6 + i });
+  assert.equal(asked, 2);
+  assert.deepEqual(
+    [...asks],
+    [
+      [CH_A, 1_000],
+      [CH_B, 3e6],
+    ],
+    "the first ask's time is kept",
+  );
+});
+
+test("FXO C6: the checking line shows only after an ask, while nothing is loaded, and for a limited time", () => {
+  const asks = historyVerifyStep(NO_ASKS, UNVERIFIED).asks;
+  assert.equal(historyCheckingShown(asks, UNVERIFIED), true);
+  // Not asked for: no line.
+  assert.equal(historyCheckingShown(NO_ASKS, UNVERIFIED), false);
+  assert.equal(
+    historyCheckingShown(asks, { ...UNVERIFIED, channelId: CH_B }),
+    false,
+  );
+  // Loaded (verified or not) is not "checking".
+  for (const nativeLoaded of [true, undefined, null, "false"]) {
+    assert.equal(
+      historyCheckingShown(asks, { ...UNVERIFIED, nativeLoaded }),
+      false,
+      String(nativeLoaded),
+    );
+  }
+  // The line ends: a refresh the bridge dropped must not read "Checking"
+  // for good.
+  const at = (now: unknown) =>
+    historyCheckingShown(asks, { ...UNVERIFIED, now });
+  assert.equal(at(1_000 + HISTORY_CHECK_LINE_MS - 1), true);
+  assert.equal(at(1_000 + HISTORY_CHECK_LINE_MS), false);
+  assert.equal(at(1_000 + 10 * HISTORY_CHECK_LINE_MS), false);
+  // A clock that went back, or is unreadable: no line.
+  assert.equal(at(999), false);
+  for (const now of [undefined, null, "1000", Number.NaN, Infinity]) {
+    assert.equal(at(now), false, String(now));
+  }
+  assert.ok(HISTORY_CHECK_LINE_MS > 0 && HISTORY_CHECK_LINE_MS <= 60_000);
 });

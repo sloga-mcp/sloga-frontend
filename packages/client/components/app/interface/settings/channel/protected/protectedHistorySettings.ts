@@ -15,6 +15,11 @@
 // - a wipe is never a default. The option starts unticked each time the
 //   protect form opens, is read from that form only, and nothing here ever
 //   reads a stored value for it.
+//
+// Fix round W4: a protect that went through with something left out has an
+// outcome of its own (`protectOutcomeKind`), the wipe progress shows only
+// once native says `wiped`, and the page asks for one verify per channel
+// when it has no verified state to show (`historyVerifyStep`).
 
 // ---------------------------------------------------------------------------
 // Protect form (a channel that already has messages)
@@ -142,6 +147,12 @@ export type HistorySectionModel =
       toggle: { checked: boolean; disabled: boolean };
       /** The plan O-5 line, shown while history is hidden. */
       removalNote: boolean;
+      /**
+       * Native holds a boundary and says the earlier messages were kept:
+       * they stay readable to everyone in the channel, so the "hidden"
+       * description must not say otherwise (R-W4-36).
+       */
+      earlierKept: boolean;
       wipe: { offered: boolean; disabled: boolean };
       progress: WipeProgress;
     };
@@ -171,8 +182,10 @@ export function wipeProgress(serverWipe: unknown): WipeProgress {
  * on a capable device and native's state is loaded, verified and carries a
  * known `history` line. The toggle and the wipe are disabled unless the
  * page is known to be idle. The wipe is offered from native's values alone
- * (`pre_history: "kept"` and a boundary); the server's wipe state only
- * picks the progress line.
+ * (`pre_history: "kept"` and a boundary). The server's wipe state only
+ * picks the progress line, and only once native says `wiped` (audit B8):
+ * the progress never shows beside the wipe button, and never for a wipe
+ * the owner did not sign.
  */
 export function historySectionModel(
   i: HistorySectionInput,
@@ -186,12 +199,15 @@ export function historySectionModel(
   const visible = n.historySetting === "visible";
   const idle = i.busy === false && i.storedChange === false;
   const boundary = typeof n.boundary === "string" && n.boundary.length > 0;
+  const kept = boundary && n.preHistory === "kept";
+  const wiped = boundary && n.preHistory === "wiped";
   return {
     kind: "owner",
     toggle: { checked: visible, disabled: !idle },
     removalNote: !visible,
-    wipe: { offered: boundary && n.preHistory === "kept", disabled: !idle },
-    progress: boundary ? wipeProgress(i.serverWipe) : { kind: "none" },
+    earlierKept: kept,
+    wipe: { offered: kept, disabled: !idle },
+    progress: wiped ? wipeProgress(i.serverWipe) : { kind: "none" },
   };
 }
 
@@ -245,4 +261,113 @@ export function historyFailureKind(err: unknown): HistoryFailureKind | null {
   if (e.source !== "client" || typeof e.reason !== "string") return null;
   const at = HISTORY_FAILURES.indexOf(e.reason as HistoryFailureKind);
   return at === -1 ? null : HISTORY_FAILURES[at];
+}
+
+// ---------------------------------------------------------------------------
+// A protect that went through with something left out (R-W4-35, audit B7)
+// ---------------------------------------------------------------------------
+
+/**
+ * - `members_pending`: the channel is protected with the owner alone; the
+ *   picked members were not added.
+ * - `wipe_not_done`: the channel is protected; the wipe that was ticked was
+ *   not performed.
+ */
+export type ProtectOutcomeKind = "members_pending" | "wipe_not_done";
+
+/**
+ * The outcome of a rejected protect call when the rejection means "the
+ * channel is protected now" (`{ source: "client", reason }` from the
+ * bridge's owner flow), or null: the protect failed, or failed for a cause
+ * this build does not know, and the page shows what it shows for any failed
+ * owner action. Only the two exact reasons count.
+ */
+export function protectOutcomeKind(err: unknown): ProtectOutcomeKind | null {
+  if (typeof err !== "object" || err === null) return null;
+  const e = err as { source?: unknown; reason?: unknown };
+  if (e.source !== "client") return null;
+  if (e.reason === "protected_members_pending") return "members_pending";
+  if (e.reason === "wipe_not_done") return "wipe_not_done";
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// One verify per channel when the page has no verified state (audit C6)
+// ---------------------------------------------------------------------------
+
+/** How long the checking line may show for one ask. */
+export const HISTORY_CHECK_LINE_MS = 20_000;
+
+export interface HistoryVerifyInput {
+  channelId: unknown;
+  /** The page's owner check. */
+  isOwner: unknown;
+  /** `protectedFlag().historySetting`. */
+  flag: unknown;
+  /** A protected channel on a device that runs the text plane. */
+  canAct: unknown;
+  /** `historySectionModel(...).kind`. */
+  modelKind: unknown;
+  /** Whether native's state for the channel is loaded at all. */
+  nativeLoaded: unknown;
+  /** `Date.now()`. */
+  now: unknown;
+}
+
+/** The channels this page instance already asked for, with when. */
+export type HistoryVerifyAsks = ReadonlyMap<string, number>;
+
+/**
+ * The channel id when the history section could show here if native's
+ * state allowed it (owner, history flag on, a protected channel this device
+ * can act on); else null.
+ */
+function verifyChannel(i: HistoryVerifyInput): string | null {
+  if (typeof i.channelId !== "string" || i.channelId.length === 0) return null;
+  if (i.isOwner !== true || i.flag !== true || i.canAct !== true) return null;
+  return i.channelId;
+}
+
+/**
+ * Whether the page asks the bridge for one refresh of the channel now
+ * (`retryNow`), and the asks to remember. It asks when the history section
+ * could show (owner, history flag on, a protected channel this device can
+ * act on) but its model is `none`, and only ONCE per channel for the life
+ * of `asks`: the page keeps `asks` for as long as it is mounted, so
+ * switching away and back, or a state that stays unverified, never asks
+ * again. With the flag off it never asks.
+ */
+export function historyVerifyStep(
+  asks: HistoryVerifyAsks,
+  i: HistoryVerifyInput,
+): { asks: HistoryVerifyAsks; ask: boolean } {
+  const id = verifyChannel(i);
+  if (id === null || i.modelKind !== "none" || asks.has(id)) {
+    return { asks, ask: false };
+  }
+  const at = typeof i.now === "number" && Number.isFinite(i.now) ? i.now : 0;
+  const next = new Map(asks);
+  next.set(id, at);
+  return { asks: next, ask: true };
+}
+
+/**
+ * Whether the "Checking" line shows in place of the history section: only
+ * after this page asked for the channel, only while native's state for it
+ * is not loaded, and for at most `HISTORY_CHECK_LINE_MS` after the ask. A
+ * state that is loaded but not verified is not "checking": the page shows
+ * nothing there, as before.
+ */
+export function historyCheckingShown(
+  asks: HistoryVerifyAsks,
+  i: HistoryVerifyInput,
+): boolean {
+  const id = verifyChannel(i);
+  if (id === null || i.modelKind !== "none") return false;
+  if (i.nativeLoaded !== false) return false;
+  const at = asks.get(id);
+  if (at === undefined) return false;
+  if (typeof i.now !== "number" || !Number.isFinite(i.now)) return false;
+  const waited = i.now - at;
+  return waited >= 0 && waited < HISTORY_CHECK_LINE_MS;
 }

@@ -44,6 +44,9 @@ const BUNDLE_LINE: [unknown, string[]][] = [
 
 const RESTORE_LINE: [unknown, string[]][] = [
   [summary("none"), []],
+  [summary("none", "none"), []],
+  [summary("none", "oldest"), ["oldest"]],
+  [summary("none", "all"), ["all"]],
   [summary("partial", "oldest"), ["skipped_partial"]],
   [summary("all"), ["skipped_all"]],
   [UNREPORTED, []],
@@ -63,7 +66,7 @@ test("backupTextLines: every truncated and skipped combination gives exactly the
       cases++;
     }
   }
-  assert.equal(cases, 30);
+  assert.equal(cases, 45);
 });
 
 test("backupTextLines: nothing reported shows no line", () => {
@@ -181,19 +184,58 @@ test("backupTextLines: a real native report and bundle, through the bridge's rea
   assert.deepEqual(lines(bundle, { ...report, text_skipped: false }), []);
 });
 
-test("backupTextLines: epochs and the restored bundle's truncation add no line", () => {
+test("backupTextLines R-W4-12: a restore of a truncated backup shows the oldest or the all line; epochs add nothing and skipped comes first", () => {
+  const TRUNCATED: [unknown, string[]][] = [
+    ["none", []],
+    [null, []],
+    [undefined, []],
+    ["oldest", ["oldest"]],
+    ["all", ["all"]],
+  ];
   for (const epochs of [0, 1, 500]) {
-    for (const truncated of ["none", "oldest", "all", null]) {
-      assert.deepEqual(
-        backupTextLines(undefined, summary("none", truncated, epochs), true),
-        [],
-      );
+    for (const [truncated, lines] of TRUNCATED) {
+      for (const flag of [true, false, undefined]) {
+        assert.deepEqual(
+          backupTextLines(undefined, summary("none", truncated, epochs), flag),
+          lines,
+          `truncated ${String(truncated)}, flag ${String(flag)}`,
+        );
+      }
+      // What the restore could not bring back is the line, never both
       assert.deepEqual(
         backupTextLines(undefined, summary("partial", truncated, epochs), true),
         ["skipped_partial"],
       );
+      assert.deepEqual(
+        backupTextLines(undefined, summary("all", truncated, epochs), true),
+        ["skipped_all"],
+      );
     }
   }
+  // A report with `truncated` and no `skipped` key at all
+  assert.deepEqual(backupTextLines(undefined, { truncated: "oldest" }, true), [
+    "oldest",
+  ]);
+  assert.deepEqual(
+    backupTextLines(undefined, { truncated: "all", skipped: null }, true),
+    ["all"],
+  );
+  // A `truncated` this build does not know reads as the careful line
+  assert.deepEqual(
+    backupTextLines(undefined, summary("none", "newest"), true),
+    ["all"],
+  );
+  // Through the bridge's reader, from a native report
+  const report = { device_id: "A", new_device_id: "B", text_epochs: 2 };
+  const read = (text_truncated: string) =>
+    backupTextLines(
+      undefined,
+      restoreTextSummary({ ...report, text_truncated }),
+      true,
+    );
+  assert.deepEqual(read("oldest"), ["oldest"]);
+  assert.deepEqual(read("all"), ["all"]);
+  assert.deepEqual(read("none"), []);
 });
 
 test("restore text: kept per bridge, replaced by the next restore, listeners told", () => {

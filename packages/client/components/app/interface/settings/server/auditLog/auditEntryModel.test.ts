@@ -619,7 +619,7 @@ test("U6: copy arguments carry resolved names and only the fields of their actio
   );
 });
 
-test("U6: an unreadable entry or an unnamed channel gets no copy arguments", () => {
+test("U6: an unreadable entry or a missing actor name gets no copy arguments", () => {
   const detail: AuditProtectedDetail = {
     action: "channel_history_wipe",
     channel: CHANNEL,
@@ -634,21 +634,49 @@ test("U6: an unreadable entry or an unnamed channel gets no copy arguments", () 
     null,
   );
   assert.equal(
-    protectedAuditCopyArgs(detail, { actor: "Ann", channel: undefined }),
-    null,
-  );
-  assert.equal(
-    protectedAuditCopyArgs(detail, { actor: "Ann", channel: "" }),
-    null,
-  );
-  // The channel id is not a name
-  assert.equal(
-    protectedAuditCopyArgs(detail, { actor: "Ann", channel: CHANNEL }),
-    null,
-  );
-  assert.equal(
     protectedAuditCopyArgs(detail, { actor: "", channel: "#general" }),
     null,
+  );
+  // Not even to get the no-name sentence
+  assert.equal(
+    protectedAuditCopyArgs(undefined, { actor: "Ann", channel: undefined }),
+    null,
+  );
+  assert.equal(
+    protectedAuditCopyArgs(detail, { actor: "", channel: undefined }),
+    null,
+  );
+});
+
+test("FXO C13: a channel the client cannot name keeps the entry's fact and passes no channel, never the id", () => {
+  const details: AuditProtectedDetail[] = [
+    { action: "channel_protect", channel: CHANNEL, wiped: false },
+    { action: "channel_protect", channel: CHANNEL, wiped: true },
+    { action: "channel_history_wipe", channel: CHANNEL, count: null },
+    { action: "channel_history_wipe", channel: CHANNEL, count: 12 },
+  ];
+  // Gone, blank, or the id itself: all read as "no name"
+  for (const channel of [undefined, "", "   ", CHANNEL]) {
+    for (const detail of details) {
+      const args = protectedAuditCopyArgs(detail, { actor: "Ann", channel });
+      const label = `${JSON.stringify(detail)} ${String(channel)}`;
+      assert.ok(args, label);
+      assert.equal(args.action, detail.action, label);
+      assert.equal(JSON.stringify(args).includes(CHANNEL), false, label);
+      // The fact is the one the entry carries
+      assert.deepEqual(
+        args.detail,
+        detail.action === "channel_protect"
+          ? { actor: "Ann", channel: null, wiped: detail.wiped }
+          : { actor: "Ann", channel: null, count: detail.count },
+        label,
+      );
+    }
+  }
+  // A name is still passed on as it is
+  assert.equal(
+    protectedAuditCopyArgs(details[0], NAMES)?.detail.channel,
+    "#general",
   );
 });
 
@@ -803,13 +831,36 @@ test("U6: the row renders the protected entries through auditCopy or the generic
   ]) {
     assert.equal(sentence(bad), GENERIC);
   }
-  // A channel the client cannot name: the generic sentence, never the id
-  const elsewhere = "01JGONE0000000000000000000";
-  assert.equal(sentence(protect(bool(true), { channel: elsewhere })), GENERIC);
-  assert.equal(sentence(wipeDone(int(3), { channel: elsewhere })), GENERIC);
-  names.set(elsewhere, "");
-  assert.equal(sentence(wipeDone(int(3), { channel: elsewhere })), GENERIC);
   assert.equal(calls.length, 5);
+  // A channel the client cannot name (a deleted one): the entry's fact with
+  // no channel, never the generic sentence and never the id (C13)
+  const elsewhere = "01JGONE0000000000000000000";
+  assert.equal(
+    sentence(protect(bool(true), { channel: elsewhere })),
+    'copy:channel_protect:{"actor":"Ann","channel":null,"wiped":true}',
+  );
+  assert.equal(
+    sentence(protect(bool(false), { channel: elsewhere })),
+    'copy:channel_protect:{"actor":"Ann","channel":null,"wiped":false}',
+  );
+  assert.equal(
+    sentence(wipeRequest({ channel: elsewhere })),
+    'copy:channel_history_wipe:{"actor":"Ann","channel":null,"count":null}',
+  );
+  assert.equal(
+    sentence(wipeDone(int(3), { channel: elsewhere })),
+    'copy:channel_history_wipe:{"actor":"Ann","channel":null,"count":3}',
+  );
+  names.set(elsewhere, "");
+  assert.equal(
+    sentence(wipeDone(int(3), { channel: elsewhere })),
+    'copy:channel_history_wipe:{"actor":"Ann","channel":null,"count":3}',
+  );
+  assert.equal(calls.length, 10);
+  assert.equal(JSON.stringify(calls).includes(elsewhere), false);
+  // An unreadable entry of a deleted channel is still the generic sentence
+  assert.equal(sentence(protect(str("true"), { channel: elsewhere })), GENERIC);
+  assert.equal(calls.length, 10);
 });
 
 test("U6: no W4-0 placeholder is left in the audit log files", () => {

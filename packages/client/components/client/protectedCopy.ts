@@ -589,14 +589,16 @@ export function rowStateCopy(kind: RowStateKind): string {
 
 /**
  * The permanent divider at the history boundary: under the newest earlier
- * message while they are kept, at the top of the channel after a wipe.
+ * message while they are kept, at the top of the channel after a wipe. The
+ * wiped line says "removed from this channel": the signed list proves the
+ * owner's request, not that a server finished deleting (R-W4-36).
  */
 export function dividerCopy(preHistory: PreHistorySetting): string {
   switch (preHistory) {
     case "kept":
       return t`Messages above weren't protected`;
     case "wiped":
-      return t`Earlier unprotected messages were deleted.`;
+      return t`Earlier unprotected messages were removed from this channel.`;
     default: {
       const _exhaustive: never = preHistory;
       return verifyChannelFailedCopy();
@@ -652,6 +654,9 @@ export const CLIENT_REASONS_WITH_COPY = [
   "authority_held",
   // S4 `protect` of a channel with messages: the boundary moved five times.
   "protect_busy",
+  // S4 `protect` that went through with something left out (R-W4-35, B7).
+  "protected_members_pending",
+  "wipe_not_done",
 ] as const;
 
 export type ClientReasonWithCopy = (typeof CLIENT_REASONS_WITH_COPY)[number];
@@ -681,6 +686,11 @@ export function clientReasonCopy(reason: ClientReasonWithCopy): string {
     // The settings page's inline error, word for word (design 9.5).
     case "protect_busy":
       return historyErrorCopy("protect_busy");
+    // The settings page's own lines, word for word.
+    case "protected_members_pending":
+      return protectedMembersPendingCopy();
+    case "wipe_not_done":
+      return protectedWipeNotDoneCopy();
     default: {
       const _exhaustive: never = reason;
       return verifyChannelFailedCopy();
@@ -839,14 +849,34 @@ function historyErrorCopy(kind: HistorySettingsError): string {
     // The wipe route refused; the cause is never shown.
     case "wipe_refused":
       return t`Earlier messages couldn't be deleted right now.`;
-    // Native `seat_list_invalid` with reason `future_boundary`.
+    // Native `seat_list_invalid` with reason `future_boundary`: the newest
+    // message id is ahead of this device's clock. Either side can be the
+    // one that is off, so the line blames neither (R-W4-36).
     case "clock_behind":
-      return t`This device's clock is behind the newest message. Check the date and time settings and try again.`;
+      return t`The newest message's time is ahead of this device's clock. Check the date and time settings, or try again in a few minutes.`;
     default: {
       const _exhaustive: never = kind;
       return verifyChannelFailedCopy();
     }
   }
+}
+
+/**
+ * `protect` rejected `protected_members_pending` (R-W4-35): the channel is
+ * protected, the picked members are not on the list. Not an error of the
+ * protect itself.
+ */
+function protectedMembersPendingCopy(): string {
+  return t`This channel is now protected, with only you in it. The members you picked weren't added yet. You can add them below.`;
+}
+
+/**
+ * `protect` rejected `wipe_not_done` (audit B7): the channel is protected
+ * and the earlier messages are still there. It says nothing about the
+ * members or about how to delete them now: neither is known here.
+ */
+function protectedWipeNotDoneCopy(): string {
+  return t`This channel is now protected, but the earlier messages were not deleted.`;
 }
 
 export const settingsCopy = {
@@ -901,6 +931,16 @@ export const settingsCopy = {
       ? t`Messages already in this channel stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted.`
       : t`Messages already in #${channel} stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted.`;
   },
+  /**
+   * On the protect form of a channel that already has messages: the order
+   * of the two steps (R-W4-35).
+   */
+  protectOrder: (): string =>
+    t`The channel is protected first, with only you in it. The members you pick are added right after.`,
+  /** After a protect whose member step did not go through. */
+  membersPending: protectedMembersPendingCopy,
+  /** After a protect that could not do the wipe that was ticked. */
+  wipeNotDone: protectedWipeNotDoneCopy,
   /** Checkbox on the protect form (off by default). */
   deleteEarlierOption: (): string => t`Also delete the earlier messages`,
   /** What a wipe does, under the checkbox and the wipe action. */
@@ -911,12 +951,18 @@ export const settingsCopy = {
   /** Under the toggle while history is visible. */
   historyVisibleDescription: (): string =>
     t`People who join later can read messages sent while this is on, and so can a new device of anyone in the channel. Anyone in the channel can still share what they read.`,
-  /** Under the toggle while history is hidden. */
-  historyHiddenDescription: (): string =>
-    t`New members only see messages sent after they join.`,
-  /** Shown before the toggle is turned on (plan O-5). */
+  /**
+   * Under the toggle while history is hidden. `earlierKept`: native holds
+   * a boundary with the earlier messages kept, and those stay readable to
+   * everyone in the channel whatever this setting says (R-W4-36).
+   */
+  historyHiddenDescription: (earlierKept: boolean): string =>
+    earlierKept === true
+      ? t`New members only see protected messages sent after they join. Messages from before this channel was protected stay readable to everyone in it.`
+      : t`New members only see messages sent after they join.`,
+  /** Shown to the owner before the toggle is turned on (plan O-5). */
   historyRemovalNote: (): string =>
-    t`If you're removed from this channel, you keep what you've already read on this device. Signing out without a key backup loses it.`,
+    t`Removing someone doesn't take back what they already read. It stays on their devices.`,
   /** Wipe action on an already protected channel. */
   wipeButton: (): string => t`Delete the earlier unprotected messages`,
   /** The server's wipe state is `requested`. */
@@ -1127,13 +1173,15 @@ export type AuditCopyAction = "channel_protect" | "channel_history_wipe";
 
 /**
  * Display values for an audit row. `actor` and `channel` are display names
- * the caller resolved, never ids. `wiped`: the protect entry's
- * `changes.wiped` (only `true` counts). `count`: the wipe job entry's
- * number; the request entry has none.
+ * the caller resolved, never ids. `channel` is null when the caller cannot
+ * name the channel (it was deleted, say): the sentence then keeps the fact
+ * and names no channel. `wiped`: the protect entry's `changes.wiped` (only
+ * `true` counts). `count`: the wipe job entry's number; the request entry
+ * has none.
  */
 export interface AuditCopyDetail {
   actor: string;
-  channel: string;
+  channel: string | null;
   wiped?: boolean;
   count?: number | null;
 }
@@ -1155,24 +1203,35 @@ export function auditActionLabel(action: AuditCopyAction): string {
 /**
  * One sentence for an audit row. The boundary is never shown. A wipe entry
  * with a count is the job's own entry, so it names no one; without a usable
- * count it is the request.
+ * count it is the request. Without a channel name the same four sentences
+ * say "a channel".
  */
 export function auditCopy(
   action: AuditCopyAction,
   detail: AuditCopyDetail,
 ): string {
   const actor = detail.actor;
-  const channel = detail.channel;
+  const channel = displayName(detail.channel) === null ? null : detail.channel;
   switch (action) {
     case "channel_protect":
+      if (channel === null) {
+        return detail.wiped === true
+          ? t`${actor} protected a channel and chose to delete its earlier messages`
+          : t`${actor} protected a channel`;
+      }
       return detail.wiped === true
         ? t`${actor} protected the channel ${channel} and chose to delete its earlier messages`
         : t`${actor} protected the channel ${channel}`;
     case "channel_history_wipe": {
       const count = detail.count;
-      return typeof count === "number" &&
-        Number.isSafeInteger(count) &&
-        count >= 0
+      const counted =
+        typeof count === "number" && Number.isSafeInteger(count) && count >= 0;
+      if (channel === null) {
+        return counted
+          ? t`The earlier messages in a channel were deleted (${count})`
+          : t`${actor} started deleting the earlier messages in a channel`;
+      }
+      return counted
         ? t`The earlier messages in ${channel} were deleted (${count})`
         : t`${actor} started deleting the earlier messages in ${channel}`;
     }

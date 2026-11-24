@@ -8,6 +8,7 @@ import {
   on,
   onCleanup,
   onMount,
+  untrack,
 } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
@@ -22,6 +23,7 @@ import {
   errorUiCopy,
   noticeCopy,
   reasonProblemCopy,
+  rowStateCopy,
   seatPickerCopy,
   settingsCopy,
 } from "@revolt/client/protectedCopy";
@@ -68,12 +70,17 @@ import {
   serverRemovedSeatIds,
 } from "./SeatList";
 import {
+  type HistoryVerifyAsks,
+  type ProtectOutcomeKind,
+  historyCheckingShown,
   historyFailureKind,
   historySectionModel,
   historyToggleClick,
+  historyVerifyStep,
   newProtectDraft,
   protectDraftStep,
   protectOpts,
+  protectOutcomeKind,
   wipeClickAllowed,
 } from "./protectedHistorySettings";
 
@@ -145,7 +152,10 @@ const REMOVAL_RECHECK_MS = 30_000;
  * from native's verified state only, and "Delete the earlier unprotected
  * messages" while native says they were kept. The page confirms neither a
  * wipe nor hidden to visible itself: those dialogs are native, inside the
- * sign call.
+ * sign call. A protect that went through with the members not added, or
+ * without the wipe that was ticked, is shown as its own line and never as a
+ * failed protect. When the page has no verified state for the channel it
+ * asks the bridge for one refresh, once per channel while it is mounted.
  *
  * Seats come from the bridge's last `GET .../seats` (`seatsSnapshot`).
  * When it has none (the channel isn't protected yet, or the bridge has not
@@ -360,6 +370,12 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
   const [draft, setDraft] = createSignal(newProtectDraft());
   /** S4: a failed history toggle or wipe, shown in the history section. */
   const [historyError, setHistoryError] = createSignal<string | null>(null);
+  /**
+   * S4: the channel was protected, with something left out (the members,
+   * or the wipe that was ticked). A line of its own, never the error.
+   */
+  const [protectOutcome, setProtectOutcome] =
+    createSignal<ProtectOutcomeKind | null>(null);
 
   // Another channel in the same page: the form closes and nothing ticked
   // carries over.
@@ -370,6 +386,7 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
         setDraft(newProtectDraft());
         setConfirming(false);
         setHistoryError(null);
+        setProtectOutcome(null);
       },
       { defer: true },
     ),
@@ -477,6 +494,10 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
    * second step. A wipe is asked for only by a tick made in the form this
    * picker was opened from; the confirmation is native's dialog, and a
    * decline comes back as a silent rejection.
+   *
+   * Two rejections mean the channel IS protected (`protectOutcomeKind`):
+   * the members were not added, or the ticked wipe was not done. Those
+   * resolve here, so the picker closes, and the page says which.
    */
   async function runProtect(userIds: string[]): Promise<void> {
     const a = availability();
@@ -492,6 +513,8 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     setPending("protect");
     setError(null);
     setSaved(false);
+    setProtectOutcome(null);
+    let outcome: ProtectOutcomeKind | null = null;
     try {
       if (opts === undefined) {
         await api.protect(
@@ -507,16 +530,21 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
           opts,
         );
       }
-      setDraft(protectDraftStep(draft(), { type: "done" }));
     } catch (err) {
-      // With members picked, the channel may now be protected with the
-      // owner alone: the page shows what is there, with this error.
-      if (opts !== undefined) rereadAfterHistory();
-      setError(errorText(err));
-      throw err;
+      outcome = protectOutcomeKind(err);
+      // A rejection may come after the first list landed: the page reads
+      // what is there again, never assumes it.
+      if (opts !== undefined || outcome !== null) rereadAfterHistory();
+      if (outcome === null) {
+        setError(errorText(err));
+        throw err;
+      }
     } finally {
       setPending(null);
     }
+    // Protected, perhaps with something left out: the tick is used up.
+    setDraft(protectDraftStep(draft(), { type: "done" }));
+    setProtectOutcome(outcome);
     rereadSeats();
   }
 
@@ -583,6 +611,7 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     setError(null);
     setSaved(false);
     setNote(null);
+    setProtectOutcome(null);
     try {
       await api.setSeats(
         props.channel.id,
@@ -823,6 +852,52 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     return m.kind === "owner" ? m : null;
   };
 
+  /**
+   * The history section needs the bridge's verified view, and a channel
+   * that was not opened in this session has none. The page then asks for
+   * ONE refresh of the channel (`retryNow`, never the open's loop), once
+   * per channel for as long as it is mounted (`historyVerifyStep`), and
+   * shows the checking line for a short while. Never with the flag off.
+   */
+  const [verifyAsks, setVerifyAsks] = createSignal<HistoryVerifyAsks>(
+    new Map(),
+  );
+  const verifyInput = (at: number) => ({
+    channelId: props.channel.id,
+    isOwner: eligible(),
+    flag: historyFlag(),
+    canAct: canAct(),
+    modelKind: historyModel().kind,
+    nativeLoaded: historyNative() !== null,
+    now: at,
+  });
+  createEffect(() => {
+    const input = verifyInput(untrack(now));
+    const step = historyVerifyStep(untrack(verifyAsks), input);
+    if (!step.ask) return;
+    setVerifyAsks(step.asks);
+    readUi((api) => api.retryNow(input.channelId), undefined);
+  });
+  const historyChecking = () =>
+    historyCheckingShown(verifyAsks(), verifyInput(now()));
+
+  /** The line for a protect that left something out, or null. */
+  const protectOutcomeLine = (): string | null => {
+    const outcome = protectOutcome();
+    switch (outcome) {
+      case null:
+        return null;
+      case "members_pending":
+        return settingsCopy.membersPending();
+      case "wipe_not_done":
+        return settingsCopy.wipeNotDone();
+      default: {
+        const _exhaustive: never = outcome;
+        return null;
+      }
+    }
+  };
+
   /** The server's wipe progress line; its count is the only number shown. */
   const wipeProgressLine = (): string | null => {
     const p = historyOwner()?.progress;
@@ -855,6 +930,7 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     setHistoryError(null);
     setSaved(false);
     setNote(null);
+    setProtectOutcome(null);
     try {
       await api.setHistoryVisible(props.channel.id, visible);
     } catch (err) {
@@ -879,6 +955,7 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     setHistoryError(null);
     setSaved(false);
     setNote(null);
+    setProtectOutcome(null);
     try {
       await api.wipeHistory(props.channel.id);
     } catch (err) {
@@ -1006,10 +1083,12 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
                     </ConfirmTitle>
                     <Warning>{settingsCopy.protectConfirmBody()}</Warning>
                     {/* S4: the earlier messages stay unless this is ticked
-                        here; the wipe itself is confirmed by native. */}
+                        here; the wipe itself is confirmed by native. The
+                        line under the box says what the box's state does:
+                        "they stay" is never shown beside a tick. */}
                     <Show when={withHistory()}>
-                      <Info data-protect-history>
-                        {settingsCopy.protectWithHistory(props.channel.name)}
+                      <Info data-protect-order>
+                        {settingsCopy.protectOrder()}
                       </Info>
                       <Checkbox
                         checked={draft().wipeTicked}
@@ -1024,7 +1103,18 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
                       >
                         {settingsCopy.deleteEarlierOption()}
                       </Checkbox>
-                      <Info>{settingsCopy.wipeDescription()}</Info>
+                      <Show
+                        when={draft().wipeTicked}
+                        fallback={
+                          <Info data-protect-history>
+                            {settingsCopy.protectWithHistory(
+                              props.channel.name,
+                            )}
+                          </Info>
+                        }
+                      >
+                        <Info>{settingsCopy.wipeDescription()}</Info>
+                      </Show>
                     </Show>
                     <Actions>
                       <Button variant="text" onPress={closeProtectForm}>
@@ -1214,7 +1304,9 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
                     <span>
                       {m().toggle.checked
                         ? settingsCopy.historyVisibleDescription()
-                        : settingsCopy.historyHiddenDescription()}
+                        : settingsCopy.historyHiddenDescription(
+                            m().earlierKept,
+                          )}
                     </span>
                     <Show when={m().removalNote}>
                       <Info>{settingsCopy.historyRemovalNote()}</Info>
@@ -1244,9 +1336,23 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
                   </Confirm>
                 )}
               </Show>
+              {/* No verified state yet for a channel this page asked the
+                  bridge to refresh. */}
+              <Show when={historyChecking()}>
+                <Info data-history-checking>{rowStateCopy("checking")}</Info>
+              </Show>
             </Section>
           </Match>
         </Switch>
+
+        {/* S4: protected, with the members or the ticked wipe left out. */}
+        <Show when={protectOutcomeLine()}>
+          {(line) => (
+            <Callout role="status" data-protect-outcome>
+              {line()}
+            </Callout>
+          )}
+        </Show>
 
         <Show when={saved() && !error()}>
           <Saved aria-live="polite">{settingsCopy.seatsSaved()}</Saved>

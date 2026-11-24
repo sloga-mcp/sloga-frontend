@@ -115,9 +115,10 @@ export function AuditEntryRow(props: {
 
   /**
    * The sentence for a protected channel entry. An entry the model could not
-   * read, or one whose channel this client cannot name, gets the generic
-   * sentence: the row never guesses whether earlier messages were deleted
-   * and never shows a channel id as a name.
+   * read gets the generic sentence: the row never guesses whether earlier
+   * messages were deleted. A channel this client cannot name (a deleted
+   * one, say) keeps what the entry says and names no channel; a channel id
+   * is never shown as a name.
    */
   function protectedSentence(actor: string) {
     const detail = descriptor().protectedDetail;
