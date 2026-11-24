@@ -1,3 +1,4 @@
+import { Capacitor } from "@capacitor/core";
 import { Trans } from "@lingui-solid/solid/macro";
 import {
   Match,
@@ -22,10 +23,13 @@ import {
   type DmPreviewMode,
   DM_PREVIEW_DEFAULT,
 } from "@revolt/client/notificationPreviewPolicy";
+import { useSlimMode } from "@revolt/client/useSlimMode";
+import { ringFullScreen, ringStyleAfterToggle } from "@revolt/rtc/ringStyle";
 import { useState } from "@revolt/state";
 import { CategoryButton, Checkbox, Column, Text, iconSize } from "@revolt/ui";
 
 import MdChat from "@material-design-icons/svg/outlined/chat.svg?component-solid";
+import MdFullscreen from "@material-design-icons/svg/outlined/fullscreen.svg?component-solid";
 import MdMarkUnreadChatAlt from "@material-design-icons/svg/outlined/mark_unread_chat_alt.svg?component-solid";
 import MdNotifications from "@material-design-icons/svg/outlined/notifications.svg?component-solid";
 import MdNotificationsOff from "@material-design-icons/svg/outlined/notifications_off.svg?component-solid";
@@ -95,6 +99,24 @@ export default function Notifications(props: { isDesktop: boolean }) {
   function toggleRingCalls() {
     settings.setValue("notifications:ring_calls", !ringCalls());
     void resyncPushPrefs();
+  }
+
+  // Whether a call that comes in while this phone is unlocked and the app
+  // is on screen covers the whole screen. The switch shows what happens
+  // now, which under the default depends on Slim view.
+  const slim = useSlimMode();
+  const ringFull = () =>
+    ringFullScreen({
+      locked: false,
+      slim: slim(),
+      style: settings.getValue("notifications:ring_style"),
+    });
+
+  function toggleRingFull() {
+    settings.setValue(
+      "notifications:ring_style",
+      ringStyleAfterToggle(ringFull()),
+    );
   }
 
   onMount(() => document.addEventListener("visibilitychange", recheckOnReturn));
@@ -195,6 +217,21 @@ export default function Notifications(props: { isDesktop: boolean }) {
           >
             <Trans>Ring for calls on this device</Trans>
           </CategoryButton>
+          <Show when={Capacitor.isNativePlatform()}>
+            <CategoryButton
+              action={<Checkbox checked={ringFull()} />}
+              onClick={toggleRingFull}
+              icon={<MdFullscreen {...iconSize(22)} />}
+              description={
+                <Trans>
+                  When off, a call that comes in while the app is open shows as
+                  a banner at the top. A locked phone always rings full screen.
+                </Trans>
+              }
+            >
+              <Trans>Full-screen incoming calls</Trans>
+            </CategoryButton>
+          </Show>
           <Show when={callAlertsBlocked()}>
             <CategoryButton
               onClick={openFullScreenCallAlertSettings}

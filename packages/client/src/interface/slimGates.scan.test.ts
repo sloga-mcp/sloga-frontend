@@ -2064,3 +2064,56 @@ test("G23 NotificationsWorker.tsx, IncomingCallOverlay.tsx, incomingCall.ts: a r
   for (const rule of rules)
     has(style, rule, "the cover must stay full-screen, on top and opaque");
 });
+
+test("G24 IncomingCallOverlay.tsx: full screen or banner is decided from the live lock state, and an answer read while the app is hidden never counts as unlocked", () => {
+  // The banner leaves the chat behind it readable, so it may never be drawn
+  // on a lock screen. The setting only chooses for an unlocked phone: the
+  // overlay hands the rule its own lock reading, never a constant. That
+  // reading must not go stale either: the phone can lock while the app is
+  // hidden without the page hearing of it.
+  const overlay = load(INCOMING_OVERLAY);
+  has(
+    overlay,
+    `const fullScreen = () =>
+      ringFullScreen({
+        locked: locked(),
+        slim: slim(),
+        style: state.settings.getValue("notifications:ring_style"),
+      });`,
+    "the ring's full screen must come from ringFullScreen and the live lock state",
+  );
+  assert.equal(
+    count(overlay, "ringFullScreen("),
+    1,
+    "one place decides between the full screen and the banner",
+  );
+  has(
+    overlay,
+    `<Show when={fullScreen()} fallback={<Popup`,
+    "the banner is only the fallback of the full-screen ring",
+  );
+
+  // An answer of "not locked" that arrives while hidden is not kept
+  has(
+    overlay,
+    `function lockDoubt(): boolean {
+      return lockUnknown() && document.visibilityState !== "visible";
+    }`,
+    "a lock answer read while the app is hidden must stay in doubt",
+  );
+  has(
+    overlay,
+    `if (ask === lockAsk) setLocked(answer !== false || lockDoubt());`,
+    "a lock answer read while the app is hidden must not unlock the ring",
+  );
+
+  // Coming back to the front drops the old answer before asking again
+  has(
+    overlay,
+    `} else if (incomingCall() || voice.callEndedNotice()) {
+        forgetLocked();
+        askLocked();
+      }`,
+    "the lock answer must be dropped when the app comes back to the front",
+  );
+});

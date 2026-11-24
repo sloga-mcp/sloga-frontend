@@ -24,6 +24,7 @@ import {
   useVoice,
 } from "@revolt/rtc";
 import { nativeRingPending } from "@revolt/rtc/incomingCall";
+import { ringFullScreen } from "@revolt/rtc/ringStyle";
 import { serverCallRingSecs } from "@revolt/rtc/serverRingLength";
 import { useState } from "@revolt/state";
 import { Avatar, Button } from "@revolt/ui/components/design";
@@ -79,8 +80,9 @@ function chatName(channel: Channel | undefined): string | undefined {
  * - The ring itself, while a DM/Group call is ringing us (state set by
  *   NotificationsWorker). Accept answers through the voice store and opens
  *   the conversation once the join has landed, Decline tells the server. On
- *   a locked phone and in Slim view the ring covers the whole screen and
- *   shows nothing but who is calling.
+ *   a locked phone the ring covers the whole screen and shows nothing but
+ *   who is calling. On an unlocked one the device's setting chooses between
+ *   that and the banner (`ringFullScreen`).
  * - The same full-screen cover, without buttons, while a ring the phone
  *   opened waits to be presented (`nativeRingPending`).
  * - "Call ended", when an Accept found the ring already over.
@@ -159,6 +161,16 @@ export function IncomingCallOverlay() {
   const [locked, setLocked] = createSignal(lockUnknown());
   let lockAsk = 0;
 
+  /**
+   * Whether an answer of "not locked" cannot be trusted right now. While
+   * the app is hidden the phone can lock without the page hearing of it, so
+   * on Android an answer that arrives then never counts as unlocked. The
+   * phone is asked again when the app comes back to the front.
+   */
+  function lockDoubt(): boolean {
+    return lockUnknown() && document.visibilityState !== "visible";
+  }
+
   /** Ask the phone again. Only the newest question may answer. */
   function askLocked() {
     const ask = ++lockAsk;
@@ -166,7 +178,7 @@ export function IncomingCallOverlay() {
       .then(() => deviceLocked())
       .then(
         (answer) => {
-          if (ask === lockAsk) setLocked(answer !== false);
+          if (ask === lockAsk) setLocked(answer !== false || lockDoubt());
         },
         () => {
           if (ask === lockAsk) setLocked(true);
@@ -198,6 +210,10 @@ export function IncomingCallOverlay() {
       if (document.visibilityState !== "visible") {
         forgetLocked();
       } else if (incomingCall() || voice.callEndedNotice()) {
+        // The last answer may be from before the phone was locked (a ring
+        // that came in while the app was already hidden), so it is dropped
+        // before the phone is asked again.
+        forgetLocked();
         askLocked();
       }
     };
@@ -207,7 +223,14 @@ export function IncomingCallOverlay() {
     );
   });
 
-  const fullScreen = () => locked() || slim();
+  // Full screen or a banner: the device's own setting decides while the
+  // phone is unlocked, and a locked phone is always full screen.
+  const fullScreen = () =>
+    ringFullScreen({
+      locked: locked(),
+      slim: slim(),
+      style: state.settings.getValue("notifications:ring_style"),
+    });
 
   // Take the ring down when the ring window runs out with no answer. The
   // window is counted from when the ring started, so a re-run of this effect

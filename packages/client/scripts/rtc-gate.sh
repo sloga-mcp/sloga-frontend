@@ -245,6 +245,8 @@ EXPECTED=(
   "components/rtc/outgoingRingPolicy.test.ts 37 0"
   "components/rtc/joinRefusalPolicy.test.ts 18 0"
   "components/rtc/ringDuration.test.ts 11 0"
+  # Full screen or banner for a ring while the app is on screen.
+  "components/rtc/ringStyle.test.ts 9 0"
   # The Slim call screen's camera flip (the choice of the next camera) and
   # the phone's lock-screen reads the Answer path asks.
   "components/rtc/cameraFlip.test.ts 24 0"
@@ -255,9 +257,9 @@ EXPECTED=(
   "components/client/pushPolicy.test.ts 29 0"
   # Every push subscribe goes through one site and carries the preferences.
   "components/client/pushSubscribeSites.scan.test.ts 7 0"
-  # The Slim view's gates and the call screen's security components. 24 with
-  # the M2 final-audit fix (G23: the cover over a ring the phone opened).
-  "src/interface/slimGates.scan.test.ts 24 0"
+  # The Slim view's gates and the call screen's security components. 25 with
+  # G24 (full screen or banner is decided from the live lock state).
+  "src/interface/slimGates.scan.test.ts 25 0"
   "components/client/callContacts.test.ts 33 0"
   "components/rtc/moveSurfacePins.test.ts 10 0"
   "components/rtc/idlePolicy.test.ts 54 0"
@@ -531,6 +533,7 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   components/rtc/outgoingRingPolicy.test.ts
   components/rtc/joinRefusalPolicy.test.ts
   components/rtc/ringDuration.test.ts
+  components/rtc/ringStyle.test.ts
   components/rtc/cameraFlip.test.ts
   components/rtc/deviceLock.test.ts
   components/rtc/serverRingLength.test.ts
@@ -730,6 +733,7 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/joinRefusalPolicy.ts
   components/rtc/joinRefusalPolicy.test.ts
   components/rtc/incomingCall.ts components/rtc/ringDuration.test.ts
+  components/rtc/ringStyle.ts components/rtc/ringStyle.test.ts
   # The Slim call screen and the modules it and the Answer path added (FW2).
   components/rtc/callAudioRoute.ts components/rtc/serverRingLength.ts
   components/rtc/serverRingLength.test.ts

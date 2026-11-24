@@ -7,6 +7,7 @@ import {
   UNICODE_EMOJI_PACKS,
   UnicodeEmojiPacks,
 } from "@revolt/markdown/emoji/UnicodeEmoji";
+import { type RingStyle, isRingStyle } from "@revolt/rtc/ringStyle";
 import { batch } from "solid-js";
 
 import { State } from "..";
@@ -140,6 +141,13 @@ interface SettingsDefinition {
    * another.
    */
   "notifications:ring_calls": boolean;
+
+  /**
+   * How an incoming call is shown while the app is on screen: full screen
+   * or a banner at the top. Per-device (this store does not sync). A locked
+   * phone is full screen whatever this says (see `ringFullScreen`).
+   */
+  "notifications:ring_style": RingStyle;
 
   /**
    * Selected unicode emoji
@@ -402,6 +410,7 @@ const EXPECTED_TYPES: { [K in keyof SettingsDefinition]: ValueType<K> } = {
     return out;
   },
   "notifications:ring_calls": "boolean",
+  "notifications:ring_style": "string",
   "appearance:unicode_emoji": "string",
   "appearance:show_send_button": "boolean",
   "appearance:expand_emoticons": "boolean",
@@ -466,6 +475,9 @@ const DEFAULT_VALUES: TypeSettings = {
   "notifications:dm_preview_overrides": {},
   // On, so shipping the switch stops nobody's device from ringing.
   "notifications:ring_calls": true,
+  // What the app did before the setting existed, so shipping it changes
+  // nobody's ring.
+  "notifications:ring_style": "auto",
   "appearance:expand_emoticons": true,
   "appearance:show_timestamps": true,
   "appearance:show_usernames": true,
@@ -539,6 +551,8 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
       // that is not a boolean falls back to this. Mirrored in DEFAULT_VALUES;
       // see the note there.
       "notifications:ring_calls": true,
+      // Mirrored in DEFAULT_VALUES — see the note there.
+      "notifications:ring_style": "auto",
       "appearance:unicode_emoji": "fluent-3d",
       "appearance:show_send_button": true,
       // On: the expansion shipped before the toggle did, so off would be a
@@ -640,6 +654,11 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
         }
       } else if (key === "appearance:layout_members_side") {
         if (MembersSides.includes(input[key] as never)) {
+          settings[key] = input[key];
+        }
+      } else if (key === "notifications:ring_style") {
+        // An unknown value is dropped, so the default stands.
+        if (isRingStyle(input[key])) {
           settings[key] = input[key];
         }
       } else if (key === "appearance:dm_windows") {

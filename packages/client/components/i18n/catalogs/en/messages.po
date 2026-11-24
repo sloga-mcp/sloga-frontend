@@ -4254,6 +4254,14 @@ msgstr "When off, this device does not ring for incoming calls. Your other devic
 msgid "Ring for calls on this device"
 msgstr "Ring for calls on this device"
 
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Full-screen incoming calls"
+msgstr "Full-screen incoming calls"
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "When off, a call that comes in while the app is open shows as a banner at the top. A locked phone always rings full screen."
+msgstr "When off, a call that comes in while the app is open shows as a banner at the top. A locked phone always rings full screen."
+
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Enable Push to Talk"
 msgstr "Enable Push to Talk"
