@@ -22,6 +22,7 @@ import type {
 import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
+import { auditActionLabel } from "@revolt/client/protectedCopy";
 import { useError } from "@revolt/i18n";
 import { userInformation } from "@revolt/markdown/users";
 import { useModals } from "@revolt/modal";
@@ -36,7 +37,7 @@ import {
 import { MenuItem } from "@revolt/ui/components/design/Menu";
 
 import { type AuditUser, AuditEntryRow } from "./AuditEntryRow";
-import { KNOWN_AUDIT_ACTIONS } from "./auditEntryModel";
+import { AUDIT_FILTER_ACTIONS, KNOWN_AUDIT_ACTIONS } from "./auditEntryModel";
 
 /** Entries per page */
 const PAGE_SIZE = 50;
@@ -267,10 +268,9 @@ export function AuditLogPage(props: { server: Server }) {
         return t`Change server settings`;
       case "server_owner_transfer":
         return t`Transfer ownership`;
-      // S4-W4-0 placeholder (lane U6): the raw action, as for an unknown one.
       case "channel_protect":
       case "channel_history_wipe":
-        return String(value);
+        return auditActionLabel(value);
       default: {
         const _exhaustive: never = value;
         return String(value);
@@ -302,7 +302,7 @@ export function AuditLogPage(props: { server: Server }) {
             <MenuItem value={ALL}>
               <Trans>All actions</Trans>
             </MenuItem>
-            <For each={KNOWN_AUDIT_ACTIONS}>
+            <For each={AUDIT_FILTER_ACTIONS}>
               {(value) => (
                 <MenuItem value={value}>{actionLabel(value)}</MenuItem>
               )}

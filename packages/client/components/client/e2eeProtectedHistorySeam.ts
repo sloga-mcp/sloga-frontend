@@ -286,6 +286,36 @@ export interface ProtectedHistorySeamDeps {
   pinHistory(channelId: string): PinHistory | null;
 }
 
+/**
+ * The SDK's two one-way latches for a channel, as the manager's
+ * `preHistoryState` dep answers them (R-W4-26: a conflicted or wiped
+ * channel's plaintext rows are red). Never throws. A latch that is not the
+ * literal `false` reads as set; a missing SDK state or a read that throws
+ * reads as conflicted, so nothing renders as ordinary on an unknown state.
+ * @param history `client.protectedHistory`
+ * @param channelId Channel id
+ */
+export function preHistoryStateOf(
+  history:
+    | {
+        isConflicted(channelId: string): boolean;
+        isWiped(channelId: string): boolean;
+      }
+    | null
+    | undefined,
+  channelId: string,
+): { conflicted: boolean; wiped: boolean } {
+  try {
+    if (!history) return { conflicted: true, wiped: false };
+    return {
+      conflicted: history.isConflicted(channelId) !== false,
+      wiped: history.isWiped(channelId) !== false,
+    };
+  } catch {
+    return { conflicted: true, wiped: false };
+  }
+}
+
 /** Extra port member, beside `formatsV2`: the `history_setting` advert. */
 export interface ProtectedHistoryPort {
   historySetting(): boolean;

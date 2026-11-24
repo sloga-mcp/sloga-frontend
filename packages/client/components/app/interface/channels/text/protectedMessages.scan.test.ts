@@ -19,6 +19,15 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import {
+  dividerAfter,
+  nativeHistoryInput,
+} from "../../../../client/protectedRowPolicy.ts";
+import { historyFloorNotice } from "../../../../client/protectedShield.ts";
+import type {
+  HistoryStop,
+  TextChannelState,
+} from "../../../../client/protectedTextTypes";
 import { restorableForTrust, splitUntrusted } from "./e2eeTranscriptTrust.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -36,6 +45,16 @@ const EXPORTS = [
   "timelineDisplayName",
   "sameLocalDay",
   "planTimelineMarkers",
+  // S4 (W4 lane U3)
+  "latestFloorOnly",
+  "timelineTone",
+  "pageEndsHistory",
+  "pageStalled",
+  "keylessView",
+  "walkAfterPage",
+  "verifiedHistoryOf",
+  "historyVisibleOption",
+  "planBoundaryDivider",
 ] as const;
 
 async function loadRegion(): Promise<Record<string, unknown>> {
@@ -466,5 +485,922 @@ describe("timeline marker rendering", () => {
     for (const m of source.matchAll(/\bstyled\(\s*([^,\s]+)/g)) {
       assert.match(m[1], /^"/, `styled(${m[1]}, ...) at module scope`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S4 (W4 lane U3): paging end, boundary divider, history floor, walk trigger
+// ---------------------------------------------------------------------------
+
+type FloorMarker = {
+  id: string;
+  atMs: number;
+  kind?: string;
+  channelId?: string;
+};
+type VerifiedHistory = {
+  historyVisible: boolean;
+  divider: { boundary: string; preHistory: "kept" | "wiped" } | null;
+} | null;
+type DividerPlan = {
+  below: string | null;
+  preHistory: "kept" | "wiped";
+} | null;
+type WalkInput = {
+  protectedChannel: boolean;
+  historyFlag: boolean;
+  historyWalk: string | undefined;
+  rows: number;
+  keylessRows: boolean;
+  floorKnown: boolean;
+};
+
+const pageEndsHistory =
+  fn<(count: number, limit: number, protectedChannel: boolean) => boolean>(
+    "pageEndsHistory",
+  );
+const pageStalled =
+  fn<
+    (
+      ids: string[],
+      cursor: string | undefined,
+      direction: "older" | "newer",
+      protectedChannel: boolean,
+    ) => boolean
+  >("pageStalled");
+const keylessView = fn<(view: unknown) => boolean>("keylessView");
+const walkAfterPage = fn<(i: WalkInput) => boolean>("walkAfterPage");
+const latestFloorOnly =
+  fn<(markers: FloorMarker[]) => FloorMarker[]>("latestFloorOnly");
+const timelineTone =
+  fn<(kind: string, floorTone: string | null | undefined) => "quiet" | "loud">(
+    "timelineTone",
+  );
+const verifiedHistoryOf =
+  fn<
+    (
+      native: ReturnType<typeof nativeHistoryInput> | undefined,
+      historySetting: unknown,
+      pin: { boundary: string; wiped: boolean } | null | undefined,
+      latch: { conflicted: boolean; wiped: boolean },
+    ) => VerifiedHistory
+  >("verifiedHistoryOf");
+const historyVisibleOption = fn<
+  (history: { historyVisible: boolean } | null | undefined) => {
+    historyVisible?: true;
+  }
+>("historyVisibleOption");
+const planBoundaryDivider = fn<
+  (i: {
+    idsNewestFirst: string[];
+    divider: { boundary: string; preHistory: "kept" | "wiped" } | null;
+    atStart: boolean;
+    atEnd: boolean;
+    dividerAfter: typeof dividerAfter;
+  }) => DividerPlan
+>("planBoundaryDivider");
+const planFloorMarkers = planTimelineMarkers as unknown as (
+  markers: FloorMarker[],
+  messagesAtMs: number[],
+  atStart: boolean,
+  atEnd: boolean,
+  sameDay: (a: number, b: number) => boolean,
+) => {
+  before: FloorMarker[][];
+  beforeDate: FloorMarker[][];
+  breaksTail: boolean[];
+  trailing: FloorMarker[];
+};
+
+// Well-formed ULIDs that sort by `n`
+const ulid = (n: number) =>
+  "01HZZZZZZZZZZZZZZZZZZZ" + String(n).padStart(4, "0");
+const NO_LATCH = { conflicted: false, wiped: false };
+const BOUNDARY = ulid(30);
+
+/** A native state the row policy calls verified, with the given changes. */
+function nativeState(over: Record<string, unknown> = {}): TextChannelState {
+  return {
+    channel_id: "C",
+    group_id: "G",
+    generation: 1,
+    epoch: 5,
+    state: "active",
+    members: [],
+    seat_list: { version: 3 },
+    self_seated: true,
+    roster_matches_list: true,
+    update_due: false,
+    update_required: false,
+    verdict: "ok",
+    history_setting: "visible",
+    history_boundary: BOUNDARY,
+    pre_history: "kept",
+    history_time_limit: 1_700_000_000_000,
+    ...over,
+  } as unknown as TextChannelState;
+}
+
+/** The production chain: the view's native state to what the list may show. */
+function shown(
+  native: TextChannelState | null,
+  o: {
+    seatListError?: string | null;
+    pin?: { boundary: string; wiped: boolean } | null;
+    latch?: { conflicted: boolean; wiped: boolean };
+  } = {},
+): VerifiedHistory {
+  return verifiedHistoryOf(
+    nativeHistoryInput(native, { seatListError: o.seatListError ?? null }),
+    native?.history_setting,
+    o.pin ?? null,
+    o.latch ?? NO_LATCH,
+  );
+}
+
+const plan = (
+  loaded: number[],
+  divider: { boundary: string; preHistory: "kept" | "wiped" } | null,
+  atStart: boolean,
+  atEnd: boolean,
+) =>
+  planBoundaryDivider({
+    idsNewestFirst: loaded.map(ulid),
+    divider,
+    atStart,
+    atEnd,
+    dividerAfter,
+  });
+
+describe("S4 paging end", () => {
+  it("U3: an ordinary channel ends paging on a short page", () => {
+    assert.equal(pageEndsHistory(49, 50, false), true);
+    assert.equal(pageEndsHistory(1, 50, false), true);
+    assert.equal(pageEndsHistory(0, 50, false), true);
+    assert.equal(pageEndsHistory(29, 30, false), true);
+    // Only a literal true takes the protected rule
+    assert.equal(pageEndsHistory(49, 50, 1 as unknown as boolean), true);
+  });
+
+  it("U3: a protected channel pages on after a short page", () => {
+    assert.equal(pageEndsHistory(49, 50, true), false);
+    assert.equal(pageEndsHistory(1, 50, true), false);
+    assert.equal(pageEndsHistory(12, 30, true), false);
+  });
+
+  it("U3: a protected channel ends paging on an empty page", () => {
+    assert.equal(pageEndsHistory(0, 50, true), true);
+    assert.equal(pageEndsHistory(0, 30, true), true);
+  });
+
+  it("U3: a full page never ends paging", () => {
+    for (const p of [true, false]) {
+      assert.equal(pageEndsHistory(50, 50, p), false);
+      assert.equal(pageEndsHistory(30, 30, p), false);
+      assert.equal(pageEndsHistory(60, 50, p), false);
+    }
+  });
+
+  it("U3: a protected page that brings nothing beyond its cursor is stalled", () => {
+    const cursor = ulid(20);
+    // Backward: something older than the cursor is progress
+    assert.equal(
+      pageStalled([ulid(20), ulid(25)], cursor, "older", true),
+      true,
+    );
+    assert.equal(pageStalled([ulid(20)], cursor, "older", true), true);
+    assert.equal(
+      pageStalled([ulid(25), ulid(19)], cursor, "older", true),
+      false,
+    );
+    // Forward: something newer is
+    assert.equal(
+      pageStalled([ulid(20), ulid(15)], cursor, "newer", true),
+      true,
+    );
+    assert.equal(
+      pageStalled([ulid(15), ulid(21)], cursor, "newer", true),
+      false,
+    );
+    // Never for an empty page, an ordinary channel or a fetch with no cursor
+    assert.equal(pageStalled([], cursor, "older", true), false);
+    assert.equal(pageStalled([ulid(25)], cursor, "older", false), false);
+    assert.equal(pageStalled([ulid(25)], undefined, "older", true), false);
+    assert.equal(
+      pageStalled([ulid(25)], cursor, "older", 1 as unknown as boolean),
+      false,
+    );
+  });
+
+  it("U3: backward paging of a protected channel always terminates", () => {
+    // The decisions of caseFetchUpwards, one request per trigger: stop on a
+    // stalled or ending page, else move the cursor to the oldest row.
+    const page = (server: (before: string) => string[], from: string) => {
+      let cursor = from;
+      let requests = 0;
+      while (requests < 10_000) {
+        const ids = server(cursor);
+        requests++;
+        if (
+          pageStalled(ids, cursor, "older", true) ||
+          pageEndsHistory(ids.length, 50, true)
+        ) {
+          break;
+        }
+        cursor = [...ids, cursor].sort()[0];
+      }
+      return { requests, cursor };
+    };
+
+    // Every row stripped still comes back as a row: 120 of them in pages
+    // the server's filter cut short, then one empty page.
+    const rows = Array.from({ length: 120 }, (_, i) => ulid(i + 1));
+    const honest = (size: number) => (before: string) =>
+      rows
+        .filter((id) => id < before)
+        .slice(-size)
+        .reverse();
+    for (const size of [50, 7, 1]) {
+      const out = page(honest(size), ulid(121));
+      assert.equal(out.cursor, ulid(1));
+      assert.equal(out.requests, Math.ceil(120 / size) + 1);
+    }
+
+    // A server that answers every request with the same rows, or with rows
+    // that are not older, gets one request and no more.
+    assert.equal(page(() => [ulid(121), ulid(130)], ulid(121)).requests, 1);
+    assert.equal(page(() => [ulid(500)], ulid(121)).requests, 1);
+    const same = [ulid(90), ulid(80)];
+    assert.equal(page(() => same, ulid(121)).requests, 2);
+  });
+
+  it("U3: all four paging sites decide through pageEndsHistory", () => {
+    // The definition and four calls
+    assert.equal(count(source, "pageEndsHistory("), 5);
+    assert.ok(!/\.length < (INITIAL_)?FETCH_LIMIT/.test(source));
+    assert.match(
+      bodyOf(/async function caseInitialLoad\(/),
+      /!useExistingState &&\s*pageEndsHistory\(\s*messages\.length,\s*INITIAL_FETCH_LIMIT,\s*protectedTranscript\(\),\s*\)\s*\) \{\s*setStart\(true\);/,
+    );
+    assert.match(
+      bodyOf(/async function caseJumpToBottom\(/),
+      /if \(\s*pageEndsHistory\(messages\.length, FETCH_LIMIT, protectedTranscript\(\)\)\s*\) \{\s*setStart\(true\);\s*\} else \{\s*setStart\(false\);/,
+    );
+
+    const up = bodyOf(/async function caseFetchUpwards\(/);
+    assert.match(up, /const protectedPage = protectedTranscript\(\);/);
+    assert.match(
+      up,
+      /const stalled = pageStalled\(\s*result\.messages\.map\(\(message\) => message\.id\),\s*oldest,\s*"older",\s*protectedPage,\s*\);/,
+    );
+    assert.match(
+      up,
+      /if \(\s*stalled \|\|\s*pageEndsHistory\(result\.messages\.length, FETCH_LIMIT, protectedPage\)\s*\) \{\s*setStart\(true\);/,
+    );
+    assert.match(up, /before: oldest,/);
+    assert.match(up, /if \(result\.messages\.length && !stalled\) \{/);
+
+    const down = bodyOf(/async function caseFetchDownwards\(/);
+    assert.match(down, /const protectedPage = protectedTranscript\(\);/);
+    assert.match(
+      down,
+      /const stalled = pageStalled\(\s*result\.messages\.map\(\(message\) => message\.id\),\s*newest,\s*"newer",\s*protectedPage,\s*\);/,
+    );
+    assert.match(
+      down,
+      /if \(\s*stalled \|\|\s*pageEndsHistory\(result\.messages\.length, FETCH_LIMIT, protectedPage\)\s*\) \{\s*setEnd\(true\);/,
+    );
+    assert.match(down, /after: newest,/);
+    assert.match(down, /if \(result\.messages\.length && !stalled\) \{/);
+  });
+
+  it("U3: one page request per trigger, and none without a row to page from", () => {
+    for (const [header, guard] of [
+      [
+        /async function caseFetchUpwards\(/,
+        /const oldest = messages\(\)\.slice\(-1\)\[0\]\?\.id;\s*if \(oldest === undefined\) return;/,
+      ],
+      [
+        /async function caseFetchDownwards\(/,
+        /const newest = messages\(\)\[0\]\?\.id;\s*if \(newest === undefined\) return;/,
+      ],
+    ] as const) {
+      const body = bodyOf(header);
+      assert.equal(count(body, "fetchMessagesWithUsers("), 1);
+      assert.ok(!/\bwhile\s*\(|\bfor\s*\(|\bdo\s*\{/.test(body), "no loop");
+      assert.ok(!/caseFetch(Upwards|Downwards)\(/.test(body));
+      assert.match(body, guard);
+      // The guard comes before the fetch is announced
+      assert.ok(body.search(guard) < body.indexOf("setFetching("));
+    }
+  });
+});
+
+describe("S4 history walk trigger", () => {
+  const base: WalkInput = {
+    protectedChannel: true,
+    historyFlag: true,
+    historyWalk: "idle",
+    rows: 50,
+    keylessRows: false,
+    floorKnown: false,
+  };
+  const every = (over: Partial<WalkInput>) => {
+    const out: boolean[] = [];
+    for (const keylessRows of [true, false]) {
+      for (const floorKnown of [true, false]) {
+        out.push(walkAfterPage({ ...base, keylessRows, floorKnown, ...over }));
+      }
+    }
+    return out;
+  };
+
+  it("U3: a backward page asks for a walk when the last one has to be retried", () => {
+    assert.deepEqual(every({ historyWalk: "retry_later" }), [
+      true,
+      true,
+      true,
+      true,
+    ]);
+  });
+
+  it("U3: no walk is asked while one is running", () => {
+    assert.deepEqual(every({ historyWalk: "running" }), [
+      false,
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  it("U3: no walk with the history flag off or outside a protected channel", () => {
+    for (const historyWalk of ["retry_later", "idle"]) {
+      assert.ok(!every({ historyWalk, historyFlag: false }).includes(true));
+      assert.ok(
+        !every({ historyWalk, protectedChannel: false }).includes(true),
+      );
+      assert.ok(
+        !every({
+          historyWalk,
+          historyFlag: "true" as unknown as boolean,
+        }).includes(true),
+      );
+    }
+  });
+
+  it("U3: rows without a key ask for a walk only until a floor is known", () => {
+    assert.equal(walkAfterPage({ ...base, keylessRows: true }), true);
+    assert.equal(
+      walkAfterPage({ ...base, keylessRows: true, floorKnown: true }),
+      false,
+    );
+    assert.equal(walkAfterPage({ ...base, keylessRows: false }), false);
+    assert.equal(
+      walkAfterPage({ ...base, keylessRows: false, floorKnown: true }),
+      false,
+    );
+  });
+
+  it("U3: an empty page, an unknown walk state or a missing view asks for nothing", () => {
+    assert.ok(!every({ historyWalk: "retry_later", rows: 0 }).includes(true));
+    assert.ok(!every({ historyWalk: undefined }).includes(true));
+    assert.ok(!every({ historyWalk: "zz_future" }).includes(true));
+  });
+
+  it("U3: only the gray key-missing views count as rows without a key", () => {
+    assert.equal(
+      keylessView({ status: "marker", kind: "sent_before_join" }),
+      true,
+    );
+    assert.equal(keylessView({ status: "marker", kind: "unknown_key" }), true);
+    for (const kind of [
+      "removed_self",
+      "decrypt_failed",
+      "unverified_sender",
+      "unencrypted_row",
+      "error",
+    ]) {
+      assert.equal(keylessView({ status: "marker", kind }), false);
+    }
+    for (const status of ["pending", "ok", "plain", "checking"]) {
+      assert.equal(keylessView({ status, kind: "sent_before_join" }), false);
+    }
+    assert.equal(keylessView(undefined), false);
+    assert.equal(keylessView(null), false);
+  });
+
+  it("U3: walkHistory is requested once, from the backward paging path only", () => {
+    assert.equal(count(source, "walkHistory("), 1);
+    // The definition and one call
+    assert.equal(count(source, "walkHistoryAfterPage("), 2);
+
+    const helper = bodyOf(/function walkHistoryAfterPage\(/);
+    assert.match(helper, /const wanted = walkAfterPage\(\{/);
+    assert.match(helper, /if \(wanted\) ui\.walkHistory\(channelId\);/);
+    assert.match(
+      helper,
+      /historyFlag: ui\.protectedFlag\(\)\.historySetting === true,/,
+    );
+    assert.match(
+      helper,
+      /historyWalk: ui\.protectedChannels\.get\(channelId\)\?\.historyWalk,/,
+    );
+    assert.match(helper, /protectedChannel: protectedTranscript\(\),/);
+    assert.match(helper, /rows: page\.length,/);
+    assert.match(helper, /keylessView\(ui\.protectedViews\.get\(row\.id\)\)/);
+    assert.match(
+      helper,
+      /floorKnown: protectedTimeline\(\)\.some\(\s*\(marker\) => marker\.kind === "history_floor",/,
+    );
+    assert.ok(!/\bwhile\s*\(|\bfor\s*\(/.test(helper));
+
+    const up = bodyOf(/async function caseFetchUpwards\(/);
+    const call = up.indexOf("walkHistoryAfterPage(result.messages)");
+    assert.ok(call !== -1, "not called from backward paging");
+    assert.ok(call > up.indexOf("if (preempted()) return;"));
+    assert.match(
+      up,
+      /if \(!stalled\) walkHistoryAfterPage\(result\.messages\);/,
+    );
+  });
+});
+
+describe("S4 history floor marker", () => {
+  const M0 = at(10, 12); // newest
+  const M1 = at(10, 9); // oldest
+  const floor = (id: string, atMs: number, channelId = "C"): FloorMarker => ({
+    id,
+    atMs,
+    kind: "history_floor",
+    channelId,
+  });
+  const other = (id: string, kind: string, atMs: number): FloorMarker => ({
+    id,
+    atMs,
+    kind,
+    channelId: "C",
+  });
+  const placed = (p: ReturnType<typeof planFloorMarkers>) =>
+    [...p.before.flat(), ...p.beforeDate.flat(), ...p.trailing].map(
+      (m) => m.id,
+    );
+
+  it("U3: only the latest history floor of a channel is placed", () => {
+    const markers = [
+      floor("f1", at(10, 9, 30)),
+      other("dev", "new_device", at(10, 10)),
+      floor("f2", at(10, 10, 30)),
+      other("gone", "forced_removal", at(10, 11)),
+      floor("f3", at(10, 11, 30)),
+    ];
+    const p = planFloorMarkers(markers, [M0, M1], true, true, sameLocalDay);
+    assert.deepEqual(placed(p), ["f3", "gone", "dev"]);
+
+    // Latest by arrival, not by time: a later stop replaces an earlier one
+    const back = [floor("late", at(10, 11)), floor("early", at(10, 10))];
+    assert.deepEqual(
+      placed(planFloorMarkers(back, [M0, M1], true, true, sameLocalDay)),
+      ["early"],
+    );
+  });
+
+  it("U3: floors of different channels are kept apart, and other markers are never dropped", () => {
+    const list = [
+      floor("a1", 1, "A"),
+      other("d1", "new_device", 2),
+      floor("b1", 3, "B"),
+      other("d2", "new_device", 4),
+      floor("a2", 5, "A"),
+      { id: "bare", atMs: 6 },
+    ];
+    assert.deepEqual(
+      latestFloorOnly(list).map((m) => m.id),
+      ["d1", "b1", "d2", "a2", "bare"],
+    );
+    assert.deepEqual(latestFloorOnly([]), []);
+    const one = [floor("only", 1)];
+    assert.deepEqual(latestFloorOnly(one), one);
+  });
+
+  it("U3: a history floor is ordered by time against device and removal markers", () => {
+    // Different times: newest first in the plan
+    const mixed = [
+      other("dev", "new_device", at(10, 10)),
+      floor("floor", at(10, 10, 30)),
+      other("gone", "forced_removal", at(10, 11)),
+    ];
+    const p = planFloorMarkers(mixed, [M0, M1], true, true, sameLocalDay);
+    assert.deepEqual(p.before.map(ids), [[], ["gone", "floor", "dev"]]);
+    assert.deepEqual(p.breaksTail, [true, false]);
+
+    // Equal times: arrival order once the list is reversed for display
+    const t = at(10, 10);
+    for (const order of [
+      ["dev", "floor", "gone"],
+      ["floor", "gone", "dev"],
+      ["gone", "dev", "floor"],
+    ]) {
+      const same = order.map((id) =>
+        id === "floor"
+          ? floor(id, t)
+          : other(id, id === "dev" ? "new_device" : "forced_removal", t),
+      );
+      const q = planFloorMarkers(same, [M0, M1], true, true, sameLocalDay);
+      assert.deepEqual(q.before[1].map((m) => m.id).reverse(), order);
+    }
+
+    // A floor at a message's own time sits right after that message
+    const own = planFloorMarkers(
+      [floor("floor", M1)],
+      [M0, M1],
+      true,
+      true,
+      sameLocalDay,
+    );
+    assert.deepEqual(own.before.map(ids), [[], ["floor"]]);
+  });
+
+  it("U3: an unknown stop reads loud, hidden and missing history read quiet", () => {
+    const tone = (stop: string) =>
+      timelineTone(
+        "history_floor",
+        historyFloorNotice(stop as HistoryStop).tone,
+      );
+    assert.equal(tone("hidden"), "quiet");
+    assert.equal(tone("missing"), "quiet");
+    assert.equal(tone("genesis"), "quiet");
+    for (const stop of [
+      "invalid",
+      "anchor_mismatch",
+      "conflict",
+      "unanchored",
+    ]) {
+      assert.equal(tone(stop), "loud");
+    }
+    assert.equal(tone("zz_future_stop"), "loud");
+    // A tone this list does not know, or none, is loud too
+    assert.equal(timelineTone("history_floor", "zz_future_tone"), "loud");
+    assert.equal(timelineTone("history_floor", undefined), "loud");
+    assert.equal(timelineTone("history_floor", null), "loud");
+    // No other marker is ever loud
+    assert.equal(timelineTone("new_device", "loud"), "quiet");
+    assert.equal(timelineTone("forced_removal", null), "quiet");
+  });
+
+  it("U3: the floor row takes its tone from historyFloorNotice and names no member", () => {
+    assert.ok(!source.includes("S4-W4-0 placeholder"));
+
+    const row = bodyOf(/function ProtectedTimelineRow\(/);
+    assert.match(
+      row,
+      /timelineTone\(\s*marker\.kind,\s*marker\.kind === "history_floor"\s*\? historyFloorNotice\(marker\.stop\)\.tone\s*: null,\s*\)/,
+    );
+    assert.match(row, /tone=\{tone\(\)\}/);
+    assert.match(row, /timelineGlyph\(props\.marker\.kind, tone\(\)\)/);
+    assert.match(
+      row,
+      /const userId = marker\.kind === "history_floor" \? undefined : marker\.userId;/,
+    );
+    assert.match(
+      row,
+      /const user = userId \? c\.users\.get\(userId\) : undefined;/,
+    );
+
+    assert.match(
+      bodyOf(/function timelineGlyph\(/),
+      /case "history_floor":\s*return tone === "loud" \? "gpp_bad" : "key_off";/,
+    );
+
+    // Both tones are styled; an omitted key would apply no style at all
+    const styles = source.slice(source.indexOf("const TimelineRow = styled("));
+    assert.match(
+      styles,
+      /tone: \{\s*quiet: \{\s*fontStyle: "italic",\s*color: "var\(--md-sys-color-outline\)",\s*\},\s*loud: \{\s*fontStyle: "normal",\s*color: "var\(--md-sys-color-error\)",\s*\},\s*\},/,
+    );
+  });
+});
+
+describe("S4 verified history state", () => {
+  const NO_BOUNDARY = { history_boundary: undefined, pre_history: undefined };
+
+  it("U3: a verified state shows its boundary and its history setting", () => {
+    assert.deepEqual(shown(nativeState()), {
+      historyVisible: true,
+      divider: { boundary: BOUNDARY, preHistory: "kept" },
+    });
+    assert.deepEqual(shown(nativeState({ pre_history: "wiped" })), {
+      historyVisible: true,
+      divider: { boundary: BOUNDARY, preHistory: "wiped" },
+    });
+    // A channel protected while empty has no boundary and no divider
+    assert.deepEqual(shown(nativeState(NO_BOUNDARY)), {
+      historyVisible: true,
+      divider: null,
+    });
+  });
+
+  it("U3: an unverified, missing or conflicted state shows no divider and no history wording", () => {
+    // Not loaded
+    assert.equal(shown(null), null);
+    // The last list verify failed
+    assert.equal(
+      shown(nativeState(), { seatListError: "seat_list_invalid" }),
+      null,
+    );
+    // The list on hand is signed by a signer the user has not accepted
+    assert.equal(shown(nativeState({ verdict: "owner_changed" })), null);
+    // A verdict this build does not know
+    assert.equal(shown(nativeState({ verdict: "zz_future" })), null);
+    // No list held
+    assert.equal(shown(nativeState({ seat_list: null })), null);
+    // The SDK holds the channel conflicted
+    assert.equal(
+      shown(nativeState(), { latch: { conflicted: true, wiped: false } }),
+      null,
+    );
+    // An input that only claims to be verified is not
+    for (const verified of [false, "true", 1, undefined]) {
+      assert.equal(
+        verifiedHistoryOf(
+          {
+            verified: verified as boolean,
+            boundary: BOUNDARY,
+            preHistory: "kept",
+            timeLimit: 0,
+          },
+          "visible",
+          null,
+          NO_LATCH,
+        ),
+        null,
+      );
+    }
+    assert.equal(verifiedHistoryOf(undefined, "visible", null, NO_LATCH), null);
+  });
+
+  it("U3: a wipe record the verified list does not confirm shows nothing, a verified wipe says wiped", () => {
+    const wipedLatch = { conflicted: false, wiped: true };
+    assert.equal(shown(nativeState(), { latch: wipedLatch }), null);
+    assert.equal(shown(nativeState(NO_BOUNDARY), { latch: wipedLatch }), null);
+    assert.deepEqual(
+      shown(nativeState({ pre_history: "wiped" }), { latch: wipedLatch })
+        ?.divider,
+      { boundary: BOUNDARY, preHistory: "wiped" },
+    );
+
+    // The pin: another boundary, or wiped while the list says kept
+    assert.equal(
+      shown(nativeState(), { pin: { boundary: ulid(31), wiped: false } }),
+      null,
+    );
+    assert.equal(
+      shown(nativeState(), { pin: { boundary: BOUNDARY, wiped: true } }),
+      null,
+    );
+    assert.equal(
+      shown(nativeState(NO_BOUNDARY), {
+        pin: { boundary: BOUNDARY, wiped: false },
+      }),
+      null,
+    );
+    assert.deepEqual(
+      shown(nativeState(), { pin: { boundary: BOUNDARY, wiped: false } })
+        ?.divider,
+      { boundary: BOUNDARY, preHistory: "kept" },
+    );
+    assert.deepEqual(
+      shown(nativeState({ pre_history: "wiped" }), {
+        pin: { boundary: BOUNDARY, wiped: true },
+      })?.divider,
+      { boundary: BOUNDARY, preHistory: "wiped" },
+    );
+  });
+
+  it("U3: the history wording follows the verified setting as it is now", () => {
+    assert.deepEqual(historyVisibleOption(shown(nativeState())), {
+      historyVisible: true,
+    });
+    // Left out, not false: the option is absent on every other state
+    for (const history of [
+      shown(nativeState({ history_setting: "hidden" })),
+      shown(nativeState({ history_setting: undefined })),
+      shown(nativeState({ history_setting: true })),
+      shown(nativeState(), { seatListError: "seat_list_invalid" }),
+      shown(nativeState({ verdict: "owner_changed" })),
+      shown(nativeState(), { latch: { conflicted: true, wiped: false } }),
+      shown(nativeState(), { latch: { conflicted: false, wiped: true } }),
+      shown(null),
+      undefined,
+      { historyVisible: "true" as unknown as boolean },
+    ]) {
+      const opts = historyVisibleOption(history);
+      assert.deepEqual(opts, {});
+      assert.ok(!("historyVisible" in opts));
+    }
+  });
+
+  it("U3: the divider and the wording read the verified state through nativeHistoryInput", () => {
+    assert.equal(count(source, "nativeHistoryInput("), 1);
+    // The definition and one call
+    assert.equal(count(source, "verifiedHistoryOf("), 2);
+    const hook = bodyOf(/function useVerifiedHistory\(/);
+    assert.match(
+      hook,
+      /return verifiedHistoryOf\(\s*nativeHistoryInput\(view\.native, \{ seatListError: view\.seatListError \}\),\s*view\.native\?\.history_setting,\s*c\.protectedPins\.historyOf\(id\) \?\? null,\s*\{\s*conflicted: c\.protectedHistory\.isConflicted\(id\),\s*wiped: c\.protectedHistory\.isWiped\(id\),\s*\},\s*\);/,
+    );
+    assert.match(
+      hook,
+      /const view = protectedUiOf\(c\.e2ee\)\?\.protectedChannels\.get\(id\);\s*if \(!view\) return null;/,
+    );
+
+    // The divider: only on a protected transcript, only from the hook
+    assert.match(
+      source,
+      /const verifiedHistory = useVerifiedHistory\(\(\) =>\s*protectedTranscript\(\) \? props\.channel\.id : undefined,\s*\);/,
+    );
+    assert.equal(count(source, "planBoundaryDivider("), 2);
+    assert.match(
+      source,
+      /const boundary = protectedTranscript\(\)\s*\? planBoundaryDivider\(\{\s*idsNewestFirst: arr\.map\(\(message\) => message\.id\),\s*divider: verifiedHistory\(\)\?\.divider \?\? null,\s*atStart: atStart\(\),\s*atEnd: atEnd\(\),\s*dividerAfter,\s*\}\)\s*: null;/,
+    );
+
+    // The wording: the third argument of the one timelineCopy call
+    assert.equal(count(source, "timelineCopy("), 1);
+    const row = bodyOf(/function ProtectedTimelineRow\(/);
+    assert.match(
+      row,
+      /const history = useVerifiedHistory\(\(\) => props\.marker\.channelId\);/,
+    );
+    assert.match(row, /historyVisibleOption\(history\(\)\),\s*\);/);
+    assert.ok(!/historyVisible: true/.test(row));
+  });
+});
+
+describe("S4 boundary divider placement", () => {
+  const kept = { boundary: BOUNDARY, preHistory: "kept" } as const;
+  const wiped = { boundary: BOUNDARY, preHistory: "wiped" } as const;
+  const flags = [
+    [true, true],
+    [true, false],
+    [false, true],
+    [false, false],
+  ] as const;
+
+  it("U3: with rows on both sides the divider sits directly below the newest row at or below the boundary", () => {
+    for (const [s, e] of flags) {
+      // The boundary row itself is loaded
+      assert.deepEqual(plan([50, 40, 30, 20, 10], kept, s, e), {
+        below: ulid(30),
+        preHistory: "kept",
+      });
+      // It is not: the newest row below it
+      assert.deepEqual(plan([50, 40, 25, 20, 10], kept, s, e), {
+        below: ulid(25),
+        preHistory: "kept",
+      });
+      assert.deepEqual(plan([31, 29], kept, s, e), {
+        below: ulid(29),
+        preHistory: "kept",
+      });
+    }
+  });
+
+  it("U3: with every row at or below the boundary the divider needs the end of the conversation", () => {
+    for (const s of [true, false]) {
+      assert.deepEqual(plan([30, 20, 10], kept, s, true), {
+        below: ulid(30),
+        preHistory: "kept",
+      });
+      assert.deepEqual(plan([20, 10], wiped, s, true), {
+        below: ulid(20),
+        preHistory: "wiped",
+      });
+      // A newer row at or below the boundary may still be unloaded
+      assert.equal(plan([30, 20, 10], kept, s, false), null);
+      assert.equal(plan([20, 10], kept, s, false), null);
+      assert.equal(plan([20, 10], wiped, s, false), null);
+    }
+  });
+
+  it("U3: with every row above the boundary there is no kept divider", () => {
+    for (const [s, e] of flags) {
+      assert.equal(plan([50, 40, 31], kept, s, e), null);
+      assert.equal(plan([], kept, s, e), null);
+    }
+  });
+
+  it("U3: after a wipe with no row at or below the boundary the divider sits at the top once paging ended", () => {
+    for (const e of [true, false]) {
+      assert.deepEqual(plan([50, 40, 31], wiped, true, e), {
+        below: null,
+        preHistory: "wiped",
+      });
+      assert.deepEqual(plan([], wiped, true, e), {
+        below: null,
+        preHistory: "wiped",
+      });
+      // Backward paging has not ended
+      assert.equal(plan([50, 40, 31], wiped, false, e), null);
+      assert.equal(plan([], wiped, false, e), null);
+    }
+    // A row at or below the boundary is still loaded: under that row
+    assert.deepEqual(plan([50, 40, 20], wiped, true, true), {
+      below: ulid(20),
+      preHistory: "wiped",
+    });
+    // A boundary that is not a ULID has no divider anywhere
+    const bad = { boundary: "not-a-ulid", preHistory: "wiped" } as const;
+    assert.equal(plan([50, 40], bad, true, true), null);
+    assert.equal(plan([], { ...bad, boundary: "" }, true, true), null);
+  });
+
+  it("U3: no divider while the state is not verified", () => {
+    const loaded = [50, 40, 30, 20, 10];
+    for (const history of [
+      shown(null),
+      shown(nativeState(), { seatListError: "seat_list_invalid" }),
+      shown(nativeState({ verdict: "owner_changed" })),
+      shown(nativeState({ seat_list: null })),
+      shown(nativeState(), { latch: { conflicted: true, wiped: false } }),
+      shown(nativeState(), { latch: { conflicted: false, wiped: true } }),
+      shown(nativeState({ pre_history: "wiped" }), {
+        seatListError: "seat_list_invalid",
+      }),
+    ]) {
+      for (const [s, e] of flags) {
+        assert.equal(plan(loaded, history?.divider ?? null, s, e), null);
+        assert.equal(plan([], history?.divider ?? null, s, e), null);
+      }
+    }
+    // The same rows with the verified state do get one
+    assert.notEqual(
+      plan(loaded, shown(nativeState())?.divider ?? null, true, true),
+      null,
+    );
+    // A kind this list does not know is never drawn
+    assert.equal(
+      plan(
+        loaded,
+        { boundary: BOUNDARY, preHistory: "zz" as unknown as "kept" },
+        true,
+        true,
+      ),
+      null,
+    );
+  });
+
+  it("U3: the divider entry is pushed right under its row and rendered through MessageDivider", () => {
+    const memo = between(
+      "const messagesWithTail = createMemo<ListEntry[]>(() => {",
+      "return messagesWithTail.reverse();",
+    );
+    // The list is built newest first: what is pushed before a row shows
+    // below it. Markers of the newer side first, then the divider, then
+    // the row.
+    const markers = memo.indexOf(
+      "pushTimelineMarkers(timeline?.before[index]);",
+    );
+    const push = memo.search(
+      /if \(boundary && boundary\.below === message\.id\) \{\s*pushBoundaryDivider\(\);\s*\}/,
+    );
+    const row = memo.indexOf(
+      'if (message.author?.relationship === "Blocked") {',
+    );
+    assert.ok(markers !== -1 && push !== -1 && row !== -1);
+    assert.ok(markers < push && push < row, "the divider is not under its row");
+    assert.equal(count(memo, "pushBoundaryDivider()"), 2);
+
+    // At the top: after everything else was pushed
+    const top = memo.search(
+      /if \(boundary && boundary\.below === null\) \{\s*pushBoundaryDivider\(\);\s*\}/,
+    );
+    assert.ok(top > memo.indexOf("pushTimelineMarkers(timeline?.trailing);"));
+    assert.ok(top > memo.lastIndexOf("createBlockedMessageCount();"));
+
+    // Blocked rows stay on their side, and the row under it starts a chain
+    assert.match(
+      memo,
+      /const pushBoundaryDivider = \(\) => \{\s*if \(!boundary\) return;\s*createBlockedMessageCount\(\);\s*messagesWithTail\.push\(/,
+    );
+    assert.match(
+      memo,
+      /if \(boundary && next && boundary\.below === next\.id\) \{\s*tail = false;/,
+    );
+
+    // Its own entry kind: never the date or unread divider, never stripped
+    assert.match(
+      memo,
+      /t: 4,\s*kind: "protected_boundary",\s*preHistory: boundary\.preHistory,/,
+    );
+    assert.match(memo, /if \(messagesWithTail\[0\]\?\.t === 1\) \{/);
+    assert.match(
+      source,
+      /<Match when=\{local\.t === 4\}>\s*<MessageDivider\s*protectedBoundary=\{\(other as ListEntry & \{ t: 4 \}\)\.preHistory\}\s*\/>/,
+    );
+    assert.equal(count(source, "protectedBoundary="), 1);
+    assert.match(
+      source,
+      /<Match when=\{local\.t === 1\}>\s*<MessageDivider \{\.\.\.\(other as ListEntry & \{ t: 1 \}\)\} \/>/,
+    );
   });
 });

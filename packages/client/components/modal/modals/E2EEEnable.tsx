@@ -2,6 +2,7 @@ import { Match, Show, Switch, createSignal } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
+import { recordRestoreText } from "@revolt/app/interface/settings/user/backupTextLines";
 import { useClient, useE2EE } from "@revolt/client";
 import { Column, Dialog, DialogProps, Text } from "@revolt/ui";
 
@@ -33,7 +34,7 @@ import { Modals } from "../types";
  * the native surface (the bundled recovery window on desktop / a native
  * dialog from the Capacitor E2ee plugin on Android and iOS) — it never
  * reaches this webview;
- * `restoreFromBackup` only couriers opaque ciphertext.
+ * `restoreFromBackupReport` only couriers opaque ciphertext.
  */
 export function E2EEEnableModal(
   props: DialogProps & Modals & { type: "e2ee_enable" },
@@ -94,7 +95,7 @@ export function E2EEEnableModal(
         return;
       }
 
-      const count = await e2ee.restoreFromBackup(token);
+      const { blobs: count, text } = await e2ee.restoreFromBackupReport(token);
       if (count === 0) {
         // No blob for this account (or the native surface was dismissed).
         // Keep the dialog open so the user can start fresh instead.
@@ -102,6 +103,11 @@ export function E2EEEnableModal(
         setBusy(false);
         return;
       }
+
+      // What the restore said about protected channel history, for the
+      // Encryption settings. Only a native dialog reports it; the desktop
+      // recovery window keeps its report, which reads as nothing reported.
+      recordRestoreText(e2ee, text);
 
       // Desktop: the recovery WINDOW is now open and drives code entry +
       // republish asynchronously (the completion courier lives in the bridge).

@@ -1,7 +1,9 @@
-import { Show } from "solid-js";
+import { Match, Show, Switch } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
+
+import { dividerCopy } from "@revolt/client/protectedCopy";
 
 /**
  * Divider line
@@ -58,6 +60,24 @@ const Unread = styled("div", {
   },
 });
 
+/**
+ * Label of the protected history boundary; same neutral look as the date
+ */
+const Boundary = styled("span", {
+  base: {
+    marginTop: "-2px",
+    fontSize: "0.6875rem",
+    lineHeight: "0.6875rem",
+    fontWeight: 600,
+    paddingInline: "5px 5px",
+
+    borderRadius: "var(--borderRadius-md)",
+
+    color: "var(--md-sys-color-outline)",
+    background: "var(--md-sys-color-surface-container-lowest)",
+  },
+});
+
 interface Props {
   /**
    * Display the date
@@ -68,6 +88,13 @@ interface Props {
    * Show unread indicator
    */
   unread?: boolean;
+
+  /**
+   * Show the protected history boundary instead: earlier messages were
+   * kept above this line, or wiped. The caller decides when to pass this;
+   * the date and the unread indicator are not shown with it.
+   */
+  protectedBoundary?: "kept" | "wiped";
 }
 
 /**
@@ -75,15 +102,22 @@ interface Props {
  */
 export function MessageDivider(props: Props) {
   return (
-    <Base unread={props.unread}>
-      <Show when={props.unread}>
-        <Unread>
-          <Trans>NEW</Trans>
-        </Unread>
-      </Show>
-      <Show when={props.date}>
-        <time>{props.date}</time>
-      </Show>
+    <Base unread={props.protectedBoundary ? false : props.unread}>
+      <Switch>
+        <Match when={props.protectedBoundary}>
+          {(boundary) => <Boundary>{dividerCopy(boundary())}</Boundary>}
+        </Match>
+        <Match when={true}>
+          <Show when={props.unread}>
+            <Unread>
+              <Trans>NEW</Trans>
+            </Unread>
+          </Show>
+          <Show when={props.date}>
+            <time>{props.date}</time>
+          </Show>
+        </Match>
+      </Switch>
     </Base>
   );
 }

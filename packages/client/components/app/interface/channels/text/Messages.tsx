@@ -35,7 +35,14 @@ import {
 } from "@revolt/client/encryptedOnlyGuard";
 import { latchedForClient } from "@revolt/client/encryptedOnlyLatch";
 import { timelineCopy } from "@revolt/client/protectedCopy";
-import { protectedActionsBlocked } from "@revolt/client/protectedShield";
+import {
+  dividerAfter,
+  nativeHistoryInput,
+} from "@revolt/client/protectedRowPolicy";
+import {
+  historyFloorNotice,
+  protectedActionsBlocked,
+} from "@revolt/client/protectedShield";
 import type { TimelineMarker } from "@revolt/client/protectedTextTypes";
 import {
   protectedUiOf,
@@ -168,9 +175,35 @@ function sameLocalDay(a: number, b: number): boolean {
 }
 
 /**
+ * The markers to place: every marker that is not a history floor, and of
+ * the history floors only the latest one of each channel. The bridge's list
+ * is append-only, so a later stop of the walk comes after the stop it
+ * replaces and the older line must not stay on screen beside it.
+ * @param markers Markers in arrival order
+ * @returns Markers in the same order, older floors left out
+ */
+function latestFloorOnly<M extends { kind?: string; channelId?: string }>(
+  markers: readonly M[],
+): M[] {
+  const latest = new Map<string, number>();
+  markers.forEach((marker, index) => {
+    if (marker.kind === "history_floor") {
+      latest.set(marker.channelId ?? "", index);
+    }
+  });
+  return markers.filter(
+    (marker, index) =>
+      marker.kind !== "history_floor" ||
+      latest.get(marker.channelId ?? "") === index,
+  );
+}
+
+/**
  * Where local timeline markers sit among the loaded messages, ordered by
  * their `atMs`. Indices follow `messagesAtMs`, which is newest first like
- * the list; every array of markers is newest first too.
+ * the list; every array of markers is newest first too. A history floor is
+ * placed by its `atMs` like any other marker, and only the latest floor of
+ * a channel is placed at all.
  * - `before[k]`: markers at or after message k and before message k - 1.
  *   For k = 0 they are newer than every loaded message and show only at
  *   the end of the conversation (otherwise they belong to unloaded rows).
@@ -186,7 +219,9 @@ function sameLocalDay(a: number, b: number): boolean {
  * @param sameDay Day comparison
  * @returns Placement
  */
-function planTimelineMarkers<M extends { atMs: number }>(
+function planTimelineMarkers<
+  M extends { atMs: number; kind?: string; channelId?: string },
+>(
   markers: readonly M[],
   messagesAtMs: readonly number[],
   atStart: boolean,
@@ -194,7 +229,7 @@ function planTimelineMarkers<M extends { atMs: number }>(
   sameDay: (a: number, b: number) => boolean,
 ): { before: M[][]; beforeDate: M[][]; breaksTail: boolean[]; trailing: M[] } {
   // Newest first; equal times keep their arrival order once reversed
-  const pending = markers
+  const pending = latestFloorOnly(markers)
     .map((marker, index) => ({ marker, index }))
     .filter(({ marker }) => Number.isFinite(marker.atMs))
     .sort((a, b) => b.marker.atMs - a.marker.atMs || b.index - a.index)
@@ -244,6 +279,224 @@ function planTimelineMarkers<M extends { atMs: number }>(
         : [];
 
   return { before, beforeDate, breaksTail, trailing };
+}
+
+/**
+ * Whether a timeline row reads loud. Only a history floor can: its tone
+ * comes from `historyFloorNotice`, and any tone other than the two quiet
+ * ones is loud, so a stop this build does not know is never shown as an
+ * ordinary "before you joined" line.
+ * @param kind Marker kind
+ * @param floorTone `historyFloorNotice(stop).tone` for a history floor
+ * @returns Tone of the row
+ */
+function timelineTone(
+  kind: string,
+  floorTone: string | null | undefined,
+): "quiet" | "loud" {
+  if (kind !== "history_floor") return "quiet";
+  return floorTone === "gray" || floorTone === "before_join" ? "quiet" : "loud";
+}
+
+/**
+ * Whether a fetched page ends paging in its direction. An ordinary channel
+ * ends on a short page. A protected or pinned channel ends on an EMPTY page
+ * only: the server filters rows out of its pages there, so a short page can
+ * sit in the middle of the history, and there is no `has_more` to ask.
+ * @param count Rows in the page
+ * @param limit Rows asked for
+ * @param protectedChannel Result of `protectedTranscriptOf`
+ * @returns Whether no further page is requested
+ */
+function pageEndsHistory(
+  count: number,
+  limit: number,
+  protectedChannel: boolean,
+): boolean {
+  return protectedChannel === true ? count === 0 : count < limit;
+}
+
+/**
+ * Whether a page of a protected channel brought no row beyond the row it
+ * was fetched from. Ending only on an empty page would otherwise ask for
+ * the same page for as long as it keeps coming back, so such a page ends
+ * paging too and none of its rows are added. Never true for an ordinary
+ * channel, an empty page or a fetch with no cursor.
+ * @param ids Ids of the page's rows
+ * @param cursor Id the page was fetched before or after
+ * @param direction "older" for a page before the cursor, "newer" for after
+ * @param protectedChannel Result of `protectedTranscriptOf`
+ * @returns Whether the page made no progress
+ */
+function pageStalled(
+  ids: readonly string[],
+  cursor: string | undefined,
+  direction: "older" | "newer",
+  protectedChannel: boolean,
+): boolean {
+  if (protectedChannel !== true || cursor === undefined || !ids.length) {
+    return false;
+  }
+  return !ids.some((id) => (direction === "older" ? id < cursor : id > cursor));
+}
+
+/**
+ * Whether a row's view says its key is not held on this device: the gray
+ * "sent before this device joined" and "unknown key" markers. A row sent
+ * after this device was removed is not one (no walk can bring that key),
+ * and neither is a pending or a failed row.
+ * @param view The bridge's view of the row, if any
+ * @returns Whether a history walk could bring the key
+ */
+function keylessView(
+  view: { status?: string; kind?: string } | null | undefined,
+): boolean {
+  return (
+    view?.status === "marker" &&
+    (view.kind === "sent_before_join" || view.kind === "unknown_key")
+  );
+}
+
+/**
+ * Whether a backward page load asks the manager for a history walk. Asked
+ * at most once per loaded page, and only with the history flag on:
+ * - never while a walk runs, and never without a view of the channel;
+ * - always when the last walk has to be retried (`retry_later`);
+ * - otherwise only when the page holds rows whose key is not held and no
+ *   walk has stopped at a floor yet. Once a floor marker stands, such rows
+ *   are the expected state and paging through them starts no walk.
+ * @param i Page and channel state
+ * @returns Whether to call `walkHistory`
+ */
+function walkAfterPage(i: {
+  protectedChannel: boolean;
+  historyFlag: boolean;
+  historyWalk: string | undefined;
+  rows: number;
+  keylessRows: boolean;
+  floorKnown: boolean;
+}): boolean {
+  if (i.protectedChannel !== true || i.historyFlag !== true) return false;
+  if (!(i.rows > 0)) return false;
+  if (i.historyWalk === "retry_later") return true;
+  if (i.historyWalk !== "idle") return false;
+  return i.keylessRows === true && i.floorKnown === false;
+}
+
+/**
+ * What this list may show about a channel's history, from the VERIFIED
+ * native state only. Null (show nothing) while the state is not loaded or
+ * not verified, while the SDK holds the channel conflicted, and whenever
+ * the wipe records disagree with the verified list: the SDK or the pin says
+ * wiped while the list does not, or the pin holds another boundary.
+ * @param native Result of `nativeHistoryInput` for the view's native state
+ * @param historySetting `view.native.history_setting`, as it is now
+ * @param pin The local pin's history record, null when none
+ * @param latch The SDK's per-session records for the channel
+ * @returns History setting and divider inputs, or null
+ */
+function verifiedHistoryOf(
+  native:
+    | {
+        verified: boolean;
+        boundary: string | null;
+        preHistory: "kept" | "wiped" | null;
+      }
+    | null
+    | undefined,
+  historySetting: unknown,
+  pin: { boundary: string; wiped: boolean } | null | undefined,
+  latch: { conflicted: boolean; wiped: boolean },
+): {
+  historyVisible: boolean;
+  divider: { boundary: string; preHistory: "kept" | "wiped" } | null;
+} | null {
+  if (!native || native.verified !== true) return null;
+  if (latch.conflicted !== false) return null;
+
+  const boundary =
+    typeof native.boundary === "string" && native.boundary !== ""
+      ? native.boundary
+      : null;
+  const preHistory =
+    native.preHistory === "kept" || native.preHistory === "wiped"
+      ? native.preHistory
+      : null;
+  const wipedByList = boundary !== null && preHistory === "wiped";
+
+  if (latch.wiped !== false && !wipedByList) return null;
+  if (pin) {
+    if (pin.boundary !== boundary) return null;
+    if (pin.wiped !== false && !wipedByList) return null;
+  }
+
+  return {
+    historyVisible: historySetting === "visible",
+    divider:
+      boundary !== null && preHistory !== null
+        ? { boundary, preHistory }
+        : null,
+  };
+}
+
+/**
+ * Options for `timelineCopy`: "It can read this channel's history." is
+ * added only while the verified state says the history is visible now.
+ * Anything else leaves the option out.
+ * @param history Result of `verifiedHistoryOf`
+ * @returns Options bag
+ */
+function historyVisibleOption(
+  history: { historyVisible: boolean } | null | undefined,
+): { historyVisible?: true } {
+  return history?.historyVisible === true ? { historyVisible: true } : {};
+}
+
+/**
+ * Where the permanent boundary divider goes, or null for none.
+ * - It sits directly below the newest loaded row at or below the boundary
+ *   (`dividerAfter`), provided a newer row or the end of the conversation
+ *   is loaded too: without either, a newer row at or below the boundary
+ *   may still be unloaded and the line would be drawn too high.
+ * - With `wiped` and no such row loaded it sits at the top of the channel
+ *   once backward paging has ended.
+ * @param i Loaded ids (newest first), the `divider` of `verifiedHistoryOf`,
+ *   list position and L1p's `dividerAfter`
+ * @returns The row the divider sits below (null: the top), and its kind
+ */
+function planBoundaryDivider(i: {
+  idsNewestFirst: readonly string[];
+  divider: { boundary: string; preHistory: "kept" | "wiped" } | null;
+  atStart: boolean;
+  atEnd: boolean;
+  dividerAfter: (
+    idsOldestFirst: readonly string[],
+    boundary: string,
+  ) => string | null;
+}): { below: string | null; preHistory: "kept" | "wiped" } | null {
+  const divider = i.divider;
+  if (!divider) return null;
+  if (divider.preHistory !== "kept" && divider.preHistory !== "wiped") {
+    return null;
+  }
+
+  const below = i.dividerAfter(
+    [...i.idsNewestFirst].reverse(),
+    divider.boundary,
+  );
+  if (below !== null) {
+    const newerLoaded = i.idsNewestFirst.some((id) => id > below);
+    if (!newerLoaded && i.atEnd !== true) return null;
+    return { below, preHistory: divider.preHistory };
+  }
+
+  // A boundary no row can be compared with has no divider anywhere
+  if (i.dividerAfter([divider.boundary], divider.boundary) === null) {
+    return null;
+  }
+  return divider.preHistory === "wiped" && i.atStart === true
+    ? { below: null, preHistory: "wiped" }
+    : null;
 }
 // protected-pure:end
 
@@ -372,6 +625,45 @@ export function Messages(props: Props) {
    */
   function protectedTranscript(): boolean {
     return protectedTranscriptOf(props.channel.type, protectedOrPinned());
+  }
+
+  /**
+   * What the verified native state says about this channel's history (the
+   * boundary divider reads it); null on any other channel or state
+   */
+  const verifiedHistory = useVerifiedHistory(() =>
+    protectedTranscript() ? props.channel.id : undefined,
+  );
+
+  /**
+   * After a backward page was loaded: ask the manager for a history walk
+   * when `walkAfterPage` says so. Called once per loaded page from the
+   * paging path, never from an effect or a memo.
+   * @param page Rows of the page
+   */
+  function walkHistoryAfterPage(page: MessageInterface[]) {
+    const channelId = props.channel.id;
+    const ui = protectedUiOf(client().e2ee);
+    if (!ui || typeof ui.walkHistory !== "function") return;
+    if (typeof ui.protectedFlag !== "function") return;
+
+    try {
+      const wanted = walkAfterPage({
+        protectedChannel: protectedTranscript(),
+        historyFlag: ui.protectedFlag().historySetting === true,
+        historyWalk: ui.protectedChannels.get(channelId)?.historyWalk,
+        rows: page.length,
+        keylessRows: page.some((row) =>
+          keylessView(ui.protectedViews.get(row.id)),
+        ),
+        floorKnown: protectedTimeline().some(
+          (marker) => marker.kind === "history_floor",
+        ),
+      });
+      if (wanted) ui.walkHistory(channelId);
+    } catch {
+      console.error("[protected] history walk request failed", { channelId });
+    }
   }
 
   /**
@@ -604,7 +896,14 @@ export function Messages(props: Props) {
         );
       }
       // Check if we're at the start of the conversation otherwise
-      else if (!useExistingState && messages.length < INITIAL_FETCH_LIMIT) {
+      else if (
+        !useExistingState &&
+        pageEndsHistory(
+          messages.length,
+          INITIAL_FETCH_LIMIT,
+          protectedTranscript(),
+        )
+      ) {
         setStart(true);
       }
       // Apply existing state if present
@@ -681,6 +980,10 @@ export function Messages(props: Props) {
     // - Must not already be fetching (or otherwise the fetch must have failed)
     if (atStart() || !canFetch()) return;
 
+    // Nothing loaded means there is no row to page from
+    const oldest = messages().slice(-1)[0]?.id;
+    if (oldest === undefined) return;
+
     // Indicate we are fetching upwards
     setFetching("upwards");
 
@@ -692,19 +995,33 @@ export function Messages(props: Props) {
       const result = await props.channel.fetchMessagesWithUsers({
         limit: FETCH_LIMIT,
         // Take the id of the oldest message currently fetched
-        before: messages().slice(-1)[0].id,
+        before: oldest,
       });
 
       // Cancel if we've been pre-empted
       if (preempted()) return;
 
-      // If it's less than we expected, we are at the start
-      if (result.messages.length < FETCH_LIMIT) {
+      // A protected channel ends on an empty page, or on a page that
+      // brought nothing older; any other channel ends on a short page
+      const protectedPage = protectedTranscript();
+      const stalled = pageStalled(
+        result.messages.map((message) => message.id),
+        oldest,
+        "older",
+        protectedPage,
+      );
+      if (
+        stalled ||
+        pageEndsHistory(result.messages.length, FETCH_LIMIT, protectedPage)
+      ) {
         setStart(true);
       }
 
+      // One history walk request per loaded page, decided by the page
+      if (!stalled) walkHistoryAfterPage(result.messages);
+
       // Prepend messages if we received any
-      if (result.messages.length) {
+      if (result.messages.length && !stalled) {
         // Calculate how much we need to cut off the other end
         const tooManyBy = Math.max(
           0,
@@ -750,6 +1067,10 @@ export function Messages(props: Props) {
     // - Must not already be fetching (or otherwise the fetch must have failed)
     if (atEnd() || !canFetch()) return;
 
+    // Nothing loaded means there is no row to page from
+    const newest = messages()[0]?.id;
+    if (newest === undefined) return;
+
     // Indicate we are fetching downwards
     setFetching("downwards");
 
@@ -760,20 +1081,31 @@ export function Messages(props: Props) {
       // Fetch messages after the newest message we have
       const result = await props.channel.fetchMessagesWithUsers({
         limit: FETCH_LIMIT,
-        after: messages()[0].id,
+        after: newest,
         sort: "Oldest",
       });
 
       // Cancel if we've been pre-empted
       if (preempted()) return;
 
-      // If it's less than we expected, we are at the end
-      if (result.messages.length < FETCH_LIMIT) {
+      // A protected channel ends on an empty page, or on a page that
+      // brought nothing newer; any other channel ends on a short page
+      const protectedPage = protectedTranscript();
+      const stalled = pageStalled(
+        result.messages.map((message) => message.id),
+        newest,
+        "newer",
+        protectedPage,
+      );
+      if (
+        stalled ||
+        pageEndsHistory(result.messages.length, FETCH_LIMIT, protectedPage)
+      ) {
         setEnd(true);
       }
 
       // If we received any messages at all, append them to the bottom
-      if (result.messages.length) {
+      if (result.messages.length && !stalled) {
         // Calculate how much we need to cut off the other end
         const tooManyBy = Math.max(
           0,
@@ -867,7 +1199,9 @@ export function Messages(props: Props) {
         // Check if we're at the start of the conversation
         // NB. this may be counter-intuitive because we are in history but,
         //     this could be a very rare edge case for large moderation actions
-        if (messages.length < FETCH_LIMIT) {
+        if (
+          pageEndsHistory(messages.length, FETCH_LIMIT, protectedTranscript())
+        ) {
           setStart(true);
         } else {
           setStart(false);
@@ -1220,6 +1554,33 @@ export function Messages(props: Props) {
         )
       : undefined;
 
+    // Permanent history boundary divider, from the verified state only
+    const boundary = protectedTranscript()
+      ? planBoundaryDivider({
+          idsNewestFirst: arr.map((message) => message.id),
+          divider: verifiedHistory()?.divider ?? null,
+          atStart: atStart(),
+          atEnd: atEnd(),
+          dividerAfter,
+        })
+      : null;
+
+    /**
+     * Push the boundary divider (after any pending blocked message count,
+     * so that blocked rows stay on their own side of it)
+     */
+    const pushBoundaryDivider = () => {
+      if (!boundary) return;
+      createBlockedMessageCount();
+      messagesWithTail.push(
+        objectCache.get(`protected_boundary:${boundary.preHistory}`) ?? {
+          t: 4,
+          kind: "protected_boundary",
+          preHistory: boundary.preHistory,
+        },
+      );
+    };
+
     /**
      * Push timeline markers (after any pending blocked message count)
      */
@@ -1280,6 +1641,11 @@ export function Messages(props: Props) {
         tail = false;
       }
 
+      // So does the boundary divider under the next message
+      if (boundary && next && boundary.below === next.id) {
+        tail = false;
+      }
+
       // Try to add the unread divider
       if (
         !insertedUnreadDivider &&
@@ -1297,6 +1663,11 @@ export function Messages(props: Props) {
 
       // Markers newer than this message
       pushTimelineMarkers(timeline?.before[index]);
+
+      // The boundary divider sits directly below this message
+      if (boundary && boundary.below === message.id) {
+        pushBoundaryDivider();
+      }
 
       if (message.author?.relationship === "Blocked") {
         blockedMessages++;
@@ -1334,6 +1705,11 @@ export function Messages(props: Props) {
     // Push remainder of blocked messages
     createBlockedMessageCount();
 
+    // After a wipe the boundary divider sits at the top of the channel
+    if (boundary && boundary.below === null) {
+      pushBoundaryDivider();
+    }
+
     // Strip unread divider if it is the first item
     // (hence would show alone at the bottom of messages)
     if (messagesWithTail[0]?.t === 1) {
@@ -1351,6 +1727,8 @@ export function Messages(props: Props) {
         objectCache.set(object.unread ?? object.date, object);
       } else if (object.t === 3) {
         objectCache.set(object.marker, object);
+      } else if (object.t === 4) {
+        objectCache.set(`protected_boundary:${object.preHistory}`, object);
       }
     }
 
@@ -1619,6 +1997,13 @@ type ListEntry =
       // Protected channel timeline marker (local, never from the server)
       t: 3;
       marker: TimelineMarker;
+    }
+  | {
+      // Protected channel history boundary (permanent; from the verified
+      // native state only, never merged with the date or unread divider)
+      t: 4;
+      kind: "protected_boundary";
+      preHistory: "kept" | "wiped";
     };
 
 /**
@@ -1674,24 +2059,64 @@ function Entry(
       <Match when={local.t === 3}>
         <ProtectedTimelineRow marker={(other as ListEntry & { t: 3 }).marker} />
       </Match>
+      <Match when={local.t === 4}>
+        <MessageDivider
+          protectedBoundary={(other as ListEntry & { t: 4 }).preHistory}
+        />
+      </Match>
     </Switch>
   );
 }
 
 /**
+ * The verified history state of a channel (`verifiedHistoryOf`): the
+ * manager's view through `nativeHistoryInput`, the local pin and the SDK's
+ * conflict and wipe records. Null without a channel id, a bridge surface
+ * or a view.
+ * @param channelId Channel id
+ * @returns Accessor
+ */
+function useVerifiedHistory(channelId: Accessor<string | undefined>) {
+  const client = useClient();
+
+  const history = createMemo(() => {
+    const id = channelId();
+    const c = client();
+    if (!id || !c) return null;
+
+    const view = protectedUiOf(c.e2ee)?.protectedChannels.get(id);
+    if (!view) return null;
+
+    return verifiedHistoryOf(
+      nativeHistoryInput(view.native, { seatListError: view.seatListError }),
+      view.native?.history_setting,
+      c.protectedPins.historyOf(id) ?? null,
+      {
+        conflicted: c.protectedHistory.isConflicted(id),
+        wiped: c.protectedHistory.isWiped(id),
+      },
+    );
+  });
+  return history;
+}
+
+/**
  * Glyph for a timeline marker kind
  * @param kind Marker kind
+ * @param tone Result of `timelineTone`
  * @returns Material symbol name
  */
-function timelineGlyph(kind: TimelineMarker["kind"]): string {
+function timelineGlyph(
+  kind: TimelineMarker["kind"],
+  tone: "quiet" | "loud",
+): string {
   switch (kind) {
     case "new_device":
       return "devices";
     case "forced_removal":
       return "person_remove";
-    // S4-W4-0 placeholder (lane U3)
     case "history_floor":
-      return "info";
+      return tone === "loud" ? "gpp_bad" : "key_off";
     default: {
       const _exhaustive: never = kind;
       return "info";
@@ -1703,22 +2128,34 @@ function timelineGlyph(kind: TimelineMarker["kind"]): string {
  * Local system-style row for a protected channel timeline marker (plan
  * D22). The member is named the way system messages name users (server
  * nickname, then display name); an unknown member reads "A member", never
- * an id.
+ * an id. A history floor names no member; it reads loud when the walk
+ * stopped for a reason other than hidden or missing history.
  */
 function ProtectedTimelineRow(props: { marker: TimelineMarker }) {
   const client = useClient();
   const { t } = useLingui();
+  const history = useVerifiedHistory(() => props.marker.channelId);
+
+  const tone = createMemo(() => {
+    const marker = props.marker;
+    return timelineTone(
+      marker.kind,
+      marker.kind === "history_floor"
+        ? historyFloorNotice(marker.stop).tone
+        : null,
+    );
+  });
 
   const text = createMemo(() => {
     const c = client();
-    // S4-W4-0 placeholder (lane U3): a history floor names no member.
-    const userId =
-      props.marker.kind === "history_floor" ? "" : props.marker.userId;
-    const serverId = c.channels.get(props.marker.channelId)?.serverId;
-    const member = serverId
-      ? c.serverMembers.getByKey({ server: serverId, user: userId })
-      : undefined;
-    const user = c.users.get(userId);
+    const marker = props.marker;
+    const userId = marker.kind === "history_floor" ? undefined : marker.userId;
+    const serverId = c.channels.get(marker.channelId)?.serverId;
+    const member =
+      serverId && userId
+        ? c.serverMembers.getByKey({ server: serverId, user: userId })
+        : undefined;
+    const user = userId ? c.users.get(userId) : undefined;
 
     return timelineCopy(
       props.marker,
@@ -1727,13 +2164,19 @@ function ProtectedTimelineRow(props: { marker: TimelineMarker }) {
         // C16: local msgid; C0 has no member-name fallback yet
         t`A member`,
       ),
+      // "It can read this channel's history." only from the verified state
+      historyVisibleOption(history()),
     );
   });
 
   return (
-    <TimelineRow role="note" data-protected-timeline={props.marker.kind}>
+    <TimelineRow
+      role="note"
+      tone={tone()}
+      data-protected-timeline={props.marker.kind}
+    >
       <MaterialSymbol size={16}>
-        {timelineGlyph(props.marker.kind)}
+        {timelineGlyph(props.marker.kind, tone())}
       </MaterialSymbol>
       <span>{text()}</span>
     </TimelineRow>
@@ -1751,8 +2194,22 @@ const TimelineRow = styled("div", {
     marginTop: "var(--gap-md)",
     padding: "var(--gap-sm) var(--gap-xxl)",
     fontSize: "0.8em",
-    fontStyle: "italic",
-    color: "var(--md-sys-color-outline)",
     overflowWrap: "anywhere",
+  },
+  variants: {
+    // One key per `timelineTone` result; `tone` is always passed
+    tone: {
+      quiet: {
+        fontStyle: "italic",
+        color: "var(--md-sys-color-outline)",
+      },
+      loud: {
+        fontStyle: "normal",
+        color: "var(--md-sys-color-error)",
+      },
+    },
+  },
+  defaultVariants: {
+    tone: "quiet",
   },
 });

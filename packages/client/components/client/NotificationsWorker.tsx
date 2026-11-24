@@ -157,8 +157,9 @@ function protectedToastIsAlert(kind: ProtectedToastKind): boolean {
     case "unsolicited_welcome":
     case "owner_notice":
       return true;
-    // S4-W4-0 placeholder (no lane names this file): an alert, as for an
-    // unknown kind.
+    // S4 (design 9.2): both history toasts are owner notices, raised only
+    // on the owner's devices when history keys can't be shared as expected;
+    // alerts like `owner_notice`.
     case "history_mismatch":
     case "history_too_large":
       return true;

@@ -37,6 +37,7 @@ import {
   bundleTextTruncated,
   historyManagerOf,
   historyPolicyActions,
+  preHistoryStateOf,
   restoreTextSummary,
 } from "./e2eeProtectedHistorySeam.ts";
 
@@ -711,6 +712,63 @@ test("historyManagerOf: only a manager with all four calls", () => {
   assert.equal(historyManagerOf(undefined), null);
 });
 
+test("preHistoryStateOf: reads both latches of the SDK state", () => {
+  const sdk = new ProtectedHistoryState();
+  assert.deepEqual(preHistoryStateOf(sdk, CH), {
+    conflicted: false,
+    wiped: false,
+  });
+  sdk.markWiped(CH);
+  assert.deepEqual(preHistoryStateOf(sdk, CH), {
+    conflicted: false,
+    wiped: true,
+  });
+  assert.deepEqual(preHistoryStateOf(sdk, "01OTHER"), {
+    conflicted: false,
+    wiped: false,
+  });
+  const other = new ProtectedHistoryState();
+  other.setReveal(CH, { boundary: "junk", timeLimit: 0 });
+  assert.deepEqual(preHistoryStateOf(other, CH), {
+    conflicted: true,
+    wiped: false,
+  });
+  other.markWiped(CH);
+  assert.deepEqual(preHistoryStateOf(other, CH), {
+    conflicted: true,
+    wiped: true,
+  });
+  // Only the literal false is "not latched".
+  const odd = {
+    isConflicted: () => undefined as unknown as boolean,
+    isWiped: () => 0 as unknown as boolean,
+  };
+  assert.deepEqual(preHistoryStateOf(odd, CH), {
+    conflicted: true,
+    wiped: true,
+  });
+});
+
+test("preHistoryStateOf: a throw or a missing SDK state reads as conflicted", () => {
+  const boom = () => {
+    throw new Error("boom");
+  };
+  const fine = () => false;
+  for (const history of [
+    null,
+    undefined,
+    { isConflicted: boom, isWiped: fine },
+    { isConflicted: fine, isWiped: boom },
+    { isConflicted: boom, isWiped: boom },
+    {} as { isConflicted(): boolean; isWiped(): boolean },
+  ]) {
+    assert.deepEqual(preHistoryStateOf(history, CH), {
+      conflicted: true,
+      wiped: false,
+    });
+  }
+});
+
 // ---- E. e2ee.ts ---------------------------------------------------------------
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
@@ -969,6 +1027,43 @@ test("e2ee.ts: the manager's deps: the pin history and a flag-gated backup refre
   assert.match(
     code(bridgeMember("#protectedEnsureManager")),
     /manager=newProtectedTextManager\(this\.#protectedPort\(userId,deviceId,life\.signal\),callbacks,deps\);/,
+  );
+});
+
+test("e2ee.ts: the manager's deps carry the history toggle, the wipe and the SDK latches", () => {
+  const owner = propsNamed("owner").filter(
+    (p) => memberOf(p) === "#protectedEnsureManager",
+  );
+  assert.equal(owner.length, 1);
+  assert.equal(
+    code(owner[0]),
+    "owner:{protect,setSeats,signOwnerDevices,moveOwnerKey,pendingSeats," +
+      "cancelPendingSeats,recoverOwnership,setHistory,wipeHistory,}",
+  );
+  // Both names are the owner flows, not something local to the bridge.
+  const imports: string[] = [];
+  for (const statement of SF.statements) {
+    if (
+      ts.isImportDeclaration(statement) &&
+      code(statement.moduleSpecifier) === '"./protectedTextOwner"'
+    ) {
+      imports.push(code(statement));
+    }
+  }
+  assert.equal(imports.length, 1);
+  assert.match(imports[0], /[{,]setHistory,/);
+  assert.match(imports[0], /[{,]wipeHistory,?\}/);
+  const pre = propsNamed("preHistoryState");
+  assert.equal(pre.length, 1);
+  assert.equal(memberOf(pre[0]), "#protectedEnsureManager");
+  assert.equal(
+    code(pre[0]),
+    "preHistoryState:(channelId)=>" +
+      "preHistoryStateOf(this.#client?.protectedHistory,channelId)",
+  );
+  assert.match(
+    code(bridgeMember("#protectedEnsureManager")),
+    /constdeps:ProtectedTextManagerDeps&ProtectedTextHistoryDeps=\{/,
   );
 });
 

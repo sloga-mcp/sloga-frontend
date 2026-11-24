@@ -11,6 +11,10 @@
  * type-stripping. Nothing here is translated; the page owns the copy.
  */
 import type {
+  AuditCopyAction,
+  AuditCopyDetail,
+} from "@revolt/client/protectedCopy";
+import type {
   AuditLogAction,
   AuditLogChangeData,
   AuditLogEntryData,
@@ -30,6 +34,22 @@ export type AuditTargetKind =
   | "permission_target"
   | "none";
 
+/**
+ * What the two protected channel entries say, read strictly from the wire
+ * (backend `v0::AuditLogAction`):
+ *
+ * - `channel_protect`: `channel` is the channel, `changes` are `boundary`
+ *   (a message id, never shown, so it is not kept here) and `wiped`.
+ * - `channel_history_wipe`: two separate entries. The owner's request has an
+ *   actor and no changes (`count: null`); the entry the wipe job writes when
+ *   it is done has no actor and one `count` change.
+ *
+ * `channel` is the channel id; the page resolves the name.
+ */
+export type AuditProtectedDetail =
+  | { action: "channel_protect"; channel: string; wiped: boolean }
+  | { action: "channel_history_wipe"; channel: string; count: number | null };
+
 /** How the audit log page should present one entry */
 export type AuditEntryDescriptor = {
   /** The action, or `"unknown"` for any action this build does not know */
@@ -40,6 +60,12 @@ export type AuditEntryDescriptor = {
   changes: AuditLogChangeData[];
   /** How many objects the action affected (bulk actions only) */
   count?: number;
+  /**
+   * `channel_protect` / `channel_history_wipe` only: what the entry says.
+   * Absent when the entry could not be read, and the page then shows the
+   * generic sentence rather than guess whether anything was deleted.
+   */
+  protectedDetail?: AuditProtectedDetail;
   /** True when the action is not one this build knows */
   unknown: boolean;
 };
@@ -68,7 +94,6 @@ const ACTIONS = [
   "role_ranks_update",
   "server_update",
   "server_owner_transfer",
-  // S4-W4-0 placeholder (lane U6)
   "channel_protect",
   "channel_history_wipe",
 ] as const satisfies readonly AuditLogAction[];
@@ -86,6 +111,24 @@ const _allActionsListed: [_MissingAction] extends [never] ? true : false = true;
  * module has no runtime imports.
  */
 export const KNOWN_AUDIT_ACTIONS: readonly AuditLogAction[] = ACTIONS;
+
+const CHANNEL_GROUP_TAIL: readonly AuditLogAction[] = [
+  "channel_protect",
+  "channel_history_wipe",
+];
+
+/**
+ * The actions in the order the action filter lists them: the known actions,
+ * with the two protected channel actions moved up to the end of the channel
+ * group (after `channel_overwrite_update`).
+ */
+export const AUDIT_FILTER_ACTIONS: readonly AuditLogAction[] = ACTIONS.filter(
+  (action) => !CHANNEL_GROUP_TAIL.includes(action),
+).flatMap((action) =>
+  action === "channel_overwrite_update"
+    ? [action, ...CHANNEL_GROUP_TAIL]
+    : [action],
+);
 
 /** Target kind per action. A `Record` over the union, so a missing or extra
  * action is a type error. */
@@ -113,7 +156,7 @@ const TARGET_KIND: Record<AuditLogAction, AuditTargetKind> = {
   role_ranks_update: "none",
   server_update: "none",
   server_owner_transfer: "user",
-  // S4-W4-0 placeholder (lane U6)
+  // Both name their channel in `channel` and send no `target`
   channel_protect: "none",
   channel_history_wipe: "none",
 };
@@ -140,8 +183,156 @@ export function describeAuditEntry(
     changes: Array.isArray(entry.changes) ? entry.changes : [],
     unknown: !known,
   };
+  if (isProtectedAction(descriptor.kind)) {
+    // Everything these entries carry is read into `protectedDetail`. The raw
+    // changes are dropped so the details block never lists the boundary
+    // message id, or a `wiped` / `count` value that could not be read.
+    descriptor.changes = [];
+    const detail = readProtectedDetail(descriptor.kind, entry);
+    if (detail) descriptor.protectedDetail = detail;
+    return descriptor;
+  }
   if (typeof entry.count === "number") descriptor.count = entry.count;
   return descriptor;
+}
+
+function isProtectedAction(kind: string): kind is AuditCopyAction {
+  return kind === "channel_protect" || kind === "channel_history_wipe";
+}
+
+/**
+ * The changes of an entry by key, or undefined if the list is not one this
+ * build can read: not a list, an item that is not a change, a key outside
+ * `allowed`, or a key that comes twice.
+ */
+function changesByKey(
+  changes: unknown,
+  allowed: readonly string[],
+): Map<string, AuditLogChangeData> | undefined {
+  const byKey = new Map<string, AuditLogChangeData>();
+  if (changes === undefined) return byKey;
+  if (!Array.isArray(changes)) return undefined;
+  for (const change of changes as unknown[]) {
+    if (typeof change !== "object" || change === null) return undefined;
+    const key = (change as { key?: unknown }).key;
+    if (typeof key !== "string" || !allowed.includes(key)) return undefined;
+    if (byKey.has(key)) return undefined;
+    byKey.set(key, change as AuditLogChangeData);
+  }
+  return byKey;
+}
+
+/** The `new` value of a new-only change; undefined if there is an `old` */
+function newOnly(change: AuditLogChangeData): unknown {
+  return change.old === undefined ? change.new : undefined;
+}
+
+/**
+ * Read a protected channel entry. Undefined for anything that is not exactly
+ * one of the shapes the server writes: there is no safe guess between "the
+ * earlier messages were kept" and "they were deleted".
+ */
+function readProtectedDetail(
+  action: AuditCopyAction,
+  entry: AuditLogEntryData,
+): AuditProtectedDetail | undefined {
+  const channel: unknown = entry.channel;
+  if (typeof channel !== "string" || channel === "") return undefined;
+  // Neither entry has a target or a top-level count
+  if (entry.target !== undefined || entry.count !== undefined) return undefined;
+  const hasActor = typeof entry.actor === "string" && entry.actor !== "";
+
+  switch (action) {
+    case "channel_protect": {
+      if (!hasActor) return undefined;
+      const changes = changesByKey(entry.changes, ["boundary", "wiped"]);
+      const wiped = changes?.get("wiped");
+      if (!changes || !wiped) return undefined;
+
+      const value = newOnly(wiped) as { type?: unknown; value?: unknown };
+      if (value?.type !== "Bool" || typeof value.value !== "boolean") {
+        return undefined;
+      }
+
+      // The boundary is checked for its shape only and then left behind
+      const boundary = changes.get("boundary");
+      if (boundary) {
+        if (boundary.old !== undefined) return undefined;
+        const id = boundary.new as { type?: unknown; value?: unknown };
+        if (
+          id !== undefined &&
+          (id?.type !== "String" || typeof id.value !== "string")
+        ) {
+          return undefined;
+        }
+      }
+
+      return { action, channel, wiped: value.value === true };
+    }
+    case "channel_history_wipe": {
+      const changes = changesByKey(entry.changes, ["count"]);
+      if (!changes) return undefined;
+
+      const counted = changes.get("count");
+      if (!counted) {
+        // The request: someone asked, nothing is counted yet
+        return hasActor ? { action, channel, count: null } : undefined;
+      }
+
+      const value = newOnly(counted) as { type?: unknown; value?: unknown };
+      if (
+        value?.type !== "Int" ||
+        typeof value.value !== "number" ||
+        !Number.isSafeInteger(value.value) ||
+        value.value < 0
+      ) {
+        return undefined;
+      }
+      return { action, channel, count: value.value };
+    }
+    default: {
+      const _exhaustive: never = action;
+      return undefined;
+    }
+  }
+}
+
+/**
+ * What to pass to `auditCopy` for a protected channel entry, or null when
+ * the page must show the generic sentence instead: the entry could not be
+ * read, or the channel has no name the client can resolve (the channel id
+ * is never passed as a name).
+ *
+ * `wiped` is passed for the protect entry only and `count` for the wipe
+ * entry only.
+ */
+export function protectedAuditCopyArgs(
+  detail: AuditProtectedDetail | undefined,
+  names: { actor: string; channel: string | undefined },
+): { action: AuditCopyAction; detail: AuditCopyDetail } | null {
+  if (!detail) return null;
+  const actor = names.actor;
+  const channel = names.channel;
+  if (typeof actor !== "string" || actor === "") return null;
+  if (typeof channel !== "string" || channel === "") return null;
+  if (channel === detail.channel) return null;
+
+  switch (detail.action) {
+    case "channel_protect":
+      return {
+        action: "channel_protect",
+        detail: { actor, channel, wiped: detail.wiped === true },
+      };
+    case "channel_history_wipe":
+      return {
+        action: "channel_history_wipe",
+        detail: { actor, channel, count: detail.count },
+      };
+    default: {
+      const _exhaustive: never = detail;
+      return null;
+    }
+  }
 }
 
 /**

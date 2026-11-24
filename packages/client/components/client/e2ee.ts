@@ -109,11 +109,11 @@ import {
   type HistorySeamPorts,
   type ProtectedHistoryManagerApi,
   type ProtectedHistoryPort,
-  type ProtectedHistorySeamDeps,
   type RestoreTextSummary,
   applyHistoryPolicy,
   bundleTextTruncated,
   historyManagerOf,
+  preHistoryStateOf,
   restoreTextSummary,
 } from "./e2eeProtectedHistorySeam.ts";
 import { protectorSendErrorCopy } from "./e2eeProtectorCopy";
@@ -201,6 +201,7 @@ import {
 } from "./protectedRouter";
 import { toProtectedSendError } from "./protectedSendError";
 import {
+  type ProtectedTextHistoryDeps,
   type ProtectedTextManagerExtraCallbacks,
   ProtectedTextManager,
 } from "./protectedText";
@@ -216,8 +217,10 @@ import {
   pendingSeats,
   protect,
   recoverOwnership,
+  setHistory,
   setSeats,
   signOwnerDevices,
+  wipeHistory,
 } from "./protectedTextOwner";
 import {
   type ProtectedChannelInfo,
@@ -10426,7 +10429,7 @@ export class E2EEBridge implements E2EEAdapter {
         applyHistoryPolicy(this.#protectedHistoryPorts(), channelId, p);
       },
     };
-    const deps: ProtectedTextManagerDeps & ProtectedHistorySeamDeps = {
+    const deps: ProtectedTextManagerDeps & ProtectedTextHistoryDeps = {
       owner: {
         protect,
         setSeats,
@@ -10435,6 +10438,9 @@ export class E2EEBridge implements E2EEAdapter {
         pendingSeats,
         cancelPendingSeats,
         recoverOwnership,
+        // S4: the history toggle and the wipe.
+        setHistory,
+        wipeHistory,
       },
       messages: { encryptAndSend, decryptRow, markerForError },
       // S4 (design 8.5 "Refresh", OPEN 3): the existing courier, so native
@@ -10446,6 +10452,10 @@ export class E2EEBridge implements E2EEAdapter {
       // S4 (R-W4-4): the local pin's history, for the row policy.
       pinHistory: (channelId) =>
         this.#client.protectedPins.historyOf(channelId) ?? null,
+      // S4 (R-W4-26): the SDK's conflict and wipe latches; an unreadable
+      // state reads as conflicted.
+      preHistoryState: (channelId) =>
+        preHistoryStateOf(this.#client?.protectedHistory, channelId),
     };
     manager = new ProtectedTextManager(
       this.#protectedPort(userId, deviceId, life.signal),
