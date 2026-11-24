@@ -243,6 +243,13 @@ export function useError() {
         if (feature === "e2ee")
           return t`Encrypted messaging is unavailable right now.`;
       }
+      // S4 (design 9.2). `ProtectHistoryMoved`: the channel's history moved
+      // while it was being protected, so the protect did not land (the
+      // `protect_busy` msgid of `protectedCopy.ts`). `HistoryLinkExists` is
+      // handled by the bridge and never shown in practice: neutral wording.
+      if (errType === "ProtectHistoryMoved")
+        return t`This channel is too busy to protect right now. Try again in a quiet moment.`;
+      if (errType === "HistoryLinkExists") return t`This was already done.`;
       // Prot (same lag pattern). Amounts are grouped in the app locale.
       if (errType === "ProtDisabled") return t`Prot isn't available right now.`;
       if (errType === "ProtSalesClosed")
