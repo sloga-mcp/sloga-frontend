@@ -982,6 +982,10 @@ internal open class UniffiVTableCallbackInterfaceTextConfirm(
 
 
 
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -1170,6 +1174,10 @@ fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_decrypt(
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_encrypt(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_group_create(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_history_import(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_history_link_build(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_join(
 ): Short
@@ -1437,6 +1445,10 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_decrypt(`ptr`: Pointer,`argsJs
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_encrypt(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_group_create(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_history_import(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_history_link_build(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_join(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1875,6 +1887,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_group_create() != 65309.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_history_import() != 21968.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_history_link_build() != 56699.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_join() != 3609.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1902,7 +1920,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_remove() != 50494.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_seat_list_sign() != 55646.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_seat_list_sign() != 27493.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_seat_list_verify() != 48248.toShort()) {
@@ -3145,6 +3163,20 @@ public interface E2eeEngineInterface {
     fun `textGroupCreate`(`argsJson`: kotlin.String): kotlin.String
     
     /**
+     * `e2ee_text_history_import`: JSON `HistoryImported`. `session` is the
+     * id a previous call answered (absent to start); `steps` is required.
+     * No dialog. Never provisions.
+     */
+    fun `textHistoryImport`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_history_link_build`: JSON `HistoryLinkBuilt`. `candidates`
+     * is required (the links the server already holds for the epoch,
+     * possibly empty); every rule is in core. No dialog. Never provisions.
+     */
+    fun `textHistoryLinkBuild`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
      * `e2ee_text_join`: JSON `TextJoinIntent`. Never provisions:
      * unprovisioned, the engine's shape checks, then `not_enabled` (its
      * fresh-store answer), as `ShellEngine::text_join`.
@@ -3209,8 +3241,12 @@ public interface E2eeEngineInterface {
      * `confirm`; one that does none of these is signed with no dialog. A
      * recovery list (`recovery: true`) ALWAYS needs `confirm` (core's
      * recovery dialog). `format`, `authority` and `recovery` are the S2
-     * inputs (absent: `None`, `None`, `false`), checked in core. Persists
-     * nothing.
+     * inputs (absent: `None`, `None`, `false`), checked in core.
+     * `history`, `historyBoundary`, `preHistory` and `wipeCount` are the
+     * S4 inputs (absent: `None`): a list that wipes earlier history needs
+     * `confirm` too (core's wipe dialog, through the same `TextConfirm`,
+     * after the growth one when both apply), and `wipeCount` only labels
+     * that dialog. No input skips a dialog. Persists nothing.
      */
     fun `textSeatListSign`(`argsJson`: kotlin.String, `confirm`: TextConfirm): kotlin.String
     
@@ -5039,6 +5075,42 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
+     * `e2ee_text_history_import`: JSON `HistoryImported`. `session` is the
+     * id a previous call answered (absent to start); `steps` is required.
+     * No dialog. Never provisions.
+     */
+    @Throws(E2eeException::class)override fun `textHistoryImport`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_history_import(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_history_link_build`: JSON `HistoryLinkBuilt`. `candidates`
+     * is required (the links the server already holds for the epoch,
+     * possibly empty); every rule is in core. No dialog. Never provisions.
+     */
+    @Throws(E2eeException::class)override fun `textHistoryLinkBuild`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_history_link_build(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * `e2ee_text_join`: JSON `TextJoinIntent`. Never provisions:
      * unprovisioned, the engine's shape checks, then `not_enabled` (its
      * fresh-store answer), as `ShellEngine::text_join`.
@@ -5202,8 +5274,12 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
      * `confirm`; one that does none of these is signed with no dialog. A
      * recovery list (`recovery: true`) ALWAYS needs `confirm` (core's
      * recovery dialog). `format`, `authority` and `recovery` are the S2
-     * inputs (absent: `None`, `None`, `false`), checked in core. Persists
-     * nothing.
+     * inputs (absent: `None`, `None`, `false`), checked in core.
+     * `history`, `historyBoundary`, `preHistory` and `wipeCount` are the
+     * S4 inputs (absent: `None`): a list that wipes earlier history needs
+     * `confirm` too (core's wipe dialog, through the same `TextConfirm`,
+     * after the growth one when both apply), and `wipeCount` only labels
+     * that dialog. No input skips a dialog. Persists nothing.
      */
     @Throws(E2eeException::class)override fun `textSeatListSign`(`argsJson`: kotlin.String, `confirm`: TextConfirm): kotlin.String {
             return FfiConverterString.lift(
