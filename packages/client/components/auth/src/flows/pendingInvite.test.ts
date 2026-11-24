@@ -1,10 +1,11 @@
 // Unit spec for the signed-out invite and Google sign-in rules. Run it with
 // Node's built-in runner from packages/client:
 //   node --test --conditions=browser components/auth/src/flows/pendingInvite.test.ts
-// Declared test count: 12 (the runner also exits 0 when it finds no tests at
+// Declared test count: 11 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 // Focus: only a bare `/invite/:code` path yields a code, over-long codes are
-// refused, and Google is offered only in a browser whose server turned it on.
+// refused, and Google is offered only outside a native shell, when the
+// server turned it on.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -44,50 +45,37 @@ test("code at the length limit is kept, one over is refused", () => {
 
 test("browser with Google turned on is offered Google", () => {
   assert.equal(
-    googleSignInOffered({}, { features: { oauth_google: true } }),
+    googleSignInOffered(false, { features: { oauth_google: true } }),
     true,
   );
 });
 
 test("Google turned off is not offered", () => {
   assert.equal(
-    googleSignInOffered({}, { features: { oauth_google: false } }),
+    googleSignInOffered(false, { features: { oauth_google: false } }),
     false,
   );
 });
 
 test("missing or broken config is not offered", () => {
-  assert.equal(googleSignInOffered({}, undefined), false);
-  assert.equal(googleSignInOffered({}, null), false);
-  assert.equal(googleSignInOffered({}, { features: {} }), false);
-  assert.equal(googleSignInOffered({}, "oops"), false);
+  assert.equal(googleSignInOffered(false, undefined), false);
+  assert.equal(googleSignInOffered(false, null), false);
+  assert.equal(googleSignInOffered(false, { features: {} }), false);
+  assert.equal(googleSignInOffered(false, "oops"), false);
 });
 
 test("a truthy non-boolean flag is not offered", () => {
   assert.equal(
-    googleSignInOffered({}, { features: { oauth_google: "yes" } }),
+    googleSignInOffered(false, { features: { oauth_google: "yes" } }),
     false,
   );
 });
 
-test("desktop app is never offered Google", () => {
+// Which shells count as native (Tauri, Electron, the phone apps) is
+// `isNativeShell`'s job, covered in components/common/lib/appOrigin.test.ts
+test("a native shell is never offered Google, even with it turned on", () => {
   assert.equal(
-    googleSignInOffered(
-      { __TAURI__: {} },
-      { features: { oauth_google: true } },
-    ),
+    googleSignInOffered(true, { features: { oauth_google: true } }),
     false,
-  );
-});
-
-test("phone app is never offered Google, a Capacitor web build is", () => {
-  const on = { features: { oauth_google: true } };
-  assert.equal(
-    googleSignInOffered({ Capacitor: { isNativePlatform: () => true } }, on),
-    false,
-  );
-  assert.equal(
-    googleSignInOffered({ Capacitor: { isNativePlatform: () => false } }, on),
-    true,
   );
 });

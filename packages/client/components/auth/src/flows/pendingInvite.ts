@@ -17,26 +17,19 @@ export function pendingInviteCode(
 }
 
 /**
- * Window fields that tell a native shell apart from a browser
- */
-export type ShellWindow = {
-  __TAURI__?: unknown;
-  Capacitor?: { isNativePlatform?: () => boolean };
-};
-
-/**
  * Whether "Continue with Google" can be offered here. Google rejects OAuth
- * from embedded webviews (disallowed_useragent), so the desktop and phone
- * apps never show it, and the server must have Google sign-in turned on.
- * @param win Window to check for a native shell
+ * from embedded webviews (disallowed_useragent), so no native shell (Tauri,
+ * Electron or the phone apps) shows it, and the server must have Google
+ * sign-in turned on.
+ * @param nativeShell Whether this is a native shell (`isNativeShell()`)
  * @param config Root API response, if it loaded
  * @returns Whether to show the button
  */
 export function googleSignInOffered(
-  win: ShellWindow,
+  nativeShell: boolean,
   config: unknown,
 ): boolean {
-  if (win.__TAURI__ || win.Capacitor?.isNativePlatform?.()) return false;
+  if (nativeShell) return false;
   const features = (config as { features?: { oauth_google?: unknown } } | null)
     ?.features;
   return features?.oauth_google === true;

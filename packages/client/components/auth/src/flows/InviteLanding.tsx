@@ -6,6 +6,7 @@ import { PublicChannelInvite, ServerPublicInvite } from "stoat.js";
 import { useClient } from "@revolt/client";
 import { useSlimMode } from "@revolt/client/useSlimMode";
 import { CONFIGURATION } from "@revolt/common";
+import { isNativeShell } from "@revolt/common/lib/appOrigin";
 import { useState } from "@revolt/state";
 import { Avatar, Button, Column, Text } from "@revolt/ui";
 
@@ -17,9 +18,13 @@ import { googleSignInOffered, pendingInviteCode } from "./pendingInvite";
  * Whether this page can offer "Continue with Google". Never rejects.
  */
 async function fetchGoogleSignInOffered(): Promise<boolean> {
+  // Checked first so the desktop and phone apps never make the request
+  const nativeShell = isNativeShell();
+  if (nativeShell) return false;
+
   try {
     const response = await fetch(`${CONFIGURATION.DEFAULT_API_URL}/`);
-    return googleSignInOffered(window, await response.json());
+    return googleSignInOffered(nativeShell, await response.json());
   } catch {
     return false;
   }
