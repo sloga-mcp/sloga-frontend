@@ -19,11 +19,16 @@
  *   every design 7.6 server type and the D17 extras; anything else fails
  *   closed (red marker for a message, `unverified` otherwise).
  * - `protectedActionsBlocked`: plan D11.
+ * - S4: an `unknown_epoch` row answers `removed_self` or asks for the history
+ *   walk (`walk: true`); `historyFloorNotice`, `historyOwnerNotice` and
+ *   `rowNotes` route the walk's stop, the owner's history failures and the
+ *   per-row notes (design 9.2 / 9.3 "S4").
  *
  * Nothing here holds key material or message text.
  */
 import { holdsCurrentGroup } from "./protectedTextPolicy.ts";
 import type {
+  HistoryStop,
   NativeErrorTag,
   ProtectedChannelView,
   ProtectedMarkerKind,
@@ -656,7 +661,10 @@ export interface ProtectedErrorContext {
 
 /**
  * - `notice`: show this notice (`max` fills `{max}`, null when absent);
- * - `marker`: render this marker instead of the message body;
+ * - `marker`: render this marker instead of the message body. S4: `walk`
+ *   is present (and true) only on an `unknown_epoch` row the history walk may
+ *   still open; the marker is what the row shows until the walk imports its
+ *   epoch, and what it keeps when the walk does not;
  * - `toast`: raise this toast;
  * - `none`: no UI; the bridge handles it (retry, catch-up, ack + drop) or
  *   the user cancelled a native dialog.
@@ -676,7 +684,7 @@ export type ProtectedErrorUi =
        */
       users?: readonly string[];
     }
-  | { kind: "marker"; marker: ProtectedMarkerKind; tag: string }
+  | { kind: "marker"; marker: ProtectedMarkerKind; tag: string; walk?: true }
   | { kind: "toast"; toast: ProtectedToastKind; tag: string }
   | { kind: "none"; tag: string };
 
@@ -730,24 +738,54 @@ function catchAll(ctx: ProtectedErrorContext): ProtectedErrorUi {
     : notice("unverified", "unknown");
 }
 
-/** Message rows: everything not listed is the red `error` marker. */
+/**
+ * `UnknownEpoch.current`: native sends -1 for a group it holds no epoch of
+ * (design 3.9 "S4", as built), so -1 is a value here and not a malformed one.
+ */
+function currentEpoch(v: unknown): number | null {
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= -1 ? v : null;
+}
+
+/**
+ * Message rows: everything not listed is the red `error` marker.
+ *
+ * `unknown_epoch` (design 3.9 "S4" step 4, first match wins):
+ * 1. `removed_self === true`: the gray `removed_self` marker and no walk,
+ *    whatever the epochs say. An older shell sends no key, which is false.
+ * 2. `epoch > current`: the S1 path, one catch-up and one retry.
+ * 3. `epoch < current`: the row may be opened by the history walk. It shows
+ *    `sent_before_join` meanwhile and carries `walk: true`. `oldest_held` is
+ *    not read: a key can be missing below it or inside the held run, and
+ *    null only means nothing is held.
+ * 4. `epoch === current`, or an epoch this cannot read: red, no walk.
+ * This cannot see the group, so a closed or `left` group's rows above its
+ * last held epoch are the caller's (`walkTrigger` in protectedHistoryWalk).
+ */
 function onMessage(
   tag: TextNativeErrorTag,
   f: Fields,
   ctx: ProtectedErrorContext,
-) {
+): ProtectedErrorUi {
   switch (tag) {
     case "unknown_epoch": {
+      if (f.removed_self === true) return marker("removed_self", tag);
       const epoch = count(f.epoch);
-      const oldest = count(f.oldest_held);
-      const current = count(f.current);
-      if (epoch !== null && oldest !== null && epoch < oldest) {
-        return marker("sent_before_join", tag);
+      const current = currentEpoch(f.current);
+      if (epoch === null || current === null) {
+        return marker("decrypt_failed", tag);
       }
-      if (epoch !== null && current !== null && epoch > current) {
+      if (epoch > current) {
         return ctx.catchUpDone === true
           ? marker("decrypt_failed", tag)
           : none(tag);
+      }
+      if (epoch < current) {
+        return {
+          kind: "marker",
+          marker: "sent_before_join",
+          tag,
+          walk: true,
+        };
       }
       return marker("decrypt_failed", tag);
     }
@@ -858,6 +896,10 @@ export const PROTECTED_SERVER_ERROR_TYPES = [
   "RemovalReasonRequired",
   "ProtectedClientOutdated",
   "InSlowmode",
+  // S4 (design 9.2). `FeatureDisabled` stays the general type above: its
+  // history meaning is in `feature`, which the link write policy reads.
+  "ProtectHistoryMoved",
+  "HistoryLinkExists",
 ] as const;
 
 export type ProtectedServerErrorType =
@@ -908,6 +950,17 @@ const SERVER_RULES: Record<ProtectedServerErrorType, Rule> = {
   // successor create; any other op keeps the catch-all it had before.
   InSlowmode: (_f, c) =>
     c.op === "owner" ? notice("resecured_too_often", "") : catchAll(c),
+  // S4: the boundary moved under a protect. The bridge re-signs and retries
+  // (at most 5) and then reports the client reason `protect_busy`
+  // (`historyOwnerNotice`), so a raw one reaching the owner UI is a protect
+  // that did not land. Any other op never expects it and fails closed.
+  ProtectHistoryMoved: (_f, c) =>
+    c.op === "owner" ? notice("protect_failed", "") : catchAll(c),
+  // S4: this user's history link already stands, or the slots are taken.
+  // Done, logged by the bridge and never retried: nothing to show on the two
+  // ops that write links. Any other op never expects it and fails closed.
+  HistoryLinkExists: (_f, c) =>
+    c.op === "channel" || c.op === "owner" ? none("") : catchAll(c),
 };
 
 /**
@@ -1003,6 +1056,122 @@ export function protectedNoticeForError(
   return isNativeTag(err.type)
     ? mapNative(err, ctx)
     : mapServer(err.type, err, ctx);
+}
+
+// ---------------------------------------------------------------------------
+// S4 history: the walk's floor, owner failures, row notes (design 9.2, 9.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * How the `history_floor` timeline marker reads. `gray` and `before_join`
+ * are quiet lines (`before_join` reuses the S1 "Sent before this device
+ * joined." wording); `loud` names which of the three 9.2 notices to show.
+ */
+export type HistoryFloorNotice =
+  | { tone: "gray"; loud: null }
+  | { tone: "before_join"; loud: null }
+  | {
+      tone: "loud";
+      loud: "history_invalid" | "history_anchor" | "history_conflict";
+    };
+
+/**
+ * Where the history walk stopped, as the floor marker's tone. A stop this
+ * build does not know (a newer shell) is loud: earlier history was not
+ * loaded and that is never shown as an ordinary "before you joined" line.
+ */
+export function historyFloorNotice(stop: HistoryStop): HistoryFloorNotice {
+  switch (stop) {
+    case "hidden":
+      return { tone: "gray", loud: null };
+    case "missing":
+    case "genesis":
+      return { tone: "before_join", loud: null };
+    case "invalid":
+      return { tone: "loud", loud: "history_invalid" };
+    case "anchor_mismatch":
+    case "unanchored":
+      return { tone: "loud", loud: "history_anchor" };
+    case "conflict":
+      return { tone: "loud", loud: "history_conflict" };
+    default: {
+      const _x: never = stop;
+      return { tone: "loud", loud: "history_invalid" };
+    }
+  }
+}
+
+/** The owner's S4 history failures (design 9.2 "S4" owner rows). */
+export type HistoryOwnerNoticeKind =
+  | "protect_busy"
+  | "wipe_refused"
+  | "clock_behind"
+  | "history_mismatch"
+  | "history_too_large";
+
+/**
+ * Where an owner history failure shows. `protect_busy` (five
+ * `ProtectHistoryMoved` in a row), `wipe_refused` (a plain
+ * `InvalidOperation` on the wipe route: a legal hold, or not the owner) and
+ * `clock_behind` (`seat_list_invalid{reason: future_boundary}`) answer an
+ * action in the channel's protected settings, so they are inline errors
+ * there. The other two come from background link work and are toasts. A
+ * kind this build does not know stays an inline error: never a toast it has
+ * no copy for, never nothing.
+ */
+export function historyOwnerNotice(
+  kind: HistoryOwnerNoticeKind,
+): ProtectedToastKind | "inline" {
+  switch (kind) {
+    case "protect_busy":
+    case "wipe_refused":
+    case "clock_behind":
+      return "inline";
+    case "history_mismatch":
+      return "history_mismatch";
+    case "history_too_large":
+      return "history_too_large";
+    default: {
+      const _x: never = kind;
+      return "inline";
+    }
+  }
+}
+
+/** A note under a decrypted row, in display order. */
+export type RowNote =
+  | "sender_unverified"
+  | "sender_unverified_history"
+  | "timing_unverified"
+  | "below_boundary";
+
+/**
+ * The notes a decrypted row carries, in display order.
+ *
+ * - The sender note shows unless `sender_verified` is literally true. It is
+ *   the "(history)" variant when the row's epoch came from this session's
+ *   history walk (`fromHistory`) or native says `timing_unverified`; a live
+ *   unverified sender keeps the S1 note. Native reports no provenance, so
+ *   this is the closest the bridge can tell.
+ * - `timing_unverified`: only a literal true (an older shell sends no key).
+ * - `below_boundary`: an encrypted row listed at or below the boundary.
+ */
+export function rowNotes(
+  d: { sender_verified: boolean; timing_unverified: boolean },
+  ctx: { belowBoundary: boolean; fromHistory: boolean },
+): RowNote[] {
+  const notes: RowNote[] = [];
+  const timing = d.timing_unverified === true;
+  if (d.sender_verified !== true) {
+    notes.push(
+      ctx.fromHistory === true || timing
+        ? "sender_unverified_history"
+        : "sender_unverified",
+    );
+  }
+  if (timing) notes.push("timing_unverified");
+  if (ctx.belowBoundary === true) notes.push("below_boundary");
+  return notes;
 }
 
 // ---------------------------------------------------------------------------

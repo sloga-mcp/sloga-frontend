@@ -26,6 +26,12 @@
  *   resolved and at most `REMOVED_NAMES_LISTED_MAX`), and the owner page's
  *   note through `noticeCopy` (they will be left off); neither names a
  *   release cause, since any of the four gets there.
+ * - S4 (W4 lane L1c): the history copy. Every marker, history stop, toast,
+ *   note, divider, settings, backup and audit key has its own text; a walk
+ *   that stopped `hidden` never reads like a loud stop and only `unanchored`
+ *   promises another try; a new device "can read this channel's history"
+ *   only when the caller says history is visible; a count shows only as a
+ *   whole number; the S1 strings are the ones C0 had.
  *
  * `@lingui/core/macro` only runs inside the build, so a module hook swaps it
  * for a stand-in `t` that fills in the values. The asserted text is the
@@ -52,6 +58,12 @@ import {
 } from "./protectedRemovalReasonPolicy.ts";
 import type { ProtectedErrorUi } from "./protectedShield.ts";
 import { protectedNoticeForError } from "./protectedShield.ts";
+import type {
+  HistoryStop,
+  ProtectedMarkerKind,
+  ProtectedToastKind,
+  TimelineMarker,
+} from "./protectedTextTypes.ts";
 
 const COPY_URL = new URL("./protectedCopy.ts", import.meta.url).href;
 const MACRO_STUB = "protectedcopy-test:lingui-macro";
@@ -91,15 +103,26 @@ registerHooks({
 const {
   CLIENT_REASONS_WITH_COPY,
   REMOVED_NAMES_LISTED_MAX,
+  auditActionLabel,
+  auditCopy,
+  backupNoteCopy,
+  backupTextCopy,
   clientReasonCopy,
+  dividerCopy,
   errorUiCopy,
+  markerCopy,
+  messageCopy,
   noticeCopy,
   ownerKeyCopy,
   reasonEmptyCopy,
   reasonProblemCopy,
   reasonTooLongCopy,
   removalReasonHintCopy,
+  rowNoteCopy,
+  rowStateCopy,
   settingsCopy,
+  timelineCopy,
+  toastCopy,
 }: typeof import("./protectedCopy.ts") = await import(COPY_URL);
 
 const AUTHORITY_NEEDS_V2 =
@@ -140,10 +163,11 @@ function ownerCopy(failure: unknown): string | null {
 // --------------------------------------------------- authority_needs_v2 --
 
 test("authority_needs_v2: the owner UI shows its own copy, not the catch-all", () => {
-  // U11b added the four `moveOwnerKey` refusals (spec'd below).
+  // U11b added the four `moveOwnerKey` refusals (spec'd below); S4 added
+  // `protect_busy` (spec'd with the S4 copy).
   assert.deepEqual(
     [...CLIENT_REASONS_WITH_COPY],
-    ["authority_needs_v2", ...Object.keys(MOVE_REFUSALS)],
+    ["authority_needs_v2", ...Object.keys(MOVE_REFUSALS), "protect_busy"],
   );
   const text = ownerCopy(authorityFailure);
   assert.equal(text, AUTHORITY_NEEDS_V2);
@@ -606,5 +630,652 @@ test("FXP F-L6: a device holding no group (its own join was refused; signer or n
   assert.notEqual(
     noticeCopy("join_stalled", null, null, null, ctx),
     NO_GROUP_REFUSED,
+  );
+});
+
+// ------------------------------------------------- S4 history copy (L1c) --
+
+const MESSAGE_CATCH_ALL = "Something went wrong verifying this message.";
+const SENT_BEFORE_JOIN = "Sent before this device joined.";
+const SENDER_NOT_VERIFIED =
+  "The sender's device isn't verified on this device yet.";
+
+/**
+ * Every marker kind and its text. `Record` over the union: a kind added to
+ * `ProtectedMarkerKind` fails tsc here. All but `removed_self` are S1 / S2
+ * arms, as they read at C0.
+ */
+const MARKERS: Record<ProtectedMarkerKind, string> = {
+  sent_before_join: SENT_BEFORE_JOIN,
+  removed_self: "Sent after you were removed.",
+  unknown_key: "Sent with a key this device never had.",
+  decrypt_failed: "Couldn't decrypt this message.",
+  unverified_sender: "Couldn't verify the sender. This message may be forged.",
+  removed_sender: "Sent by someone who was removed from this channel.",
+  replay: "Duplicate message (replayed).",
+  malformed: "Unreadable message.",
+  unsupported_version: "Update Sloga to see this message.",
+  unencrypted_row:
+    "Unencrypted message in a protected channel. It did not come from a member's protected app.",
+  error: MESSAGE_CATCH_ALL,
+};
+
+const FLOOR_HIDDEN = "History from before you joined isn't shared here.";
+const FLOOR_INVALID = "Earlier history couldn't be verified and wasn't loaded.";
+const FLOOR_CONFLICT =
+  "Two different versions of this channel's earlier history were offered, so earlier history wasn't loaded.";
+const FLOOR_UNANCHORED =
+  "Earlier history couldn't be confirmed yet. Sloga will try again later.";
+
+/** Every walk stop and the line at the history floor (design 9.2). */
+const FLOORS: Record<HistoryStop, string> = {
+  hidden: FLOOR_HIDDEN,
+  missing: SENT_BEFORE_JOIN,
+  genesis: SENT_BEFORE_JOIN,
+  invalid: FLOOR_INVALID,
+  anchor_mismatch: FLOOR_INVALID,
+  conflict: FLOOR_CONFLICT,
+  unanchored: FLOOR_UNANCHORED,
+};
+
+/** Every toast kind and its text; the first two as they read at C0. */
+const TOASTS: Record<ProtectedToastKind, string> = {
+  unsolicited_welcome:
+    "Blocked an unexpected invitation to a protected channel.",
+  owner_notice:
+    "Another of your devices changed a protected channel. Open the channel to see what changed.",
+  history_mismatch:
+    "History keys shared for a protected channel don't match. New members may not be able to read some earlier messages.",
+  history_too_large:
+    "Some earlier history in a protected channel can't be shared with new members: too many people joined or left at once.",
+};
+
+const ROW_NOTES = {
+  sender_unverified: SENDER_NOT_VERIFIED,
+  sender_unverified_history: "Sender couldn't be verified (history).",
+  timing_unverified: "Timing of this message can't be verified.",
+  below_boundary: "Listed among the earlier, unprotected messages.",
+} as const;
+
+const DIVIDER_KEPT = "Messages above weren't protected";
+const DIVIDER_WIPED = "Earlier unprotected messages were deleted.";
+
+const BACKUP_TEXT = {
+  oldest:
+    "The oldest history from your protected channels didn't fit in this backup.",
+  all: "History from your protected channels didn't fit in this backup.",
+  skipped_partial:
+    "Some history from your protected channels couldn't be restored.",
+  skipped_all:
+    "None of the history from your protected channels could be restored.",
+} as const;
+
+/** The settings page strings C0 had, with the values the page passes. */
+const SETTINGS_S1: Record<string, string> = {
+  title: "Protected channel",
+  description:
+    "Messages in a protected channel are end-to-end encrypted. Only members you give a seat can read and send messages, on devices that support Protected channels.",
+  protectButton: "Protect this channel",
+  protectConfirmTitle: "Protect this channel?",
+  protectConfirmBody:
+    "This can't be undone. A protected channel can't go back to a normal channel.",
+  protecting: "Protecting\u2026",
+  ownerOnly: "Only the server owner can manage this protected channel.",
+  seatsHeading: "Seats",
+  seatsUsed: "Seats used: 2 of 5",
+  deviceCap: "Each member can use up to 3 devices.",
+  addSeats: "Add seats",
+  removeSeat: "Remove seat",
+  noSeats: "No one has a seat yet.",
+  ownerBadge: "Owner",
+  publishInFlight:
+    "Saving the member list. You can make more changes when this finishes.",
+  seatsSaved: "Seats updated.",
+  typeTogglesHidden:
+    "Voice and announcement settings aren't available for protected channels.",
+};
+
+/** The S4 settings strings; the wipe count 7 is the only number. */
+const SETTINGS_S4: Record<string, string> = {
+  protectWithHistory:
+    "Messages already in #general stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted.",
+  deleteEarlierOption: "Also delete the earlier messages",
+  wipeDescription:
+    "Earlier messages and their files will be deleted from Sloga's servers. This can't be undone. Copies on people's devices, forwards, crossposts and reports may remain.",
+  historyToggle: "New members can read earlier messages",
+  historyVisibleDescription:
+    "People who join later can read messages sent while this is on, and so can a new device of anyone in the channel. Anyone in the channel can still share what they read.",
+  historyHiddenDescription:
+    "New members only see messages sent after they join.",
+  historyRemovalNote:
+    "If you're removed from this channel, you keep what you've already read on this device. Signing out without a key backup loses it.",
+  wipeButton: "Delete the earlier unprotected messages",
+  wipeRequested: "The earlier messages are being deleted from Sloga's servers.",
+  wipeDone: "Earlier messages deleted from Sloga's servers: 7",
+  historyRetryLater:
+    "Earlier history couldn't be loaded right now. Try again later.",
+};
+
+const SETTINGS_ERRORS = {
+  protect_busy:
+    "This channel is too busy to protect right now. Try again in a quiet moment.",
+  wipe_refused: "Earlier messages couldn't be deleted right now.",
+  clock_behind:
+    "This device's clock is behind the newest message. Check the date and time settings and try again.",
+} as const;
+
+const WIPE_DONE_NO_COUNT =
+  "Earlier messages were deleted from Sloga's servers.";
+
+const AUDIT = {
+  protect: "Ann protected the channel general",
+  protectWiped:
+    "Ann protected the channel general and chose to delete its earlier messages",
+  wipeRequest: "Ann started deleting the earlier messages in general",
+  wipeDone: "The earlier messages in general were deleted (7)",
+} as const;
+
+/** A history floor marker as the manager records it (`TimelineMarker`). */
+const floorMarker = (stop: HistoryStop): TimelineMarker => ({
+  kind: "history_floor",
+  channelId: "01CHANNEL00000000000000000",
+  groupId: "01GROUP0000000000000000000",
+  epoch: 3,
+  stop,
+  atMs: 1,
+});
+
+const newDevice: TimelineMarker = {
+  kind: "new_device",
+  channelId: "01CHANNEL00000000000000000",
+  groupId: "01GROUP0000000000000000000",
+  epoch: 3,
+  userId: "01USER00000000000000000000",
+  deviceId: "DEVICEID",
+  atMs: 1,
+};
+
+/** The settings strings as the page reads them. */
+function settingsNow(): Record<string, string> {
+  return {
+    title: settingsCopy.title(),
+    description: settingsCopy.description(),
+    protectButton: settingsCopy.protectButton(),
+    protectConfirmTitle: settingsCopy.protectConfirmTitle(),
+    protectConfirmBody: settingsCopy.protectConfirmBody(),
+    protecting: settingsCopy.protecting(),
+    ownerOnly: settingsCopy.ownerOnly(),
+    seatsHeading: settingsCopy.seatsHeading(),
+    seatsUsed: settingsCopy.seatsUsed(2, 5),
+    deviceCap: settingsCopy.deviceCap(3),
+    addSeats: settingsCopy.addSeats(),
+    removeSeat: settingsCopy.removeSeat(),
+    noSeats: settingsCopy.noSeats(),
+    ownerBadge: settingsCopy.ownerBadge(),
+    publishInFlight: settingsCopy.publishInFlight(),
+    seatsSaved: settingsCopy.seatsSaved(),
+    typeTogglesHidden: settingsCopy.typeTogglesHidden(),
+    protectWithHistory: settingsCopy.protectWithHistory("general"),
+    deleteEarlierOption: settingsCopy.deleteEarlierOption(),
+    wipeDescription: settingsCopy.wipeDescription(),
+    historyToggle: settingsCopy.historyToggle(),
+    historyVisibleDescription: settingsCopy.historyVisibleDescription(),
+    historyHiddenDescription: settingsCopy.historyHiddenDescription(),
+    historyRemovalNote: settingsCopy.historyRemovalNote(),
+    wipeButton: settingsCopy.wipeButton(),
+    wipeRequested: settingsCopy.wipeRequested(),
+    wipeDone: settingsCopy.wipeDone(7),
+    historyRetryLater: settingsCopy.historyRetryLater(),
+  };
+}
+
+test("S4 markers: removed_self reads its own line, not the sent-before-join one", () => {
+  assert.equal(markerCopy("removed_self"), "Sent after you were removed.");
+  assert.notEqual(markerCopy("removed_self"), SENT_BEFORE_JOIN);
+  assert.notEqual(markerCopy("removed_self"), MESSAGE_CATCH_ALL);
+});
+
+test("S4 markers: every marker kind has its own text and the S1 arms are unchanged", () => {
+  const kinds = Object.keys(MARKERS) as ProtectedMarkerKind[];
+  assert.equal(kinds.length, 11);
+  for (const kind of kinds) {
+    assert.equal(markerCopy(kind), MARKERS[kind], kind);
+  }
+  assert.equal(new Set(kinds.map((k) => markerCopy(k))).size, kinds.length);
+});
+
+test("S4 history floor: every stop has its line and names no one", () => {
+  const stops = Object.keys(FLOORS) as HistoryStop[];
+  assert.equal(stops.length, 7);
+  for (const stop of stops) {
+    const text = timelineCopy(floorMarker(stop), "Ann");
+    assert.equal(text, FLOORS[stop], stop);
+    assert.doesNotMatch(text, /Ann|01CHANNEL|01GROUP|\d/, stop);
+    // The history-visible option belongs to a new device only.
+    assert.equal(
+      timelineCopy(floorMarker(stop), "Ann", { historyVisible: true }),
+      FLOORS[stop],
+      stop,
+    );
+  }
+});
+
+test("S4 history floor: a hidden stop never reads like a loud one", () => {
+  const hidden = timelineCopy(floorMarker("hidden"), "");
+  assert.equal(hidden, FLOOR_HIDDEN);
+  for (const stop of [
+    "invalid",
+    "anchor_mismatch",
+    "conflict",
+    "unanchored",
+  ] as const) {
+    assert.notEqual(timelineCopy(floorMarker(stop), ""), hidden, stop);
+  }
+  assert.notEqual(hidden, SENT_BEFORE_JOIN);
+  // Four different lines in all, plus the S1 marker's.
+  assert.equal(new Set(Object.values(FLOORS)).size, 5);
+});
+
+test("S4 history floor: missing and genesis read the S1 sent-before-join line", () => {
+  for (const stop of ["missing", "genesis"] as const) {
+    assert.equal(
+      timelineCopy(floorMarker(stop), ""),
+      markerCopy("sent_before_join"),
+      stop,
+    );
+  }
+});
+
+test("S4 history floor: only unanchored promises another try", () => {
+  const stops = Object.keys(FLOORS) as HistoryStop[];
+  for (const stop of stops) {
+    const text = timelineCopy(floorMarker(stop), "");
+    assert.equal(/try again|later/i.test(text), stop === "unanchored", stop);
+  }
+  // A mismatched anchor is a refused candidate, as `invalid` is.
+  assert.equal(timelineCopy(floorMarker("anchor_mismatch"), ""), FLOOR_INVALID);
+  assert.equal(timelineCopy(floorMarker("unanchored"), ""), FLOOR_UNANCHORED);
+});
+
+test("S4 history floor: every refused stop says earlier history wasn't loaded", () => {
+  for (const stop of ["invalid", "anchor_mismatch", "conflict"] as const) {
+    assert.match(timelineCopy(floorMarker(stop), ""), /wasn't loaded/, stop);
+  }
+  assert.match(timelineCopy(floorMarker("unanchored"), ""), /couldn't be/);
+});
+
+test("S4 timeline: a new device can read history only when the caller says history is visible", () => {
+  const visible = "Ann added a new device. It can read this channel's history.";
+  const s1 = "Ann added a new device.";
+  assert.equal(
+    timelineCopy(newDevice, "Ann", { historyVisible: true }),
+    visible,
+  );
+  assert.equal(timelineCopy(newDevice, "Ann"), s1);
+  assert.equal(timelineCopy(newDevice, "Ann", {}), s1);
+  assert.equal(timelineCopy(newDevice, "Ann", { historyVisible: false }), s1);
+  // Only a literal true: an older caller's value never widens the claim.
+  for (const loose of [undefined, null, 1, "true", "visible"]) {
+    assert.equal(
+      timelineCopy(newDevice, "Ann", { historyVisible: loose as never }),
+      s1,
+      String(loose),
+    );
+  }
+  // The S1 forced-removal line is unchanged, with or without the option.
+  const removed: TimelineMarker = {
+    kind: "forced_removal",
+    channelId: "01CHANNEL00000000000000000",
+    groupId: "01GROUP0000000000000000000",
+    epoch: 3,
+    userId: "01USER00000000000000000000",
+    atMs: 1,
+  };
+  const forced =
+    "Ann was removed by the server and can't rejoin until the owner re-seats them.";
+  assert.equal(timelineCopy(removed, "Ann"), forced);
+  assert.equal(timelineCopy(removed, "Ann", { historyVisible: true }), forced);
+});
+
+test("S4 toasts: every toast kind has its own text and the S2 ones are unchanged", () => {
+  const kinds = Object.keys(TOASTS) as ProtectedToastKind[];
+  assert.equal(kinds.length, 4);
+  for (const kind of kinds) assert.equal(toastCopy(kind), TOASTS[kind], kind);
+  assert.equal(new Set(kinds.map((k) => toastCopy(k))).size, kinds.length);
+  for (const kind of ["history_mismatch", "history_too_large"] as const) {
+    assert.notEqual(toastCopy(kind), CATCH_ALL, kind);
+  }
+});
+
+test("S4 row notes: four notes, each its own, the S1 note unchanged", () => {
+  const kinds = Object.keys(ROW_NOTES) as (keyof typeof ROW_NOTES)[];
+  for (const kind of kinds) assert.equal(rowNoteCopy(kind), ROW_NOTES[kind]);
+  assert.equal(new Set(kinds.map((k) => rowNoteCopy(k))).size, 4);
+  // The S1 note is the one message rows already show.
+  assert.equal(rowNoteCopy("sender_unverified"), SENDER_NOT_VERIFIED);
+  assert.equal(messageCopy.senderNotVerified(), SENDER_NOT_VERIFIED);
+});
+
+test("S4 row notes: the history sender note is never the S1 text", () => {
+  assert.notEqual(
+    rowNoteCopy("sender_unverified_history"),
+    rowNoteCopy("sender_unverified"),
+  );
+  assert.match(rowNoteCopy("sender_unverified_history"), /\(history\)/);
+  // No note reads as a pass.
+  for (const text of Object.values(ROW_NOTES)) {
+    assert.doesNotMatch(text, /\bis verified\b|\bwas verified\b/, text);
+  }
+});
+
+test("S4 row state: checking has its own line", () => {
+  // The catalog's existing msgid (R-W4-27), written as "Decrypting" is.
+  assert.equal(
+    rowStateCopy("checking"),
+    "Checking" + String.fromCodePoint(0x2026),
+  );
+  assert.notEqual(rowStateCopy("checking"), messageCopy.pending());
+  assert.notEqual(rowStateCopy("checking"), markerCopy("unencrypted_row"));
+});
+
+test("S4 divider: kept says the messages above weren't protected, wiped that they were deleted", () => {
+  assert.equal(dividerCopy("kept"), DIVIDER_KEPT);
+  assert.equal(dividerCopy("wiped"), DIVIDER_WIPED);
+  assert.notEqual(dividerCopy("kept"), dividerCopy("wiped"));
+});
+
+test("S4 settings: the S1 strings are unchanged and the page has exactly these keys", () => {
+  const now = settingsNow();
+  for (const [key, want] of Object.entries(SETTINGS_S1)) {
+    assert.equal(now[key], want, key);
+  }
+  assert.deepEqual(
+    Object.keys(settingsCopy).sort(),
+    [
+      ...Object.keys(SETTINGS_S1),
+      ...Object.keys(SETTINGS_S4),
+      "historyError",
+    ].sort(),
+  );
+});
+
+test("S4 settings: each history string has its own text", () => {
+  const now = settingsNow();
+  for (const [key, want] of Object.entries(SETTINGS_S4)) {
+    assert.equal(now[key], want, key);
+  }
+  assert.equal(
+    new Set(Object.values(now)).size,
+    Object.keys(now).length,
+    "no two settings keys share a string",
+  );
+  // The two toggle descriptions say opposite things.
+  assert.notEqual(
+    settingsCopy.historyVisibleDescription(),
+    settingsCopy.historyHiddenDescription(),
+  );
+});
+
+test("S4 settings: protect with history names the channel only when it has a name", () => {
+  const unnamed =
+    "Messages already in this channel stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted.";
+  for (const blank of [null, "", "   "]) {
+    assert.equal(settingsCopy.protectWithHistory(blank), unnamed);
+  }
+  assert.equal(
+    settingsCopy.protectWithHistory(" general "),
+    SETTINGS_S4.protectWithHistory,
+  );
+});
+
+test("S4 settings: the wipe result shows only a whole count of 0 or more", () => {
+  assert.equal(settingsCopy.wipeDone(7), SETTINGS_S4.wipeDone);
+  assert.equal(
+    settingsCopy.wipeDone(0),
+    "Earlier messages deleted from Sloga's servers: 0",
+  );
+  for (const bad of [
+    null,
+    undefined,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    2 ** 53,
+    "7",
+    {},
+  ]) {
+    assert.equal(
+      settingsCopy.wipeDone(bad as never),
+      WIPE_DONE_NO_COUNT,
+      String(bad),
+    );
+  }
+});
+
+test("S4 settings: each inline error has its own text", () => {
+  const kinds = Object.keys(
+    SETTINGS_ERRORS,
+  ) as (keyof typeof SETTINGS_ERRORS)[];
+  for (const kind of kinds) {
+    assert.equal(settingsCopy.historyError(kind), SETTINGS_ERRORS[kind], kind);
+    assert.notEqual(settingsCopy.historyError(kind), CATCH_ALL, kind);
+  }
+  assert.equal(new Set(kinds.map((k) => settingsCopy.historyError(k))).size, 3);
+  // A refused wipe gives no cause.
+  assert.doesNotMatch(SETTINGS_ERRORS.wipe_refused, /hold|legal|owner/i);
+});
+
+test("S4 protect_busy: the client refusal reads the busy line through the owner UI", () => {
+  const busy =
+    "This channel is too busy to protect right now. Try again in a quiet moment.";
+  const failure = { source: "client", reason: "protect_busy" };
+  assert.equal(ownerCopy(failure), busy);
+  assert.equal(clientReasonCopy("protect_busy"), busy);
+  // One string: the settings page's inline error is the same line.
+  assert.equal(settingsCopy.historyError("protect_busy"), busy);
+  assert.notEqual(ownerCopy(failure), CATCH_ALL);
+  assert.notEqual(ownerCopy(failure), noticeCopy("protect_failed"));
+  // Only a client failure: the same reason from native or server keeps its
+  // own mapping.
+  for (const other of [
+    { source: "native", reason: "protect_busy" },
+    { source: "server", reason: "protect_busy" },
+    { reason: "protect_busy" },
+  ]) {
+    assert.notEqual(ownerCopy(other), busy, JSON.stringify(other));
+  }
+});
+
+test("S4 backup: four lines, each its own", () => {
+  const kinds = Object.keys(BACKUP_TEXT) as (keyof typeof BACKUP_TEXT)[];
+  for (const kind of kinds) {
+    assert.equal(backupTextCopy(kind), BACKUP_TEXT[kind], kind);
+  }
+  assert.equal(new Set(kinds.map((k) => backupTextCopy(k))).size, 4);
+  assert.equal(
+    backupNoteCopy.replacesOldDevice(),
+    "Restoring replaces your old device.",
+  );
+  assert.equal(
+    backupNoteCopy.textBudget(),
+    "History from protected channels uses up to 2 MB of your backup, so fewer direct messages may fit.",
+  );
+});
+
+test("S4 backup: a partly restored history never reads like a wholly skipped one", () => {
+  assert.notEqual(
+    backupTextCopy("skipped_partial"),
+    backupTextCopy("skipped_all"),
+  );
+  assert.match(backupTextCopy("skipped_partial"), /^Some /);
+  assert.match(backupTextCopy("skipped_all"), /^None /);
+  assert.notEqual(backupTextCopy("oldest"), backupTextCopy("all"));
+  assert.match(backupTextCopy("oldest"), /^The oldest /);
+});
+
+test("S4 audit: the protect and wipe sentences and the two filter labels", () => {
+  const who = { actor: "Ann", channel: "general" };
+  assert.equal(auditCopy("channel_protect", who), AUDIT.protect);
+  assert.equal(
+    auditCopy("channel_protect", { ...who, wiped: false }),
+    AUDIT.protect,
+  );
+  assert.equal(
+    auditCopy("channel_protect", { ...who, wiped: true }),
+    AUDIT.protectWiped,
+  );
+  assert.equal(auditCopy("channel_history_wipe", who), AUDIT.wipeRequest);
+  assert.equal(
+    auditCopy("channel_history_wipe", { ...who, count: null }),
+    AUDIT.wipeRequest,
+  );
+  assert.equal(
+    auditCopy("channel_history_wipe", { ...who, count: 7 }),
+    AUDIT.wipeDone,
+  );
+  assert.equal(
+    auditCopy("channel_history_wipe", { ...who, count: 0 }),
+    "The earlier messages in general were deleted (0)",
+  );
+  assert.equal(new Set(Object.values(AUDIT)).size, 4);
+  assert.equal(auditActionLabel("channel_protect"), "Protect channel");
+  assert.equal(
+    auditActionLabel("channel_history_wipe"),
+    "Delete earlier messages",
+  );
+});
+
+test("S4 audit: only a literal true is a wipe and only a whole count is shown", () => {
+  const who = { actor: "Ann", channel: "general" };
+  for (const loose of ["false", "true", 1, {}, null]) {
+    assert.equal(
+      auditCopy("channel_protect", { ...who, wiped: loose as never }),
+      AUDIT.protect,
+      String(loose),
+    );
+  }
+  for (const bad of ["7", -1, 1.5, Number.NaN, 2 ** 53, {}]) {
+    assert.equal(
+      auditCopy("channel_history_wipe", { ...who, count: bad as never }),
+      AUDIT.wipeRequest,
+      String(bad),
+    );
+  }
+  // A count belongs to the wipe entry only, and a wipe flag to the protect.
+  assert.equal(
+    auditCopy("channel_protect", { ...who, count: 7 }),
+    AUDIT.protect,
+  );
+  assert.equal(
+    auditCopy("channel_history_wipe", { ...who, wiped: true }),
+    AUDIT.wipeRequest,
+  );
+});
+
+test("S4 copy: every string is its own, plain ASCII, and carries no placeholder, id or number but the wipe count", () => {
+  // key -> [text, the digits it may carry]
+  const all: Record<string, [string, string]> = {
+    "marker.removed_self": [markerCopy("removed_self"), ""],
+    "floor.hidden": [timelineCopy(floorMarker("hidden"), "Ann"), ""],
+    "floor.invalid": [timelineCopy(floorMarker("invalid"), "Ann"), ""],
+    "floor.conflict": [timelineCopy(floorMarker("conflict"), "Ann"), ""],
+    "floor.unanchored": [timelineCopy(floorMarker("unanchored"), "Ann"), ""],
+    "timeline.new_device_history": [
+      timelineCopy(newDevice, "Ann", { historyVisible: true }),
+      "",
+    ],
+    "toast.history_mismatch": [toastCopy("history_mismatch"), ""],
+    "toast.history_too_large": [toastCopy("history_too_large"), ""],
+    "note.sender_unverified_history": [
+      rowNoteCopy("sender_unverified_history"),
+      "",
+    ],
+    "note.timing_unverified": [rowNoteCopy("timing_unverified"), ""],
+    "note.below_boundary": [rowNoteCopy("below_boundary"), ""],
+    "divider.kept": [dividerCopy("kept"), ""],
+    "divider.wiped": [dividerCopy("wiped"), ""],
+    "settings.protectWithHistoryUnnamed": [
+      settingsCopy.protectWithHistory(null),
+      "",
+    ],
+    "settings.wipeDoneNoCount": [settingsCopy.wipeDone(null), ""],
+    "backup.replacesOldDevice": [backupNoteCopy.replacesOldDevice(), ""],
+    "backup.textBudget": [backupNoteCopy.textBudget(), "2"],
+    "audit.label.protect": [auditActionLabel("channel_protect"), ""],
+    "audit.label.wipe": [auditActionLabel("channel_history_wipe"), ""],
+    "audit.protect": [AUDIT.protect, ""],
+    "audit.protectWiped": [AUDIT.protectWiped, ""],
+    "audit.wipeRequest": [AUDIT.wipeRequest, ""],
+    "audit.wipeDone": [AUDIT.wipeDone, "7"],
+  };
+  const now = settingsNow();
+  for (const key of Object.keys(SETTINGS_S4)) {
+    all[`settings.${key}`] = [now[key], key === "wipeDone" ? "7" : ""];
+  }
+  for (const kind of Object.keys(SETTINGS_ERRORS)) {
+    all[`settings.error.${kind}`] = [
+      settingsCopy.historyError(kind as keyof typeof SETTINGS_ERRORS),
+      "",
+    ];
+  }
+  for (const kind of Object.keys(BACKUP_TEXT)) {
+    all[`backup.${kind}`] = [
+      backupTextCopy(kind as keyof typeof BACKUP_TEXT),
+      "",
+    ];
+  }
+  // `rowStateCopy("checking")` is not here: it reuses a msgid the catalog
+  // already had, ellipsis character included.
+  assert.equal(Object.keys(all).length, 41);
+
+  const seen = new Map<string, string>();
+  // The strings that were there before S4 count too.
+  for (const [kind, text] of Object.entries(MARKERS)) {
+    if (kind !== "removed_self") seen.set(text, `S1 marker ${kind}`);
+  }
+  for (const [key, text] of Object.entries(SETTINGS_S1)) {
+    seen.set(text, `S1 settings ${key}`);
+  }
+  for (const text of [
+    CATCH_ALL,
+    SENDER_NOT_VERIFIED,
+    TOASTS.unsolicited_welcome,
+    TOASTS.owner_notice,
+    timelineCopy(newDevice, "Ann"),
+    messageCopy.pending(),
+    messageCopy.tsSkew(),
+  ]) {
+    seen.set(text, "S1");
+  }
+  for (const [key, [text, digits]] of Object.entries(all)) {
+    assert.ok(text.length > 0, key);
+    assert.equal(seen.get(text), undefined, `${key} repeats ${seen.get(text)}`);
+    seen.set(text, key);
+    // Printable ASCII: no dash or ellipsis character, no control character.
+    assert.match(text, /^[\x20-\x7e]+$/, key);
+    assert.doesNotMatch(text, /[{}$!]|undefined|null|NaN|\[object/, key);
+    // Nothing shaped like an id (a ULID is 26 characters of base 32).
+    assert.doesNotMatch(text, /[0-9A-HJKMNP-TV-Z]{26}/, key);
+    assert.equal(text.replace(/\D/g, ""), digits, key);
+    assert.equal(text, text.trim(), key);
+  }
+});
+
+test("S4 copy: a kind this build does not know reads the fail-closed line", () => {
+  assert.equal(
+    timelineCopy(floorMarker("later_stop" as never), "Ann"),
+    CATCH_ALL,
+  );
+  assert.equal(markerCopy("later_kind" as never), MESSAGE_CATCH_ALL);
+  assert.equal(toastCopy("later_kind" as never), CATCH_ALL);
+  assert.equal(rowNoteCopy("later_kind" as never), MESSAGE_CATCH_ALL);
+  assert.equal(rowStateCopy("later_kind" as never), MESSAGE_CATCH_ALL);
+  assert.equal(dividerCopy("later_kind" as never), CATCH_ALL);
+  assert.equal(settingsCopy.historyError("later_kind" as never), CATCH_ALL);
+  assert.equal(backupTextCopy("later_kind" as never), CATCH_ALL);
+  assert.equal(
+    auditCopy("later_action" as never, { actor: "Ann", channel: "general" }),
+    "Ann performed an action",
   );
 });
