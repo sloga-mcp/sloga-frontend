@@ -32,11 +32,13 @@ import {
   Unreads,
   UserStatus,
   iconSize,
+  isSlogaStaff,
   slogaBurstKeyframes,
   unreadHolepunch,
   unreadTone,
   usePresenceText,
 } from "@revolt/ui";
+import { DisplayName } from "@revolt/ui/components/features/DisplayName";
 
 import MdAdd from "@material-design-icons/svg/filled/add.svg?component-solid";
 import MdChevronRight from "@material-design-icons/svg/filled/chevron_right.svg?component-solid";
@@ -442,7 +444,13 @@ export const ServerList = (props: Props) => {
           placement="right"
           content={() => (
             <Column>
-              <span>{props.user.username}</span>
+              <span>
+                <DisplayName
+                  user={props.user}
+                  name={props.user.username}
+                  brand={isSlogaStaff(props.user)}
+                />
+              </span>
               <Text class="label" size="small">
                 {presence.pickerLabel(props.user.presence)}
               </Text>
@@ -468,7 +476,13 @@ export const ServerList = (props: Props) => {
             />
             <Show when={railExpanded()}>
               <RailUserText>
-                <RailLabel>{props.user.displayName}</RailLabel>
+                <RailLabel>
+                  <DisplayName
+                    user={props.user}
+                    name={props.user.displayName}
+                    brand={isSlogaStaff(props.user)}
+                  />
+                </RailLabel>
                 <RailSubLabel>
                   {props.user.username}#{props.user.discriminator}
                 </RailSubLabel>

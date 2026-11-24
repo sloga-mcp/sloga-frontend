@@ -34,8 +34,10 @@ import {
   Row,
   Text,
   UserStatus,
+  isSlogaStaff,
   usePresenceText,
 } from "@revolt/ui";
+import { DisplayName } from "@revolt/ui/components/features/DisplayName";
 
 import MdContactPage from "@material-design-icons/svg/outlined/contact_page.svg?component-solid";
 import MdDelete from "@material-design-icons/svg/outlined/delete.svg?component-solid";
@@ -171,7 +173,13 @@ export function UserMenu(props: Props) {
                     src={user()?.animatedAvatarURL}
                   />
                   <Column gap="none">
-                    <Text>{user()?.displayName}</Text>
+                    <Text>
+                      <DisplayName
+                        user={user()}
+                        name={user()?.displayName ?? ""}
+                        brand={isSlogaStaff(user())}
+                      />
+                    </Text>
                     <Text class="label">
                       {user()?.username}#{user()?.discriminator}
                     </Text>
