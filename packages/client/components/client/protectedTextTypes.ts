@@ -34,6 +34,7 @@ import type {
   MlsSubmitCommit,
 } from "./e2ee";
 import type { ResecureInputs } from "./protectedResecurePolicy";
+import type { RowOps, WalkBatch } from "./protectedTextMessages";
 
 export type { MlsRemovalReason, MlsRemovedReason } from "./e2ee";
 
@@ -1546,6 +1547,13 @@ export interface ProtectedTextPort {
    * from a server list.
    */
   formatsV2?(): boolean;
+  /**
+   * S4 (R-W4-9): the root advert's `history_setting` as the bridge holds
+   * it. Optional: absent reads as false. While it is not `true` the manager
+   * writes and reads no history link, runs no walk and refuses every
+   * history owner call.
+   */
+  historySetting?(): boolean;
 }
 
 /** Why a refresh runs (D8, D26). */
@@ -1651,12 +1659,38 @@ export interface RecoveryPlan {
 
 /** B2 (`protectedTextOwner.ts`) signatures, injected by B5. */
 export interface OwnerFlows {
+  /**
+   * `opts` (S4, R-W4-11, R-W4-23): `withHistory` protects a channel that
+   * already has messages (a boundary genesis); `wipe` signs it
+   * `pre_history: "wiped"`. Absent = the S1 protect.
+   */
   protect(
     ops: GroupOps,
     port: ProtectedTextPort,
     channelId: string,
     seats: string[],
     deviceCap: number,
+    opts?: { withHistory: boolean; wipe: boolean },
+  ): Promise<void>;
+  /**
+   * S4 (design 6.3 "History setting"): sign and publish the next list with
+   * `history: "visible" | "hidden"`. Optional only until the bridge's deps
+   * literal lists it; the manager refuses `setHistoryVisible` without it.
+   */
+  setHistory?(
+    ops: GroupOps,
+    port: ProtectedTextPort,
+    channelId: string,
+    visible: boolean,
+  ): Promise<void>;
+  /**
+   * S4 (design 4.9 "S4"): sign the one-change wipe list and POST it.
+   * Optional for the same reason as `setHistory`.
+   */
+  wipeHistory?(
+    ops: GroupOps,
+    port: ProtectedTextPort,
+    channelId: string,
   ): Promise<void>;
   /**
    * `reason` (S2 D40): the ALREADY-VALIDATED audit-log reason
@@ -1729,11 +1763,17 @@ export interface MessageFlows {
     silent: boolean,
     key: string,
   ): Promise<ProtectedSendOutcome>;
+  /**
+   * S4: `ops` may also carry the history lookups and the walk
+   * (`HistoryOps`); `opts.batch` is the `decryptHistory` call the row
+   * belongs to.
+   */
   decryptRow(
-    ops: GroupOps,
+    ops: RowOps,
     port: ProtectedTextPort,
     row: ProtectedMessageRow,
     live: boolean,
+    opts?: { batch?: WalkBatch },
   ): Promise<ProtectedMessageView>;
   markerForError(err: unknown): ProtectedMarkerKind;
 }
@@ -1782,7 +1822,32 @@ export interface ProtectedTextManagerApi {
   channelProtected(channelId: string): void;
   confirmOwnerChange(channelId: string): Promise<void>;
   recreateGroup(channelId: string): Promise<void>;
-  protect(channelId: string, seats: string[], deviceCap: number): Promise<void>;
+  /**
+   * `opts` (S4): see `OwnerFlows.protect`. With history opts set it is
+   * refused while `port.historySetting()` is not true.
+   */
+  protect(
+    channelId: string,
+    seats: string[],
+    deviceCap: number,
+    opts?: { withHistory: boolean; wipe: boolean },
+  ): Promise<void>;
+  /**
+   * S4: `OwnerFlows.setHistory`, then this device's self-Update when the
+   * setting changed (design 6.3). Refused while the history flag is off.
+   */
+  setHistoryVisible(channelId: string, visible: boolean): Promise<void>;
+  /**
+   * S4: `OwnerFlows.wipeHistory`. Only this call starts a wipe; refused
+   * while the history flag is off.
+   */
+  wipeHistory(channelId: string): Promise<void>;
+  /**
+   * S4: start (or join) the channel's history walk from the native
+   * `history_floor`. Nothing while the history flag is off. Never a
+   * security input.
+   */
+  walkHistory(channelId: string): void;
   /** `reason`: see `OwnerFlows.setSeats`; re-validated before it is sent. */
   setSeats(
     channelId: string,

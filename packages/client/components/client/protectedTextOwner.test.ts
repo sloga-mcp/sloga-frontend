@@ -49,6 +49,8 @@ const _ownerFlows: OwnerFlows = {
   pendingSeats,
   cancelPendingSeats,
   recoverOwnership,
+  setHistory,
+  wipeHistory,
 };
 void _ownerFlows;
 

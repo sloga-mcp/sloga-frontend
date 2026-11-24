@@ -1108,8 +1108,7 @@ async function run(
  * on as well.
  */
 function historySettingOn(port: ProtectedTextPort): boolean {
-  const p: ProtectedTextPort & { historySetting?(): boolean } = port;
-  return p.historySetting?.() === true && formatsV2On(port);
+  return port.historySetting?.() === true && formatsV2On(port);
 }
 
 /**

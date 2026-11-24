@@ -11268,12 +11268,9 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
-   * The manager's S4 calls, or a `not_implemented` rejection.
-   *
-   * S4-W4-0 placeholder (lane L2m): the manager does not carry these yet,
-   * so every call through here rejects. Once `ProtectedTextManager` has
-   * `protect(..., opts)`, `setHistoryVisible`, `wipeHistory` and
-   * `walkHistory`, `historyManagerOf` finds them and this line goes.
+   * The manager's S4 calls (`protect(..., opts)`, `setHistoryVisible`,
+   * `wipeHistory`, `walkHistory`), or a `not_implemented` rejection for a
+   * manager that does not carry them.
    */
   #protectedHistoryManager(
     manager: ProtectedTextManager,
