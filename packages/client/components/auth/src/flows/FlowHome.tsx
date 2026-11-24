@@ -7,6 +7,7 @@ import { TransitionType } from "@revolt/client/Controller";
 import { Navigate } from "@revolt/routing";
 import { Button, Column } from "@revolt/ui";
 
+import { ContinueWithGoogle, PendingInviteCard } from "./InviteLanding";
 import { LogoStory } from "./LogoStory";
 
 import { useState } from "@revolt/state";
@@ -28,6 +29,8 @@ export default function FlowHome() {
 
           <Column gap="xl">
             <LogoStory />
+
+            <PendingInviteCard />
 
             <Column>
               <b
@@ -59,6 +62,7 @@ export default function FlowHome() {
             </Column>
 
             <Column>
+              <ContinueWithGoogle terms />
               <a href="/login/auth">
                 <Column>
                   <Button bg="#FF8A00">

@@ -20,7 +20,6 @@ export const FlowBase = styled("div", {
     background: "var(--md-sys-color-surface-container)",
     color: "var(--md-sys-color-on-surface)",
     maxWidth: "360px",
-    maxHeight: "600px",
     padding: "45px 40px",
     borderRadius: "32px",
     marginTop: "20px",

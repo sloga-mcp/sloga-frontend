@@ -8,6 +8,8 @@ import { Button, Row, Text, iconSize } from "@revolt/ui";
 
 import MdArrowBack from "@material-design-icons/svg/filled/arrow_back.svg?component-solid";
 
+import { ContinueWithGoogle, PendingInviteCard } from "./InviteLanding";
+
 import { Show } from "solid-js";
 import { FlowTitle } from "./Flow";
 import { setFlowCheckEmail } from "./FlowCheck";
@@ -70,6 +72,10 @@ export default function FlowCreate() {
       <FlowTitle subtitle={<Trans>Create an account</Trans>} emoji="wave">
         <Trans>Hello!</Trans>
       </FlowTitle>
+      <PendingInviteCard />
+      {/* Above the form so the fastest way in is seen first; the terms
+          notice inside the form below is on the same screen */}
+      <ContinueWithGoogle orEmail />
       {/* `code` is already a percent-encoded segment (the router matches
           on URL.pathname), so it is appended as-is: encodeURIComponent
           would double-encode any "%" and the invite would not round-trip. */}

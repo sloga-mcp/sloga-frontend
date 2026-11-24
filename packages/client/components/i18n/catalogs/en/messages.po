@@ -2551,6 +2551,19 @@ msgstr "Continue unencrypted — new messages will be readable by the server —
 msgid "Continue with Google"
 msgstr "Continue with Google"
 
+#: components/auth/src/flows/InviteLanding.tsx
+msgid "You've been invited to join"
+msgstr "You've been invited to join"
+
+#. placeholder {0}: inviter()
+#: components/auth/src/flows/InviteLanding.tsx
+msgid "Invited by {0}"
+msgstr "Invited by {0}"
+
+#: components/auth/src/flows/InviteLanding.tsx
+msgid "or sign up with email"
+msgstr "or sign up with email"
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Contrast"
 msgstr "Contrast"
