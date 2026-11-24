@@ -759,7 +759,8 @@ test("backup text: a kept upload records the bundle's text_truncated, null witho
     [{ text_truncated: "oldest" }, "oldest"],
     [{ text_truncated: "all" }, "all"],
     [{}, null],
-    [{ text_truncated: "everything" }, null],
+    // B5: a value this build does not know is kept as unknown, not dropped
+    [{ text_truncated: "everything" }, "unknown"],
   ] as const) {
     fresh("electron");
     plugin.due = [{ ...BUNDLE, ...extra }];

@@ -1,8 +1,11 @@
-// Protected channels S4, the bridge's history seam (lane L2e).
+// Protected channels S4, the bridge's history seam (lane L2e; fix round
+// FXE: R-W4-31, A7, B5).
 //
 //   A. `historyPolicyActions`: the decision matrix, and a sweep over every
 //      input combination proving a reveal only comes from a verified, kept,
-//      well-formed, pinned-compatible policy with the flag on.
+//      well-formed, pinned-compatible policy. The server's history flag is
+//      no input (R-W4-31): the sweep and the rig still carry one, to prove
+//      it is never read and changes nothing.
 //   B. `applyHistoryPolicy` on the real stoat.js `ProtectedHistoryState`
 //      (the pin set is a small fake with the same `setHistory` rules: the
 //      real one imports a `.js` sibling and does not load here).
@@ -11,8 +14,9 @@
 //   E. `e2ee.ts`, read as a syntax tree (comments cannot satisfy or defeat
 //      it): the reveal, the pin write and the purge each have ONE call
 //      site, inside `#protectedHistoryPorts`, which only `onHistoryPolicy`
-//      reaches; the flag is stored whole and travels to the manager; the
-//      backup and UI pass-throughs keep their shape.
+//      reaches; a dispose clears every reveal without a latch (A7); the
+//      flag is stored whole and travels to the manager, and no flag fetch
+//      reaches a reveal; the backup and UI pass-throughs keep their shape.
 //
 // `E2EE_SEAM_TS` swaps in another e2ee.ts for the controls.
 //
@@ -54,7 +58,6 @@ const KEPT: HistoryPolicy = {
   timeLimit: LIMIT,
 };
 const CLEAN: HistorySeamState = {
-  historySetting: true,
   pinned: null,
   revealed: null,
   conflicted: false,
@@ -200,19 +203,71 @@ test("actions: a pin on another boundary, a wiped pin, a conflicted or wiped cha
   }
 });
 
-test("actions: the flag off does nothing, whatever the policy says", () => {
-  for (const p of [KEPT, { ...KEPT, preHistory: "wiped" as const }]) {
-    assert.deepEqual(
-      historyPolicyActions(p, { ...CLEAN, historySetting: false }),
-      {
-        refusal: "flag_off",
-        pin: null,
-        reveal: null,
-        purge: null,
-        loud: false,
-      },
-    );
+/** A state that still carries a server flag, as the seam's caller once did. */
+function flagged(state: HistorySeamState, historySetting: unknown) {
+  return { ...state, historySetting } as unknown as HistorySeamState;
+}
+
+test("actions (R-W4-31): the server flag is no input, off decides the same as on", () => {
+  // The type has no room for it.
+  const noFlag: "historySetting" extends keyof HistorySeamState ? never : true =
+    true;
+  assert.equal(noFlag, true);
+  const held: HistorySeamState = {
+    ...CLEAN,
+    pinned: { boundary: B1, wiped: false },
+    revealed: B1,
+  };
+  const policies: HistoryPolicy[] = [
+    KEPT,
+    { ...KEPT, preHistory: "wiped" },
+    { ...KEPT, verified: false },
+    { ...KEPT, boundary: B2 },
+  ];
+  for (const state of [CLEAN, held]) {
+    for (const p of policies) {
+      const want = historyPolicyActions(p, state);
+      for (const flag of [false, true, undefined, null, "off"]) {
+        assert.deepEqual(
+          historyPolicyActions(p, flagged(state, flag)),
+          want,
+          JSON.stringify({ p, flag }),
+        );
+      }
+    }
   }
+  // Flag off: a verified kept policy reveals, a wiped one purges, and an
+  // unverified one takes a held reveal back.
+  assert.deepEqual(historyPolicyActions(KEPT, flagged(CLEAN, false)), {
+    refusal: null,
+    pin: { boundary: B1, wiped: false },
+    reveal: { boundary: B1, timeLimit: LIMIT },
+    purge: null,
+    loud: false,
+  });
+  assert.deepEqual(
+    historyPolicyActions(
+      { ...KEPT, preHistory: "wiped" },
+      flagged(CLEAN, false),
+    ),
+    {
+      refusal: "wiped",
+      pin: { boundary: B1, wiped: true },
+      reveal: null,
+      purge: { boundary: B1 },
+      loud: false,
+    },
+  );
+  assert.deepEqual(
+    historyPolicyActions({ ...KEPT, verified: false }, flagged(held, false)),
+    {
+      refusal: "unverified",
+      pin: null,
+      reveal: null,
+      purge: { boundary: B1 },
+      loud: false,
+    },
+  );
 });
 
 test("actions: a held reveal is taken back by every policy that does not allow it", () => {
@@ -229,7 +284,6 @@ test("actions: a held reveal is taken back by every policy that does not allow i
     [{ ...KEPT, boundary: B2 }, { ...held, pinned: null }, "pin_mismatch"],
     [{ ...KEPT, timeLimit: null }, held, "no_time_limit"],
     [{ ...KEPT, preHistory: null }, held, "pre_history_unknown"],
-    [KEPT, { ...held, historySetting: false }, "flag_off"],
     [KEPT, { ...held, conflicted: true }, "channel_conflicted"],
     [KEPT, { ...held, wiped: true }, "channel_wiped"],
   ];
@@ -278,10 +332,13 @@ test("actions: over every input combination a reveal needs every condition", () 
                         preHistory,
                         timeLimit,
                       } as unknown as HistoryPolicy,
-                      { historySetting, pinned, revealed, conflicted, wiped },
+                      flagged(
+                        { pinned, revealed, conflicted, wiped },
+                        historySetting,
+                      ),
                     );
+                    // R-W4-31: `historySetting` is not among the conditions.
                     const allowed =
-                      historySetting === true &&
                       verified === true &&
                       (boundary === B1 || boundary === B2) &&
                       preHistory === "kept" &&
@@ -321,10 +378,9 @@ test("actions: over every input combination a reveal needs every condition", () 
                       )
                         assert.notEqual(a.purge, null, a.refusal ?? "");
                     }
-                    // A pin is written only from a verified policy, flag on.
+                    // A pin is written only from a verified policy.
                     if (a.pin !== null) {
                       assert.equal(verified, true);
-                      assert.equal(historySetting, true);
                       assert.equal(a.pin.boundary, boundary);
                     }
                   }
@@ -362,7 +418,9 @@ function rig(opts: { flag?: boolean } = {}) {
   const calls: string[] = [];
   const lines: string[] = [];
   const state = { flag: opts.flag ?? true };
-  const ports: HistorySeamPorts = {
+  // `historySetting` is no port of the seam any more (R-W4-31). The rig
+  // keeps one as a trap: a seam that read the flag again would log it here.
+  const ports: HistorySeamPorts & { historySetting(): boolean } = {
     historySetting: () => {
       calls.push("historySetting");
       return state.flag;
@@ -546,35 +604,76 @@ test("apply: a conflicted or wiped channel is never handed a reveal", () => {
   assert.equal(wiped.covers(), false);
 });
 
-test("apply: with the history flag off the seam reads two things and does nothing", () => {
-  for (const p of [
-    KEPT,
-    { ...KEPT, preHistory: "wiped" as const },
-    { ...KEPT, verified: false },
-    { ...KEPT, boundary: B2 },
-  ]) {
-    const r = rig({ flag: false });
-    assert.equal(applyHistoryPolicy(r.ports, CH, p), "none");
-    assert.deepEqual(r.calls, ["historySetting", "revealed"]);
-    assert.deepEqual(r.lines, []);
-    assert.equal(r.sdk.revealOf(CH), undefined);
-    assert.equal(r.pins.historyOf(CH), undefined);
-    assert.equal(r.sdk.canReveal(CH), true);
+test("apply (R-W4-31): with the server flag off every policy is applied as with it on, and the flag is never read", () => {
+  const noFlag: "historySetting" extends keyof HistorySeamPorts ? never : true =
+    true;
+  assert.equal(noFlag, true);
+  const policies: [HistoryPolicy, string][] = [
+    [KEPT, "revealed"],
+    [{ ...KEPT, preHistory: "wiped" }, "wiped"],
+    [{ ...KEPT, verified: false }, "none"],
+    [{ ...KEPT, boundary: null }, "none"],
+  ];
+  for (const [p, outcome] of policies) {
+    const off = rig({ flag: false });
+    const on = rig({ flag: true });
+    assert.equal(applyHistoryPolicy(off.ports, CH, p), outcome);
+    assert.equal(applyHistoryPolicy(on.ports, CH, p), outcome);
+    assert.deepEqual(off.calls, on.calls, JSON.stringify(p));
+    assert.equal(off.calls.includes("historySetting"), false);
+    assert.deepEqual(off.sdk.revealOf(CH), on.sdk.revealOf(CH));
+    assert.deepEqual(off.pins.historyOf(CH), on.pins.historyOf(CH));
   }
+  // Flag off, verified kept: pinned and revealed.
+  const kept = rig({ flag: false });
+  assert.equal(applyHistoryPolicy(kept.ports, CH, KEPT), "revealed");
+  assert.deepEqual(kept.writes(), [
+    `setHistory:${B1}:false`,
+    `reveal:${B1}:${LIMIT}`,
+  ]);
+  assert.equal(kept.covers(), true);
+  // Flag off, verified wiped: pinned wiped and purged.
+  const wiped = rig({ flag: false });
+  assert.equal(
+    applyHistoryPolicy(wiped.ports, CH, { ...KEPT, preHistory: "wiped" }),
+    "wiped",
+  );
+  assert.deepEqual(wiped.writes(), [`setHistory:${B1}:true`, `purge:${B1}`]);
+  assert.equal(wiped.sdk.isWiped(CH), true);
 });
 
-test("apply: the flag going off mid-session takes a held reveal back", () => {
+test("apply (R-W4-31): the server flag going off mid-session keeps a held reveal, and a later unverified policy still takes it back", () => {
   const r = rig();
-  applyHistoryPolicy(r.ports, CH, KEPT);
+  assert.equal(applyHistoryPolicy(r.ports, CH, KEPT), "revealed");
+  const before = r.writes().slice();
+  // A failed flag fetch is stored as off. The same verified policy again:
+  // the reveal stays as it was, nothing is purged and nothing latches.
   r.state.flag = false;
-  assert.equal(applyHistoryPolicy(r.ports, CH, KEPT), "withdrawn");
+  assert.equal(applyHistoryPolicy(r.ports, CH, KEPT), "revealed");
+  assert.deepEqual(r.writes(), before, "no write, no purge");
+  assert.deepEqual(r.sdk.revealOf(CH), { boundary: B1, timeLimit: LIMIT });
+  assert.equal(r.covers(), true);
+  assert.equal(r.sdk.isWiped(CH), false);
+  assert.equal(r.sdk.isConflicted(CH), false);
+  assert.equal(r.sdk.canReveal(CH), true);
+  // Flag still off: the manager reports the state unverified. That goes.
+  assert.equal(
+    applyHistoryPolicy(r.ports, CH, { ...KEPT, verified: false }),
+    "withdrawn",
+  );
+  assert.deepEqual(r.writes().slice(-1), [`purge:${B1}`]);
+  assert.equal(r.covers(), false);
+  // Flag back on changes nothing either: the purge latched the channel.
+  r.state.flag = true;
+  assert.equal(applyHistoryPolicy(r.ports, CH, KEPT), "none");
   assert.equal(r.covers(), false);
   assert.equal(r.writes().filter((c) => c.startsWith("reveal:")).length, 1);
+  assert.equal(r.calls.includes("historySetting"), false, "flag never read");
 });
 
 test("apply: a port that throws never reveals, and a held reveal is purged", () => {
   for (const broken of [
-    "historySetting",
+    "revealed",
     "pinned",
     "conflicted",
     "wiped",
@@ -673,19 +772,41 @@ test("restoreTextSummary: every R-W4-12 combination", () => {
   }
 });
 
-test("bundleTextTruncated: the three literals, else null", () => {
+test("bundleTextTruncated (B5): the three literals; null without the key; any other value is unknown, never null", () => {
   for (const v of ["none", "oldest", "all"]) {
     assert.equal(bundleTextTruncated({ text_truncated: v }), v);
   }
+  // No text section reported at all.
   for (const bundle of [
     null,
     undefined,
+    "all",
+    7,
     {},
     { header: "h", ciphertext: "c", generation: 1, truncated: true },
-    { text_truncated: true },
-    { text_truncated: "ALL" },
+    { text_truncated: undefined },
+    { text_truncated: null },
   ]) {
-    assert.equal(bundleTextTruncated(bundle), null);
+    assert.equal(bundleTextTruncated(bundle), null, JSON.stringify(bundle));
+  }
+  // A value is there, but not one this build knows: the warning is kept.
+  for (const v of [
+    "ALL",
+    "newest",
+    "",
+    "unknown",
+    true,
+    false,
+    0,
+    3,
+    {},
+    ["all"],
+  ]) {
+    assert.equal(
+      bundleTextTruncated({ text_truncated: v }),
+      "unknown",
+      JSON.stringify(v),
+    );
   }
 });
 
@@ -875,7 +996,6 @@ test("e2ee.ts: the reveal, the pin write and the purge have one call site each, 
   assert.equal(
     code(bridgeMember("#protectedHistoryPorts")),
     "#protectedHistoryPorts():HistorySeamPorts{constclient=this.#client;return{" +
-      "historySetting:()=>this.protectedFlag().historySetting===true," +
       "pinned:(channelId)=>client.protectedPins.historyOf(channelId)," +
       "revealed:(channelId)=>client.protectedHistory.revealOf(channelId)," +
       "conflicted:(channelId)=>client.protectedHistory.isConflicted(channelId)," +
@@ -902,10 +1022,68 @@ test("e2ee.ts: only onHistoryPolicy reaches the ports, behind the current-manage
   );
 });
 
+test("e2ee.ts (A7): a dispose clears every reveal, unconditionally and without the latching purge", () => {
+  const clears = callsOf("clearAllPreProtectReveals");
+  assert.equal(clears.length, 1);
+  assert.equal(memberOf(clears[0]), "#protectedDispose");
+  assert.equal(code(clears[0]), "this.#client.clearAllPreProtectReveals()");
+  // Not the per-channel call, and not the SDK state under it.
+  assert.equal(callsOf("clearPreProtectReveal").length, 0);
+  assert.equal(callsOf("clearReveal").length, 0);
+  // A statement of the method body itself: on every dispose, with or
+  // without a manager, and a throw from it does not stop the teardown.
+  const dispose = bridgeMember("#protectedDispose");
+  assert.ok(ts.isMethodDeclaration(dispose) && dispose.body);
+  const statements = dispose.body.statements.map((s) => code(s));
+  const at = statements.findIndex((s) =>
+    s.includes("clearAllPreProtectReveals"),
+  );
+  assert.ok(at >= 0, "the clear is a top-level statement of the dispose");
+  assert.equal(
+    statements[at],
+    "try{this.#client.clearAllPreProtectReveals();}" +
+      'catch(error){console.error("[protected]revealclearfailed",errorName(error));}',
+  );
+  // After the manager is disposed, before the views are dropped.
+  assert.match(
+    statements[at - 1],
+    /^if\(manager\)\{try\{manager\.dispose\(\);\}/,
+  );
+  assert.equal(statements[at + 1], "this.protectedChannels.clear();");
+  // The dispose itself purges nothing: no latch, the next manager reveals.
+  const body = code(dispose);
+  assert.doesNotMatch(body, /purgePreProtectRows|#protectedHistoryPorts/);
+});
+
+test("e2ee.ts (R-W4-31): the history ports read no flag, and no flag fetch reaches a reveal, a purge or a dispose", () => {
+  const ports = code(bridgeMember("#protectedHistoryPorts"));
+  assert.doesNotMatch(ports, /protectedFlag|historySetting|#ptFlagState/);
+  // The members that fetch and store the flag (a failed `GET /` is stored
+  // as off) touch nothing of the reveal.
+  for (const name of [
+    "#protectedRefreshFlag",
+    "#protectedProbeFlag",
+    "#protectedFlagFetch",
+  ]) {
+    assert.doesNotMatch(
+      code(bridgeMember(name)),
+      /applyHistoryPolicy|#protectedHistoryPorts|#protectedDispose|revealPreProtectRows|purgePreProtectRows|clearAllPreProtectReveals|clearPreProtectReveal/,
+      name,
+    );
+  }
+  // The stored flag has one reader, and the callback does not ask it.
+  const callbacks = propsNamed("onHistoryPolicy");
+  assert.equal(callbacks.length, 1);
+  assert.doesNotMatch(code(callbacks[0]), /protectedFlag|historySetting/);
+});
+
 test("the app: no other file calls the reveal, the pin write or the purge", () => {
   const names = [
     "revealPreProtectRows",
     "purgePreProtectRows",
+    "clearAllPreProtectReveals",
+    "clearPreProtectReveal",
+    "clearReveal",
     "setReveal",
     "markWiped",
   ];
@@ -955,6 +1133,7 @@ test("the app: no other file calls the reveal, the pin write or the purge", () =
   walk(join(CLIENT_ROOT, "src"));
   assert.ok(files > 500, `walked ${files} files`);
   assert.deepEqual(hits.sort(), [
+    "components/client/e2ee.ts:clearAllPreProtectReveals:this.#client.clearAllPreProtectReveals()",
     "components/client/e2ee.ts:purgePreProtectRows:client.purgePreProtectRows(channelId,boundary)",
     "components/client/e2ee.ts:revealPreProtectRows:client.revealPreProtectRows(channelId,reveal)",
     "components/client/e2ee.ts:setHistory:client.protectedPins.setHistory(channelId,history)",

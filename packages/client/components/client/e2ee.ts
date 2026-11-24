@@ -105,7 +105,7 @@ import {
   shellRefreshesBackup,
 } from "./e2eePlatform";
 import {
-  type BackupTextTruncated,
+  type BundleTextTruncated,
   type HistorySeamPorts,
   type ProtectedHistoryManagerApi,
   type ProtectedHistoryPort,
@@ -8147,11 +8147,12 @@ export class E2EEBridge implements E2EEAdapter {
   /**
    * Protected channels S4 (design 8.5): `text_truncated` of the last backup
    * bundle the server kept from this bridge (create, rotate or refresh);
-   * null when that bundle had no text section. Unset until an upload.
+   * null when that bundle had no text section, `"unknown"` for a value this
+   * build does not know. Unset until an upload. Never persisted.
    */
   readonly backupText = new ReactiveMap<
     "state",
-    { truncated: BackupTextTruncated | null }
+    { truncated: BundleTextTruncated | null }
   >();
 
   /**
@@ -10489,12 +10490,12 @@ export class E2EEBridge implements E2EEAdapter {
   /**
    * S4: the SDK calls `applyHistoryPolicy` drives. This is the one place in
    * the app that calls `revealPreProtectRows` or `setHistory`; both run only
-   * on values the manager reported from native verified state.
+   * on values the manager reported from native verified state. The server's
+   * history flag is not among them (R-W4-31): it gates writes, never this.
    */
   #protectedHistoryPorts(): HistorySeamPorts {
     const client = this.#client;
     return {
-      historySetting: () => this.protectedFlag().historySetting === true,
       pinned: (channelId) => client.protectedPins.historyOf(channelId),
       revealed: (channelId) => client.protectedHistory.revealOf(channelId),
       conflicted: (channelId) =>
@@ -10546,6 +10547,13 @@ export class E2EEBridge implements E2EEAdapter {
       } catch (error) {
         console.error("[protected] manager dispose failed", errorName(error));
       }
+    }
+    // S4 (A7): no reveal outlives the manager that verified it. The clear
+    // latches nothing, so the next manager's verified policy reveals again.
+    try {
+      this.#client.clearAllPreProtectReveals();
+    } catch (error) {
+      console.error("[protected] reveal clear failed", errorName(error));
     }
     this.protectedChannels.clear();
     this.protectedViews.clear();

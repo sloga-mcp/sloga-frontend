@@ -11,10 +11,16 @@
  * agrees and the channel is neither conflicted nor wiped. Everything else
  * reveals nothing, and takes an earlier reveal back.
  *
- * The SDK has no call that only clears a reveal, so taking one back goes
- * through the wipe purge: the cached plaintext rows up to the boundary are
- * dropped and the channel takes no reveal for the rest of the session. That
- * is the fail-closed direction; the rows come back stripped on a refetch.
+ * The server's `history_setting` flag is not an input (R-W4-31). The server
+ * controls it, so it proves nothing: it must not hold a reveal back, and
+ * turning it off (or a flag fetch that failed) must not take one back or
+ * leave one standing. Only the policy the manager reports decides.
+ *
+ * Taking a reveal back on a policy goes through the wipe purge: the cached
+ * plaintext rows up to the boundary are dropped and the channel takes no
+ * reveal for the rest of the session. That is the fail-closed direction;
+ * the rows come back stripped on a refetch. A dispose of the manager uses
+ * the SDK's clear instead (`e2ee.ts`), which latches nothing.
  *
  * Pure: no Solid, no SDK runtime, no `e2ee.ts`; loadable by `node --test`.
  */
@@ -37,8 +43,6 @@ export type HistoryReveal = { boundary: string; timeLimit: number };
 
 /** What the bridge knows about a channel before it acts on a policy. */
 export type HistorySeamState = {
-  /** The server's `history_setting` advert as the bridge holds it. */
-  historySetting: boolean;
   /** The local pin's history, if one was written. */
   pinned: PinHistory | null;
   /** Boundary of the reveal held for this channel, if any. */
@@ -51,7 +55,6 @@ export type HistorySeamState = {
 
 /** Why a policy reveals nothing. */
 export type HistoryRefusal =
-  | "flag_off"
   | "unverified"
   | "pre_history_unknown"
   | "no_boundary"
@@ -108,7 +111,6 @@ export function historyPolicyActions(
     loud,
   });
 
-  if (state.historySetting !== true) return refuse("flag_off");
   if (typeof p !== "object" || p === null || p.verified !== true) {
     return refuse("unverified");
   }
@@ -162,8 +164,6 @@ export function historyPolicyActions(
 
 /** What the bridge hands `applyHistoryPolicy` (all on the SDK client). */
 export interface HistorySeamPorts {
-  /** `protectedFlag().historySetting`. */
-  historySetting(): boolean;
   /** `client.protectedPins.historyOf`. */
   pinned(channelId: string): PinHistory | null | undefined;
   /** `client.protectedHistory.revealOf`. */
@@ -191,9 +191,9 @@ export type HistorySeamOutcome =
   | "failed";
 
 /**
- * Act on one reported policy. With the history flag off and no reveal set
- * it reads the flag and the reveal and touches nothing else. Never
- * throws: a port that throws ends in `failed`, with a held reveal purged.
+ * Act on one reported policy, whatever the server's history flag says
+ * (R-W4-31: the ports carry no flag). Never throws: a port that throws ends
+ * in `failed`, with a held reveal purged.
  * @param ports The SDK calls, as the bridge wires them
  * @param channelId Channel id
  * @param p The manager's policy for the channel
@@ -204,20 +204,15 @@ export function applyHistoryPolicy(
   p: HistoryPolicy,
 ): HistorySeamOutcome {
   try {
-    const flagOn = ports.historySetting() === true;
     const set = ports.revealed(channelId) ?? null;
-    if (!flagOn && set === null) return "none";
-
     const conflicted = ports.conflicted(channelId) !== false;
     const wiped = ports.wiped(channelId) !== false;
     // The SDK keeps a reveal's record after a wipe or a conflict but no
     // longer honours it: that one is not held, and needs no taking back.
     const held = set !== null && !conflicted && !wiped ? set : null;
-    if (!flagOn && held === null) return "none";
 
     const actions = historyPolicyActions(p, {
-      historySetting: flagOn,
-      pinned: flagOn ? (ports.pinned(channelId) ?? null) : null,
+      pinned: ports.pinned(channelId) ?? null,
       revealed: held === null ? null : held.boundary,
       conflicted,
       wiped,
@@ -280,11 +275,6 @@ export function applyHistoryPolicy(
 // ---------------------------------------------------------------------------
 // What the manager reads from the bridge, and the bridge from the manager
 // ---------------------------------------------------------------------------
-
-/** Extra manager dep: the local pin's history for the row policy. */
-export interface ProtectedHistorySeamDeps {
-  pinHistory(channelId: string): PinHistory | null;
-}
 
 /**
  * The SDK's two one-way latches for a channel, as the manager's
@@ -380,14 +370,24 @@ function textTruncatedOf(value: unknown): BackupTextTruncated | null {
 }
 
 /**
- * `BackupBundle.text_truncated`, or null when the bundle has no text
- * section (or comes from a shell that does not report one).
+ * What a bundle says about its text section: one of the three values, or
+ * `"unknown"` for a value this build does not know. The UI reads `"unknown"`
+ * as the careful line, never as "nothing was left out".
+ */
+export type BundleTextTruncated = BackupTextTruncated | "unknown";
+
+/**
+ * `BackupBundle.text_truncated`. Null only when the bundle carries no such
+ * key (no text section, or a shell that does not report one). A value that
+ * is there but is not one of the three is `"unknown"`, not null.
  */
 export function bundleTextTruncated(
   bundle: unknown,
-): BackupTextTruncated | null {
+): BundleTextTruncated | null {
   if (typeof bundle !== "object" || bundle === null) return null;
-  return textTruncatedOf((bundle as Record<string, unknown>).text_truncated);
+  const value = (bundle as Record<string, unknown>).text_truncated;
+  if (value === undefined || value === null) return null;
+  return textTruncatedOf(value) ?? "unknown";
 }
 
 /**
