@@ -355,7 +355,11 @@ export type BackupTextTruncated = "none" | "oldest" | "all";
 export type RestoreTextSummary = {
   /** Epochs restored; null when the report does not say (0 or older shell). */
   epochs: number | null;
-  truncated: BackupTextTruncated | null;
+  /**
+   * Null only when the report carries no `text_truncated`; `"unknown"` for
+   * a value this build does not know (RB8), as for a bundle.
+   */
+  truncated: BundleTextTruncated | null;
   /**
    * `partial`: some history keys were left out; `all`: nothing of the text
    * section was restored.
@@ -393,7 +397,9 @@ export function bundleTextTruncated(
 /**
  * The three `text_*` keys of a native `RestoreReport`. A report without
  * them (an older shell, iOS's null, a legacy republish payload) reads
- * `{ epochs: null, truncated: null, skipped: "none" }`.
+ * `{ epochs: null, truncated: null, skipped: "none" }`. A `text_truncated`
+ * that is there but is not one of the three is `"unknown"`, never null
+ * (RB8): the report said something, so the UI keeps its careful line.
  * @param report What the native restore answered
  */
 export function restoreTextSummary(report: unknown): RestoreTextSummary {
@@ -407,8 +413,9 @@ export function restoreTextSummary(report: unknown): RestoreTextSummary {
     r.text_epochs >= 0
       ? r.text_epochs
       : null;
-  const truncated = textTruncatedOf(r.text_truncated);
-  // R-W4-12: skipped with `text_truncated` = partial, without = all.
+  const truncated = bundleTextTruncated(r);
+  // R-W4-12: skipped with `text_truncated` = partial, without = all. A
+  // value this build does not know is still "with".
   const skipped =
     r.text_skipped !== true ? "none" : truncated !== null ? "partial" : "all";
   return { epochs, truncated, skipped };

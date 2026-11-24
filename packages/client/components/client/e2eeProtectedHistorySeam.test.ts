@@ -15,8 +15,9 @@
 //      it): the reveal, the pin write and the purge each have ONE call
 //      site, inside `#protectedHistoryPorts`, which only `onHistoryPolicy`
 //      reaches; a dispose clears every reveal without a latch (A7); the
-//      flag is stored whole and travels to the manager, and no flag fetch
-//      reaches a reveal; the backup and UI pass-throughs keep their shape.
+//      history flag never reaches the seam, and a failed flag fetch never
+//      disposes (an answered `enabled: false` does, off Tauri, through the
+//      platform apply); the backup and UI pass-throughs keep their shape.
 //
 // `E2EE_SEAM_TS` swaps in another e2ee.ts for the controls.
 //
@@ -30,6 +31,8 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 import { ProtectedHistoryState } from "../../../stoat.js/src/lib/protectedHistory.ts";
+
+import { type FlagState, reduceFlag } from "./protectedPlatform.ts";
 
 import {
   type HistoryPolicy,
@@ -709,7 +712,7 @@ test("apply: a port that throws never reveals, and a held reveal is purged", () 
 
 // ---- C. backup ---------------------------------------------------------------
 
-test("restoreTextSummary: every R-W4-12 combination", () => {
+test("restoreTextSummary: every R-W4-12 combination; an unknown text_truncated is unknown, never null (RB8)", () => {
   const none = { epochs: null, truncated: null, skipped: "none" };
   for (const report of [
     null,
@@ -752,9 +755,25 @@ test("restoreTextSummary: every R-W4-12 combination", () => {
     // skipped without it: nothing of the text section was restored
     [{ text_skipped: true }, { epochs: null, truncated: null, skipped: "all" }],
     [
-      { text_skipped: true, text_truncated: "some" },
+      { text_skipped: true, text_truncated: null },
       { epochs: null, truncated: null, skipped: "all" },
     ],
+    [
+      { text_skipped: true, text_truncated: undefined },
+      { epochs: null, truncated: null, skipped: "all" },
+    ],
+    // RB8: a value this build does not know is kept as "unknown". The key
+    // is there, so a skip with it is partial, as with a known value.
+    [
+      { text_skipped: true, text_truncated: "some" },
+      { epochs: null, truncated: "unknown", skipped: "partial" },
+    ],
+    [
+      { text_epochs: 4, text_truncated: "newest" },
+      { epochs: 4, truncated: "unknown", skipped: "none" },
+    ],
+    [{ text_truncated: null }, none],
+    [{ text_truncated: undefined }, none],
     // only the literal true skips; junk fields read as absent
     [
       { text_skipped: false, text_truncated: "none" },
@@ -769,6 +788,19 @@ test("restoreTextSummary: every R-W4-12 combination", () => {
   ];
   for (const [report, want] of cases) {
     assert.deepEqual(restoreTextSummary(report), want, JSON.stringify(report));
+  }
+  // RB8, value by value: never null, never the raw value.
+  for (const v of ["ALL", "", "unknown", true, false, 0, 3, {}, ["all"]]) {
+    assert.deepEqual(
+      restoreTextSummary({ text_truncated: v }),
+      { ...none, truncated: "unknown" },
+      JSON.stringify(v),
+    );
+    assert.deepEqual(
+      restoreTextSummary({ text_truncated: v, text_skipped: true }),
+      { epochs: null, truncated: "unknown", skipped: "partial" },
+      JSON.stringify(v),
+    );
   }
 });
 
@@ -1055,26 +1087,124 @@ test("e2ee.ts (A7): a dispose clears every reveal, unconditionally and without t
   assert.doesNotMatch(body, /purgePreProtectRows|#protectedHistoryPorts/);
 });
 
-test("e2ee.ts (R-W4-31): the history ports read no flag, and no flag fetch reaches a reveal, a purge or a dispose", () => {
+test("e2ee.ts (R-W4-31): the history flag never reaches the seam, and a failed flag fetch never disposes", () => {
+  // 1. The seam is never handed the flag.
   const ports = code(bridgeMember("#protectedHistoryPorts"));
   assert.doesNotMatch(ports, /protectedFlag|historySetting|#ptFlagState/);
-  // The members that fetch and store the flag (a failed `GET /` is stored
-  // as off) touch nothing of the reveal.
-  for (const name of [
+  const callbacks = propsNamed("onHistoryPolicy");
+  assert.equal(callbacks.length, 1);
+  assert.doesNotMatch(code(callbacks[0]), /protectedFlag|historySetting/);
+
+  // 2. The members that fetch and store the flag (a failed `GET /` is
+  // stored as off) touch nothing of the reveal themselves.
+  const fetchers = [
     "#protectedRefreshFlag",
     "#protectedProbeFlag",
     "#protectedFlagFetch",
-  ]) {
+    "#protectedPlatformDecide",
+  ];
+  for (const name of [...fetchers, "#protectedFlagEvent"]) {
     assert.doesNotMatch(
       code(bridgeMember(name)),
       /applyHistoryPolicy|#protectedHistoryPorts|#protectedDispose|revealPreProtectRows|purgePreProtectRows|clearAllPreProtectReveals|clearPreProtectReveal/,
       name,
     );
   }
-  // The stored flag has one reader, and the callback does not ask it.
-  const callbacks = propsNamed("onHistoryPolicy");
-  assert.equal(callbacks.length, 1);
-  assert.doesNotMatch(code(callbacks[0]), /protectedFlag|historySetting/);
+
+  // 3. What they do reach: `#protectedFlagEvent` -> `#protectedPlatformApply`
+  // -> `#protectedDispose`. That path exists (off Tauri an answered
+  // `enabled: false` drops the manager and clears every reveal, without a
+  // latch). Every event on it is built here, and none carries the history
+  // flag: only the advert's `enabled`.
+  const events = callsOf("#protectedFlagEvent");
+  assert.deepEqual(events.map((c) => `${memberOf(c)} ${code(c)}`).sort(), [
+    "#protectedPlatformDecide this.#protectedFlagEvent(event)",
+    '#protectedProbeFlag this.#protectedFlagEvent({kind:"fetch_failed"})',
+    '#protectedProbeFlag this.#protectedFlagEvent({kind:"fetch_ok",enabled:flag.enabled})',
+    "#protectedRefreshFlag this.#protectedFlagEvent(event)",
+  ]);
+  // `event` is what `#protectedFlagFetch` built: a failed request is
+  // `fetch_failed` and nothing else.
+  const fetched = callsOf("#protectedFlagFetch");
+  assert.deepEqual(fetched.map((c) => memberOf(c)).sort(), [
+    "#protectedPlatformDecide",
+    "#protectedRefreshFlag",
+  ]);
+  const fetch = code(bridgeMember("#protectedFlagFetch"));
+  assert.ok(
+    fetch.includes(
+      "try{returnawaitthis.#client.api.get(path);}catch(error){failed=true;throwerror;}",
+    ),
+    "a failed GET sets `failed`",
+  );
+  assert.ok(
+    fetch.includes(
+      'return{event:failed?{kind:"fetch_failed"}:{kind:"fetch_ok",enabled:flag.enabled},flag,};',
+    ),
+    "the event of a failed GET",
+  );
+  assert.ok(
+    code(bridgeMember("#protectedPlatformDecide")).includes(
+      "this.#protectedFlagFetch().then(({event})=>{this.#protectedFlagEvent(event);returntrue;})",
+    ),
+  );
+  assert.equal(
+    code(bridgeMember("#protectedRefreshFlag")),
+    "async#protectedRefreshFlag():Promise<void>{" +
+      "const{event,flag}=awaitthis.#protectedFlagFetch();" +
+      'this.#ptFlagState.set("state",flag);' +
+      "this.#protectedFlagEvent(event);" +
+      "if(flag.enabled)awaitthis.#protectedReplenish();}",
+  );
+  // The boot probe: no answer is `fetch_failed`, then it returns.
+  assert.ok(
+    code(bridgeMember("#protectedProbeFlag")).includes(
+      'if(!answered){this.#ptFlagProbeFailures++;this.#protectedFlagEvent({kind:"fetch_failed"});return;}',
+    ),
+  );
+
+  // 4. `fetch_failed` leaves the reduced flag as it was, whatever it was,
+  // and an unchanged flag returns before the apply.
+  const states: FlagState[] = ["on", "off", "unknown"];
+  for (const prev of states) {
+    assert.equal(reduceFlag(prev, { kind: "fetch_failed" }), prev, prev);
+  }
+  const event = bridgeMember("#protectedFlagEvent");
+  assert.ok(ts.isMethodDeclaration(event) && event.body);
+  assert.deepEqual(
+    event.body.statements.map((s) => code(s)),
+    [
+      "constbefore=this.#protectedPlatformState();",
+      "constprev=this.#ptServerFlag;",
+      "this.#ptServerFlag=reduceFlag(this.#ptServerFlag,event);",
+      'if(event.kind==="fetch_ok"){this.#protectedFlagRemember(this.#client.user?.id??null,event.enabled);}',
+      "if(this.#ptServerFlag===prev)return;",
+      "this.#protectedPlatformChanged();",
+      "this.#protectedPlatformApply(before);",
+    ],
+  );
+
+  // 5. The apply is reached from the event only, and it is the one place
+  // on this path that disposes: a window that stopped being structural.
+  const applies = callsOf("#protectedPlatformApply");
+  assert.deepEqual(
+    applies.map((c) => memberOf(c)),
+    ["#protectedFlagEvent"],
+  );
+  const apply = bridgeMember("#protectedPlatformApply");
+  const disposes = callsOf("#protectedDispose").filter(
+    (c) => memberOf(c) === "#protectedPlatformApply",
+  );
+  assert.equal(disposes.length, 1);
+  assert.equal(
+    code(disposes[0].parent.parent),
+    "if(before.structural&&!after.structural)this.#protectedDispose();",
+  );
+  assert.equal(disposes[0].parent.parent.parent.parent, apply);
+  assert.doesNotMatch(
+    code(apply),
+    /historySetting|#ptFlagState|protectedFlag\(|purgePreProtectRows|#protectedHistoryPorts|applyHistoryPolicy/,
+  );
 });
 
 test("the app: no other file calls the reveal, the pin write or the purge", () => {
