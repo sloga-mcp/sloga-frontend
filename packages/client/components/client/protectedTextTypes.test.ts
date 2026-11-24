@@ -1,19 +1,21 @@
-// Unit spec for the Protected channels shared types (W4 lane A1, S2 lane
-// L0T). Run with Node's built-in runner:
+// Unit spec for the Protected channels shared types (W4 lane A1, S2 and S4
+// lane L0T). Run with Node's built-in runner:
 //   node --test --conditions=browser components/client/protectedTextTypes.test.ts
 // Focus: the runtime tables every later lane trusts. `TEXT_COMMANDS` is the
-// bridge's text-command allow-list, so it must be exactly the 21 native
+// bridge's text-command allow-list, so it must be exactly the 23 native
 // commands, and each command's `TextCommandArgs` keys must be exactly the
 // native Tauri parameters (all of them, always sent). `NATIVE_ERROR_TAGS` /
 // `TEXT_NATIVE_ERROR_TAGS` drive the total error mapping (plan D17), so a
-// native variant missing here would reach the UI untyped. All are pinned
-// ALWAYS against the in-repo fixtures in `__fixtures__/protected/`. The
-// native keys are generated from desktop 876c034 by
-// /home/mcp/pc-logs/s2/w4/ctl/L0T/gen_native_fixtures.py; the design keys
-// come from the S1 notes. Two extra tests re-parse the sources when present
-// (the S1 notes in `/home/mcp/w4-notes/`, override `W4_NOTES_DIR`; the
-// pinned desktop commit through `git show` in `/home/mcp/sd-protected-s2`,
-// override `S2_NATIVE_REPO`) and skip, loudly, when they are absent.
+// native variant missing here would reach the UI untyped. The S4 wire types
+// are pinned key by key (names, and which keys may be absent) against the
+// native structs. All are pinned ALWAYS against the in-repo fixtures in
+// `__fixtures__/protected/`. The native keys are generated from desktop
+// b688f121 by /home/mcp/pc-logs/s4/w4/ctl/L0T/gen_native_fixtures.py; the
+// design keys come from the S1 notes. Two extra tests re-parse the sources
+// when present (the S1 notes in `/home/mcp/w4-notes/`, override
+// `W4_NOTES_DIR`; the pinned desktop commit through `git show` in the repo
+// the fixture names, override `S2_NATIVE_REPO`) and skip, loudly, when they
+// are absent.
 //
 // S2 D40 / OR-6 / design 7.5: `textApi`, `onEvent` and
 // `joinIntentSignedFields` (e2ee.ts) are lifted out of the source with their
@@ -32,13 +34,31 @@ import { test } from "node:test";
 import type { Message } from "stoat.js";
 import type { EncryptedPayload as SdkEncryptedPayload } from "stoat.js/lib/lib/protected";
 
+import type { BackupBundle, RestoreReport } from "./e2ee.ts";
 import {
   type EncryptedPayload,
+  type HistoryBuildRefusal,
+  type HistoryEpochRef,
+  type HistoryFloor,
+  type HistoryImportStep,
+  type HistoryImported,
+  type HistoryLinkBuilt,
+  type HistoryLinkInvalidReason,
+  type HistoryLinkWire,
+  type HistoryProbe,
+  type HistoryRefusal,
+  type HistorySetting,
+  type HistoryStop,
+  type PreHistorySetting,
   type SeatListRejection,
   type TextApiHeaders,
   type TextApiResponse,
+  type TextChannelState,
   type TextCommand,
   type TextCommandArgs,
+  type TextCommitInfo,
+  type TextDecrypted,
+  type TextProcessOutcome,
   type _TextCommandArgsAlwaysSent,
   type _TextCommandArgsComplete,
   NATIVE_ERROR_TAGS,
@@ -88,9 +108,14 @@ const COMMANDS = fixture<{
   design_8_3_table: string[];
   w3_additions: string[];
   s2_additions: string[];
+  s4_additions: string[];
   named_in_native_sources: string[];
   tauri_commands: string[];
   tauri_args: Record<string, string[]>;
+  s4_enums: Record<string, string[]>;
+  s4_structs: Record<string, string[]>;
+  s4_omitted: Record<string, string[]>;
+  s4_input_default: Record<string, string[]>;
 }>("native-text-commands.json");
 
 const ERRORS = fixture<{
@@ -98,14 +123,22 @@ const ERRORS = fixture<{
   error_enum: string[];
   w3_section: string[];
   s2_appended: string[];
+  s4_appended: string[];
   design_8_4_rows: string[];
   design_8_4_existing: string[];
   text_left_reason: string[];
   seat_list_rejection: string[];
+  history_link_invalid_reason: string[];
 }>("native-error-tags.json");
 
 const ERROR_RS_PATH = "acutest-desktop/src-tauri/e2ee-core/src/error.rs";
 const TEXT_RS_PATH = "acutest-desktop/src-tauri/src/e2ee_text.rs";
+const TYPES_RS_PATH =
+  "acutest-desktop/src-tauri/e2ee-core/src/mls/text/types.rs";
+const WIRE_RS_PATH = "acutest-desktop/src-tauri/e2ee-core/src/wire.rs";
+const BACKUP_RS_PATH = "acutest-desktop/src-tauri/e2ee-core/src/backup.rs";
+/** The three sources of the S4 shapes, all in the commands fixture. */
+const SHAPE_RS_PATHS = [TYPES_RS_PATH, WIRE_RS_PATH, BACKUP_RS_PATH];
 
 /** The fixture's record of a pinned desktop source. */
 function pinned(sources: Source[], file: string): Required<Source> {
@@ -125,7 +158,7 @@ const SKIP_NOTES = NOTES_PRESENT
   ? false
   : `pinned S1 notes not found in ${NOTES}`;
 
-// S2 sources: the pinned desktop commit, read with `git show` (never a
+// Native sources: the pinned desktop commit, read with `git show` (never a
 // working tree), so a moving desktop branch cannot change what is checked.
 const NATIVE_REPO =
   process.env.S2_NATIVE_REPO ?? pinned(ERRORS.sources, ERROR_RS_PATH).repo;
@@ -143,8 +176,9 @@ function gitShow(path: string): Buffer | null {
 }
 const NATIVE_ERROR_SRC = gitShow(ERROR_RS_PATH);
 const NATIVE_TEXT_SRC = gitShow(TEXT_RS_PATH);
+const NATIVE_SHAPE_SRC = SHAPE_RS_PATHS.map(gitShow);
 const SKIP_NATIVE =
-  NATIVE_ERROR_SRC && NATIVE_TEXT_SRC
+  NATIVE_ERROR_SRC && NATIVE_TEXT_SRC && NATIVE_SHAPE_SRC.every((b) => b)
     ? false
     : `desktop ${NATIVE_COMMIT} not readable in ${NATIVE_REPO}`;
 
@@ -187,9 +221,9 @@ function between(src: string, from: string, to: string): string {
 // Always: tables against the fixtures
 // ---------------------------------------------------------------------------
 
-test("TEXT_COMMANDS: 21 unique names, all text-plane", () => {
-  assert.equal(TEXT_COMMANDS.length, 21);
-  assert.equal(new Set(TEXT_COMMANDS).size, 21);
+test("TEXT_COMMANDS: 23 unique names, all text-plane", () => {
+  assert.equal(TEXT_COMMANDS.length, 23);
+  assert.equal(new Set(TEXT_COMMANDS).size, 23);
   for (const c of TEXT_COMMANDS) {
     assert.match(c, /^(e2ee_text_[a-z_]+[a-z]|e2ee_mls_group_kind)$/, c);
   }
@@ -200,6 +234,10 @@ test("TEXT_COMMANDS: 21 unique names, all text-plane", () => {
 test("TEXT_COMMANDS equals the pinned native command list", () => {
   assert.equal(COMMANDS.design_8_3_table.length, 18, "design 8.3 rows");
   assert.deepEqual(COMMANDS.s2_additions, ["e2ee_text_authority_sign"]);
+  assert.deepEqual(COMMANDS.s4_additions, [
+    "e2ee_text_history_link_build",
+    "e2ee_text_history_import",
+  ]);
   assert.deepEqual(
     sorted(TEXT_COMMANDS),
     sorted(
@@ -207,9 +245,16 @@ test("TEXT_COMMANDS equals the pinned native command list", () => {
         ...COMMANDS.design_8_3_table,
         ...COMMANDS.w3_additions,
         ...COMMANDS.s2_additions,
+        ...COMMANDS.s4_additions,
       ]),
     ),
   );
+  // R-W4-1: the S4 commands are APPENDED after `e2ee_mls_group_kind` (the
+  // Android binding order), so every earlier position is unchanged.
+  assert.deepEqual(TEXT_COMMANDS.slice(-3), [
+    "e2ee_mls_group_kind",
+    ...COMMANDS.s4_additions,
+  ]);
   // Every Tauri command in the pinned e2ee_text.rs, and nothing else.
   assert.deepEqual(sorted(TEXT_COMMANDS), sorted(COMMANDS.tauri_commands));
   assert.ok(COMMANDS.named_in_native_sources.length >= 10);
@@ -273,6 +318,10 @@ const ARG_KEYS: {
     format: true,
     authority: true,
     recovery: true,
+    history: true,
+    historyBoundary: true,
+    preHistory: true,
+    wipeCount: true,
     channelName: true,
     displayNames: true,
   },
@@ -318,6 +367,12 @@ const ARG_KEYS: {
   e2ee_text_mark_left: { groupId: true, reason: true },
   e2ee_text_pin_own_devices: { userId: true, devices: true },
   e2ee_mls_group_kind: { groupId: true },
+  e2ee_text_history_link_build: {
+    groupId: true,
+    epoch: true,
+    candidates: true,
+  },
+  e2ee_text_history_import: { groupId: true, session: true, steps: true },
 };
 
 test("TextCommandArgs keys equal the native Tauri parameters", () => {
@@ -340,6 +395,27 @@ test("TextCommandArgs keys equal the native Tauri parameters", () => {
   assert.ok(
     has(COMMANDS.tauri_args.e2ee_text_seat_list_verify, "asOfGeneration"),
   );
+  // The S4 parameters, by name and in native order (R-W4-2: always sent).
+  const sign = COMMANDS.tauri_args.e2ee_text_seat_list_sign;
+  assert.deepEqual(sign.slice(sign.indexOf("recovery")), [
+    "recovery",
+    "history",
+    "historyBoundary",
+    "preHistory",
+    "wipeCount",
+    "channelName",
+    "displayNames",
+  ]);
+  assert.deepEqual(COMMANDS.tauri_args.e2ee_text_history_link_build, [
+    "groupId",
+    "epoch",
+    "candidates",
+  ]);
+  assert.deepEqual(COMMANDS.tauri_args.e2ee_text_history_import, [
+    "groupId",
+    "session",
+    "steps",
+  ]);
 });
 
 test("NATIVE_ERROR_TAGS equals the native Error enum, in order", () => {
@@ -348,21 +424,34 @@ test("NATIVE_ERROR_TAGS equals the native Error enum, in order", () => {
   assert.deepEqual([...NATIVE_ERROR_TAGS], ERRORS.error_enum);
 });
 
-test("S2: the two appended tags close the enum, in native order", () => {
+test("S2 + S4: the three appended tags close the enum, in native order", () => {
   assert.deepEqual(ERRORS.s2_appended, [
     "catch_up_leaf_unresolvable",
     "unsupported_envelope_version",
   ]);
-  assert.deepEqual(ERRORS.error_enum.slice(-2), ERRORS.s2_appended);
-  assert.deepEqual(NATIVE_ERROR_TAGS.slice(-2), ERRORS.s2_appended);
+  assert.deepEqual(ERRORS.s4_appended, ["history_link_invalid"]);
+  const appended = [...ERRORS.s2_appended, ...ERRORS.s4_appended];
+  assert.deepEqual(ERRORS.error_enum.slice(-3), appended);
+  assert.deepEqual(NATIVE_ERROR_TAGS.slice(-3), appended);
   assert.equal(
-    NATIVE_ERROR_TAGS[NATIVE_ERROR_TAGS.length - 3],
+    NATIVE_ERROR_TAGS[NATIVE_ERROR_TAGS.length - 4],
     "handover_target_invalid",
   );
-  // Both are text-plane tags (the total mapping must name them).
+  // S4 added exactly one variant to the S2 enum (72 tags at desktop 876c034).
+  assert.equal(ERRORS.error_enum.length, 73);
+  // Both S2 tags are text-plane tags (the total mapping must name them).
   for (const t of ERRORS.s2_appended) {
     assert.ok(has(TEXT_NATIVE_ERROR_TAGS, t), t);
   }
+});
+
+test("S4: history_link_invalid is a native tag but not a text-plane tag", () => {
+  // Native never rejects a command with it: it is only an entry of
+  // `HistoryImported.refused`. A thrown one is unknown, so it goes to the
+  // fail-closed catch-all instead of getting a mapping of its own.
+  assert.ok(has(NATIVE_ERROR_TAGS, "history_link_invalid"));
+  assert.equal(has(TEXT_NATIVE_ERROR_TAGS, "history_link_invalid"), false);
+  assert.deepEqual(COMMANDS.s4_enums.HistoryRefusal, ["history_link_invalid"]);
 });
 
 test("protector_locked: right after protector, not a text-plane tag", () => {
@@ -377,15 +466,21 @@ test("TEXT_NATIVE_ERROR_TAGS = W3 variants + design 8.4 existing", () => {
   const tags: readonly string[] = TEXT_NATIVE_ERROR_TAGS;
   assert.equal(new Set(tags).size, tags.length);
   for (const t of tags) assert.ok(has(NATIVE_ERROR_TAGS, t), t);
-  assert.equal(ERRORS.w3_section.length, 29, "W3 variants + S2 appended");
+  assert.equal(ERRORS.w3_section.length, 30, "W3 variants + S2, S4 appended");
   assert.equal(ERRORS.design_8_4_rows.length, 25, "design 8.4 rows");
   assert.equal(ERRORS.design_8_4_existing.length, 6, "8.4 existing");
   for (const r of ERRORS.design_8_4_rows) {
     assert.ok(ERRORS.w3_section.includes(r), `design row ${r} not in W3`);
   }
+  // Every variant of the W3 section except the S4 one that is never thrown
+  // (see the test above).
+  const thrown = ERRORS.w3_section.filter(
+    (t) => !ERRORS.s4_appended.includes(t),
+  );
+  assert.equal(thrown.length, 29);
   assert.deepEqual(
     sorted(tags),
-    sorted(new Set([...ERRORS.w3_section, ...ERRORS.design_8_4_existing])),
+    sorted(new Set([...thrown, ...ERRORS.design_8_4_existing])),
   );
 });
 
@@ -404,6 +499,7 @@ const SEAT_LIST_REJECTIONS: Record<SeatListRejection, true> = {
   too_many_seats: true,
   immutable_changed: true,
   authority_invalid: true,
+  future_boundary: true,
 };
 
 test("SeatListRejection equals the native SeatListRejection enum", () => {
@@ -411,17 +507,306 @@ test("SeatListRejection equals the native SeatListRejection enum", () => {
     sorted(Object.keys(SEAT_LIST_REJECTIONS)),
     sorted(ERRORS.seat_list_rejection),
   );
+  assert.equal(ERRORS.seat_list_rejection.at(-1), "future_boundary");
+});
+
+// ---------------------------------------------------------------------------
+// S4: the history enums and wire structs, key by key
+// ---------------------------------------------------------------------------
+
+/** Every member of a string union, written out (tsc refuses a difference). */
+type Members<U extends string> = Record<U, true>;
+
+const S4_ENUMS: {
+  HistorySetting: Members<HistorySetting>;
+  PreHistorySetting: Members<PreHistorySetting>;
+  HistoryStop: Members<HistoryStop>;
+  HistoryBuildRefusal: Members<HistoryBuildRefusal>;
+  HistoryRefusal: Members<HistoryRefusal["type"]>;
+} = {
+  HistorySetting: { visible: true, hidden: true },
+  PreHistorySetting: { kept: true, wiped: true },
+  HistoryStop: {
+    hidden: true,
+    missing: true,
+    invalid: true,
+    anchor_mismatch: true,
+    conflict: true,
+    unanchored: true,
+    genesis: true,
+  },
+  HistoryBuildRefusal: { hidden: true, not_derived: true, too_large: true },
+  HistoryRefusal: { history_link_invalid: true },
+};
+
+const HISTORY_LINK_INVALID_REASONS: Members<HistoryLinkInvalidReason> = {
+  aead: true,
+  malformed: true,
+  writer_not_member: true,
+  bad_writer_sig: true,
+  roster_identity_mismatch: true,
+  roster_diff_mismatch: true,
+  anchor_mismatch: true,
+};
+
+test("S4: the history enums equal the native enums", () => {
+  assert.deepEqual(
+    sorted(Object.keys(S4_ENUMS)),
+    sorted(Object.keys(COMMANDS.s4_enums)),
+  );
+  for (const [name, members] of Object.entries(S4_ENUMS)) {
+    assert.deepEqual(
+      sorted(Object.keys(members)),
+      sorted(COMMANDS.s4_enums[name]),
+      name,
+    );
+  }
+  assert.deepEqual(
+    sorted(Object.keys(HISTORY_LINK_INVALID_REASONS)),
+    sorted(ERRORS.history_link_invalid_reason),
+  );
+});
+
+/** Every key of `T`, written out (tsc refuses a missing or an extra key). */
+type Keys<T> = { [K in keyof T]-?: true };
+/** The keys of `T` that may be absent. */
+type OptionalKeys<T> = {
+  [K in keyof T]-?: object extends Pick<T, K> ? K : never;
+}[keyof T];
+/** The optional keys of `T`, written out (tsc refuses a difference). */
+type Absent<T> = Record<OptionalKeys<T>, true>;
+
+/**
+ * Each S4 wire type's keys, and beside them the keys this side types as
+ * optional. `MlsCommitInfo` is checked as `TextCommitInfo` (the text plane's
+ * stored commit: `MlsCommitInfo` plus `rejoin_intents`).
+ */
+const S4_STRUCTS: {
+  TextProcessOutcome: [Keys<TextProcessOutcome>, Absent<TextProcessOutcome>];
+  TextDecrypted: [Keys<TextDecrypted>, Absent<TextDecrypted>];
+  TextChannelState: [Keys<TextChannelState>, Absent<TextChannelState>];
+  HistoryFloor: [Keys<HistoryFloor>, Absent<HistoryFloor>];
+  HistoryEpochRef: [Keys<HistoryEpochRef>, Absent<HistoryEpochRef>];
+  HistoryLinkBuilt: [Keys<HistoryLinkBuilt>, Absent<HistoryLinkBuilt>];
+  HistoryProbe: [Keys<HistoryProbe>, Absent<HistoryProbe>];
+  HistoryImportStep: [Keys<HistoryImportStep>, Absent<HistoryImportStep>];
+  HistoryImported: [Keys<HistoryImported>, Absent<HistoryImported>];
+  HistoryLinkWire: [Keys<HistoryLinkWire>, Absent<HistoryLinkWire>];
+  MlsCommitInfo: [Keys<TextCommitInfo>, Absent<TextCommitInfo>];
+  BackupBundle: [Keys<BackupBundle>, Absent<BackupBundle>];
+  RestoreReport: [Keys<RestoreReport>, Absent<RestoreReport>];
+} = {
+  TextProcessOutcome: [
+    {
+      group_id: true,
+      channel_id: true,
+      kind: true,
+      epoch: true,
+      removed_self: true,
+      added: true,
+      removed: true,
+      new_devices: true,
+      off_list: true,
+      seat_list_adopted: true,
+      owner_notice: true,
+      history_link: true,
+    },
+    { owner_notice: true, history_link: true },
+  ],
+  TextDecrypted: [
+    {
+      message_id: true,
+      channel_id: true,
+      group_id: true,
+      epoch: true,
+      author_user_id: true,
+      sender_device_id: true,
+      cid: true,
+      ts: true,
+      text: true,
+      replies: true,
+      sender_verified: true,
+      ts_skew: true,
+      files: true,
+      timing_unverified: true,
+    },
+    {},
+  ],
+  TextChannelState: [
+    {
+      channel_id: true,
+      group_id: true,
+      generation: true,
+      epoch: true,
+      state: true,
+      members: true,
+      seat_list: true,
+      owner_pin: true,
+      self_seated: true,
+      roster_matches_list: true,
+      update_due: true,
+      update_required: true,
+      verdict: true,
+      owner_alert: true,
+      history_floor: true,
+      history_setting: true,
+      history_boundary: true,
+      pre_history: true,
+      history_time_limit: true,
+    },
+    {
+      owner_alert: true,
+      history_floor: true,
+      history_setting: true,
+      history_boundary: true,
+      pre_history: true,
+      history_time_limit: true,
+    },
+  ],
+  HistoryFloor: [{ group_id: true, epoch: true, stopped: true }, {}],
+  HistoryEpochRef: [{ group_id: true, epoch: true }, {}],
+  HistoryLinkBuilt: [
+    { link: true, contest: true, mismatched_writers: true, refused: true },
+    {},
+  ],
+  HistoryProbe: [
+    { message_id: true, author_user_id: true, nonce: true, encrypted: true },
+    {},
+  ],
+  HistoryImportStep: [
+    {
+      holder_group_id: true,
+      holder_epoch: true,
+      candidates: true,
+      commit: true,
+      prev_commit: true,
+      probes: true,
+    },
+    { commit: true, prev_commit: true, probes: true },
+  ],
+  HistoryImported: [
+    {
+      session: true,
+      need_more: true,
+      imported: true,
+      floor: true,
+      stopped: true,
+      refused: true,
+    },
+    {},
+  ],
+  HistoryLinkWire: [
+    {
+      group_id: true,
+      epoch: true,
+      prev_group_id: true,
+      prev_epoch: true,
+      nonce: true,
+      ciphertext: true,
+      writer_user_id: true,
+      writer_device_id: true,
+      signature: true,
+    },
+    {},
+  ],
+  MlsCommitInfo: [
+    {
+      group_id: true,
+      epoch: true,
+      committer: true,
+      commit: true,
+      added: true,
+      removed: true,
+      rejoin_intents: true,
+      removed_reasons: true,
+      created_at: true,
+    },
+    { rejoin_intents: true, removed_reasons: true, created_at: true },
+  ],
+  BackupBundle: [
+    {
+      header: true,
+      ciphertext: true,
+      generation: true,
+      truncated: true,
+      text_truncated: true,
+    },
+    { text_truncated: true },
+  ],
+  RestoreReport: [
+    {
+      device_id: true,
+      new_device_id: true,
+      messages: true,
+      conversations: true,
+      peers: true,
+      truncated: true,
+      generation: true,
+      created_at: true,
+      text_epochs: true,
+      text_truncated: true,
+      text_skipped: true,
+    },
+    { text_epochs: true, text_truncated: true, text_skipped: true },
+  ],
+};
+
+/** The argument structs: a caller may leave out what native defaults. */
+const S4_INPUT_STRUCTS = ["HistoryProbe", "HistoryImportStep"];
+
+test("S4: the wire types carry exactly the native struct fields", () => {
+  assert.deepEqual(
+    sorted(Object.keys(S4_STRUCTS)),
+    sorted(Object.keys(COMMANDS.s4_structs)),
+  );
+  for (const [name, [keys]] of Object.entries(S4_STRUCTS)) {
+    assert.deepEqual(
+      sorted(Object.keys(keys)),
+      sorted(COMMANDS.s4_structs[name]),
+      name,
+    );
+  }
+  // The S4 fields, by name.
+  assert.ok(has(COMMANDS.s4_structs.TextProcessOutcome, "history_link"));
+  assert.ok(has(COMMANDS.s4_structs.TextDecrypted, "timing_unverified"));
+  assert.ok(has(COMMANDS.s4_structs.MlsCommitInfo, "created_at"));
+  assert.ok(has(COMMANDS.s4_structs.BackupBundle, "text_truncated"));
+  assert.ok(has(COMMANDS.s4_structs.RestoreReport, "text_skipped"));
+});
+
+test("S4: a key is optional exactly where native may leave it out", () => {
+  assert.deepEqual(
+    sorted(Object.keys(COMMANDS.s4_input_default)),
+    sorted(S4_INPUT_STRUCTS),
+  );
+  for (const [name, [, absent]] of Object.entries(S4_STRUCTS)) {
+    // A result: `skip_serializing_if`. An argument: `serde(default)`.
+    const native = S4_INPUT_STRUCTS.includes(name)
+      ? COMMANDS.s4_input_default[name]
+      : COMMANDS.s4_omitted[name];
+    assert.deepEqual(sorted(Object.keys(absent)), sorted(native), name);
+  }
+  // An argument struct is never an output with omitted keys.
+  for (const name of S4_INPUT_STRUCTS) {
+    assert.deepEqual(COMMANDS.s4_omitted[name], [], name);
+  }
 });
 
 test("the native keys are pinned to one full desktop commit with sha256s", () => {
   const e = pinned(ERRORS.sources, ERROR_RS_PATH);
-  const t = pinned(COMMANDS.sources, TEXT_RS_PATH);
-  for (const s of [e, t]) {
+  const rest = [TEXT_RS_PATH, ...SHAPE_RS_PATHS].map((p) =>
+    pinned(COMMANDS.sources, p),
+  );
+  for (const s of [e, ...rest]) {
     assert.match(s.commit, /^[0-9a-f]{40}$/, s.file);
     assert.match(s.sha256, /^[0-9a-f]{64}$/, s.file);
+    assert.equal(s.commit, e.commit, s.file);
   }
-  assert.equal(e.commit, t.commit);
-  assert.ok(e.commit.startsWith("876c034"), "desktop 876c034 (S2-W3 final)");
+  assert.equal(
+    e.commit,
+    "b688f1219845c2a37cb3235649a7ba7f5969c4a1",
+    "desktop b688f121 (S4-W3 final)",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -475,12 +860,17 @@ test("fixtures match the pinned desktop commit", { skip: SKIP_NATIVE }, () => {
   assert.ok(w3 > 0, "W3 section marker");
   assert.deepEqual(variants(body.slice(w3)).map(snake), ERRORS.w3_section);
   const s2 = body.indexOf("// Appended in slice order");
-  assert.ok(s2 > w3, "S2 appended marker");
-  assert.deepEqual(variants(body.slice(s2)).map(snake), ERRORS.s2_appended);
+  assert.ok(s2 > w3, "appended marker");
+  assert.deepEqual(variants(body.slice(s2)).map(snake), [
+    ...ERRORS.s2_appended,
+    ...ERRORS.s4_appended,
+  ]);
   const left = variants(enumBody(errorSrc, "TextLeftReason")).map(snake);
   assert.deepEqual(left, ERRORS.text_left_reason);
   const seat = variants(enumBody(errorSrc, "SeatListRejection")).map(snake);
   assert.deepEqual(seat, ERRORS.seat_list_rejection);
+  const reason = variants(enumBody(errorSrc, "HistoryLinkInvalidReason"));
+  assert.deepEqual(reason.map(snake), ERRORS.history_link_invalid_reason);
 
   // commands: every #[tauri::command], its parameters minus the carriers
   const COMMAND =
@@ -494,6 +884,53 @@ test("fixtures match the pinned desktop commit", { skip: SKIP_NATIVE }, () => {
   }
   assert.deepEqual(Object.keys(args), COMMANDS.tauri_commands);
   assert.deepEqual(args, COMMANDS.tauri_args);
+
+  // S4 shapes: each enum and struct, from the source that declares it.
+  const shapeSrc = NATIVE_SHAPE_SRC.map((b, i) => {
+    const buf = b as Buffer;
+    assert.equal(
+      sha256(buf),
+      pinned(COMMANDS.sources, SHAPE_RS_PATHS[i]).sha256,
+      SHAPE_RS_PATHS[i],
+    );
+    return buf.toString("utf8");
+  });
+  const declaring = (head: string) => {
+    const found = shapeSrc.filter((s) => s.includes(head));
+    assert.equal(found.length, 1, `one source declares ${head}`);
+    return found[0];
+  };
+  for (const [name, members] of Object.entries(COMMANDS.s4_enums)) {
+    const src = declaring(`pub enum ${name} {`);
+    assert.deepEqual(variants(enumBody(src, name)).map(snake), members, name);
+  }
+  for (const [name, fields] of Object.entries(COMMANDS.s4_structs)) {
+    const head = `pub struct ${name} {`;
+    const src = declaring(head);
+    const start = src.indexOf(head);
+    const lines = src.slice(start, src.indexOf("\n}", start)).split("\n");
+    const names: string[] = [];
+    const omitted: string[] = [];
+    const defaulted: string[] = [];
+    // A field's own attributes are the non-comment lines since the last one.
+    let attrs = "";
+    for (const line of lines.slice(1)) {
+      const m = /^ {4}pub (\w+): /.exec(line);
+      if (m) {
+        names.push(m[1]);
+        if (attrs.includes("skip_serializing_if")) omitted.push(m[1]);
+        if (attrs.includes("default")) defaulted.push(m[1]);
+        attrs = "";
+      } else if (!line.trim().startsWith("//")) {
+        attrs += line;
+      }
+    }
+    assert.deepEqual(names, fields, name);
+    assert.deepEqual(omitted, COMMANDS.s4_omitted[name], name);
+    if (name in COMMANDS.s4_input_default) {
+      assert.deepEqual(defaulted, COMMANDS.s4_input_default[name], name);
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------

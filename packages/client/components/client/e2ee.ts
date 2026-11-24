@@ -444,11 +444,46 @@ function identityConfirmOutcomeOf(
 }
 
 /** A key-backup upload bundle produced natively (opaque ciphertext) */
-type BackupBundle = {
+export type BackupBundle = {
   header: string;
   ciphertext: string;
   generation: number;
   truncated: boolean;
+  /**
+   * Protected channels S4 (design 8.5): the text section's `truncated` as
+   * this bundle was built; absent when the bundle carries no text section.
+   */
+  text_truncated?: "none" | "oldest" | "all";
+};
+
+/**
+ * Outcome of a native restore (`backup.rs` `RestoreReport`). The three
+ * `text_*` keys are the Protected-channel text section (S4, design 8.5) and
+ * each is omitted at its default.
+ */
+export type RestoreReport = {
+  /** The SOURCE device the backup was taken on. */
+  device_id: string;
+  /** The NEW device this install now is. */
+  new_device_id: string;
+  messages: number;
+  conversations: number;
+  peers: number;
+  truncated: boolean;
+  generation: number;
+  created_at: number;
+  /** Protected-channel epochs restored; absent when 0. */
+  text_epochs?: number;
+  /**
+   * The text section's `truncated`; absent when the backup carried no
+   * section or all of it was skipped.
+   */
+  text_truncated?: "none" | "oldest" | "all";
+  /**
+   * Absent when false. With `text_truncated` present: some history keys
+   * were left out; without it: nothing of the text section was restored.
+   */
+  text_skipped?: boolean;
 };
 
 /** One device's backup blob returned by the restore fetch */
@@ -1009,6 +1044,12 @@ export interface MlsCommitInfo {
   removed: MlsMemberDevice[];
   /** Text groups only (S2): absent = none; never on Call commits. */
   removed_reasons?: MlsRemovedReason[];
+  /**
+   * Protected channels S4: the server's store time of this commit, ms.
+   * Absent from an older server. Hand it to native only as a safe integer
+   * >= 0 (native refuses the whole call on anything else).
+   */
+  created_at?: number;
 }
 
 /** Response to `POST /mls/groups` (an `Arbitrated` — 200 Created / 409 Conflict). */
@@ -9971,6 +10012,7 @@ export class E2EEBridge implements E2EEAdapter {
         enabled: false,
         defaultDeviceCap: null,
         formatsV2: false,
+        historySetting: false,
       }
     );
   }
@@ -10335,6 +10377,8 @@ export class E2EEBridge implements E2EEAdapter {
         if (!current()) return;
         this.#protectedIndexReported(channelId, groupId, generation);
       },
+      // S4-W4-0 placeholder (lane L2e): nothing is revealed or pinned yet.
+      onHistoryPolicy: () => {},
     };
     manager = new ProtectedTextManager(
       this.#protectedPort(userId, deviceId, life.signal),
@@ -10350,6 +10394,8 @@ export class E2EEBridge implements E2EEAdapter {
           recoverOwnership,
         },
         messages: { encryptAndSend, decryptRow, markerForError },
+        // S4-W4-0 placeholder (lane L2e)
+        requestBackupRefresh: () => {},
       },
     );
     this.#ptManager = manager;
@@ -10546,6 +10592,10 @@ export class E2EEBridge implements E2EEAdapter {
         return this.#invoke<Out>("e2ee_text_pin_own_devices", a);
       case "e2ee_mls_group_kind":
         return this.#invoke<Out>("e2ee_mls_group_kind", a);
+      case "e2ee_text_history_link_build":
+        return this.#invoke<Out>("e2ee_text_history_link_build", a);
+      case "e2ee_text_history_import":
+        return this.#invoke<Out>("e2ee_text_history_import", a);
       default: {
         // Unreachable: the allow-list above already refused anything else.
         const _exhaustive: never = command;
@@ -11120,10 +11170,31 @@ export class E2EEBridge implements E2EEAdapter {
     channelId: string,
     seats: string[],
     deviceCap: number,
+    opts?: { withHistory: boolean; wipe: boolean },
   ): Promise<void> {
+    // S4-W4-0 placeholder (lanes L2e, L2m): a protect with history is
+    // refused, never run as a plain protect.
+    if (opts?.withHistory || opts?.wipe) {
+      throw { source: "client", reason: "not_implemented" };
+    }
     const manager = await this.#protectedManagerFor(channelId);
     return manager.protect(channelId, seats, deviceCap);
   }
+
+  // S4-W4-0 placeholders (lanes L2e, L2m): the two owner calls reject and
+  // the walk is a no-op until the manager carries them.
+  async setHistoryVisible(
+    _channelId: string,
+    _visible: boolean,
+  ): Promise<void> {
+    throw { source: "client", reason: "not_implemented" };
+  }
+
+  async wipeHistory(_channelId: string): Promise<void> {
+    throw { source: "client", reason: "not_implemented" };
+  }
+
+  walkHistory(_channelId: string): void {}
 
   async setSeats(
     channelId: string,

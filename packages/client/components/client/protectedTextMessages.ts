@@ -519,6 +519,10 @@ function okView(
     tsSkew: d.ts_skew === true,
     cid: d.cid,
     filesUnsupported: d.files.length,
+    // S4-W4-0 placeholder (lane L2x)
+    timingUnverified: false,
+    belowBoundary: false,
+    historySender: false,
   };
   return view;
 }

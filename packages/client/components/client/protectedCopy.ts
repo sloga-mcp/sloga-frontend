@@ -428,6 +428,9 @@ export function markerCopy(kind: ProtectedMarkerKind): string {
       return t`Update Sloga to see this message.`;
     case "error":
       return verifyMessageFailedCopy();
+    // S4-W4-0 placeholder (lane L1c)
+    case "removed_self":
+      return verifyMessageFailedCopy();
     default: {
       const _exhaustive: never = kind;
       return verifyMessageFailedCopy();
@@ -446,6 +449,9 @@ export function timelineCopy(m: TimelineMarker, name: string): string {
       return t`${name} added a new device.`;
     case "forced_removal":
       return t`${name} was removed by the server and can't rejoin until the owner re-seats them.`;
+    // S4-W4-0 placeholder (lane L1c)
+    case "history_floor":
+      return verifyChannelFailedCopy();
     default: {
       const _exhaustive: never = m;
       return verifyChannelFailedCopy();
@@ -466,6 +472,10 @@ export function toastCopy(kind: ProtectedToastKind): string {
     // notice it was (`ownerNoticeCopy`).
     case "owner_notice":
       return t`Another of your devices changed a protected channel. Open the channel to see what changed.`;
+    // S4-W4-0 placeholder (lane L1c)
+    case "history_mismatch":
+    case "history_too_large":
+      return verifyChannelFailedCopy();
     default: {
       const _exhaustive: never = kind;
       return verifyChannelFailedCopy();

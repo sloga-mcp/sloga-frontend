@@ -1613,6 +1613,11 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         format: null,
         authority: null,
         recovery: true,
+        // S4 (R-W4-2): always sent; a recovery list never carries them.
+        history: null,
+        historyBoundary: null,
+        preHistory: null,
+        wipeCount: null,
         channelName: info?.name ?? null,
         displayNames: this.#port.displayNames(seats),
       });
@@ -5811,6 +5816,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         rec.ownerChangeUnlisted !== null &&
         rec.native?.owner_pin?.pending_signer?.device_id ===
           rec.ownerChangeUnlisted.deviceId,
+      // S4-W4-0 placeholder (lane L2m)
+      historyWalk: "idle",
     };
   }
 

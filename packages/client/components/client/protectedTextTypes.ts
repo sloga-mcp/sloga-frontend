@@ -8,10 +8,10 @@
  * Rules:
  * - Native mirrors follow the pinned native sources (`e2ee-core`
  *   `mls/text/types.rs` and `error.rs`; S1 copies in `/home/mcp/w4-notes/`,
- *   S2 at desktop 876c034): struct fields snake_case as named, enums
- *   snake_case, and every Rust `Option` arrives as `null`, so it is
- *   `T | null` here. The exception is the S2 fields native marks
- *   `skip_serializing_if` (omitted when `None`, so the S1 bytes are
+ *   S2 at desktop 876c034, S4 at desktop b688f121): struct fields snake_case
+ *   as named, enums snake_case, and every Rust `Option` arrives as `null`,
+ *   so it is `T | null` here. The exception is the S2 and S4 fields native
+ *   marks `skip_serializing_if` (omitted when `None`, so the S1 bytes are
  *   unchanged): those are optional keys.
  * - Command arguments follow Tauri's mapping: top-level argument names in
  *   camelCase, nested structs snake_case. An optional native parameter is
@@ -166,6 +166,12 @@ export interface TextProcessOutcome {
   seat_list_adopted: number | null;
   /** S2: owner-device alert raised by that adoption; absent when none. */
   owner_notice?: OwnerDeviceNotice;
+  /**
+   * S4 (design 3.14.6): the committer's history link for the won transition.
+   * `_commit_won` only (never from `_process`); absent when none. PUT
+   * verbatim, never rebuilt.
+   */
+  history_link?: HistoryLinkWire;
 }
 
 /** `e2ee_text_encrypt`. `nonce` is the cid native minted (plan D10). */
@@ -190,6 +196,13 @@ export interface TextDecrypted {
   ts_skew: boolean;
   /** One entry per file of a v2 envelope; `[]` for v1. Always present. */
   files: FileMeta[];
+  /**
+   * S4 (design 3.9 step 9): the removed-sender time clause rested on an
+   * imported history row, so the timing is informational only (the grey
+   * note). Always present from an S4 shell; an older shell sends no key, so
+   * test `=== true`.
+   */
+  timing_unverified: boolean;
 }
 
 /**
@@ -305,6 +318,21 @@ export interface TextChannelState {
    * device); absent when none.
    */
   owner_alert?: OwnerDeviceNotice;
+  // S4 (design 8.3 "S4"): each is absent when native holds none, so the S1
+  // state is unchanged.
+  /**
+   * The lowest epoch held for the channel from any source, and why the
+   * history walk stopped there (design 3.14.8).
+   */
+  history_floor?: HistoryFloor;
+  /** The held list's `history` line (`hidden` for a v1 list). */
+  history_setting?: HistorySetting;
+  /** The channel's history boundary (a ULID, design 4.9 "S4"). */
+  history_boundary?: string;
+  /** The channel's local `pre_history` (S4-D14). */
+  pre_history?: PreHistorySetting;
+  /** `issued_at` of the earliest list ever verified for the channel, ms. */
+  history_time_limit?: number;
 }
 
 export type SeatListStatus = "accepted" | "unchanged";
@@ -389,8 +417,137 @@ export interface DisplayName {
 export type GroupKind = "call" | "text";
 
 // ---------------------------------------------------------------------------
-// Commands (21: design 8.3 + W3 D12 `_mark_left` + W3 D7 `_pin_own_devices`
-// + S2 `_authority_sign`)
+// History sharing (S4: design 3.14, 8.3 "S4"; `types.rs`, `wire.rs` and
+// `error.rs` at desktop b688f121)
+// ---------------------------------------------------------------------------
+
+/** A list's `history` line (`TextChannelState.history_setting`). */
+export type HistorySetting = "visible" | "hidden";
+
+/** A genesis's `pre_history` line (`TextChannelState.pre_history`). */
+export type PreHistorySetting = "kept" | "wiped";
+
+/** Why the history walk stopped (design 3.14.7, 3.14.8). */
+export type HistoryStop =
+  | "hidden"
+  | "missing"
+  | "invalid"
+  | "anchor_mismatch"
+  | "conflict"
+  | "unanchored"
+  | "genesis";
+
+/** Why `_history_link_build` built no link (design 3.14.6). */
+export type HistoryBuildRefusal = "hidden" | "not_derived" | "too_large";
+
+/** Why a history link candidate was refused (design 3.14.7, 8.4). */
+export type HistoryLinkInvalidReason =
+  | "aead"
+  | "malformed"
+  | "writer_not_member"
+  | "bad_writer_sig"
+  | "roster_identity_mismatch"
+  | "roster_diff_mismatch"
+  | "anchor_mismatch";
+
+/**
+ * One history link (design 3.14.5 "Wire"): the PUT body, each GET row, and
+ * the native argument and result. Passed verbatim between the server and
+ * native: send the object as received, never rebuild it from these fields.
+ */
+export interface HistoryLinkWire {
+  /** The holder group G'. */
+  group_id: string;
+  /** The holder epoch e'. */
+  epoch: number;
+  /** G, the group whose keys the link carries. */
+  prev_group_id: string;
+  /** e, the epoch whose keys the link carries. */
+  prev_epoch: number;
+  nonce: string;
+  ciphertext: string;
+  writer_user_id: string;
+  writer_device_id: string;
+  signature: string;
+}
+
+/** One epoch of one group, as `HistoryImported` names it. */
+export interface HistoryEpochRef {
+  group_id: string;
+  epoch: number;
+}
+
+/** `TextChannelState.history_floor`. `stopped` is always present. */
+export interface HistoryFloor {
+  group_id: string;
+  epoch: number;
+  stopped: HistoryStop | null;
+}
+
+/** `e2ee_text_history_link_build`. Writes nothing natively. */
+export interface HistoryLinkBuilt {
+  link: HistoryLinkWire | null;
+  contest: boolean;
+  /**
+   * Writers of verified candidates whose content differs from this device's
+   * (the owner notice). Ids only; the UI never renders them.
+   */
+  mismatched_writers: MlsMemberDevice[];
+  refused: HistoryBuildRefusal | null;
+}
+
+/**
+ * A stored message the history walk may open as evidence (design 3.14.7).
+ * `encrypted` is the row's raw `encrypted`, passed through unparsed.
+ */
+export interface HistoryProbe {
+  message_id: string;
+  author_user_id: string;
+  nonce: string;
+  encrypted: EncryptedPayload;
+}
+
+/**
+ * One holder of an `e2ee_text_history_import` page, highest holder first.
+ * Native defaults the last three when absent (`serde(default)`), so they
+ * are optional keys: an absent commit is `null`, absent probes are `[]`.
+ */
+export interface HistoryImportStep {
+  holder_group_id: string;
+  holder_epoch: number;
+  candidates: HistoryLinkWire[];
+  /** The stored commit into the holder epoch, when retained. */
+  commit?: MlsCommitInfo | null;
+  /** The stored commit of the epoch before it, when retained. */
+  prev_commit?: MlsCommitInfo | null;
+  /** At most 3 probes of the holder, from distinct authors. */
+  probes?: HistoryProbe[];
+}
+
+/**
+ * One refused candidate in `HistoryImported.refused`. The same shape as the
+ * `history_link_invalid` native error; `group_id` / `epoch` name the HOLDER.
+ */
+export interface HistoryRefusal {
+  type: "history_link_invalid";
+  group_id: string;
+  epoch: number;
+  reason: HistoryLinkInvalidReason;
+}
+
+/** `e2ee_text_history_import`. */
+export interface HistoryImported {
+  session: string;
+  need_more: boolean;
+  imported: HistoryEpochRef[];
+  floor: HistoryEpochRef | null;
+  stopped: HistoryStop | null;
+  refused: HistoryRefusal[];
+}
+
+// ---------------------------------------------------------------------------
+// Commands (23: design 8.3 + W3 D12 `_mark_left` + W3 D7 `_pin_own_devices`
+// + S2 `_authority_sign` + S4 `_history_link_build`, `_history_import`)
 // ---------------------------------------------------------------------------
 
 /** The text command allow-list (B5 `textInvoke` refuses anything else). */
@@ -416,6 +573,9 @@ export const TEXT_COMMANDS = [
   "e2ee_text_mark_left",
   "e2ee_text_pin_own_devices",
   "e2ee_mls_group_kind",
+  // S4, appended (the Android binding order at desktop b688f121)
+  "e2ee_text_history_link_build",
+  "e2ee_text_history_import",
 ] as const;
 
 export type TextCommand = (typeof TEXT_COMMANDS)[number];
@@ -508,6 +668,10 @@ export interface TextCommandArgs {
    * `serverList` null only when the server holds no list (genesis).
    * S2: `format` (null = native's choice), `authority` (null = none) and
    * `recovery` (a recovery list always gets the recovery dialog).
+   * S4 (null = none, always sent): `history` on any v2 list, never with
+   * `recovery`; `historyBoundary` (a ULID) on a v2 genesis only;
+   * `preHistory` on a genesis or the wipe list (`wiped` gets the native
+   * wipe dialog); `wipeCount` only labels that dialog.
    */
   e2ee_text_seat_list_sign: TextDialogCopyArgs & {
     channelId: string;
@@ -518,6 +682,10 @@ export interface TextCommandArgs {
     format: number | null;
     authority: SignedAuthority | null;
     recovery: boolean;
+    history: HistorySetting | null;
+    historyBoundary: string | null;
+    preHistory: PreHistorySetting | null;
+    wipeCount: number | null;
   };
   /** S2: ALWAYS a native dialog naming every owner device. */
   e2ee_text_authority_sign: TextDialogCopyArgs & {
@@ -569,6 +737,24 @@ export interface TextCommandArgs {
    */
   e2ee_text_pin_own_devices: { userId: string; devices: unknown[] };
   e2ee_mls_group_kind: { groupId: string };
+  /**
+   * S4: `epoch` is the holder epoch; `candidates` are the links the server
+   * already holds for it (always sent, may be empty; at most 200).
+   */
+  e2ee_text_history_link_build: {
+    groupId: string;
+    epoch: number;
+    candidates: HistoryLinkWire[];
+  };
+  /**
+   * S4: `session` is null to start, then the id the previous call answered
+   * (an unknown one starts fresh natively). A call is all or nothing.
+   */
+  e2ee_text_history_import: {
+    groupId: string;
+    session: string | null;
+    steps: HistoryImportStep[];
+  };
 }
 
 /** Per-command results. Rust `()` arrives as `null`. */
@@ -595,6 +781,8 @@ export interface TextCommandResult {
   /** Unspecified by the native plan; read nothing from it. */
   e2ee_text_pin_own_devices: unknown;
   e2ee_mls_group_kind: GroupKind | null;
+  e2ee_text_history_link_build: HistoryLinkBuilt;
+  e2ee_text_history_import: HistoryImported;
 }
 
 export type _TextCommandArgsComplete = Assert<
@@ -665,7 +853,9 @@ export type SeatListRejection =
   | "too_many_seats"
   // S2
   | "immutable_changed"
-  | "authority_invalid";
+  | "authority_invalid"
+  // S4: `_seat_list_sign` only (a genesis boundary ahead of the local clock)
+  | "future_boundary";
 
 export type MalformedTextReason =
   | "structure"
@@ -746,9 +936,10 @@ export const NATIVE_ERROR_TAGS = [
   "wrong_group_kind",
   "identity_pin_required",
   "handover_target_invalid",
-  // Appended in slice order (S2, S3); the spec pins the order
+  // Appended in slice order (S2, S3, S4); the spec pins the order
   "catch_up_leaf_unresolvable",
   "unsupported_envelope_version",
+  "history_link_invalid",
 ] as const;
 
 export type NativeErrorTag = (typeof NATIVE_ERROR_TAGS)[number];
@@ -761,7 +952,9 @@ export type NativeErrorTag = (typeof NATIVE_ERROR_TAGS)[number];
  * variants design 8.4 says apply to text groups. Plan D17's total mapping
  * must name each of these; any other `NativeErrorTag` (e.g. `busy`,
  * `storage`, `not_enabled`) and any untyped rejection go to the fail-closed
- * catch-all.
+ * catch-all. The S4 `history_link_invalid` is NOT listed: native never
+ * rejects a command with it (it only appears in `HistoryImported.refused`),
+ * so a thrown one is unknown and fails closed.
  */
 export const TEXT_NATIVE_ERROR_TAGS = [
   "unknown_epoch",
@@ -875,6 +1068,12 @@ export type NativeError =
       epoch: number;
       oldest_held: number | null;
       current: number;
+      /**
+       * S4 (design 3.9 "S4"): the epoch falls after this device's recorded
+       * removal from the group. An older shell sends no key, so test
+       * `=== true` / `=== false`.
+       */
+      removed_self: boolean;
     }
   | {
       type: "unknown_sender";
@@ -941,7 +1140,12 @@ export type NativeError =
   /** S2-D31: rolled back, not poisoned; mark `left` and rejoin. */
   | { type: "catch_up_leaf_unresolvable"; group_id: string; epoch: number }
   /** S3-N0: a newer format than this build reads; `v` is never shown. */
-  | { type: "unsupported_envelope_version"; v: number };
+  | { type: "unsupported_envelope_version"; v: number }
+  /**
+   * S4: one refused history link CANDIDATE (`group_id` / `epoch` name the
+   * holder). Never thrown: read it from `HistoryImported.refused`.
+   */
+  | HistoryRefusal;
 
 /** Plan `TextNativeError`: the text-plane subset of `NativeError`. */
 export type TextNativeError = Extract<
@@ -1058,6 +1262,12 @@ export interface ProtectedChannelsFlag {
   defaultDeviceCap: number | null;
   /** S2 `formats_v2`; absent/malformed is `false` and never turns `enabled` off. */
   formatsV2: boolean;
+  /**
+   * S4 `history_setting` (R-W4-9): absent/malformed is `false` and never
+   * turns `enabled` off. While false the bridge writes no history link and
+   * offers no boundary protect, no history toggle and no wipe.
+   */
+  historySetting: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,6 +1303,7 @@ export interface TextApiResponse {
  */
 export type ProtectedMarkerKind =
   | "sent_before_join" // UnknownEpoch, epoch < oldest_held (gray)
+  | "removed_self" // S4 UnknownEpoch.removed_self: sent after removal (gray)
   | "unknown_key" // MlsGroupNotFound on decrypt (gray)
   | "decrypt_failed" // UnknownEpoch, epoch > current after one catch-up (red)
   | "unverified_sender" // UnknownSender, BadSig on a message (red)
@@ -1103,7 +1314,12 @@ export type ProtectedMarkerKind =
   | "unencrypted_row" // no `encrypted` in a protected/pinned channel (red)
   | "error"; // any other or unknown error (red, fail closed)
 
-/** Plan D22, verbatim. */
+/**
+ * Plan D22, plus the S4 row arms (design 9.5): `plain` is a verified
+ * pre-boundary row that renders as an ordinary message (its fields come from
+ * the SDK's verified reveal, never from here); `checking` is a row with no
+ * `encrypted` whose arm is not decided yet (it stays stripped).
+ */
 export type ProtectedMessageView =
   | { status: "pending" }
   | {
@@ -1115,7 +1331,15 @@ export type ProtectedMessageView =
       cid: string;
       /** S2 (OR-20): files of a v2 envelope this build cannot show; 0 for v1. */
       filesUnsupported: number;
+      /** S4: native `timing_unverified` (the grey note). */
+      timingUnverified: boolean;
+      /** S4: an encrypted row whose id is at or below the history boundary. */
+      belowBoundary: boolean;
+      /** S4: show the "(history)" sender note instead of the S1 one. */
+      historySender: boolean;
     }
+  | { status: "plain" }
+  | { status: "checking" }
   | { status: "marker"; kind: ProtectedMarkerKind };
 
 /** Local per-channel timeline markers from `TextProcessOutcome` (D22). */
@@ -1135,6 +1359,15 @@ export type TimelineMarker =
       groupId: string;
       epoch: number;
       userId: string;
+      atMs: number;
+    }
+  /** S4: where the history walk stopped (`groupId` / `epoch` = the floor). */
+  | {
+      kind: "history_floor";
+      channelId: string;
+      groupId: string;
+      epoch: number;
+      stop: HistoryStop;
       atMs: number;
     };
 
@@ -1196,10 +1429,21 @@ export interface ProtectedChannelView {
    * list or the pin changes. The manager always sets it (see above).
    */
   ownerChangeUnlisted?: boolean;
+  /**
+   * S4: the channel's history walk. `retry_later`: it ended `unanchored` on
+   * a session cap and runs again on the next backward paging that needs it.
+   */
+  historyWalk: "idle" | "running" | "retry_later";
 }
 
 /** Toasts the manager raises through `port.notify` (D22). */
-export type ProtectedToastKind = "unsolicited_welcome" | "owner_notice";
+export type ProtectedToastKind =
+  | "unsolicited_welcome"
+  | "owner_notice"
+  /** S4: an owner-user device found a history link that differs from its own. */
+  | "history_mismatch"
+  /** S4: `_history_link_build` refused `too_large`. */
+  | "history_too_large";
 
 // ---------------------------------------------------------------------------
 // Port (plan 4.3) and manager-facing types
@@ -1498,11 +1742,30 @@ export interface ProtectedTextManagerCallbacks {
   onView(channelId: string, v: ProtectedChannelView): void;
   onMessageView(messageId: string, v: ProtectedMessageView): void;
   onTimelineMarker(channelId: string, m: TimelineMarker): void;
+  /**
+   * S4 (R-W4-4): the channel's history policy as native holds it. `verified`
+   * false means "not known": the bridge reveals nothing and plaintext rows
+   * stay stripped.
+   */
+  onHistoryPolicy(
+    channelId: string,
+    p: {
+      verified: boolean;
+      boundary: string | null;
+      preHistory: PreHistorySetting | null;
+      timeLimit: number | null;
+    },
+  ): void;
 }
 
 export interface ProtectedTextManagerDeps {
   owner: OwnerFlows;
   messages: MessageFlows;
+  /**
+   * S4 (design 8.5 "Refresh"): ask the bridge for a backup refresh; a no-op
+   * unless native finds one due.
+   */
+  requestBackupRefresh(): void;
 }
 
 /** The manager's public surface (plan 4.3, RC NEW-8a). */
@@ -1593,7 +1856,26 @@ export interface ProtectedUiApi {
    * channel the manager doesn't hold. Never a security input.
    */
   retryNow(channelId: string): void;
-  protect(channelId: string, seats: string[], deviceCap: number): Promise<void>;
+  /**
+   * `opts` (S4, R-W4-11): `withHistory` protects a channel that already has
+   * messages (a boundary genesis); `wipe` signs it `pre_history: "wiped"`
+   * (the confirmation is the native dialog). Absent = the S1 protect.
+   */
+  protect(
+    channelId: string,
+    seats: string[],
+    deviceCap: number,
+    opts?: { withHistory: boolean; wipe: boolean },
+  ): Promise<void>;
+  /** S4: sign the next list with `history: "visible" | "hidden"`. */
+  setHistoryVisible(channelId: string, visible: boolean): Promise<void>;
+  /**
+   * S4: sign the one-change wipe list (`pre_history: "wiped"`) and ask the
+   * server to wipe. The only confirmation is the native dialog.
+   */
+  wipeHistory(channelId: string): Promise<void>;
+  /** S4: start (or retry) the channel's history walk; never a security input. */
+  walkHistory(channelId: string): void;
   /**
    * `reason` (S2 D40): the unseat reason, validated by the caller with
    * `validReason(s, "header")`; checked again before it is sent.

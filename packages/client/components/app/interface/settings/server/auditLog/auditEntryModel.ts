@@ -68,6 +68,9 @@ const ACTIONS = [
   "role_ranks_update",
   "server_update",
   "server_owner_transfer",
+  // S4-W4-0 placeholder (lane U6)
+  "channel_protect",
+  "channel_history_wipe",
 ] as const satisfies readonly AuditLogAction[];
 
 // Compile-time guard that `ACTIONS` is exactly the SDK's `AuditLogAction`:
@@ -110,6 +113,9 @@ const TARGET_KIND: Record<AuditLogAction, AuditTargetKind> = {
   role_ranks_update: "none",
   server_update: "none",
   server_owner_transfer: "user",
+  // S4-W4-0 placeholder (lane U6)
+  channel_protect: "none",
+  channel_history_wipe: "none",
 };
 
 // A Set rather than an `in` / index check on `TARGET_KIND`, so an action

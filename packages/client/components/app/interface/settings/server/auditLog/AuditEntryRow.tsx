@@ -214,6 +214,10 @@ export function AuditEntryRow(props: {
         return t`${actor} transferred ownership of the server to ${target}`;
       case "unknown":
         return t`${actor} performed an action`;
+      // S4-W4-0 placeholder (lane U6): the unknown-action sentence.
+      case "channel_protect":
+      case "channel_history_wipe":
+        return t`${actor} performed an action`;
       default: {
         const _exhaustive: never = kind;
         return t`${actor} performed an action`;

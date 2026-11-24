@@ -524,6 +524,7 @@ test("a ProtectedChannelView plus the three caller fields is a ResecureInputs", 
     capacity: null,
     clientOutdated: null,
     ownerNotice: null,
+    historyWalk: "idle",
   };
   // Compile-time: the spread is assignable (the tsc gate checks this line).
   const i: ResecureInputs = {

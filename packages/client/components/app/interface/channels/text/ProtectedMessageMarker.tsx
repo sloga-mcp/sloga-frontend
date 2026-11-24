@@ -78,6 +78,10 @@ export function markerTone(
     case "unencrypted_row":
     case "error":
       return "red";
+    // S4-W4-0 placeholder (lane U1): red like an unknown kind until U1
+    // gives it its tone.
+    case "removed_self":
+      return "red";
     // `unsupported_version` (S2, OR-19): a newer envelope version, so this
     // build is outdated; nothing is under attack.
     case "sent_before_join":

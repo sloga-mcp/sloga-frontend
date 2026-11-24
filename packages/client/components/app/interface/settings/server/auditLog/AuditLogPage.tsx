@@ -267,6 +267,10 @@ export function AuditLogPage(props: { server: Server }) {
         return t`Change server settings`;
       case "server_owner_transfer":
         return t`Transfer ownership`;
+      // S4-W4-0 placeholder (lane U6): the raw action, as for an unknown one.
+      case "channel_protect":
+      case "channel_history_wipe":
+        return String(value);
       default: {
         const _exhaustive: never = value;
         return String(value);

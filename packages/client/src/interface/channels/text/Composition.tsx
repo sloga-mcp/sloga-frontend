@@ -3439,6 +3439,9 @@ function ProtectedReplyPreview(props: {
     const v = view();
     if (!v || v.status === "pending") return messageCopy.pending();
     if (v.status === "marker") return markerCopy(v.kind);
+    // S4-W4-0 placeholder (no lane names this file): a plain or checking
+    // row previews as pending, never as server text.
+    if (v.status !== "ok") return messageCopy.pending();
     const flat = v.text.replace(/\n/g, " ");
     return flat.length > 128 ? flat.slice(0, 128) + "..." : flat;
   };

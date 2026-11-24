@@ -1689,6 +1689,9 @@ function timelineGlyph(kind: TimelineMarker["kind"]): string {
       return "devices";
     case "forced_removal":
       return "person_remove";
+    // S4-W4-0 placeholder (lane U3)
+    case "history_floor":
+      return "info";
     default: {
       const _exhaustive: never = kind;
       return "info";
@@ -1708,7 +1711,9 @@ function ProtectedTimelineRow(props: { marker: TimelineMarker }) {
 
   const text = createMemo(() => {
     const c = client();
-    const userId = props.marker.userId;
+    // S4-W4-0 placeholder (lane U3): a history floor names no member.
+    const userId =
+      props.marker.kind === "history_floor" ? "" : props.marker.userId;
     const serverId = c.channels.get(props.marker.channelId)?.serverId;
     const member = serverId
       ? c.serverMembers.getByKey({ server: serverId, user: userId })

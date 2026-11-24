@@ -115,6 +115,11 @@ function protectedMarkerKind(
       return view.kind;
     case "pending":
       return waiting;
+    // S4-W4-0 placeholder (lane U2): a plain or checking row shows the
+    // waiting marker, never the server text.
+    case "plain":
+    case "checking":
+      return waiting;
     default: {
       const _exhaustive: never = view;
       return "error";

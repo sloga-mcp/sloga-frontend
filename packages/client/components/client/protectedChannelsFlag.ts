@@ -43,7 +43,13 @@ export interface ProtectedFlagClient {
 
 /** A fresh "off" flag (never a shared object a caller could mutate). */
 function flagOff(): ProtectedChannelsFlag {
-  return { enabled: false, defaultDeviceCap: null, formatsV2: false };
+  // S4-W4-0 placeholder (lane L1f): `historySetting`
+  return {
+    enabled: false,
+    defaultDeviceCap: null,
+    formatsV2: false,
+    historySetting: false,
+  };
 }
 
 /** A non-null, non-array object. */
@@ -86,7 +92,8 @@ export function parseProtectedChannelsFeature(
   // Strict: "true", 1 or an object is not `true`; never a reason to go off.
   const formatsV2 = raw.formats_v2 === true;
 
-  return { enabled, defaultDeviceCap: cap, formatsV2 };
+  // S4-W4-0 placeholder (lane L1f): `history_setting` is not parsed yet.
+  return { enabled, defaultDeviceCap: cap, formatsV2, historySetting: false };
 }
 
 /**

@@ -1597,6 +1597,7 @@ test("shieldInputsFromView: loading view, roster age, backwards clock", () => {
     capacity: null,
     clientOutdated: null,
     ownerNotice: null,
+    historyWalk: "idle",
   };
   assert.equal(
     shieldInputsFromView(view, flags, 61_000).rosterMismatchAgeMs,
@@ -1648,6 +1649,7 @@ test("S2 shieldInputsFromView maps capacity and clientOutdated from the view", (
     capacity: null,
     clientOutdated: null,
     ownerNotice: null,
+    historyWalk: "idle",
   };
   const at = (v: ProtectedChannelView | null) =>
     explainShield(shieldInputsFromView(v, flags, 5));
@@ -1909,6 +1911,7 @@ test("S2 OR-10: shieldInputsFromView reads ownerChangeUnlisted from the view; ab
     clientOutdated: null,
     ownerNotice: null,
     ownerChangeUnlisted: true,
+    historyWalk: "idle",
   };
   const at = (v: ProtectedChannelView | null) =>
     explainShield(shieldInputsFromView(v, flags, 5));

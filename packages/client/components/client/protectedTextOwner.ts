@@ -1082,6 +1082,11 @@ export async function protect(
       format: nextFormat(port, "genesis"),
       authority: null,
       recovery: false,
+      // S4-W4-0 placeholder (lane L2o): R-W4-2, always sent.
+      history: null,
+      historyBoundary: null,
+      preHistory: null,
+      wipeCount: null,
       channelName: ctx.channelName,
       displayNames: port.displayNames(unique),
     });
@@ -1143,6 +1148,11 @@ export async function setSeats(
       format: nextFormat(port, snap.list),
       authority: null,
       recovery: false,
+      // S4-W4-0 placeholder (lane L2o): R-W4-2, always sent.
+      history: null,
+      historyBoundary: null,
+      preHistory: null,
+      wipeCount: null,
       channelName: ctx.channelName,
       displayNames: port.displayNames(unique),
     });
@@ -1224,6 +1234,11 @@ export async function signOwnerDevices(
       format,
       authority,
       recovery: false,
+      // S4-W4-0 placeholder (lane L2o): R-W4-2, always sent.
+      history: null,
+      historyBoundary: null,
+      preHistory: null,
+      wipeCount: null,
       channelName: ctx.channelName,
       displayNames: port.displayNames(verdict.seats),
     });
@@ -1399,6 +1414,11 @@ export async function moveOwnerKey(
       format: nextFormat(port, snap.list),
       authority: null,
       recovery: false,
+      // S4-W4-0 placeholder (lane L2o): R-W4-2, always sent.
+      history: null,
+      historyBoundary: null,
+      preHistory: null,
+      wipeCount: null,
       channelName: ctx.channelName,
       displayNames: port.displayNames(verdict.seats),
     });
