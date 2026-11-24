@@ -218,11 +218,29 @@ function floorAnchoredTo(
 }
 
 /**
+ * The loaded row a history floor marker is anchored to: the newest row
+ * whose time is exactly 1 ms before the marker's (R-W4-32). -1 for any
+ * other marker and while that row is not loaded.
+ * @param marker Marker
+ * @param messagesAtMs Message times in ms, newest first
+ * @returns Index of the anchored row, or -1
+ */
+function floorRowOf(
+  marker: { atMs: number; kind?: string },
+  messagesAtMs: readonly number[],
+): number {
+  if (marker.kind !== "history_floor") return -1;
+  return messagesAtMs.indexOf(marker.atMs - 1);
+}
+
+/**
  * Where local timeline markers sit among the loaded messages, ordered by
  * their `atMs`. Indices follow `messagesAtMs`, which is newest first like
- * the list; every array of markers is newest first too. A history floor is
- * placed by its `atMs` like any other marker, and only the latest floor of
- * a channel is placed at all.
+ * the list; every array of markers is newest first too. Only the latest
+ * history floor of a channel is placed at all. While its anchored row is
+ * loaded (`floorRowOf`) it goes directly before that row, whatever other
+ * row shares the marker's millisecond; otherwise by its `atMs` like any
+ * other marker.
  * - `before[k]`: markers at or after message k and before message k - 1.
  *   For k = 0 they are newer than every loaded message and show only at
  *   the end of the conversation (otherwise they belong to unloaded rows);
@@ -250,11 +268,19 @@ function planTimelineMarkers<
   sameDay: (a: number, b: number) => boolean,
 ): { before: M[][]; beforeDate: M[][]; breaksTail: boolean[]; trailing: M[] } {
   // Newest first; equal times keep their arrival order once reversed
-  const pending = latestFloorOnly(markers)
+  const ordered = latestFloorOnly(markers)
     .map((marker, index) => ({ marker, index }))
     .filter(({ marker }) => Number.isFinite(marker.atMs))
     .sort((a, b) => b.marker.atMs - a.marker.atMs || b.index - a.index)
     .map(({ marker }) => marker);
+
+  // A floor whose row is loaded is placed at that row, not by its time
+  const floorRows = new Map<M, number>();
+  for (const marker of ordered) {
+    const row = floorRowOf(marker, messagesAtMs);
+    if (row !== -1) floorRows.set(marker, row);
+  }
+  const pending = ordered.filter((marker) => !floorRows.has(marker));
 
   const before: M[][] = [];
   const beforeDate: M[][] = [];
@@ -266,6 +292,14 @@ function planTimelineMarkers<
     const newer: M[] = [];
     while (i < pending.length && pending[i].atMs >= at) {
       newer.push(pending[i++]);
+    }
+    for (const [floor, row] of floorRows) {
+      if (row !== k) continue;
+      // Keeps its place in the time order among this row's markers
+      const later = newer.findIndex(
+        (marker) => ordered.indexOf(marker) > ordered.indexOf(floor),
+      );
+      newer.splice(later === -1 ? newer.length : later, 0, floor);
     }
     before.push(
       k === 0 && !atEnd
@@ -289,7 +323,8 @@ function planTimelineMarkers<
     breaksTail.push(
       next !== undefined &&
         (sameDayOlder.length > 0 ||
-          (i < pending.length && pending[i].atMs >= next)),
+          (i < pending.length && pending[i].atMs >= next) ||
+          [...floorRows.values()].includes(k + 1)),
     );
   }
 
@@ -1034,14 +1069,14 @@ export function Messages(props: Props) {
           .then(({ messages }) => messages);
       }
 
-      // Rows of another channel are never listed
-      messages = ownRows(messages);
-
       // Cancel if we've been pre-empted
       if (preempted()) {
         collectedMessages = undefined;
         return;
       }
+
+      // Rows of another channel are never listed
+      messages = ownRows(messages);
 
       // Assume we are not at the end if we jumped to a message
       // NB. we set this late to not display the "jump to bottom" bar

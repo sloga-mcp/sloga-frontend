@@ -61,6 +61,8 @@ const EXPORTS = [
   "rowsOfChannel",
   "newestFirst",
   "reloadAfterEmptied",
+  // S4 second fix round, lane FX2U
+  "floorRowOf",
 ] as const;
 
 async function loadRegion(): Promise<Record<string, unknown>> {
@@ -596,6 +598,13 @@ const reloadAfterEmptied =
       reloads: number;
     }) => boolean
   >("reloadAfterEmptied");
+const floorRowOf =
+  fn<
+    (
+      marker: { atMs: number; kind?: string },
+      messagesAtMs: readonly number[],
+    ) => number
+  >("floorRowOf");
 const planFloorMarkers = planTimelineMarkers as unknown as (
   markers: FloorMarker[],
   messagesAtMs: number[],
@@ -1198,6 +1207,113 @@ describe("S4 history floor marker", () => {
     assert.deepEqual(own.before.map(ids), [[], ["floor"]]);
   });
 
+  // RC4: a readable row can be as close as 1 ms above the floor row, so
+  // the marker's time alone (row time + 1) would put the line above it.
+  const NEAR = R1 + 1; // readable, in the marker's own millisecond
+
+  it("FX2U: the anchored row of a floor is the newest row 1 ms before it, and only a floor has one", () => {
+    const rows = [R3, NEAR, R1, R0];
+    assert.equal(floorRowOf(floor("f", R1 + 1), rows), 2);
+    assert.equal(floorRowOf(floor("f", R0 + 1), rows), 3);
+    assert.equal(floorRowOf(floor("f", R3 + 1), rows), 0);
+    // The row that shares the marker's time is not its row
+    assert.equal(floorRowOf(floor("f", R3), rows), -1);
+    assert.equal(floorRowOf(floor("f", R1 + 2), [R3, R1, R0]), -1);
+    // Its row is not loaded
+    assert.equal(floorRowOf(floor("f", R2 + 1), rows), -1);
+    assert.equal(floorRowOf(floor("f", R1 + 1), []), -1);
+    assert.equal(floorRowOf(floor("f", Number.NaN), rows), -1);
+    // Two rows in one millisecond: the newer one (first in the list)
+    assert.equal(floorRowOf(floor("f", R1 + 1), [R3, R1, R1, R0]), 1);
+    // No other marker is anchored to a row
+    assert.equal(floorRowOf(other("d", "new_device", R1 + 1), rows), -1);
+    assert.equal(floorRowOf({ atMs: R1 + 1 }, rows), -1);
+  });
+
+  it("FX2U: a readable row within 1 ms of the floor row does not take the floor line", () => {
+    for (const [atStart, atEnd] of WINDOWS) {
+      const p = planFloorMarkers(
+        [floor("floor", R1 + 1)],
+        [R3, NEAR, R1, R0],
+        atStart,
+        atEnd,
+        sameLocalDay,
+      );
+      // Directly before the floor row R1, between it and the readable row
+      assert.deepEqual(p.before.map(ids), [[], [], ["floor"], []]);
+      assert.deepEqual(p.breaksTail, [false, true, false, false]);
+      assert.deepEqual(p.beforeDate.map(ids), [[], [], [], []]);
+      assert.deepEqual(p.trailing, []);
+
+      // The same with the readable row as the newest loaded one (k = 0)
+      const top = planFloorMarkers(
+        [floor("floor", R1 + 1)],
+        [NEAR, R1, R0],
+        atStart,
+        atEnd,
+        sameLocalDay,
+      );
+      assert.deepEqual(top.before.map(ids), [[], ["floor"], []]);
+      assert.deepEqual(top.breaksTail, [true, false, false]);
+      assert.deepEqual(placed(top), ["floor"]);
+    }
+    // Only a history floor is moved to a row: a device marker at the same
+    // time keeps its place by time, above the readable row.
+    const dev = planFloorMarkers(
+      [other("dev", "new_device", R1 + 1)],
+      [R3, NEAR, R1, R0],
+      true,
+      true,
+      sameLocalDay,
+    );
+    assert.deepEqual(dev.before.map(ids), [[], ["dev"], [], []]);
+    assert.deepEqual(dev.breaksTail, [true, false, false, false]);
+  });
+
+  it("FX2U: a floor at its row keeps the time order among that row's other markers", () => {
+    const p = planFloorMarkers(
+      [
+        other("gone", "forced_removal", R1),
+        floor("floor", R1 + 1),
+        other("dev", "new_device", R1 + 30_000),
+      ],
+      [R2, R1, R0],
+      true,
+      true,
+      sameLocalDay,
+    );
+    assert.deepEqual(p.before.map(ids), [[], ["dev", "floor", "gone"], []]);
+    assert.deepEqual(p.breaksTail, [true, false, false]);
+    // Equal times: arrival order once reversed, as for every marker
+    for (const order of [
+      ["dev", "floor"],
+      ["floor", "dev"],
+    ]) {
+      const same = order.map((id) =>
+        id === "floor" ? floor(id, R1 + 1) : other(id, "new_device", R1 + 1),
+      );
+      const q = planFloorMarkers(same, [R2, R1, R0], true, true, sameLocalDay);
+      assert.deepEqual(q.before[1].map((m) => m.id).reverse(), order);
+      assert.deepEqual(placed(q).sort(), ["dev", "floor"]);
+    }
+  });
+
+  it("FX2U: a floor whose row ends a day stays at that row, not under the next day's divider", () => {
+    // The floor row is the last millisecond of the 10th, so the marker's
+    // time is the first of the 11th, the day of the newer row.
+    const late = at(11, 0) - 1;
+    const p = planFloorMarkers(
+      [floor("floor", late + 1)],
+      [at(11, 9), late],
+      true,
+      true,
+      sameLocalDay,
+    );
+    assert.deepEqual(p.before.map(ids), [[], ["floor"]]);
+    assert.deepEqual(p.beforeDate.map(ids), [[], []]);
+    assert.deepEqual(p.breaksTail, [true, false]);
+  });
+
   it("U3: an unknown stop reads loud, hidden and missing history read quiet", () => {
     const tone = (stop: string) =>
       timelineTone(
@@ -1614,6 +1730,61 @@ describe("FXU rows of another channel", () => {
     assert.deepEqual(rowsOfChannel(page, "Y", false), page);
     // Only a literal true takes the protected rule
     assert.deepEqual(rowsOfChannel(page, "Y", 1 as unknown as boolean), page);
+  });
+
+  it("FX2U: every fetch site checks pre-emption before it filters rows", () => {
+    // RC3: the filter logs the rows it drops, so a load that was
+    // pre-empted by a channel switch must stop before it runs.
+    for (const header of [
+      /async function caseInitialLoad\(/,
+      /async function caseFetchUpwards\(/,
+      /async function caseFetchDownwards\(/,
+      /async function caseJumpToBottom\(/,
+      /async function caseJumpToMessage\(/,
+    ]) {
+      const body = bodyOf(header);
+      const check = body.indexOf("if (preempted())");
+      const filter = body.indexOf("ownRows(");
+      assert.ok(check !== -1, `${header} has no pre-emption check`);
+      assert.ok(filter !== -1, `${header} lists unfiltered rows`);
+      assert.ok(check < filter, `${header} filters before the check`);
+      assert.equal(count(body, "if (preempted())"), 1);
+      assert.equal(count(body, "ownRows("), 1);
+    }
+  });
+
+  it("FX2U: an empty cached list is refetched, and an empty page marks the start", () => {
+    // RC1: the cache hands an entry back only through restorableEntry
+    // (messageCacheLive.test.ts: no rows = not restorable) ...
+    const cacheSource = readFileSync(join(here, "MessageCache.tsx"), "utf8");
+    assert.match(
+      cacheSource,
+      /unmanage\(channel\) \{\s*if \(cache\[channel\.id\]\) \{\s*const state = cache\[channel\.id\];\s*delete cache\[channel\.id\];/,
+    );
+    assert.match(
+      cacheSource,
+      /return restorableEntry\(state, \(id\) => messages\.has\(id\)\);/,
+    );
+    assert.ok(!/return state\b/.test(cacheSource));
+
+    // ... and with no entry the load fetches, once, and an empty page is
+    // the start of the conversation (the start card), not another request
+    const initial = bodyOf(/async function caseInitialLoad\(/);
+    assert.match(
+      initial,
+      /const useExistingState = existingState && !nearby;\s*if \(useExistingState\) \{\s*messages = existingState\.messages;/,
+    );
+    assert.equal(count(initial, "fetchMessagesWithUsers("), 1);
+    assert.match(
+      initial,
+      /else if \(\s*!useExistingState &&\s*pageEndsHistory\(\s*messages\.length,\s*INITIAL_FETCH_LIMIT,\s*protectedTranscript\(\),\s*\)\s*\) \{\s*setStart\(true\);/,
+    );
+    assert.ok(!initial.includes("caseInitialLoad("));
+    assert.ok(!initial.includes("reloadIfEmptied("));
+    // An empty page ends history on every kind of channel
+    for (const protectedOrPinned of [true, false]) {
+      assert.equal(pageEndsHistory(0, 50, protectedOrPinned), true);
+    }
   });
 
   it("FXU: every fetch and the cache restore go through the row filter", () => {
