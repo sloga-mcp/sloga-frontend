@@ -13,9 +13,10 @@ import { useClient, useClientLifecycle } from "@revolt/client";
 import { apiErrorType } from "@revolt/client/apiErrorType";
 import { CONFIGURATION } from "@revolt/common";
 import {
+  type PasskeysAdvert,
   PasskeyError,
   createPasskey,
-  getPasskeysAdvert,
+  findPasskeysAdvert,
 } from "@revolt/common/lib/passkey";
 import { Navigate, useNavigate, useParams } from "@revolt/routing";
 import { Button, CircularProgress, Row, Text, TextField } from "@revolt/ui";
@@ -26,6 +27,7 @@ import { usePasskeySession } from "./passkeySession";
 import {
   type RecoverProblem,
   type RecoverStep,
+  passkeyRecoverLookupFailure,
   passkeyRecoverProblem,
   passkeyRecoveryOffered,
   recoverStartsAgain,
@@ -108,6 +110,10 @@ export default function FlowPasskeyRecover() {
     }
   }
 
+  // What the server says about passkeys, from the last lookup; undefined
+  // before the first one and after one that failed
+  let advert: PasskeysAdvert | undefined;
+
   /**
    * Ask the server about the link: whether it is good, and whether a
    * second factor goes with the new passkey. The link stays good. Never
@@ -122,15 +128,16 @@ export default function FlowPasskeyRecover() {
       setPhase("ready");
     } catch (failure) {
       const type = apiErrorType(failure);
-      const problem = passkeyRecoverProblem(type, "start", false);
+      const outcome = passkeyRecoverLookupFailure(type, advert);
 
-      if (problem === "bad_link") {
+      if (outcome === "bad_link") {
         setPhase("bad_link");
         return;
       }
 
-      // The server's own word that recovery is off: the page shows nothing
-      if (problem === "off") {
+      // Recovery is off, by the server's own word or because it has no
+      // such route and does not offer recovery: the page shows nothing
+      if (outcome === "off") {
         setPhase("off");
         return;
       }
@@ -145,17 +152,18 @@ export default function FlowPasskeyRecover() {
   /**
    * Look the link up, from the start. Also the retry after a failed lookup.
    *
-   * The advert only decides what is painted while the link is checked: a
-   * lookup of it that failed reads the same as "off", so the redirect is
-   * never taken on the advert's word. The request for the link itself tells
-   * a server that has recovery off from one that could not be reached.
+   * The advert decides what is painted while the link is checked, and what
+   * a lookup that failed without a reason means: a server that says it does
+   * not offer recovery has it off, and the page leaves. A lookup of the
+   * advert that failed says nothing either way, so the redirect is never
+   * taken on it.
    */
   async function lookUp() {
     setError(undefined);
     setPhase("loading");
 
     // Never rejects
-    const advert = await getPasskeysAdvert(CONFIGURATION.DEFAULT_API_URL);
+    advert = await findPasskeysAdvert(CONFIGURATION.DEFAULT_API_URL);
     if (passkeyRecoveryOffered(advert)) setPhase("checking");
 
     await check();

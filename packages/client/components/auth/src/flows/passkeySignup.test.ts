@@ -1,6 +1,6 @@
 // Run from packages/client:
 //   node --test --conditions=browser components/auth/src/flows/passkeySignup.test.ts
-// Declared test count: 17 (the runner exits 0 when it finds no tests at all,
+// Declared test count: 26 (the runner exits 0 when it finds no tests at all,
 // so compare this against its pass count).
 //
 // Known-bad control: set PASSKEY_SIGNUP_UNDER_TEST to the path of a changed
@@ -18,6 +18,7 @@ const underTest: typeof import("./passkeySignup.ts") = await import(
 
 const {
   SIGNUP_RESEND_WAIT_MS,
+  passkeyRecoverLookupFailure,
   passkeyRecoverProblem,
   passkeyRecoveryOffered,
   passkeySignupGate,
@@ -152,6 +153,44 @@ describe("passkeySignupProblem", () => {
       passkeySignupProblem("NoEffect", "finish"),
       "already_registered",
     );
+  });
+
+  // Fails if: an email the server will not take stops reading as one, and
+  // the form shows the raw error instead of "that email cannot be used"
+  it("reads IncorrectData and Blacklisted at start as an email that cannot be used", () => {
+    assert.equal(passkeySignupProblem("IncorrectData", "start"), "bad_email");
+    assert.equal(passkeySignupProblem("Blacklisted", "start"), "bad_email");
+  });
+
+  // Fails if: a code mail that could not be sent reads as anything other
+  // than "try again later"
+  it("reads EmailFailed at start as a mail that could not be sent", () => {
+    assert.equal(passkeySignupProblem("EmailFailed", "start"), "mail_failed");
+  });
+
+  // Fails if: a sign-up stopped by the shield loses its own message
+  it("reads BlockedByShield at start as a blocked sign-up", () => {
+    assert.equal(passkeySignupProblem("BlockedByShield", "start"), "blocked");
+  });
+
+  // Fails if: the four start-only answers get their start meaning at a
+  // later step, where the email is long accepted, or if one of them ends
+  // the sign-up instead of leaving the form up for another try
+  it("keeps the email and shield refusals to the start step, on the form", () => {
+    const types = [
+      "IncorrectData",
+      "Blacklisted",
+      "EmailFailed",
+      "BlockedByShield",
+    ];
+    for (const type of types) {
+      for (const step of ["code", "resend", "options", "finish"] as const) {
+        assert.equal(passkeySignupProblem(type, step), undefined, type);
+      }
+    }
+    for (const problem of ["bad_email", "mail_failed", "blocked"] as const) {
+      assert.equal(signupStartsAgain(problem, "start"), false, problem);
+    }
   });
 
   // Fails if: an error with no passkey meaning gets one, hiding the real
@@ -300,6 +339,72 @@ describe("passkeyRecoverProblem", () => {
     assert.equal(recoverStartsAgain("locked"), false);
     assert.equal(recoverStartsAgain("off"), false);
     assert.equal(recoverStartsAgain(undefined), false);
+  });
+});
+
+describe("passkeyRecoverLookupFailure", () => {
+  const OFFERED = { available: true, signup: true };
+  const NOT_OFFERED = [
+    {},
+    { available: false, signup: false },
+    { available: true, signup: false },
+    { available: false, signup: true },
+  ];
+
+  // Fails if: the recovery page paints "Could not check your link" on a
+  // server that has no recovery route (a 404 with no error type) and says
+  // in its advert that it does not offer recovery
+  it("reads an untyped failure as off when the advert does not offer recovery", () => {
+    for (const advert of NOT_OFFERED) {
+      assert.equal(
+        passkeyRecoverLookupFailure(undefined, advert),
+        "off",
+        JSON.stringify(advert),
+      );
+    }
+  });
+
+  // Fails if: the page leaves without a word while the link may still be
+  // good: the server offers recovery, or nothing is known about it because
+  // the advert lookup failed too (offline, say)
+  it("keeps an untyped failure a failure when recovery is offered or the advert is unknown", () => {
+    assert.equal(passkeyRecoverLookupFailure(undefined, OFFERED), "failed");
+    assert.equal(passkeyRecoverLookupFailure(undefined, undefined), "failed");
+  });
+
+  // Fails if: a refusal with a meaning of its own (a rate limit, a server
+  // error) is swallowed by the redirect because the advert says off
+  it("keeps a typed failure with no recovery meaning a failure", () => {
+    for (const advert of [undefined, OFFERED, ...NOT_OFFERED]) {
+      assert.equal(
+        passkeyRecoverLookupFailure("InternalError", advert),
+        "failed",
+        JSON.stringify(advert),
+      );
+    }
+  });
+
+  // Fails if: the server's own answers stop deciding ahead of the advert:
+  // a dead link, FeatureDisabled or a typed NotFound, whatever the advert
+  it("takes the server's typed answers as they are", () => {
+    for (const advert of [undefined, OFFERED, ...NOT_OFFERED]) {
+      const label = JSON.stringify(advert);
+      assert.equal(
+        passkeyRecoverLookupFailure("InvalidToken", advert),
+        "bad_link",
+        label,
+      );
+      assert.equal(
+        passkeyRecoverLookupFailure("FeatureDisabled", advert),
+        "off",
+        label,
+      );
+      assert.equal(
+        passkeyRecoverLookupFailure("NotFound", advert),
+        "off",
+        label,
+      );
+    }
   });
 });
 

@@ -725,7 +725,7 @@ const ADVERT_OFF: PasskeysAdvert = {
  * Successful advert lookups, and lookups still in flight, keyed by the API
  * URL without its trailing slashes. A failed lookup removes its own entry.
  */
-const adverts = new Map<string, Promise<PasskeysAdvert>>();
+const adverts = new Map<string, Promise<PasskeysAdvert | undefined>>();
 
 async function fetchPasskeysAdvert(
   base: string,
@@ -765,19 +765,34 @@ export function getPasskeysAdvert(
   apiUrl: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<PasskeysAdvert> {
+  return findPasskeysAdvert(apiUrl, fetchImpl).then(
+    (advert) => advert ?? { ...ADVERT_OFF },
+  );
+}
+
+/**
+ * The same lookup as {@link getPasskeysAdvert}, sharing its requests and
+ * its remembered answers, except that a failed lookup resolves to undefined.
+ * For the few places that must tell "the server says off" from "the server
+ * did not answer". Never rejects.
+ */
+export function findPasskeysAdvert(
+  apiUrl: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<PasskeysAdvert | undefined> {
   const base = apiUrl.replace(/\/+$/, "");
 
   const cached = adverts.get(base);
   if (cached) return cached;
 
-  const pending: Promise<PasskeysAdvert> = fetchPasskeysAdvert(
+  const pending: Promise<PasskeysAdvert | undefined> = fetchPasskeysAdvert(
     base,
     fetchImpl,
   ).then((result) => {
     if (result) return result;
 
     if (adverts.get(base) === pending) adverts.delete(base);
-    return { ...ADVERT_OFF };
+    return undefined;
   });
 
   adverts.set(base, pending);

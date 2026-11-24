@@ -94,6 +94,7 @@ const {
   creationOptionsFromJSON,
   credentialToJSON,
   filterExtensionResults,
+  findPasskeysAdvert,
   getPasskeysAdvert,
   nativeFailure,
   passkeyNameFor,
@@ -1125,6 +1126,30 @@ describe("server advert", () => {
       (await getPasskeysAdvert("https://api.test", impl)).available,
       true,
     );
+  });
+
+  // Fails if: a lookup that failed can no longer be told from a server
+  // that answered "off" (the recovery page leaves on the second and offers
+  // another try on the first), or the two lookups stop sharing one request
+  it("tells a failed lookup from a server that says off", async () => {
+    const failing = (async () => {
+      throw new Error("offline");
+    }) as unknown as typeof fetch;
+    assert.equal(
+      await findPasskeysAdvert("https://api.test", failing),
+      undefined,
+    );
+
+    const refused = fakeFetch({}, false);
+    assert.equal(
+      await findPasskeysAdvert("https://api.test", refused.impl),
+      undefined,
+    );
+
+    const { impl, urls } = fakeFetch({ features: {} });
+    assert.deepEqual(await findPasskeysAdvert("https://api.test", impl), OFF);
+    assert.deepEqual(await getPasskeysAdvert("https://api.test/", impl), OFF);
+    assert.equal(urls.length, 1);
   });
 });
 

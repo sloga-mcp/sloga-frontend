@@ -2663,6 +2663,10 @@ msgid "This passkey is already registered. Start again and create a new one."
 msgstr "This passkey is already registered. Start again and create a new one."
 
 #: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Sign-up was blocked. Try again later."
+msgstr "Sign-up was blocked. Try again later."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
 msgid "Tick the box to confirm before you continue."
 msgstr "Tick the box to confirm before you continue."
 
@@ -2832,10 +2836,12 @@ msgstr "Adding an email is turned off right now."
 msgid "This account already has an email."
 msgstr "This account already has an email."
 
+#: components/auth/src/flows/FlowCreatePasskey.tsx
 #: components/modal/modals/AddEmail.tsx
 msgid "That email address cannot be used."
 msgstr "That email address cannot be used."
 
+#: components/auth/src/flows/FlowCreatePasskey.tsx
 #: components/modal/modals/AddEmail.tsx
 msgid "The email could not be sent. Try again later."
 msgstr "The email could not be sent. Try again later."

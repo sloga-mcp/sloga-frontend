@@ -147,6 +147,12 @@ export default function FlowCreatePasskey() {
         return t`This passkey is already registered. Start again and create a new one.`;
       case "not_accepted":
         return t`The passkey was not accepted. Try again.`;
+      case "bad_email":
+        return t`That email address cannot be used.`;
+      case "mail_failed":
+        return t`The email could not be sent. Try again later.`;
+      case "blocked":
+        return t`Sign-up was blocked. Try again later.`;
       default: {
         const exhaustive: never = problem;
         return exhaustive;

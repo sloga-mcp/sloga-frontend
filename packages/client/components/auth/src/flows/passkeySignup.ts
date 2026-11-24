@@ -62,11 +62,16 @@ export type SignupProblem =
   | "invite_missing"
   | "username_taken"
   | "already_registered"
-  | "not_accepted";
+  | "not_accepted"
+  | "bad_email"
+  | "mail_failed"
+  | "blocked";
 
 /**
  * What a refused sign-up request means. `InvalidCredentials` covers three
- * cases on the server; which one it is follows from the step.
+ * cases on the server; which one it is follows from the step. The email and
+ * shield refusals come from the first request only, the one that takes the
+ * email and sends the code.
  * @param type Error type of the failed request
  * @param step Request that failed
  * @returns The problem, or undefined for an error shown as it is
@@ -107,6 +112,15 @@ export function passkeySignupProblem(
         : undefined;
     case "NoEffect":
       return step === "finish" ? "already_registered" : undefined;
+    // The email cannot be used: malformed, or on the server's blocklist
+    case "IncorrectData":
+    case "Blacklisted":
+      return step === "start" ? "bad_email" : undefined;
+    // The mail with the code could not be sent
+    case "EmailFailed":
+      return step === "start" ? "mail_failed" : undefined;
+    case "BlockedByShield":
+      return step === "start" ? "blocked" : undefined;
     default:
       return undefined;
   }
@@ -214,6 +228,43 @@ export function passkeyRecoverProblem(
     default:
       return undefined;
   }
+}
+
+/**
+ * What the recovery page does after the lookup of its link failed:
+ * - `bad_link`: the link is expired, used or unknown
+ * - `off`: recovery is not offered; the page leaves without a word
+ * - `failed`: the link could not be checked; the page offers another try
+ */
+export type RecoverLookupFailure = "bad_link" | "off" | "failed";
+
+/**
+ * Decide what a failed lookup of the recovery link means.
+ *
+ * A server that does not have the recovery route answers 404 with a body
+ * that carries no error type, which looks the same as a request that never
+ * got an answer. The advert tells the two apart: a server that says it does
+ * not offer recovery has it off. With recovery offered, or with no advert to
+ * go by, the failure stays a failure and the person can try again.
+ * @param type Error type of the failed lookup; undefined when the answer had none
+ * @param advert Passkey advert; undefined after a failed lookup of it
+ */
+export function passkeyRecoverLookupFailure(
+  type: string | undefined,
+  advert: SignupAdvert | undefined,
+): RecoverLookupFailure {
+  const problem = passkeyRecoverProblem(type, "start", false);
+  if (problem === "bad_link" || problem === "off") return problem;
+
+  if (
+    type === undefined &&
+    advert !== undefined &&
+    !passkeyRecoveryOffered(advert)
+  ) {
+    return "off";
+  }
+
+  return "failed";
 }
 
 /**
