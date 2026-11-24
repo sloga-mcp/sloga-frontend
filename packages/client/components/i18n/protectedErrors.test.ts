@@ -30,6 +30,11 @@
  * source text with its values, not a catalog lookup; a msgid missing from
  * the catalog is the lingui gate's. `PROTECTED_ERRORS_FILE=<path>` loads
  * another copy of errors.ts (a known-bad control); it must fail.
+ *
+ * `errors.ts` also reads the send-refusal helpers through the
+ * `@revolt/state` alias, which only the build resolves. The hook points that
+ * one import at the real `draftSendError.ts` (plain constants and functions,
+ * no store), so the chain runs with the shipped helpers.
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -42,6 +47,10 @@ const ERRORS_URL = process.env.PROTECTED_ERRORS_FILE
   : new URL("./errors.ts", import.meta.url).href;
 const ERROR_DETAIL_URL = new URL("./errorDetail.ts", import.meta.url).href;
 const COPY_URL = new URL("../client/protectedCopy.ts", import.meta.url).href;
+const DRAFT_SEND_ERROR_URL = new URL(
+  "../state/stores/draftSendError.ts",
+  import.meta.url,
+).href;
 
 const T_SOURCE = `function t(first, ...values) {
   if (Array.isArray(first) && "raw" in first) {
@@ -78,6 +87,9 @@ registerHooks({
       }
       if (specifier === "./errorDetail") {
         return { url: ERROR_DETAIL_URL, shortCircuit: true };
+      }
+      if (specifier === "@revolt/state/stores/draftSendError") {
+        return { url: DRAFT_SEND_ERROR_URL, shortCircuit: true };
       }
     }
     if (context.parentURL === COPY_URL && specifier === "@lingui/core/macro") {
