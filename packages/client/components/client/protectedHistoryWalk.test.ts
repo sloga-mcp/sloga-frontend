@@ -21,6 +21,7 @@ import {
   WALK_MAX_PROBES,
   WALK_MAX_START_BUMPS,
   commitForNative,
+  isMissingCommandError,
   pickProbes,
   runWalk,
   walkTrigger,
@@ -1437,4 +1438,86 @@ test("runWalk: ports that always ask for more cannot loop forever", async () => 
   assert.equal(holders, 2000);
   assert.equal(calls, 10);
   assert.equal(WALK_MAX_HOLDERS, 2000);
+});
+
+// ---------------------------------------------------------------------------
+// Older shells (R-W4-33)
+// ---------------------------------------------------------------------------
+
+/** Rejections an S2-era shell gives for a command it does not have. */
+const MISSING_COMMAND: unknown[] = [
+  new TypeError("window.__TAURI__.invoke is not a function"),
+  "Command e2ee_text_history_import not found",
+  "not implemented",
+  "UNIMPLEMENTED",
+  new Error("command e2ee_text_history_import not found"),
+  { message: "Unimplemented method" },
+  { code: "UNIMPLEMENTED" },
+  { type: "invalid_argument", field: "command" },
+  { source: "native", error: { type: "invalid_argument", field: "command" } },
+];
+
+/** Everything else, typed native errors with a telling text included. */
+const NOT_MISSING_COMMAND: unknown[] = [
+  null,
+  undefined,
+  7,
+  "",
+  "ipc closed",
+  new Error("ipc closed"),
+  {},
+  { message: 404 },
+  { type: "invalid_argument", field: "steps" },
+  { type: "invalid_argument", field: "holder_epoch" },
+  { type: "mls_group_not_found", message: "group not found" },
+  { type: "internal", message: "not implemented" },
+  { type: "internal", code: "UNIMPLEMENTED" },
+  { source: "client", reason: "disposed" },
+  { source: "transport" },
+  { source: "native", error: { type: "unknown_epoch" } },
+  { source: "native", error: { type: "internal", message: "not found" } },
+];
+
+test("isMissingCommandError: the missing-command answers, and nothing typed otherwise", () => {
+  for (const e of MISSING_COMMAND) {
+    assert.equal(isMissingCommandError(e), true, JSON.stringify(e) ?? `${e}`);
+  }
+  for (const e of NOT_MISSING_COMMAND) {
+    assert.equal(isMissingCommandError(e), false, JSON.stringify(e) ?? `${e}`);
+  }
+});
+
+test("runWalk: a missing import command ends unsupported, not a retry, after one call", async () => {
+  for (const thrown of MISSING_COMMAND) {
+    const label = JSON.stringify(thrown) ?? `${thrown}`;
+    const w = world({ links: chain(20, 1), throws: [thrown] });
+    const result = await runWalk(w.ports, { groupId: G, holderEpoch: 20 });
+    assert.deepEqual(result.end, { kind: "unsupported" }, label);
+    assert.equal(w.calls.length, 1, label);
+    assert.deepEqual(result.imported, [], label);
+    assert.equal(w.pins.length, 0, label);
+    const last = w.logs.at(-1);
+    assert.equal(last?.level, "error", label);
+    assert.equal(last?.msg, "history walk: import command missing", label);
+  }
+  // The typed `invalid_argument{command}` on the FIRST call is not read as
+  // a refused start holder: no second session is tried.
+  const w = world({
+    links: chain(20, 1),
+    throws: [
+      { type: "invalid_argument", field: "command" },
+      { type: "invalid_argument", field: "command" },
+    ],
+  });
+  const result = await runWalk(w.ports, { groupId: G, holderEpoch: 20 });
+  assert.deepEqual(result.end, { kind: "unsupported" });
+  assert.equal(w.calls.length, 1);
+  // Any other failure of the bridge call stays a retry.
+  for (const thrown of [new Error("ipc closed"), { type: "internal" }]) {
+    const other = world({ links: chain(20, 1), throws: [thrown] });
+    assert.deepEqual(
+      (await runWalk(other.ports, { groupId: G, holderEpoch: 20 })).end,
+      { kind: "retry_later", reason: "transport" },
+    );
+  }
 });

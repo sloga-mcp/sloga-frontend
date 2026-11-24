@@ -87,6 +87,42 @@ function nativeErrorOf(e: unknown): Record<string, unknown> | null {
   return typeof e.type === "string" ? e : null;
 }
 
+const MISSING_COMMAND_TEXT =
+  /not found|not implemented|unimplemented|is not a function/i;
+
+/**
+ * A bridge rejection that means "this shell has no such command" (an
+ * S2-era shell asked for an S4 history command, R-W4-33). The same rule as
+ * `isMissingCommandError` in `e2ee.ts`, repeated here because this module
+ * imports no bridge runtime (the spec pins the cases): a TypeError; a string or a `message` that says so; `code: "UNIMPLEMENTED"`;
+ * the typed `invalid_argument` with `field: "command"`. Any other typed
+ * native error is NOT one, whatever its text. A flow failure that wraps a
+ * native error is read through its `error`.
+ */
+export function isMissingCommandError(error: unknown): boolean {
+  if (error instanceof TypeError) return true;
+  if (typeof error === "string") return MISSING_COMMAND_TEXT.test(error);
+  if (typeof error !== "object" || error === null) return false;
+  const shape = error as {
+    type?: unknown;
+    field?: unknown;
+    code?: unknown;
+    message?: unknown;
+    source?: unknown;
+    error?: unknown;
+  };
+  if (shape.source === "native" && isRecord(shape.error)) {
+    return isMissingCommandError(shape.error);
+  }
+  if (shape.type === "invalid_argument") return shape.field === "command";
+  if (typeof shape.type === "string") return false;
+  if (shape.code === "UNIMPLEMENTED") return true;
+  return (
+    typeof shape.message === "string" &&
+    MISSING_COMMAND_TEXT.test(shape.message)
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Trigger (design 3.9 "S4" step 4, 3.14.8 "Trigger")
 // ---------------------------------------------------------------------------
@@ -370,7 +406,12 @@ export type WalkEnd =
   | {
       kind: "retry_later";
       reason: "unanchored" | "transport" | "pin" | "argument";
-    };
+    }
+  /**
+   * R-W4-33: the shell has no `e2ee_text_history_import`. Nothing was
+   * walked and a retry cannot help: no walk for the rest of the session.
+   */
+  | { kind: "unsupported" };
 
 export interface WalkResult {
   end: WalkEnd;
@@ -688,6 +729,12 @@ async function walkFrom(
           group_id: last.holder_group_id,
           epoch: last.holder_epoch,
         };
+        // R-W4-33: before every other reading of the error. An S2-era
+        // shell answers this for every call, so it is not a retry.
+        if (isMissingCommandError(e)) {
+          log("error", "history walk: import command missing", ids);
+          return { kind: "unsupported" };
+        }
         if (err?.type === "identity_pin_required") {
           if (pinned) {
             log("warn", "history walk: a second identity pin is needed", ids);
@@ -820,6 +867,8 @@ async function walkFrom(
  *   (a fetch or the bridge failed), `pin` (an identity pin is still owed),
  *   `argument` (native refused the call; also a session it no longer holds).
  *   Run the walk again on the next backward paging that needs it.
+ * - `unsupported`: the shell has no import command (R-W4-33). Do not run a
+ *   walk again in this session.
  *
  * `imported` and `refused` hold what native reported before the end, also
  * for a walk that ends in a stop or a retry.

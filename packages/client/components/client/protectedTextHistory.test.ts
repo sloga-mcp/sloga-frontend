@@ -8,13 +8,16 @@
 // native (`handlers`), a scripted courier (`routes`) with a small history
 // link store, and the REAL message flow `decryptRow` (B4) so the walk is
 // asked for exactly the way production asks. Nothing here talks to a
-// server. The flag-off test is the counterpart of protectedText.test.ts,
-// whose port has no `historySetting` at all.
+// server. The flag-off tests are the counterpart of protectedText.test.ts,
+// whose port has no `historySetting` at all. The flag gates writes and new
+// activity only (R-W4-31): the policy callback and the row decisions are
+// asserted in every flag state.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { MlsMemberDevice } from "./e2ee";
 import type { OwnListingRequest } from "./protectedOwnListing.ts";
+import { ulidTimeMs } from "./protectedRowPolicy.ts";
 import { historyFloorNotice } from "./protectedShield.ts";
 import {
   type ProtectedTextHistoryDeps,
@@ -22,6 +25,7 @@ import {
   BACKUP_REFRESH_EPOCHS,
   HISTORY_LINK_PAGE,
   HISTORY_LINK_PAGE_ONE,
+  PROTECTED_HISTORY_EPOCH_KEY_PREFIX,
   ProtectedTextManager,
 } from "./protectedText.ts";
 import { textGroupId } from "./protectedTextIds.ts";
@@ -235,6 +239,25 @@ function row(id: string, epoch: number, group = G0, author = PEER) {
   return r;
 }
 
+/** A ULID whose time is `ms` (the floor marker is placed by a row's time). */
+function ulidAt(ms: number): string {
+  const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  let time = "";
+  let v = ms;
+  for (let i = 0; i < 10; i++) {
+    time = alphabet[v % 32] + time;
+    v = Math.floor(v / 32);
+  }
+  return `${time}0000000000000000`;
+}
+
+/**
+ * Row times start here, years before the fake clock (1.7e12), so a marker
+ * placed at the clock cannot pass for one placed by a row.
+ */
+const T0 = 1_600_000_000_000;
+const at = (n: number) => ulidAt(T0 + n);
+
 /** A pre-protect row: no `encrypted`. */
 function plainRow(id: string) {
   const r: ProtectedMessageRow = {
@@ -330,6 +353,12 @@ class Env implements ProtectedTextPort, ProtectedTextPortExtensions {
   held = new Set<string>();
   /** The last epoch of a group, for `unknown_epoch.current`. */
   tops = new Map<string, number>();
+  /**
+   * `unknown_epoch.oldest_held` per group (native: the first epoch of the
+   * current membership run, or null). A group without an entry sends no
+   * such field, as an older shell does.
+   */
+  oldest = new Map<string, number | null>();
   /** `_history_link_build`: the answer for a holder (default: its link). */
   build: (groupId: string, epoch: number) => HistoryLinkBuilt = (g, e) => ({
     link: link(g, e, g, e - 1, { user_id: SELF, device_id: DEV }),
@@ -629,6 +658,16 @@ function defaultHandlers(env: Env): Handlers {
     e2ee_text_history_import: async (a) => {
       if (env.importGate) await env.importGate;
       if (env.importFail !== null) throw env.importFail;
+      // Native starts a session only at an epoch it holds (history.rs
+      // `start_session`): any other start holder is refused.
+      const start = a.steps[0];
+      if (
+        a.session === null &&
+        start &&
+        !env.held.has(`${start.holder_group_id}:${start.holder_epoch}`)
+      ) {
+        throw { type: "invalid_argument", field: "holder_epoch" };
+      }
       // One holder after the other, highest first: its first candidate
       // brings the keys of the epoch it names; a holder without a link is
       // where the walk stops.
@@ -675,6 +714,9 @@ function defaultHandlers(env: Env): Handlers {
           type: "unknown_epoch",
           group_id: e.group_id,
           epoch: e.epoch,
+          ...(env.oldest.has(e.group_id)
+            ? { oldest_held: env.oldest.get(e.group_id) }
+            : {}),
           current: env.tops.get(e.group_id) ?? env.state().epoch ?? 0,
           removed_self: false,
         };
@@ -867,6 +909,15 @@ function floors(env: Env) {
     m.kind === "history_floor" ? [[m.groupId, m.epoch, m.stop]] : [],
   );
 }
+
+/** `atMs` of every floor marker raised, in order. */
+function floorAts(env: Env) {
+  return env.markers.flatMap((m) =>
+    m.kind === "history_floor" ? [m.atMs] : [],
+  );
+}
+
+const builds = (env: Env) => env.calls("e2ee_text_history_link_build").length;
 
 function deferred() {
   let resolve!: () => void;
@@ -1285,13 +1336,15 @@ test("too_large: a toast on an owner device only, once per holder", async () => 
 });
 
 // ---------------------------------------------------------------------------
-// The flag (R-W4-9)
+// The flag (R-W4-9, R-W4-31): it gates writes and new activity, never the
+// read side
 // ---------------------------------------------------------------------------
 
-test("flag off: no link PUT, no link GET, no build, no walk, no policy callback, no backup refresh, no history owner call", async () => {
+test("flag off: no link PUT, no link GET, no build, no walk, no backup refresh, no history owner call; the policy and the rows still follow native", async () => {
   const env = new Env();
   env.flag = false;
   shallowOff(env);
+  Object.assign(env.state(), POLICY);
   // An owner device at leaf 1: every history path would have work to do.
   env.ownerDevice();
   env.leaf(1);
@@ -1346,25 +1399,47 @@ test("flag off: no link PUT, no link GET, no build, no walk, no policy callback,
   assert.equal(env.calls("e2ee_text_history_link_build").length, 0);
   assert.equal(imports(env).length, 0);
   assert.equal(env.api$("GET", /\/history_links/).length, 0);
-  assert.deepEqual(env.policies, []);
   assert.equal(env.backupRefreshes, 0);
   assert.deepEqual(env.notified, []);
   assert.deepEqual(floors(env), []);
   assert.deepEqual(env.walkStates, ["idle"]);
-  // The rows are decided as in S2: the manager itself is the flow's ops
-  // (it carries no history lookup and no walk), with no fifth argument.
+  // No own Update bookkeeping either: nothing was stored for it.
+  assert.deepEqual(env.storeKeys(PROTECTED_HISTORY_EPOCH_KEY_PREFIX), []);
+  // R-W4-31: the read side does not look at the flag. The verified policy
+  // native holds was reported (once: nothing about it changed) ...
+  assert.deepEqual(env.policies, [
+    {
+      channelId: CH,
+      p: {
+        verified: true,
+        boundary: BOUNDARY,
+        preHistory: "kept",
+        timeLimit: Number.MAX_SAFE_INTEGER,
+      },
+    },
+  ]);
+  // ... and the rows are decided by the full row policy: the flow gets the
+  // history ops (never the bare manager) and the walk batch.
   assert.equal(rowCalls.length, 2);
   for (const args of rowCalls) {
-    assert.equal(args.length, 4);
-    assert.equal(args[0], m);
-    assert.equal((args[0] as { requestWalk?: unknown }).requestWalk, undefined);
+    assert.equal(args.length, 5);
+    assert.notEqual(args[0], m);
+    const ops = args[0] as Record<string, unknown>;
+    for (const op of [
+      "pinHistory",
+      "nativeState",
+      "seatListError",
+      "preHistoryState",
+      "epochFromWalk",
+      "requestWalk",
+    ]) {
+      assert.equal(typeof ops[op], "function", op);
+    }
   }
-  const missing = env.msgViews.get("R7");
-  assert.equal(missing?.status, "marker");
-  assert.deepEqual(env.msgViews.get(BELOW), {
-    status: "marker",
-    kind: "unencrypted_row",
-  });
+  // A missing epoch gets its final marker (no walk may run, so the row
+  // does not wait for one), and the kept pre-protect row is plain, not red.
+  assert.equal(env.msgViews.get("R7")?.status, "marker");
+  assert.deepEqual(env.msgViews.get(BELOW), { status: "plain" });
 
   // The history owner calls are refused before any flow runs.
   const off = { source: "client", reason: "history_setting_off" };
@@ -1401,18 +1476,253 @@ function shallowOff(env: Env) {
   env.links.push(link(G0, 21), link(G0, 20));
 }
 
-test("flag turned off mid-session: the next duty and the next walk request do nothing", async () => {
-  const env = new Env();
-  shallow(env);
-  const m = await ready(env);
-  env.flag = false;
-  m.onEnvelope(envelope("E21", 21));
-  m.walkHistory(CH);
-  await env.advance(30_000);
-  assert.equal(env.calls("e2ee_text_history_link_build").length, 0);
-  assert.equal(env.linkGets().length, 0);
-  assert.equal(imports(env).length, 0);
-  m.dispose();
+test("flag turned off mid-session: the next duty and the next walk request do nothing, a row waits for no walk, and a withdrawal still goes out", async () => {
+  // `off: false` is the control: the same steps with the flag left on DO
+  // build, fetch and walk, so the zeros below are the flag's doing.
+  for (const off of [false, true]) {
+    const env = new Env();
+    shallow(env);
+    Object.assign(env.state(), POLICY);
+    const m = await ready(env);
+    m.decryptHistory(CH, [plainRow(BELOW)]);
+    await env.advance(0);
+    assert.deepEqual(env.msgViews.get(BELOW), { status: "plain" });
+    assert.equal(env.policies.length, 1);
+    if (off) env.flag = false;
+    m.onEnvelope(envelope("E21", 21));
+    m.walkHistory(CH);
+    m.decryptHistory(CH, [row("R7", 7)]);
+    await env.advance(30_000);
+    if (off) {
+      assert.equal(builds(env), 0);
+      assert.equal(env.linkGets().length, 0);
+      assert.equal(imports(env).length, 0);
+      // The row is final (its S2 marker): it is not left waiting for a
+      // walk that may not run.
+      assert.equal(env.msgViews.get("R7")?.status, "marker");
+      assert.deepEqual(env.walkStates, ["idle"]);
+    } else {
+      assert.equal(builds(env), 1);
+      assert.ok(env.linkGets().length >= 2, "the duty's and the walk's GETs");
+      assert.ok(imports(env).length >= 1);
+      assert.equal(env.msgViews.get("R7")?.status, "ok");
+    }
+    // Turning the flag off reported nothing by itself ...
+    assert.equal(env.policies.length, 1);
+    assert.deepEqual(env.msgViews.get(BELOW), { status: "plain" });
+    // ... and native's withdrawal goes out whatever the flag says: the
+    // unverified policy is reported and the cached plain view is decided
+    // again.
+    env.state().verdict = "owner_changed";
+    await m.refresh(CH, "manual");
+    await env.advance(0);
+    assert.equal(env.policies.length, 2, `off=${off}`);
+    assert.deepEqual(env.policies[1].p, {
+      verified: false,
+      boundary: BOUNDARY,
+      preHistory: "kept",
+      timeLimit: Number.MAX_SAFE_INTEGER,
+    });
+    assert.deepEqual(env.msgViews.get(BELOW), { status: "checking" });
+    m.dispose();
+  }
+});
+
+/** What native can report that takes a reveal back, and the policy it gives. */
+const WITHDRAWALS: [
+  string,
+  (env: Env) => void,
+  { verified: boolean; preHistory: "kept" | "wiped" },
+][] = [
+  [
+    "owner_changed",
+    (env) => {
+      env.state().verdict = "owner_changed";
+    },
+    { verified: false, preHistory: "kept" },
+  ],
+  [
+    "a loud verify failure",
+    (env) => {
+      env.handlers.e2ee_text_seat_list_verify = () => {
+        throw { type: "bad_sig" };
+      };
+    },
+    { verified: false, preHistory: "kept" },
+  ],
+  [
+    "wiped",
+    (env) => {
+      env.state().pre_history = "wiped";
+    },
+    { verified: true, preHistory: "wiped" },
+  ],
+];
+
+test("withdrawal (R-W4-31): in every flag state native's owner_changed, loud verify failure or wipe is reported and the cached plain view is decided again", async () => {
+  // [the flag at the reveal, the flag at the withdrawal]
+  const flagStates: [boolean, boolean][] = [
+    [true, false],
+    [false, false],
+    [true, true],
+    [false, true],
+  ];
+  for (const [before, after] of flagStates) {
+    for (const [name, withdraw, want] of WITHDRAWALS) {
+      const label = `${name}, flag ${before} -> ${after}`;
+      const env = new Env();
+      env.flag = before;
+      Object.assign(env.state(), POLICY);
+      const m = await ready(env);
+      m.decryptHistory(CH, [plainRow(BELOW)]);
+      await env.advance(0);
+      // The reveal: a verified policy, a plain row.
+      assert.equal(env.policies.length, 1, label);
+      assert.equal(
+        (env.policies[0].p as { verified: boolean }).verified,
+        true,
+        label,
+      );
+      assert.deepEqual(env.msgViews.get(BELOW), { status: "plain" }, label);
+      // The flag alone (a failed fetch stores it as off) reports nothing
+      // and decides no row again.
+      env.flag = after;
+      await m.refresh(CH, "manual");
+      await env.advance(0);
+      assert.equal(env.policies.length, 1, `${label}: the flag reported`);
+      assert.deepEqual(env.msgViews.get(BELOW), { status: "plain" }, label);
+      // Native withdraws.
+      withdraw(env);
+      await m.refresh(CH, "manual");
+      await env.advance(0);
+      assert.equal(env.policies.length, 2, `${label}: not reported`);
+      assert.deepEqual(
+        env.policies[1].p,
+        {
+          verified: want.verified,
+          boundary: BOUNDARY,
+          preHistory: want.preHistory,
+          timeLimit: Number.MAX_SAFE_INTEGER,
+        },
+        label,
+      );
+      const view = env.msgViews.get(BELOW);
+      assert.notEqual(view?.status, "plain", `${label}: still plain`);
+      assert.deepEqual(
+        view,
+        want.preHistory === "wiped"
+          ? { status: "marker", kind: "unencrypted_row" }
+          : { status: "checking" },
+        label,
+      );
+      // A row asked for now is decided the same way.
+      m.decryptHistory(CH, [plainRow(BELOW)]);
+      await env.advance(0);
+      assert.notEqual(env.msgViews.get(BELOW)?.status, "plain", label);
+      m.dispose();
+    }
+  }
+});
+
+test("policy, flag off: a state that is loading, missing or errored still reports nothing", async () => {
+  // The read fails.
+  {
+    const env = new Env();
+    env.flag = false;
+    env.handlers.e2ee_text_state = () => {
+      throw { type: "internal", message: "locked" };
+    };
+    const m = await ready(env);
+    m.decryptHistory(CH, [plainRow(BELOW)]);
+    await env.advance(0);
+    assert.deepEqual(env.policies, []);
+    assert.notEqual(env.msgViews.get(BELOW)?.status, "plain");
+    m.dispose();
+  }
+  // No list held, and a verdict this build does not know.
+  for (const over of [
+    { seat_list: null, verdict: "no_seat_list" },
+    { verdict: "brand_new_verdict" },
+  ]) {
+    const env = new Env();
+    env.flag = false;
+    Object.assign(env.state(), POLICY, over);
+    const m = await ready(env);
+    m.decryptHistory(CH, [plainRow(BELOW)]);
+    await env.advance(0);
+    assert.deepEqual(env.policies, [], JSON.stringify(over));
+    assert.notEqual(env.msgViews.get(BELOW)?.status, "plain");
+    m.dispose();
+  }
+  // A verify failure that is not one of the loud ones, then a failed read:
+  // the verified report stands, nothing is withdrawn.
+  {
+    const env = new Env();
+    env.flag = false;
+    Object.assign(env.state(), POLICY);
+    const m = await ready(env);
+    assert.equal(env.policies.length, 1);
+    env.handlers.e2ee_text_seat_list_verify = () => {
+      throw { type: "seat_list_behind" };
+    };
+    await m.refresh(CH, "manual");
+    await env.advance(0);
+    env.handlers.e2ee_text_state = () => {
+      throw { type: "internal", message: "locked" };
+    };
+    await m.refresh(CH, "manual");
+    await env.advance(0);
+    assert.equal(env.policies.length, 1);
+    assert.equal((env.policies[0].p as { verified: boolean }).verified, true);
+    m.dispose();
+  }
+});
+
+test("A8: the flag turned off during a duty's stagger: no link GET and no build after the wait", async () => {
+  for (const off of [false, true]) {
+    const env = new Env();
+    env.leaf(2);
+    const m = await ready(env);
+    m.onEnvelope(envelope("E4", 4));
+    await flush();
+    assert.ok(
+      env.sleeps.some((s) => s.ms === 4_000),
+      "the stagger is running",
+    );
+    assert.equal(env.linkGets().length, 0);
+    if (off) env.flag = false;
+    await env.advance(10_000);
+    assert.equal(env.linkGets().length, off ? 0 : 1, `off=${off}`);
+    assert.equal(builds(env), off ? 0 : 1, `off=${off}`);
+    m.dispose();
+  }
+});
+
+test("A8: the flag turned off while the owner check reads the state: no link GET", async () => {
+  for (const off of [false, true]) {
+    const env = new Env();
+    env.ownerDevice();
+    contested(env);
+    const m = await ready(env);
+    const gate = deferred();
+    const read = env.handlers.e2ee_text_state;
+    assert.ok(read);
+    env.handlers.e2ee_text_state = async (a) => {
+      await gate.promise;
+      return read(a);
+    };
+    m.onChannelChanged(CH, ["history"]);
+    await flush();
+    assert.equal(env.linkGets().length, 0);
+    if (off) env.flag = false;
+    env.handlers.e2ee_text_state = read;
+    gate.resolve();
+    await env.advance(0);
+    assert.equal(env.linkGets().length, off ? 0 : 1, `off=${off}`);
+    assert.equal(builds(env), off ? 0 : 2, `off=${off}`);
+    assert.deepEqual(env.notified, off ? [] : ["history_mismatch"]);
+    m.dispose();
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1449,7 +1759,9 @@ test("walk: across two link pages and one bridge hop, then the rows decrypt", as
   );
   env.pageCap = 3;
   const m = await ready(env);
-  m.decryptHistory(CH, [row("R7", 7), row("R4", 4)]);
+  const R7 = at(7_000);
+  const R4 = at(4_000);
+  m.decryptHistory(CH, [row(R7, 7), row(R4, 4)]);
   await env.advance(0);
 
   // One session: started once, continued with the id native answered.
@@ -1481,16 +1793,18 @@ test("walk: across two link pages and one bridge hop, then the rows decrypt", as
       `before=6&limit=${HISTORY_LINK_PAGE}`,
     ],
   );
-  // The walk stopped where the links end: one floor marker.
+  // The walk stopped where the links end: one floor marker, placed 1 ms
+  // after the loaded row below the floor (R-W4-32).
   assert.deepEqual(floors(env), [[G0, 5, "missing"]]);
+  assert.deepEqual(floorAts(env), [T0 + 4_001]);
   assert.deepEqual(env.walkStates, ["idle", "running", "idle"]);
   // The row of an imported epoch decrypts, with the history sender note;
   // the row below the floor is a marker and cost no second walk.
-  const r7 = env.msgViews.get("R7");
+  const r7 = env.msgViews.get(R7);
   assert.ok(r7?.status === "ok", JSON.stringify(r7));
-  assert.equal(r7.text, "text of R7");
+  assert.equal(r7.text, `text of ${R7}`);
   assert.equal(r7.historySender, true);
-  assert.equal(env.msgViews.get("R4")?.status, "marker");
+  assert.equal(env.msgViews.get(R4)?.status, "marker");
   assert.equal(imports(env).filter((c) => c.session === null).length, 1);
   m.dispose();
 });
@@ -1521,24 +1835,102 @@ test("walk: the floor marker is replaced by a lower one, and not repeated", asyn
   const env = new Env();
   shallow(env, 10, 9);
   const m = await ready(env);
-  m.decryptHistory(CH, [row("R7", 7)]);
+  const R7 = at(7_000);
+  const R4 = at(4_000);
+  m.decryptHistory(CH, [row(R7, 7)]);
   await env.advance(0);
   assert.deepEqual(floors(env), [[G0, 8, "missing"]]);
-  assert.equal(env.msgViews.get("R7")?.status, "marker");
+  assert.deepEqual(floorAts(env), [T0 + 7_001]);
+  assert.equal(env.msgViews.get(R7)?.status, "marker");
   // Another member wrote the missing links; the user asks again.
   env.links.push(link(G0, 8), link(G0, 7), link(G0, 6));
   m.walkHistory(CH);
+  await env.advance(0);
+  // The row whose epoch arrived is decrypted again without being asked.
+  assert.equal(env.msgViews.get(R7)?.status, "ok");
+  // The floor is epoch 5 now, and no loaded row is at or below it: the
+  // lower marker is not raised yet (R-W4-32) ...
+  assert.deepEqual(floors(env), [[G0, 8, "missing"]]);
+  // ... it is as soon as such a row is loaded, placed by that row.
+  m.decryptHistory(CH, [row(R4, 4)]);
   await env.advance(0);
   assert.deepEqual(floors(env), [
     [G0, 8, "missing"],
     [G0, 5, "missing"],
   ]);
-  // The row whose epoch arrived is decrypted again without being asked.
-  assert.equal(env.msgViews.get("R7")?.status, "ok");
+  assert.deepEqual(floorAts(env), [T0 + 7_001, T0 + 4_001]);
+  assert.equal(env.msgViews.get(R4)?.status, "marker");
   // The same stop again raises no third marker.
   m.walkHistory(CH);
   await env.advance(0);
   assert.equal(floors(env).length, 2);
+  m.dispose();
+});
+
+test("floor marker (R-W4-32): 1 ms after the newest loaded row at or below the floor epoch, never at the clock", async () => {
+  const env = new Env();
+  shallow(env, 10, 9);
+  const m = await ready(env);
+  // Loaded: a row above the floor (epoch 12), one AT it (epoch 8, readable
+  // after the walk) and two below it. The newest at or below it is E8.
+  const E12 = at(12_000);
+  const E8 = at(8_000);
+  const E7 = at(7_000);
+  const E6 = at(6_000);
+  m.decryptHistory(CH, [row(E12, 12), row(E8, 8), row(E7, 7), row(E6, 6)]);
+  await env.advance(0);
+  assert.deepEqual(floors(env), [[G0, 8, "missing"]]);
+  const marker = env.markers.find((x) => x.kind === "history_floor");
+  assert.ok(marker && marker.kind === "history_floor");
+  assert.equal(marker.atMs, T0 + 8_001);
+  assert.equal(marker.atMs, (ulidTimeMs(E8) ?? Number.NaN) + 1);
+  // Not the wall clock (the base bug: it sorted under the newest message),
+  // and below the newer row above the floor.
+  assert.notEqual(marker.atMs, env.clock);
+  assert.ok(marker.atMs < (ulidTimeMs(E12) ?? 0));
+  assert.ok(marker.atMs > (ulidTimeMs(E7) ?? Number.POSITIVE_INFINITY));
+  m.dispose();
+});
+
+test("floor marker (R-W4-32): not raised while no row at or below the floor is loaded, raised when one is, moved by a newer one", async () => {
+  const env = new Env();
+  shallow(env, 10, 9);
+  const m = await ready(env);
+  // The user's walk stops at epoch 8 with no row loaded at all.
+  m.walkHistory(CH);
+  await env.advance(0);
+  assert.ok(imports(env).length >= 1, "the walk ran");
+  assert.equal(env.state().history_floor?.epoch, 8, "and stopped at 8");
+  assert.equal(env.views.get(CH)?.historyWalk, "idle");
+  assert.deepEqual(floors(env), [], "no row to place it by");
+  // Rows above the floor, a row whose id is no ULID, and a pre-protect row
+  // place nothing.
+  m.decryptHistory(CH, [row(at(12_000), 12), row("R5", 5), plainRow(BELOW)]);
+  await env.advance(0);
+  assert.deepEqual(floors(env), []);
+  // A row below the floor arrives: the marker is raised, by that row.
+  m.decryptHistory(CH, [row(at(5_000), 5)]);
+  await env.advance(0);
+  assert.deepEqual(floors(env), [[G0, 8, "missing"]]);
+  assert.deepEqual(floorAts(env), [T0 + 5_001]);
+  // A page of newer rows at or below the floor: raised again, once for
+  // the page, by the newest of them.
+  m.decryptHistory(CH, [
+    row(at(6_000), 6),
+    row(at(7_500), 7),
+    row(at(7_000), 7),
+  ]);
+  await env.advance(0);
+  assert.deepEqual(floorAts(env), [T0 + 5_001, T0 + 7_501]);
+  // Older rows, and the same rows again, move nothing.
+  m.decryptHistory(CH, [row(at(3_000), 3), row(at(7_500), 7)]);
+  m.onMessage(row(at(2_000), 2), false);
+  await env.advance(0);
+  assert.equal(floorAts(env).length, 2);
+  // A single newer row (not a page) moves it too.
+  m.onMessage(row(at(7_800), 8), false);
+  await env.advance(0);
+  assert.deepEqual(floorAts(env), [T0 + 5_001, T0 + 7_501, T0 + 7_801]);
   m.dispose();
 });
 
@@ -1576,7 +1968,7 @@ test("walk: a stop this build does not know is passed on and reads loud", async 
   shallow(env, 10, 9);
   env.stop = "brand_new_stop";
   const m = await ready(env);
-  m.decryptHistory(CH, [row("R7", 7)]);
+  m.decryptHistory(CH, [row(at(7_000), 7)]);
   await env.advance(0);
   assert.deepEqual(floors(env), [[G0, 8, "brand_new_stop"]]);
   const marker = env.markers.find((x) => x.kind === "history_floor");
@@ -1585,7 +1977,7 @@ test("walk: a stop this build does not know is passed on and reads loud", async 
   const stopped = env.logged("error", /history walk stopped/);
   assert.equal(stopped.length, 1);
   assert.equal(stopped[0].ids.loud, true);
-  assert.equal(env.msgViews.get("R7")?.status, "marker");
+  assert.equal(env.msgViews.get(at(7_000))?.status, "marker");
   m.dispose();
 });
 
@@ -1613,6 +2005,294 @@ test("walk: probes are the loaded rows of the holder, at most 3, one per author"
       ["P4", "UC"],
     ],
   );
+  m.dispose();
+});
+
+test("walk: probes never come from the writers of the step above (through the real walk)", async () => {
+  // One call with every step, and one call per step (a page per holder).
+  for (const pageCap of [200, 1]) {
+    const env = new Env();
+    shallow(env, 0, 1);
+    env.pageCap = pageCap;
+    // Holder 10's link (it carries epoch 9's keys) was written by UA,
+    // holder 9's by UB, holder 8's by UC. Holder 7 has none: the stop.
+    env.links.push(
+      link(G0, 10, G0, 9, { user_id: "UA", device_id: "dA" }),
+      link(G0, 9, G0, 8, { user_id: "UB", device_id: "dB" }),
+      link(G0, 8, G0, 7, { user_id: "UC", device_id: "dC" }),
+    );
+    const m = await ready(env);
+    m.decryptHistory(CH, [
+      row("A10", 10, G0, "UA"),
+      row("B10", 10, G0, "UB"),
+      row("A09", 9, G0, "UA"),
+      row("B09", 9, G0, "UB"),
+      row("C09", 9, G0, "UC"),
+      row("A08", 8, G0, "UA"),
+      row("B08", 8, G0, "UB"),
+      row("C08", 8, G0, "UC"),
+      row("A07", 7, G0, "UA"),
+      row("C07", 7, G0, "UC"),
+    ]);
+    await env.advance(0);
+    const calls = imports(env);
+    // With one holder per page the steps are spread over several calls,
+    // so the writers are carried from one call to the next.
+    if (pageCap === 1) assert.ok(calls.length >= 3, `calls: ${calls.length}`);
+    const steps = calls.flatMap((c) => c.steps);
+    assert.deepEqual(
+      steps.map((s) => s.holder_epoch),
+      [10, 9, 8, 7],
+    );
+    const authors = (holder: number) =>
+      (steps.find((s) => s.holder_epoch === holder)?.probes ?? [])
+        .map((p) => p.author_user_id)
+        .sort();
+    const label = `page cap ${pageCap}`;
+    // The first step: nobody wrote a link above it.
+    assert.deepEqual(authors(10), ["UA", "UB"], label);
+    // UA wrote the link that carried epoch 9's keys: never a probe there.
+    assert.deepEqual(authors(9), ["UB", "UC"], label);
+    // UB wrote the one that carried epoch 8's.
+    assert.deepEqual(authors(8), ["UA", "UC"], label);
+    // UC wrote the one that carried epoch 7's.
+    assert.deepEqual(authors(7), ["UA"], label);
+    m.dispose();
+  }
+});
+
+/**
+ * The device joined G0 at epoch 40 (now 50): nothing below 40 is held, and
+ * native reports no floor (there was no walk yet). `oldest_held` is 40.
+ * The server stores links for the holders 40 down to `linksDownTo`.
+ */
+function joinedLate(env: Env, linksDownTo = 21) {
+  env.states.set(CH, st({ epoch: 50 }));
+  env.group = groupBody({ current_epoch: 50 });
+  env.seats = seatsBody({ as_of_epoch: 50 });
+  env.tops.set(G0, 50);
+  env.held.clear();
+  for (let e = 40; e <= 50; e++) env.held.add(`${G0}:${e}`);
+  env.oldest.set(G0, 40);
+  for (let e = 40; e >= linksDownTo; e--) env.links.push(link(G0, e));
+}
+
+test("walk start (A4): a missing epoch far below the join epoch starts at oldest_held, with no floor and with an older run's floor", async () => {
+  for (const olderRun of [false, true]) {
+    const env = new Env();
+    joinedLate(env);
+    if (olderRun) {
+      // An earlier membership (epochs 2 to 10) is still held, and native
+      // keeps that run's floor: the gap 11 to 39 lies ABOVE the floor.
+      env.state().history_floor = {
+        group_id: G0,
+        epoch: 2,
+        stopped: "missing",
+      };
+      for (let e = 2; e <= 10; e++) env.held.add(`${G0}:${e}`);
+    }
+    const label = `older run: ${olderRun}`;
+    const m = await ready(env);
+    m.decryptHistory(CH, [row("R25", 25)]);
+    await env.advance(0);
+    const calls = imports(env);
+    assert.ok(calls.length >= 1, label);
+    // 15 epochs below the join epoch: the base guess (26, then up to 29)
+    // never met a held epoch.
+    assert.equal(calls[0].steps[0].holder_epoch, 40, label);
+    assert.equal(calls[0].steps[0].holder_group_id, G0, label);
+    assert.equal(
+      calls.filter((c) => c.session === null).length,
+      1,
+      `${label}: one session start, none refused`,
+    );
+    assert.equal(env.logged("warn", /start holder refused/).length, 0, label);
+    assert.equal(env.msgViews.get("R25")?.status, "ok", label);
+    assert.equal(env.views.get(CH)?.historyWalk, "idle", label);
+    m.dispose();
+  }
+});
+
+test("walk start (A4): a miss below the floor still starts at the floor, and a hole inside the held run one above it", async () => {
+  // Below the floor: the floor wins over oldest_held.
+  {
+    const env = new Env();
+    shallow(env);
+    env.oldest.set(G0, 15);
+    const m = await ready(env);
+    m.decryptHistory(CH, [row("R7", 7)]);
+    await env.advance(0);
+    assert.equal(imports(env)[0].steps[0].holder_epoch, 10);
+    assert.equal(env.msgViews.get("R7")?.status, "ok");
+    m.dispose();
+  }
+  // A hole at epoch 45, above oldest_held (40): the guess is 46.
+  {
+    const env = new Env();
+    joinedLate(env);
+    env.held.delete(`${G0}:45`);
+    env.links.push(link(G0, 46));
+    const m = await ready(env);
+    m.decryptHistory(CH, [row("R45", 45)]);
+    await env.advance(0);
+    assert.equal(imports(env)[0].steps[0].holder_epoch, 46);
+    m.dispose();
+  }
+  // No oldest_held at all (an older shell): the guess, as before.
+  {
+    const env = new Env();
+    joinedLate(env);
+    env.oldest.clear();
+    const m = await ready(env);
+    m.decryptHistory(CH, [row("R38", 38)]);
+    await env.advance(0);
+    assert.deepEqual(
+      imports(env)
+        .filter((c) => c.session === null)
+        .map((c) => c.steps[0].holder_epoch),
+      [39, 40],
+    );
+    assert.equal(env.msgViews.get("R38")?.status, "ok");
+    m.dispose();
+  }
+});
+
+test("walkHistory (C4): after a walk that ended retry_later it starts again from the gap, not only from the floor", async () => {
+  const env = new Env();
+  joinedLate(env);
+  env.importFail = { type: "internal", message: "bridge down" };
+  const m = await ready(env);
+  m.decryptHistory(CH, [row("R25", 25)]);
+  await env.advance(0);
+  assert.deepEqual(env.msgViews.get("R25"), { status: "pending" });
+  assert.equal(env.views.get(CH)?.historyWalk, "retry_later");
+  // Native reports no floor: a retry "from the floor" has nowhere to start.
+  assert.equal(env.state().history_floor, undefined);
+  const before = imports(env).length;
+  assert.equal(before, 1);
+  // The bridge is back; the list asks once (FXU: on initial load).
+  env.importFail = null;
+  m.walkHistory(CH);
+  await env.advance(0);
+  const retry = imports(env)[before];
+  assert.ok(retry, "the retry reached native");
+  assert.equal(retry.session, null);
+  assert.equal(retry.steps[0].holder_epoch, 40, "from the gap's start");
+  assert.equal(env.msgViews.get("R25")?.status, "ok");
+  assert.equal(env.views.get(CH)?.historyWalk, "idle");
+  // Idle again: a further call starts from the floor native reports now.
+  const floor = env.state().history_floor;
+  assert.ok(floor);
+  const then = imports(env).length;
+  m.walkHistory(CH);
+  await env.advance(0);
+  assert.equal(imports(env)[then].steps[0].holder_epoch, floor.epoch);
+  m.dispose();
+});
+
+test("older shell (R-W4-33): a missing import command latches history off; before-join rows get their marker, not the hourglass", async () => {
+  const answers: unknown[] = [
+    "Command e2ee_text_history_import not found",
+    new TypeError("window.__TAURI__.invoke is not a function"),
+    { type: "invalid_argument", field: "command" },
+    { code: "UNIMPLEMENTED" },
+  ];
+  for (const answer of answers) {
+    const label = JSON.stringify(answer) ?? String(answer);
+    const env = new Env();
+    shallow(env);
+    env.oldest.set(G0, 10);
+    env.importFail = answer;
+    const m = await ready(env);
+    m.decryptHistory(CH, [row("R7", 7)]);
+    await env.advance(0);
+    assert.equal(imports(env).length, 1, label);
+    // Final, and the S2 gray marker: not `pending` (the hourglass).
+    assert.deepEqual(
+      env.msgViews.get("R7"),
+      { status: "marker", kind: "sent_before_join" },
+      label,
+    );
+    assert.equal(env.views.get(CH)?.historyWalk, "idle", label);
+    assert.ok(!env.walkStates.includes("retry_later"), label);
+    assert.deepEqual(floors(env), [], label);
+    assert.equal(env.logged("error", /history command missing/).length, 1);
+    // Off for the session: the next page, the user's retry and a member
+    // duty start nothing.
+    const gets = env.linkGets().length;
+    m.decryptHistory(CH, [row("R6", 6)]);
+    m.walkHistory(CH);
+    m.onEnvelope(envelope("E21", 21));
+    await env.advance(30_000);
+    assert.equal(imports(env).length, 1, `${label}: a second walk`);
+    assert.equal(env.linkGets().length, gets, `${label}: a link GET`);
+    assert.equal(builds(env), 0, `${label}: a link build`);
+    assert.deepEqual(
+      env.msgViews.get("R6"),
+      { status: "marker", kind: "sent_before_join" },
+      label,
+    );
+    assert.equal(env.logged("error", /history command missing/).length, 1);
+    m.dispose();
+  }
+});
+
+test("older shell (R-W4-33): a row an earlier walk left pending is settled by the latch, and a transient failure is no latch", async () => {
+  const env = new Env();
+  shallow(env);
+  env.oldest.set(G0, 10);
+  // A transient failure first: retry_later, the row waits, nothing latched.
+  env.importFail = { type: "internal", message: "bridge down" };
+  const m = await ready(env);
+  m.decryptHistory(CH, [row("R7", 7)]);
+  await env.advance(0);
+  assert.deepEqual(env.msgViews.get("R7"), { status: "pending" });
+  assert.equal(env.views.get(CH)?.historyWalk, "retry_later");
+  assert.equal(env.logged("error", /history command missing/).length, 0);
+  // Then the shell answers "no such command" to the next page's walk.
+  env.importFail = "command e2ee_text_history_import not found";
+  m.decryptHistory(CH, [row("R6", 6)]);
+  await env.advance(0);
+  assert.equal(imports(env).length, 2);
+  for (const id of ["R7", "R6"]) {
+    assert.deepEqual(
+      env.msgViews.get(id),
+      { status: "marker", kind: "sent_before_join" },
+      id,
+    );
+  }
+  assert.equal(env.views.get(CH)?.historyWalk, "idle");
+  m.dispose();
+});
+
+test("older shell (R-W4-33): a missing link build command latches history off too", async () => {
+  const env = new Env();
+  shallow(env);
+  env.oldest.set(G0, 10);
+  env.handlers.e2ee_text_history_link_build = () => {
+    throw "command e2ee_text_history_link_build not found";
+  };
+  const m = await ready(env);
+  m.onEnvelope(envelope("E21", 21));
+  await env.advance(0);
+  assert.equal(builds(env), 1);
+  assert.equal(env.logged("error", /history command missing/).length, 1);
+  const gets = env.linkGets().length;
+  // No further build, no link GET, no walk; an own commit's link is not
+  // PUT either.
+  m.onEnvelope(envelope("E22", 22));
+  m.decryptHistory(CH, [row("R7", 7)]);
+  m.walkHistory(CH);
+  await commit(m);
+  await env.advance(30_000);
+  assert.equal(builds(env), 1);
+  assert.equal(env.linkGets().length, gets);
+  assert.equal(imports(env).length, 0);
+  assert.equal(env.linkPuts().length, 0);
+  assert.deepEqual(env.msgViews.get("R7"), {
+    status: "marker",
+    kind: "sent_before_join",
+  });
   m.dispose();
 });
 
@@ -1686,10 +2366,22 @@ const POLICY = {
 
 test("policy: reported once per change, from a verified state", async () => {
   const env = new Env();
-  Object.assign(env.state(), POLICY);
+  // "From a verified state": the same lines on a state that holds no list
+  // report nothing, however often it is read.
+  const list = env.state().seat_list;
+  Object.assign(env.state(), POLICY, {
+    seat_list: null,
+    verdict: "no_seat_list",
+  });
   const m = await ready(env);
   await m.refresh(CH, "manual");
+  await env.advance(0);
+  assert.deepEqual(env.policies, []);
+  // The list is held and verified: reported, once.
+  Object.assign(env.state(), { seat_list: list, verdict: "ok" });
   await m.refresh(CH, "manual");
+  await m.refresh(CH, "manual");
+  await env.advance(0);
   assert.deepEqual(env.policies, [
     {
       channelId: CH,
@@ -1701,17 +2393,40 @@ test("policy: reported once per change, from a verified state", async () => {
       },
     },
   ]);
-  env.state().history_time_limit = 5;
-  await m.refresh(CH, "manual");
-  assert.equal(env.policies.length, 2);
-  assert.deepEqual(env.policies[1].p, {
+  // "Once per change": each of the lines, changed alone, is one report;
+  // reading the same state again is none.
+  const changes: [Partial<TextChannelState>, Record<string, unknown>][] = [
+    [{ history_time_limit: 5 }, { timeLimit: 5 }],
+    [{ pre_history: "wiped" }, { preHistory: "wiped" }],
+    [{ history_boundary: BELOW }, { boundary: BELOW }],
+  ];
+  let want: Record<string, unknown> = {
     verified: true,
     boundary: BOUNDARY,
     preHistory: "kept",
-    timeLimit: 5,
-  });
+    timeLimit: Number.MAX_SAFE_INTEGER,
+  };
+  let count = 1;
+  for (const [over, changed] of changes) {
+    Object.assign(env.state(), over);
+    want = { ...want, ...changed };
+    count += 1;
+    await m.refresh(CH, "manual");
+    await env.advance(0);
+    assert.equal(env.policies.length, count, JSON.stringify(over));
+    const sent = env.policies as { p: unknown }[];
+    assert.deepEqual(sent[count - 1].p, want);
+    await m.refresh(CH, "manual");
+    await m.refresh(CH, "manual");
+    await env.advance(0);
+    assert.equal(env.policies.length, count, "the same state again");
+  }
+  // A change that is no part of the policy (the epoch, the flag) is none.
+  env.state().epoch = 4;
+  env.flag = false;
   await m.refresh(CH, "manual");
-  assert.equal(env.policies.length, 2);
+  await env.advance(0);
+  assert.equal(env.policies.length, count);
   m.dispose();
 });
 
@@ -1956,28 +2671,234 @@ test("owner calls: without the bridge's flows the history calls are refused", as
   m.dispose();
 });
 
+/** An owner device (the signer of the held list) whose list says `hidden`. */
+function ownerHidden(env: Env) {
+  env.wonLink = null;
+  env.ownerDevice();
+  env.state().history_setting = "hidden";
+}
+
+/** The owner flow's effect: native now holds a list with the asked line. */
+function flipDeps(env: Env, then?: () => void) {
+  return fakeDeps(env, {
+    owner: {
+      setHistory: async (_ops, _port, _ch, visible) => {
+        env.state().history_setting = visible ? "visible" : "hidden";
+        then?.();
+      },
+    },
+  });
+}
+
+const updates = (env: Env) => env.calls("e2ee_text_update").length;
+
+/**
+ * Cuts a runaway. Everything here runs on microtasks, so a real Update
+ * loop would hang the run instead of failing it: at the 50th Update the
+ * flag goes off (an own Update needs it), the loop ends and the count
+ * assertion fails.
+ */
+function breaker(env: Env) {
+  const inner = env.handlers.e2ee_text_update;
+  assert.ok(inner);
+  let count = 0;
+  env.handlers.e2ee_text_update = (a) => {
+    count += 1;
+    if (count >= 50) env.flag = false;
+    return inner(a);
+  };
+}
+
 test("history setting: a change is followed by this device's own Update, no change by none", async () => {
   const env = new Env();
-  env.wonLink = null;
-  env.state().history_setting = "hidden";
+  ownerHidden(env);
+  const m = await ready(env, flipDeps(env));
+  await m.setHistoryVisible(CH, true);
+  await env.advance(0);
+  assert.equal(updates(env), 1);
+  assert.equal(env.calls("e2ee_text_commit_won").length, 1);
+  assert.equal(env.state().epoch, 4, "the Update moved the epoch");
+  await m.setHistoryVisible(CH, true);
+  await env.advance(0);
+  assert.equal(updates(env), 1, "already visible");
+  // And back: another change, another Update.
+  await m.setHistoryVisible(CH, false);
+  await env.advance(0);
+  assert.equal(updates(env), 2);
+  m.dispose();
+});
+
+test("own Update (B6): issued when the flow rejects after its list landed", async () => {
+  const env = new Env();
+  ownerHidden(env);
+  const failure = { source: "client", reason: "protect_busy" };
   const m = await ready(
     env,
-    fakeDeps(env, {
-      owner: {
-        setHistory: async (_ops, _port, _ch, visible) => {
-          env.state().history_setting = visible ? "visible" : "hidden";
-        },
-      },
+    flipDeps(env, () => {
+      throw failure;
     }),
   );
-  await m.setHistoryVisible(CH, true);
+  await assert.rejects(m.setHistoryVisible(CH, true), (e) => e === failure);
   await env.advance(0);
-  assert.equal(env.calls("e2ee_text_update").length, 1);
+  assert.equal(env.state().history_setting, "visible", "the list landed");
+  assert.equal(updates(env), 1);
   assert.equal(env.calls("e2ee_text_commit_won").length, 1);
-  await m.setHistoryVisible(CH, true);
-  await env.advance(0);
-  assert.equal(env.calls("e2ee_text_update").length, 1, "already visible");
   m.dispose();
+});
+
+test("own Update (B6): issued from the state read when a stored publish lands outside setHistoryVisible", async () => {
+  const env = new Env();
+  ownerHidden(env);
+  const m = await ready(env);
+  assert.equal(updates(env), 0);
+  // Another owner action of this device finished the stored history list:
+  // native holds it, nobody called setHistoryVisible.
+  env.state().history_setting = "visible";
+  await m.refresh(CH, "commit");
+  await env.advance(0);
+  assert.equal(updates(env), 1);
+  assert.equal(env.calls("e2ee_text_commit_won").length, 1);
+  m.dispose();
+});
+
+test("own Update (B6): a change that landed just before a restart is followed up by the next session, once", async () => {
+  const env = new Env();
+  ownerHidden(env);
+  const key = `${PROTECTED_HISTORY_EPOCH_KEY_PREFIX}${SELF}:${CH}`;
+  const first = await ready(env);
+  // The line the epoch began under is stored: ids and the setting only.
+  assert.deepEqual(JSON.parse(env.storeMap.get(key) ?? "null"), {
+    g: G0,
+    s: "hidden",
+  });
+  // The list lands and the app dies before any state read saw it.
+  first.dispose();
+  env.state().history_setting = "visible";
+  assert.equal(updates(env), 0);
+  // The next session, over the same storage: the same epoch, another line.
+  const second = await ready(env);
+  await env.advance(0);
+  assert.equal(updates(env), 1);
+  assert.equal(env.calls("e2ee_text_commit_won").length, 1);
+  assert.deepEqual(JSON.parse(env.storeMap.get(key) ?? "null"), {
+    g: G0,
+    s: "visible",
+  });
+  second.dispose();
+  // A third session finds nothing owed.
+  const third = await ready(env);
+  await env.advance(0);
+  assert.equal(updates(env), 1);
+  third.dispose();
+});
+
+test("own Update (B6): never loops: one attempt per state change, none after it landed", async () => {
+  // The Update fails every time: ONE attempt, however often the state is
+  // read, until the state changes.
+  {
+    const env = new Env();
+    ownerHidden(env);
+    env.handlers.e2ee_text_update = () => {
+      throw { type: "internal", message: "no" };
+    };
+    breaker(env);
+    const m = await ready(env);
+    env.state().history_setting = "visible";
+    for (let i = 0; i < 5; i++) {
+      await m.refresh(CH, "manual");
+      await env.advance(0);
+    }
+    await env.advance(3_600_000);
+    assert.equal(updates(env), 1, "one attempt for this state");
+    // Another member's commit moves the epoch: the new epoch began under
+    // the new line, nothing is owed any more.
+    env.state().epoch = 4;
+    for (let i = 0; i < 3; i++) {
+      await m.refresh(CH, "manual");
+      await env.advance(0);
+    }
+    assert.equal(updates(env), 1);
+    // The line changes back within this epoch: one more attempt, not more.
+    env.state().history_setting = "hidden";
+    for (let i = 0; i < 3; i++) {
+      await m.refresh(CH, "manual");
+      await env.advance(0);
+    }
+    assert.equal(updates(env), 2);
+    m.dispose();
+  }
+  // The Update lands: its own state reads start no second one.
+  {
+    const env = new Env();
+    ownerHidden(env);
+    breaker(env);
+    const m = await ready(env);
+    env.state().history_setting = "visible";
+    for (let i = 0; i < 5; i++) {
+      await m.refresh(CH, "manual");
+      await env.advance(0);
+    }
+    await env.advance(3_600_000);
+    assert.equal(updates(env), 1);
+    assert.equal(env.calls("e2ee_text_commit_won").length, 1);
+    m.dispose();
+  }
+});
+
+test("own Update (B6): only the device that signed the list, only an owner device, only while the flag is on, nothing after dispose", async () => {
+  // Another device of the owner signed the list.
+  {
+    const env = new Env();
+    ownerHidden(env);
+    const list = env.state().seat_list;
+    assert.ok(list);
+    env.state().seat_list = { ...list, signer_device_id: "dev-other" };
+    const m = await ready(env);
+    env.state().history_setting = "visible";
+    await m.refresh(CH, "manual");
+    await env.advance(0);
+    assert.equal(updates(env), 0, "not the signer");
+    m.dispose();
+  }
+  // A member's device.
+  {
+    const env = new Env();
+    env.wonLink = null;
+    env.state().history_setting = "hidden";
+    const m = await ready(env);
+    env.state().history_setting = "visible";
+    await m.refresh(CH, "manual");
+    await env.advance(0);
+    assert.equal(updates(env), 0, "not an owner device");
+    assert.deepEqual(env.storeKeys(PROTECTED_HISTORY_EPOCH_KEY_PREFIX), []);
+    m.dispose();
+  }
+  // The flag off: an Update is a write. It follows once the flag is on.
+  {
+    const env = new Env();
+    ownerHidden(env);
+    const m = await ready(env);
+    env.flag = false;
+    env.state().history_setting = "visible";
+    await m.refresh(CH, "manual");
+    await env.advance(0);
+    assert.equal(updates(env), 0, "flag off");
+    env.flag = true;
+    await m.refresh(CH, "manual");
+    await env.advance(0);
+    assert.equal(updates(env), 1, "flag on again");
+    m.dispose();
+  }
+  // Disposed before the state read that would have seen the change.
+  {
+    const env = new Env();
+    ownerHidden(env);
+    const m = await ready(env);
+    m.dispose();
+    env.state().history_setting = "visible";
+    await env.advance(3_600_000);
+    assert.equal(updates(env), 0);
+  }
 });
 
 test("backup refresh: asked once every 20 new epochs, a duplicate does not count", async () => {
