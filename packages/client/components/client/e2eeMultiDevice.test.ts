@@ -197,6 +197,9 @@ type Bridge = {
   disable(token: string): Promise<Json>;
   retryDeviceRevoke(id: string, token: string): Promise<Json>;
   restoreFromBackup(token: string): Promise<number>;
+  restoreFromBackupReport(
+    token: string,
+  ): Promise<{ blobs: number; text: Json }>;
   removeDevice(
     id: string,
     opts: { deleteBackup: boolean },
@@ -226,7 +229,7 @@ let E2EEBridge: BridgeCtor;
 let outDir: string;
 let tauriListeners: Map<string, (event: { payload: unknown }) => void>;
 /** Every bridge a test built, disposed after it (no timer outlives a test). */
-let bridges: Bridge[] = [];
+const bridges: Bridge[] = [];
 
 before(async () => {
   const require = createRequire(import.meta.url);
@@ -1157,6 +1160,63 @@ test("publishPending:restore-dialog - null and a RestoreReport are pending and u
     );
     assert.equal(challenges(client), 0, "no claim before publish");
   }
+});
+
+test("restore text (S4) - the dialog's RestoreReport text section reaches the caller; null, an older report and a cancel report nothing", async () => {
+  routes.set("GET /e2ee/backup", () =>
+    json({ backups: [{ header: "h", ciphertext: "c", generation: 1 }] }),
+  );
+  const report = { new_device_id: DEV, device_id: "01SOURCE" };
+  const none = { epochs: null, truncated: null, skipped: "none" };
+  for (const [result, text] of [
+    [null, none],
+    [report, none],
+    [
+      { ...report, text_epochs: 3, text_truncated: "oldest" },
+      { epochs: 3, truncated: "oldest", skipped: "none" },
+    ],
+    [
+      { ...report, text_epochs: 1, text_truncated: "none", text_skipped: true },
+      { epochs: 1, truncated: "none", skipped: "partial" },
+    ],
+    [
+      { ...report, text_skipped: true },
+      { epochs: null, truncated: null, skipped: "all" },
+    ],
+    // An older shell's republish payload is not a RestoreReport.
+    [{ device_id: DEV, one_time_keys: [], text_epochs: 9 }, none],
+  ] as const) {
+    native = new Native();
+    native.provisioned = false;
+    plugin = new FakePlugin();
+    const { bridge } = await readyBridge();
+    plugin.restoreResult = result;
+    unpublished();
+    assert.deepEqual(await bridge.restoreFromBackupReport("ticket"), {
+      blobs: 1,
+      text,
+    });
+    await settle();
+  }
+
+  // A cancelled dialog and an account without a backup: 0 blobs, nothing.
+  native = new Native();
+  native.provisioned = false;
+  plugin = new FakePlugin();
+  const { bridge } = await readyBridge();
+  plugin.backupRestore = async () => {
+    throw new Error(JSON.stringify({ type: "declined" }));
+  };
+  assert.deepEqual(await bridge.restoreFromBackupReport("ticket"), {
+    blobs: 0,
+    text: none,
+  });
+  routes.set("GET /e2ee/backup", () => json({ backups: [] }));
+  assert.deepEqual(await bridge.restoreFromBackupReport("ticket"), {
+    blobs: 0,
+    text: none,
+  });
+  assert.equal(await bridge.restoreFromBackup("ticket"), 0);
 });
 
 test("publishPending:restore-dialog-legacy - an older shell's republish keeps the §6.4 path", async () => {

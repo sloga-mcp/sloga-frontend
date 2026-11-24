@@ -104,6 +104,18 @@ import {
   mediaE2EEPlatformSupported,
   shellRefreshesBackup,
 } from "./e2eePlatform";
+import {
+  type BackupTextTruncated,
+  type HistorySeamPorts,
+  type ProtectedHistoryManagerApi,
+  type ProtectedHistoryPort,
+  type ProtectedHistorySeamDeps,
+  type RestoreTextSummary,
+  applyHistoryPolicy,
+  bundleTextTruncated,
+  historyManagerOf,
+  restoreTextSummary,
+} from "./e2eeProtectedHistorySeam.ts";
 import { protectorSendErrorCopy } from "./e2eeProtectorCopy";
 import {
   type CallRosterOutcome,
@@ -214,6 +226,7 @@ import {
   type ProtectedMessageRow,
   type ProtectedMessageView,
   type ProtectedTextManagerCallbacks,
+  type ProtectedTextManagerDeps,
   type ProtectedTextPort,
   type ProtectedToastKind,
   type ProtectedUiApi,
@@ -8129,6 +8142,16 @@ export class E2EEBridge implements E2EEAdapter {
   #backupRefreshAgain = false;
 
   /**
+   * Protected channels S4 (design 8.5): `text_truncated` of the last backup
+   * bundle the server kept from this bridge (create, rotate or refresh);
+   * null when that bundle had no text section. Unset until an upload.
+   */
+  readonly backupText = new ReactiveMap<
+    "state",
+    { truncated: BackupTextTruncated | null }
+  >();
+
+  /**
    * When the courier last got past its guard (ms), and the main-window focus
    * listener while one is attached. A focus re-checks only once
    * `backupRefreshFocusDue` says an hour has passed since then.
@@ -8414,6 +8437,7 @@ export class E2EEBridge implements E2EEAdapter {
     if (stored?.generation !== bundle.generation) {
       throw new BackupNotStoredError();
     }
+    this.backupText.set("state", { truncated: bundleTextTruncated(bundle) });
     await this.#invoke("e2ee_backup_mark_uploaded", {
       generation: bundle.generation,
     });
@@ -8717,6 +8741,19 @@ export class E2EEBridge implements E2EEAdapter {
    * blobs offered (0 ⇒ nothing to restore).
    */
   async restoreFromBackup(mfaTicketToken: string): Promise<number> {
+    return (await this.restoreFromBackupReport(mfaTicketToken)).blobs;
+  }
+
+  /**
+   * `restoreFromBackup` with what the restore said about the Protected
+   * channel text section (S4, design 8.5; `restoreTextSummary`). Only a
+   * native dialog (Android) hands its report back; iOS, an older shell and
+   * the desktop recovery window read as "nothing reported".
+   */
+  async restoreFromBackupReport(
+    mfaTicketToken: string,
+  ): Promise<{ blobs: number; text: RestoreTextSummary }> {
+    const unreported = restoreTextSummary(null);
     const selfId = this.#client.user?.id;
     if (!selfId) throw new Error("not signed in");
 
@@ -8726,7 +8763,7 @@ export class E2EEBridge implements E2EEAdapter {
       undefined,
       { "X-MFA-Ticket": mfaTicketToken },
     );
-    if (res.backups.length === 0) return 0;
+    if (res.backups.length === 0) return { blobs: 0, text: unreported };
 
     // Pass the server-claimed generation so native can cross-check it against
     // the AEAD-authenticated header (design §6.2 M2).
@@ -8744,7 +8781,9 @@ export class E2EEBridge implements E2EEAdapter {
       try {
         republish = await this.#transport.backupRestoreDialog(selfId, blobs);
       } catch (error) {
-        if ((error as { type?: string })?.type === "declined") return 0;
+        if ((error as { type?: string })?.type === "declined") {
+          return { blobs: 0, text: unreported };
+        }
         throw error;
       }
       // The restore added a NEW device (multi-device D1): iOS answers null,
@@ -8757,7 +8796,10 @@ export class E2EEBridge implements E2EEAdapter {
         this.#raisePublishPendingIfUnpublished(
           typeof source === "string" ? source : null,
         );
-        return res.backups.length;
+        return {
+          blobs: res.backups.length,
+          text: restoreTextSummary(republish),
+        };
       }
       // An older shell cloned the source device and returned its fresh-OTK
       // republish. Defer it until AFTER the claim (design §6.3): the
@@ -8768,7 +8810,7 @@ export class E2EEBridge implements E2EEAdapter {
       await this.refreshStatus();
       const status = this.status.get("state");
       if (status?.device_id) this.#requestClaim(status.device_id);
-      return res.backups.length;
+      return { blobs: res.backups.length, text: unreported };
     }
 
     await this.#ensureBackupCourier();
@@ -8777,7 +8819,7 @@ export class E2EEBridge implements E2EEAdapter {
       userId: selfId,
       blobs,
     });
-    return res.backups.length;
+    return { blobs: res.backups.length, text: unreported };
   }
 
   /**
@@ -10377,26 +10419,38 @@ export class E2EEBridge implements E2EEAdapter {
         if (!current()) return;
         this.#protectedIndexReported(channelId, groupId, generation);
       },
-      // S4-W4-0 placeholder (lane L2e): nothing is revealed or pinned yet.
-      onHistoryPolicy: () => {},
+      // S4 (R-W4-3, R-W4-5): the only writer of the verified reveal and of
+      // the pin's history. The decision is `applyHistoryPolicy`.
+      onHistoryPolicy: (channelId, p) => {
+        if (!current()) return;
+        applyHistoryPolicy(this.#protectedHistoryPorts(), channelId, p);
+      },
+    };
+    const deps: ProtectedTextManagerDeps & ProtectedHistorySeamDeps = {
+      owner: {
+        protect,
+        setSeats,
+        signOwnerDevices,
+        moveOwnerKey,
+        pendingSeats,
+        cancelPendingSeats,
+        recoverOwnership,
+      },
+      messages: { encryptAndSend, decryptRow, markerForError },
+      // S4 (design 8.5 "Refresh", OPEN 3): the existing courier, so native
+      // still decides whether a refresh is due. Nothing with the flag off.
+      requestBackupRefresh: () => {
+        if (this.protectedFlag().historySetting !== true) return;
+        void this.#courierBackupRefresh();
+      },
+      // S4 (R-W4-4): the local pin's history, for the row policy.
+      pinHistory: (channelId) =>
+        this.#client.protectedPins.historyOf(channelId) ?? null,
     };
     manager = new ProtectedTextManager(
       this.#protectedPort(userId, deviceId, life.signal),
       callbacks,
-      {
-        owner: {
-          protect,
-          setSeats,
-          signOwnerDevices,
-          moveOwnerKey,
-          pendingSeats,
-          cancelPendingSeats,
-          recoverOwnership,
-        },
-        messages: { encryptAndSend, decryptRow, markerForError },
-        // S4-W4-0 placeholder (lane L2e)
-        requestBackupRefresh: () => {},
-      },
+      deps,
     );
     this.#ptManager = manager;
     this.#ptLife = life;
@@ -10420,6 +10474,31 @@ export class E2EEBridge implements E2EEAdapter {
     // Channels the UI opened before this manager existed.
     for (const channelId of this.#ptOpen) void this.#protectedOpen(channelId);
     void this.#protectedRefreshFlag();
+  }
+
+  /**
+   * S4: the SDK calls `applyHistoryPolicy` drives. This is the one place in
+   * the app that calls `revealPreProtectRows` or `setHistory`; both run only
+   * on values the manager reported from native verified state.
+   */
+  #protectedHistoryPorts(): HistorySeamPorts {
+    const client = this.#client;
+    return {
+      historySetting: () => this.protectedFlag().historySetting === true,
+      pinned: (channelId) => client.protectedPins.historyOf(channelId),
+      revealed: (channelId) => client.protectedHistory.revealOf(channelId),
+      conflicted: (channelId) =>
+        client.protectedHistory.isConflicted(channelId),
+      wiped: (channelId) => client.protectedHistory.isWiped(channelId),
+      setHistory: (channelId, history) =>
+        client.protectedPins.setHistory(channelId, history),
+      reveal: (channelId, reveal) =>
+        client.revealPreProtectRows(channelId, reveal),
+      purge: (channelId, boundary) => {
+        client.purgePreProtectRows(channelId, boundary);
+      },
+      log: (line) => console.error(line),
+    };
   }
 
   /** Hand one indexed channel to the current manager, once. */
@@ -10667,7 +10746,7 @@ export class E2EEBridge implements E2EEAdapter {
     userId: string,
     deviceId: string,
     life: AbortSignal,
-  ): ProtectedTextPort {
+  ): ProtectedTextPort & ProtectedHistoryPort {
     const storage = (): Storage => globalThis.localStorage;
     return {
       selfUserId: userId,
@@ -10773,6 +10852,8 @@ export class E2EEBridge implements E2EEAdapter {
       },
       // S2 (j): the owner flows pick `format: 2` from the root advert.
       formatsV2: () => this.protectedFlag().formatsV2 === true,
+      // S4 (R-W4-9): the root advert's `history_setting`, read the same way.
+      historySetting: () => this.protectedFlag().historySetting === true,
     };
   }
 
@@ -11172,29 +11253,52 @@ export class E2EEBridge implements E2EEAdapter {
     deviceCap: number,
     opts?: { withHistory: boolean; wipe: boolean },
   ): Promise<void> {
-    // S4-W4-0 placeholder (lanes L2e, L2m): a protect with history is
-    // refused, never run as a plain protect.
-    if (opts?.withHistory || opts?.wipe) {
-      throw { source: "client", reason: "not_implemented" };
-    }
     const manager = await this.#protectedManagerFor(channelId);
+    // A protect with history goes to the S4 manager or is refused; it is
+    // never run as a plain protect.
+    if (opts?.withHistory || opts?.wipe) {
+      return this.#protectedHistoryManager(manager).protect(
+        channelId,
+        seats,
+        deviceCap,
+        opts,
+      );
+    }
     return manager.protect(channelId, seats, deviceCap);
   }
 
-  // S4-W4-0 placeholders (lanes L2e, L2m): the two owner calls reject and
-  // the walk is a no-op until the manager carries them.
-  async setHistoryVisible(
-    _channelId: string,
-    _visible: boolean,
-  ): Promise<void> {
-    throw { source: "client", reason: "not_implemented" };
+  /**
+   * The manager's S4 calls, or a `not_implemented` rejection.
+   *
+   * S4-W4-0 placeholder (lane L2m): the manager does not carry these yet,
+   * so every call through here rejects. Once `ProtectedTextManager` has
+   * `protect(..., opts)`, `setHistoryVisible`, `wipeHistory` and
+   * `walkHistory`, `historyManagerOf` finds them and this line goes.
+   */
+  #protectedHistoryManager(
+    manager: ProtectedTextManager,
+  ): ProtectedHistoryManagerApi {
+    const history = historyManagerOf(manager);
+    if (!history) throw { source: "client", reason: "not_implemented" };
+    return history;
   }
 
-  async wipeHistory(_channelId: string): Promise<void> {
-    throw { source: "client", reason: "not_implemented" };
+  async setHistoryVisible(channelId: string, visible: boolean): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return this.#protectedHistoryManager(manager).setHistoryVisible(
+      channelId,
+      visible,
+    );
   }
 
-  walkHistory(_channelId: string): void {}
+  async wipeHistory(channelId: string): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return this.#protectedHistoryManager(manager).wipeHistory(channelId);
+  }
+
+  walkHistory(channelId: string): void {
+    historyManagerOf(this.#ptManager)?.walkHistory(channelId);
+  }
 
   async setSeats(
     channelId: string,

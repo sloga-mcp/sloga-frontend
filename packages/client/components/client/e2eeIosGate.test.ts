@@ -131,8 +131,14 @@
 //       `#replenish()` housekeeping and outside its try. Gated on the
 //       transport's three-platform answer (R8), not on the iOS-only bundle
 //       listener.
-//   R5. `this.#courierBackupRefresh(` is called exactly three times: the
-//       iOS event (R3), the claim (R4) and the focus listener (R9).
+//   R5. `this.#courierBackupRefresh(` is called exactly four times: the
+//       iOS event (R3), the claim (R4), the focus listener (R9) and the
+//       Protected-channel text manager's `requestBackupRefresh` (S4, design
+//       8.5 "Refresh"), which is defined once and is exactly
+//       `requestBackupRefresh: () => { if (this.protectedFlag().historySetting
+//       !== true) return; void this.#courierBackupRefresh(); }`: nothing
+//       while the server's history flag is off, and through the courier's
+//       guard like every other caller.
 //   R6. `#courierBackupRefresh` (one) is exactly
 //       `const s = this.status.get("state"); if (<terms>) return;
 //       this.#backupRefreshAt = Date.now();
@@ -1506,6 +1512,10 @@ const CLAIM_TAILS = [
   "if(this.#transport.refreshesBackup){awaitthis.#courierBackupRefresh();}",
   "if(this.#transport.refreshesBackup)awaitthis.#courierBackupRefresh();",
 ];
+/** R5: the text manager's refresh request, whole. */
+const REFRESH_REQUEST =
+  "requestBackupRefresh:()=>{if(this.protectedFlag().historySetting!==true)" +
+  "return;voidthis.#courierBackupRefresh();}";
 const COURIER_BODY =
   /^const([\w$]+)=this\.status\.get\("state"\);if\((.+?)\)return;this\.#backupRefreshAt=Date\.now\(\);try\{awaitthis\.refreshBackupIfDue\(\);\}catch\(([\w$]+)\)\{(.*)\}$/;
 const REFRESH_COMMAND = /["'`]e2ee_backup_refresh_if_due["'`]/g;
@@ -1729,16 +1739,38 @@ function orphanBridgeViolations(src: string, m: Masked): string[] {
     }
   }
 
-  // R5: three callers, the event, the claim and the focus listener.
+  // R5: four callers, the event, the claim, the focus listener and the
+  // text manager's flag-gated request.
   const courierCalls = hitsOf(
     m.code,
     /\bthis\s*\.\s*#courierBackupRefresh\s*\(/g,
   );
-  if (courierCalls.length !== 3) {
+  if (courierCalls.length !== 4) {
     out.push(
       `R5 this.#courierBackupRefresh( called ${courierCalls.length} times,` +
-        " want 3 (the event, the claim and the focus listener)",
+        " want 4 (the event, the claim, the focus listener and" +
+        " requestBackupRefresh)",
     );
+  }
+  const requests = hitsOf(m.code, /\brequestBackupRefresh\s*:/g);
+  if (requests.length !== 1) {
+    out.push(
+      `R5 requestBackupRefresh defined ${requests.length} times, want 1`,
+    );
+  } else {
+    const open = m.code.indexOf("{", requests[0]);
+    const request =
+      open === -1
+        ? ""
+        : norm(m.text.slice(requests[0], matchClose(m.code, open) + 1));
+    if (request !== REFRESH_REQUEST) {
+      out.push(
+        `R5 line ${lineOf(src, requests[0])}: requestBackupRefresh is` +
+          ` \`${request}\`, want () => { if` +
+          " (this.protectedFlag().historySetting !== true) return; void" +
+          " this.#courierBackupRefresh(); }",
+      );
+    }
   }
 
   // R6: guarded before any native call; best effort.
@@ -2977,6 +3009,16 @@ export class E2EEBridge implements E2EEAdapter {
     }
   }
 
+  #protectedEnsureManager(): void {
+    const deps = {
+      requestBackupRefresh: () => {
+        if (this.protectedFlag().historySetting !== true) return;
+        void this.#courierBackupRefresh();
+      },
+    };
+    this.#ptManager = new ProtectedTextManager(deps);
+  }
+
   async refreshBackupIfDue(): Promise<void> {
     const selfId = this.#client.user?.id;
     if (!selfId) return;
@@ -3904,7 +3946,7 @@ const TS_MUTATIONS: Mutation[] = [
     expected: /R4 .*does not end with/,
   },
   {
-    label: "a fourth courier call, on connect",
+    label: "a fifth courier call, on connect",
     swaps: [
       [
         "    this.#watchOrphanedBackup();\n",
@@ -3913,7 +3955,52 @@ const TS_MUTATIONS: Mutation[] = [
       ],
     ],
     rules: ["R5"],
-    expected: /called 4 times, want 3/,
+    expected: /called 5 times, want 4/,
+  },
+  {
+    label: "the text manager's refresh request ignores the history flag",
+    swaps: [
+      [
+        "        if (this.protectedFlag().historySetting !== true) return;\n",
+        "",
+      ],
+    ],
+    rules: ["R5"],
+    expected: /R5 .*requestBackupRefresh is/,
+  },
+  {
+    label: "the text manager's refresh request gated on the base flag only",
+    swaps: [
+      [
+        "        if (this.protectedFlag().historySetting !== true) return;\n",
+        "        if (this.protectedFlag().enabled !== true) return;\n",
+      ],
+    ],
+    rules: ["R5"],
+    expected: /R5 .*requestBackupRefresh is/,
+  },
+  {
+    label: "the text manager's refresh request skips the courier's guard",
+    swaps: [
+      [
+        "        void this.#courierBackupRefresh();\n      },\n",
+        "        void this.refreshBackupIfDue();\n      },\n",
+      ],
+    ],
+    rules: ["R5", "R7"],
+    expected: /R5 .*requestBackupRefresh is/,
+  },
+  {
+    label: "a second refresh request, ungated",
+    swaps: [
+      [
+        "    this.#ptManager = new ProtectedTextManager(deps);\n",
+        "    this.#ptManager = new ProtectedTextManager(deps);\n" +
+          "    this.#other = { requestBackupRefresh: () => {} };\n",
+      ],
+    ],
+    rules: ["R5"],
+    expected: /R5 requestBackupRefresh defined 2 times/,
   },
   {
     label: "the courier guard dropped",
@@ -5454,7 +5541,7 @@ test("e2ee.ts: CapacitorTransport has the backupBundleWaiting listener only on i
   assert.deepEqual(ruleFilter(realTs(), ["R1", "R2"]), []);
 });
 
-test("e2ee.ts: the bridge runs the backup courier on the iOS event, after a claim where the transport refreshes, and on focus, guarded and best effort", () => {
+test("e2ee.ts: the bridge runs the backup courier on the iOS event, after a claim where the transport refreshes, on focus, and for the text manager's flag-gated request, guarded and best effort", () => {
   assert.deepEqual(ruleFilter(realTs(), ["R3", "R4", "R5", "R6", "R7"]), []);
 });
 
