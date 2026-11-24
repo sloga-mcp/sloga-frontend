@@ -6,6 +6,7 @@ import {
   Show,
   Switch,
   createContext,
+  createMemo,
   createSignal,
   onMount,
   useContext,
@@ -76,7 +77,9 @@ import { serverActionsBlocked } from "./e2eeTranscriptTrust";
 import {
   protectedRowBody,
   protectedRowNotes,
+  protectedRowScope,
   protectedViewClass,
+  replyTargetShown,
 } from "./messageProtectedView";
 
 /**
@@ -151,6 +154,13 @@ interface Props {
    * Whether this message is a link
    */
   isLink?: boolean;
+
+  /**
+   * Channel of the list this row renders in. The message list passes it, so
+   * a row that names another channel never shows a body in a Protected
+   * list. Without it only the row's own channel is known.
+   */
+  listChannelId?: string;
 }
 
 interface MessageContextShape {
@@ -283,30 +293,50 @@ export function Message(props: Props) {
    * rendered here, even if present (D25 strips them; this is the second
    * guard). The one exception is a plain row from before the channel was
    * protected (design 9.5 arm 3), see `guardedRow`.
+   *
+   * The LIST's channel decides too (`protectedRowScope`): in a Protected
+   * list every row is a Protected row, and one that names another channel
+   * is `foreign` and shows the red error marker, never a body.
    */
-  const protectedRow = () =>
-    props.message.encrypted !== undefined ||
-    client().isProtectedChannel(props.message.channelId);
+  const rowScope = createMemo(() =>
+    protectedRowScope({
+      encrypted: props.message.encrypted,
+      rowChannelId: props.message.channelId,
+      listChannelId: props.listChannelId,
+      rowHeld: client().isProtectedChannel(props.message.channelId),
+      listHeld:
+        props.listChannelId !== undefined &&
+        client().isProtectedChannel(props.listChannelId),
+    }),
+  );
 
-  /** The decrypted view; never read for any other row. */
+  /** Whether this row is a Protected channel row (a foreign one included). */
+  const protectedRow = () => rowScope() !== "open";
+
+  /** The channel this row is shown in: the list's, else the row's own. */
+  const shownChannelId = () => props.listChannelId ?? props.message.channelId;
+
+  /** The decrypted view; never read for a foreign row or any other row. */
   const protectedView = useProtectedMessage(() =>
-    protectedRow() ? props.message.id : undefined,
+    rowScope() === "protected" ? props.message.id : undefined,
   );
 
   /**
    * What a Protected row shows as its body (design 9.3, 9.5), decided in
    * `messageProtectedView.ts`: a marker, the decrypted view, the checking
    * line, or `ordinary` for a plain row from before the channel was
-   * protected.
+   * protected. A memo: the row reads it many times per render.
    */
-  const protectedBody = () =>
+  const protectedBody = createMemo(() =>
     protectedRow()
       ? protectedRowBody(
           protectedView(),
           protectedTextPlane(client().e2ee),
           props.message,
+          rowScope() === "foreign",
         )
-      : undefined;
+      : undefined,
+  );
 
   /**
    * Whether the row's server-set fields stay off the screen: every Protected
@@ -408,13 +438,28 @@ export function Message(props: Props) {
             <For each={guardedRow() ? undefined : props.message.replyIds}>
               {(reply_id) => {
                 /**
-                 * Signal the actual message
+                 * Signal the actual message. On a Protected row only a
+                 * target of the shown channel is previewed.
                  */
-                const message = () => client().messages.get(reply_id);
+                const message = () => {
+                  const target = client().messages.get(reply_id);
+                  return replyTargetShown({
+                    protectedRow: protectedRow(),
+                    listChannelId: shownChannelId(),
+                    targetChannelId: target?.channelId,
+                  })
+                    ? target
+                    : undefined;
+                };
 
                 onMount(() => {
-                  if (!message()) {
-                    props.message.channel!.fetchMessage(reply_id);
+                  // A row cached under another channel is not asked for
+                  // again. A fetch that fails, or that answers with a row
+                  // of another channel, leaves the preview "not loaded".
+                  if (!client().messages.get(reply_id)) {
+                    props.message.channel
+                      ?.fetchMessage(reply_id)
+                      .catch(() => undefined);
                   }
                 });
 
@@ -432,7 +477,7 @@ export function Message(props: Props) {
               {(replyId) => (
                 <ProtectedReplyPreview
                   id={replyId}
-                  channelId={props.message.channelId}
+                  channelId={shownChannelId()}
                 />
               )}
             </For>

@@ -42,6 +42,56 @@ export interface PlainRowFields {
   encrypted?: unknown;
   content?: unknown;
   attachments?: unknown;
+  systemMessage?: unknown;
+  embeds?: unknown;
+  forwarded?: unknown;
+  poll?: unknown;
+  softres?: unknown;
+  components?: unknown;
+}
+
+/** How a row stands against the list that renders it. */
+export type ProtectedRowScope = "open" | "protected" | "foreign";
+
+/**
+ * Whether a row is a Protected channel row, decided by the LIST's channel
+ * as well as the row's own (audit A1). `protected`: the row carries
+ * `encrypted`, or the list's channel or the row's own channel is protected
+ * or pinned. `foreign`: such a row that names another channel than the list
+ * it is shown in; it never shows a body. `open`: an ordinary row. Without a
+ * list (search, the report dialog) only the row's own channel is known.
+ * `rowHeld` / `listHeld`: `client.isProtectedChannel` of the row's own
+ * channel and of the list's; any truthy answer counts (fails closed), and
+ * `listHeld` is ignored without a list.
+ */
+export function protectedRowScope(i: {
+  encrypted: unknown;
+  rowChannelId: string | undefined;
+  listChannelId: string | undefined;
+  rowHeld: boolean;
+  listHeld: boolean;
+}): ProtectedRowScope {
+  const inList = i.listChannelId !== undefined;
+  const guarded =
+    i.encrypted !== undefined || !!i.rowHeld || (inList && !!i.listHeld);
+  if (!guarded) return "open";
+  return inList && i.rowChannelId !== i.listChannelId ? "foreign" : "protected";
+}
+
+/**
+ * Whether a legacy reply preview may show its target. On a Protected row
+ * only a target of the list's own channel is shown; any other row shows
+ * whatever target is cached, as before.
+ */
+export function replyTargetShown(i: {
+  protectedRow: boolean;
+  listChannelId: string | undefined;
+  targetChannelId: string | undefined;
+}): boolean {
+  if (i.protectedRow === false) return true;
+  return (
+    typeof i.listChannelId === "string" && i.targetChannelId === i.listChannelId
+  );
 }
 
 /**
@@ -85,11 +135,23 @@ export function protectedViewClass(
   }
 }
 
+/** A non-empty array. */
+function filled(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0;
+}
+
+/** An object (never an array, a string or a flag). */
+function present(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /**
  * Whether a row may render as an ordinary message once its view is `plain`.
- * It has content or attachments only because the SDK's verified reveal put
- * them back; a row with neither (the reveal is gone, e.g. after a reload)
- * has nothing to show. A row carrying `encrypted` is never plain.
+ * It holds any of these fields only because the SDK's verified reveal put
+ * them back: content, attachments, a system message, embeds, a forwarded
+ * snapshot, a poll, a soft-reserve sheet or components. A row with none of
+ * them (the reveal is gone, e.g. after a reload) has nothing to show. A row
+ * carrying `encrypted` is never plain.
  */
 export function plainRenderable(
   message: PlainRowFields | null | undefined,
@@ -99,18 +161,30 @@ export function plainRenderable(
   if (typeof message.content === "string" && message.content.length > 0) {
     return true;
   }
-  return Array.isArray(message.attachments) && message.attachments.length > 0;
+  return (
+    filled(message.attachments) ||
+    filled(message.embeds) ||
+    filled(message.components) ||
+    present(message.systemMessage) ||
+    present(message.forwarded) ||
+    present(message.poll) ||
+    present(message.softres)
+  );
 }
 
 /**
  * The body of a Protected channel row. `ordinary` only for a `plain` view
  * of a renderable row; a `plain` view of an empty row is the checking line.
+ * A foreign row (`protectedRowScope`) is the red `error` marker whatever its
+ * view says; anything but a literal `false` counts as foreign.
  */
 export function protectedRowBody(
   view: ProtectedMessageView | null | undefined,
   capable: boolean,
   message: PlainRowFields | null | undefined,
+  foreign: boolean,
 ): ProtectedRowBody {
+  if (foreign !== false) return { kind: "marker", marker: "error" };
   const sorted = protectedViewClass(view, capable);
   if (sorted.kind !== "plain") return sorted;
   return plainRenderable(message) ? { kind: "ordinary" } : { kind: "checking" };

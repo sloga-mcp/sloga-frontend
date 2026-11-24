@@ -199,6 +199,25 @@ function latestFloorOnly<M extends { kind?: string; channelId?: string }>(
 }
 
 /**
+ * Whether a history floor marker belongs to the row at `rowAtMs`. The
+ * manager raises the marker 1 ms after the newest loaded row at or below
+ * the floor (R-W4-32), so it is that row's whatever else is loaded.
+ * @param marker Marker
+ * @param rowAtMs Time of the row in ms
+ * @returns Whether the marker is anchored to the row
+ */
+function floorAnchoredTo(
+  marker: { atMs: number; kind?: string },
+  rowAtMs: number,
+): boolean {
+  return (
+    marker.kind === "history_floor" &&
+    marker.atMs >= rowAtMs &&
+    marker.atMs - rowAtMs <= 1
+  );
+}
+
+/**
  * Where local timeline markers sit among the loaded messages, ordered by
  * their `atMs`. Indices follow `messagesAtMs`, which is newest first like
  * the list; every array of markers is newest first too. A history floor is
@@ -206,7 +225,9 @@ function latestFloorOnly<M extends { kind?: string; channelId?: string }>(
  * a channel is placed at all.
  * - `before[k]`: markers at or after message k and before message k - 1.
  *   For k = 0 they are newer than every loaded message and show only at
- *   the end of the conversation (otherwise they belong to unloaded rows).
+ *   the end of the conversation (otherwise they belong to unloaded rows);
+ *   a history floor anchored to message 0 (`floorAnchoredTo`) is the one
+ *   exception and shows wherever the loaded window ends.
  * - `beforeDate[k]`: markers older than message k but on its day, when
  *   message k + 1 is on an earlier day (they go under k's date divider).
  * - `breaksTail[k]`: a marker sits between message k and message k + 1.
@@ -246,7 +267,11 @@ function planTimelineMarkers<
     while (i < pending.length && pending[i].atMs >= at) {
       newer.push(pending[i++]);
     }
-    before.push(k === 0 && !atEnd ? [] : newer);
+    before.push(
+      k === 0 && !atEnd
+        ? newer.filter((marker) => floorAnchoredTo(marker, at))
+        : newer,
+    );
 
     const next = k + 1 < messagesAtMs.length ? messagesAtMs[k + 1] : undefined;
     const sameDayOlder: M[] = [];
@@ -381,6 +406,75 @@ function walkAfterPage(i: {
   if (i.historyWalk === "retry_later") return true;
   if (i.historyWalk !== "idle") return false;
   return i.keylessRows === true && i.floorKnown === false;
+}
+
+/**
+ * Whether the initial load asks the manager to take up a history walk that
+ * could not finish (`retry_later`). With the whole channel loaded there is
+ * no backward page to ask from, so the load asks once itself; the manager
+ * restarts from the gap the walk was for. Nothing in any other state.
+ * @param i Channel state
+ * @returns Whether to call `walkHistory`
+ */
+function walkOnInitialLoad(i: {
+  protectedChannel: boolean;
+  historyFlag: boolean;
+  historyWalk: string | undefined;
+}): boolean {
+  if (i.protectedChannel !== true || i.historyFlag !== true) return false;
+  return i.historyWalk === "retry_later";
+}
+
+/**
+ * The rows a list may hold: on a protected or pinned channel only rows
+ * that name this channel (audit A1). A row naming another channel has no
+ * decrypted view here and must never be listed as an ordinary message.
+ * Any other channel keeps its rows as they came.
+ * @param rows Rows from a fetch or the cache
+ * @param channelId Channel the list renders
+ * @param protectedOrPinned `client.isProtectedChannel(id)`
+ * @returns Rows to list, in the same order
+ */
+function rowsOfChannel<T extends { channelId?: string }>(
+  rows: readonly T[],
+  channelId: string,
+  protectedOrPinned: boolean,
+): T[] {
+  if (protectedOrPinned !== true) return [...rows];
+  return rows.filter((row) => row.channelId === channelId);
+}
+
+/**
+ * Rows of several lists as one, newest first by id (the comparison the
+ * list always used). Every list setter that takes fetched rows goes through
+ * this, so a row the server put out of order still lands where its id says
+ * (and on its side of the boundary divider).
+ * @param lists Lists of rows
+ * @returns One list, newest first
+ */
+function newestFirst<T extends { id: string }>(lists: readonly T[][]): T[] {
+  return lists.flat().sort((a, b) => b.id.localeCompare(a.id));
+}
+
+/**
+ * Whether a delete that emptied the list asks for a fresh initial load.
+ * Only when rows were listed before and none are left, nothing is being
+ * fetched, and no such reload was spent since the list last got a row by
+ * another route: a server that keeps answering with rows that are deleted
+ * again gets one request, not a loop, and a channel that is really empty
+ * has no row whose delete could ask again.
+ * @param i Row counts around the delete, fetch state, reloads spent
+ * @returns Whether to call `caseInitialLoad`
+ */
+function reloadAfterEmptied(i: {
+  before: number;
+  after: number;
+  fetching: boolean;
+  reloads: number;
+}): boolean {
+  if (!(i.before > 0) || i.after !== 0) return false;
+  if (i.fetching !== false) return false;
+  return i.reloads === 0;
 }
 
 /**
@@ -667,6 +761,47 @@ export function Messages(props: Props) {
   }
 
   /**
+   * After an initial load: take up a history walk that could not finish
+   * (`walkOnInitialLoad`). Called once per initial load, never from an
+   * effect or a memo.
+   */
+  function walkHistoryOnLoad() {
+    const channelId = props.channel.id;
+    const ui = protectedUiOf(client().e2ee);
+    if (!ui || typeof ui.walkHistory !== "function") return;
+    if (typeof ui.protectedFlag !== "function") return;
+
+    try {
+      const wanted = walkOnInitialLoad({
+        protectedChannel: protectedTranscript(),
+        historyFlag: ui.protectedFlag().historySetting === true,
+        historyWalk: ui.protectedChannels.get(channelId)?.historyWalk,
+      });
+      if (wanted) ui.walkHistory(channelId);
+    } catch {
+      console.error("[protected] history walk request failed", { channelId });
+    }
+  }
+
+  /**
+   * Rows this list may hold (`rowsOfChannel`); a dropped row is logged by
+   * count only.
+   * @param rows Rows from a fetch or the cache
+   * @returns Rows to list
+   */
+  function ownRows(rows: MessageInterface[]): MessageInterface[] {
+    const channelId = props.channel.id;
+    const kept = rowsOfChannel(rows, channelId, protectedOrPinned());
+    if (kept.length !== rows.length) {
+      console.error("[protected] rows of another channel dropped", {
+        channelId,
+        count: rows.length - kept.length,
+      });
+    }
+    return kept;
+  }
+
+  /**
    * Hand rows restored from the cache that have no decrypted view to the
    * bridge, in one batch per restore (plan D22). Fetched rows are already
    * handed over by the SDK's fetch methods.
@@ -759,6 +894,12 @@ export function Messages(props: Props) {
   let collectedMessages: MessageInterface[] | undefined;
 
   /**
+   * Reloads spent on a list that a delete emptied (`reloadAfterEmptied`);
+   * back to zero on a channel switch and when a live message is listed
+   */
+  let emptiedReloads = 0;
+
+  /**
    * Pre-empt the current fetch
    */
   let preemptFetch: () => void | undefined;
@@ -814,9 +955,24 @@ export function Messages(props: Props) {
    * @param messagesArr Array of message arrays
    */
   function setMessagesSafely(...messagesArr: MessageInterface[][]) {
-    setMessages(
-      messagesArr.flat().toSorted((a, b) => b.id.localeCompare(a.id)),
-    );
+    setMessages(newestFirst(messagesArr));
+  }
+
+  /**
+   * After a delete: load the channel again when the delete emptied the list
+   * (`reloadAfterEmptied`), e.g. a wipe that removed every loaded row.
+   * @param before Rows listed before the delete
+   */
+  function reloadIfEmptied(before: number) {
+    const wanted = reloadAfterEmptied({
+      before,
+      after: messages().length,
+      fetching: fetching() !== undefined,
+      reloads: emptiedReloads,
+    });
+    if (!wanted) return;
+    emptiedReloads++;
+    caseInitialLoad();
   }
 
   /**
@@ -878,6 +1034,9 @@ export function Messages(props: Props) {
           .then(({ messages }) => messages);
       }
 
+      // Rows of another channel are never listed
+      messages = ownRows(messages);
+
       // Cancel if we've been pre-empted
       if (preempted()) {
         collectedMessages = undefined;
@@ -928,9 +1087,9 @@ export function Messages(props: Props) {
           messages.filter((x) => !knownIds.has(x.id)),
         );
       }
-      // Otherwise just replace the whole list
+      // Otherwise just replace the whole list, sorted like every other load
       else {
-        setMessages(messages);
+        setMessagesSafely(messages);
       }
 
       // Stop collecting messages
@@ -945,6 +1104,9 @@ export function Messages(props: Props) {
 
       // Mark as fetching has ended
       setFetching();
+
+      // A walk that could not finish is taken up once per load
+      walkHistoryOnLoad();
 
       // If we're not at the end, restore scroll position
       if (existingState && !existingState.atEnd) {
@@ -1000,6 +1162,9 @@ export function Messages(props: Props) {
 
       // Cancel if we've been pre-empted
       if (preempted()) return;
+
+      // Rows of another channel are never listed
+      result.messages = ownRows(result.messages);
 
       // A protected channel ends on an empty page, or on a page that
       // brought nothing older; any other channel ends on a short page
@@ -1088,6 +1253,9 @@ export function Messages(props: Props) {
       // Cancel if we've been pre-empted
       if (preempted()) return;
 
+      // Rows of another channel are never listed
+      result.messages = ownRows(result.messages);
+
       // A protected channel ends on an empty page, or on a page that
       // brought nothing newer; any other channel ends on a short page
       const protectedPage = protectedTranscript();
@@ -1120,9 +1288,7 @@ export function Messages(props: Props) {
         return {
           scrollAnchorId: messages()[0].id,
           commitToDOM() {
-            setMessages(() => {
-              return [...result.messages.reverse(), ...messages()];
-            });
+            setMessagesSafely(result.messages, messages());
 
             if (tooManyBy) {
               setMessages((prev) => prev.slice(0, -tooManyBy));
@@ -1186,7 +1352,7 @@ export function Messages(props: Props) {
 
       try {
         // Fetch messages for channel
-        const { messages } = await props.channel.fetchMessagesWithUsers({
+        const fetched = await props.channel.fetchMessagesWithUsers({
           limit: FETCH_LIMIT,
         });
 
@@ -1195,6 +1361,9 @@ export function Messages(props: Props) {
           collectedMessages = undefined;
           return;
         }
+
+        // Rows of another channel are never listed
+        const messages = ownRows(fetched.messages);
 
         // Check if we're at the start of the conversation
         // NB. this may be counter-intuitive because we are in history but,
@@ -1294,13 +1463,16 @@ export function Messages(props: Props) {
 
     try {
       // Fetch messages for channel
-      const { messages } = await props.channel.fetchMessagesWithUsers({
+      const fetched = await props.channel.fetchMessagesWithUsers({
         limit: FETCH_LIMIT,
         nearby: messageId,
       });
 
       // Cancel if we've been pre-empted
       if (preempted()) return;
+
+      // Rows of another channel are never listed
+      const messages = ownRows(fetched.messages);
 
       // Assume we are somewhere in history
       // NB. we could be clever here, but best not to be
@@ -1340,6 +1512,7 @@ export function Messages(props: Props) {
     on(
       () => props.channel,
       (channel) => {
+        emptiedReloads = 0;
         caseInitialLoad(props.highlightedMessageId());
 
         // move state into cache when navigating away
@@ -1430,12 +1603,20 @@ export function Messages(props: Props) {
         }
         return;
       }
+      // A listed live row gives a later emptied list its reload back
+      emptiedReloads = 0;
       if (collectedMessages) {
         collectedMessages.push(message);
         return;
       }
       if (atEnd()) {
-        setMessages([message, ...messages()]);
+        // A protected list is kept in id order: a live row with an old id
+        // must not sit under the newest rows
+        if (protectedOrPinned()) {
+          setMessagesSafely([message], messages());
+        } else {
+          setMessages([message, ...messages()]);
+        }
       }
     }
   }
@@ -1456,9 +1637,11 @@ export function Messages(props: Props) {
       message.channelId === props.channel.id &&
       messages().find((msg) => msg.id === message.id)
     ) {
+      const before = messages().length;
       setMessages((messages) =>
         messages.filter((msg) => msg.id !== message.id),
       );
+      reloadIfEmptied(before);
     }
   }
   /**
@@ -1476,11 +1659,13 @@ export function Messages(props: Props) {
         );
       }
 
+      const before = messages().length;
       setMessages((messages) =>
         messages.filter(
           (msg) => !deleted_messages.find((m) => m.id === msg.id),
         ),
       );
+      reloadIfEmptied(before);
     }
   }
 
@@ -1880,6 +2065,7 @@ export function Messages(props: Props) {
                 {(entry) => (
                   <Entry
                     {...entry}
+                    listChannelId={props.channel.id}
                     highlightedMessageId={props.highlightedMessageId}
                     editingMessageId={editingMessageId()}
                     notEncryptedLabel={notEncryptedLabel}
@@ -2012,12 +2198,15 @@ type ListEntry =
 function Entry(
   props: ListEntry &
     Pick<Props, "highlightedMessageId"> & {
+      /** Channel the list renders; a row is judged against it */
+      listChannelId: string;
       editingMessageId?: string;
       notEncryptedLabel: (message: MessageInterface) => boolean;
     },
 ) {
   const [local, other] = splitProps(props, [
     "t",
+    "listChannelId",
     "highlightedMessageId",
     "editingMessageId",
     "notEncryptedLabel",
@@ -2028,6 +2217,7 @@ function Entry(
       <Match when={local.t === 0}>
         <Message
           {...(other as ListEntry & { t: 0 })}
+          listChannelId={local.listChannelId}
           highlight={
             (other as ListEntry & { t: 0 }).message.id ===
             local.highlightedMessageId()

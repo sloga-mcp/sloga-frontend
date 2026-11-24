@@ -61,14 +61,24 @@ const Unread = styled("div", {
 });
 
 /**
- * Label of the protected history boundary; same neutral look as the date
+ * Label of the protected history boundary; same neutral look as the date.
+ * One line: the row has no height, so a wrapped label would lie over its
+ * neighbours. A label wider than the row ends in an ellipsis.
  */
 const Boundary = styled("span", {
   base: {
+    minWidth: 0,
+    maxWidth: "100%",
+    overflow: "hidden",
+    whiteSpace: "nowrap",
+    textOverflow: "ellipsis",
+
     marginTop: "-2px",
     fontSize: "0.6875rem",
     lineHeight: "0.6875rem",
     fontWeight: 600,
+    // Room for descenders, which `overflow: hidden` would cut
+    paddingBlock: "2px",
     paddingInline: "5px 5px",
 
     borderRadius: "var(--borderRadius-md)",
@@ -101,8 +111,18 @@ interface Props {
  * Generic message divider
  */
 export function MessageDivider(props: Props) {
+  // The boundary is a separator named by its label. The date and unread
+  // dividers keep no role: a separator's own text is not read out.
   return (
-    <Base unread={props.protectedBoundary ? false : props.unread}>
+    <Base
+      unread={props.protectedBoundary ? false : props.unread}
+      role={props.protectedBoundary ? "separator" : undefined}
+      aria-label={
+        props.protectedBoundary
+          ? dividerCopy(props.protectedBoundary)
+          : undefined
+      }
+    >
       <Switch>
         <Match when={props.protectedBoundary}>
           {(boundary) => <Boundary>{dividerCopy(boundary())}</Boundary>}

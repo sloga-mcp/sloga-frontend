@@ -41,6 +41,15 @@
 //      `Message.tsx` reads none of the view's note flags itself;
 //  U2d the placeholder marker is gone.
 //
+// S4 fix lane FXU (audit A1, C10, the reply fetch):
+//
+//  FXUa the Protected predicate comes from `protectedRowScope`, which takes
+//       the LIST's channel as well as the row's own; a foreign row reads no
+//       view and gets the error marker;
+//  FXUb the body is decided in one memo;
+//  FXUc the legacy reply path catches a failed fetch, asks for no row that
+//       is cached, and previews a target only through `replyTargetShown`.
+//
 // Run: node --test --conditions=browser \
 //   components/app/interface/channels/text/protectedMessage.scan.test.ts
 // `PROTECTED_MESSAGE_TSX=<path>` scans another copy (named controls).
@@ -51,7 +60,11 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
 
-import { protectedRowBody } from "./messageProtectedView.ts";
+import {
+  protectedRowBody,
+  protectedRowScope,
+  replyTargetShown,
+} from "./messageProtectedView.ts";
 
 const FILE =
   process.env.PROTECTED_MESSAGE_TSX ||
@@ -121,9 +134,12 @@ const H = loadHelpers();
  * reads it off `protectedRowBody`; the row always has server text to leak.
  */
 function markerKind(view: unknown, capable: boolean): unknown {
-  const body = protectedRowBody(view as never, capable, {
-    content: "server text",
-  });
+  const body = protectedRowBody(
+    view as never,
+    capable,
+    { content: "server text" },
+    false,
+  );
   assert.notEqual(body.kind, "ordinary");
   return body.kind === "marker" ? body.marker : undefined;
 }
@@ -230,16 +246,18 @@ test("P2: body order puts the protected branches before any server text", () => 
   );
   assert.match(marker, /<ProtectedMessageMarker kind=\{kind\(\)\} \/>/);
 
-  // `protectedMarker` / `protectedOk` are keyed on the Protected predicate.
+  // `protectedMarker` / `protectedOk` are keyed on the Protected predicate,
+  // which is every scope but `open` (FXUa pins where the scope comes from).
   assert.match(
     MESSAGE_FN,
-    /const protectedRow = \(\) =>\s+props\.message\.encrypted !== undefined \|\|\s+client\(\)\.isProtectedChannel\(props\.message\.channelId\);/,
+    /const protectedRow = \(\) => rowScope\(\) !== "open";/,
   );
   // S4 (U2): one decision, made in `messageProtectedView.ts` from the view,
-  // the text plane and the row; marker and decrypted view are read off it.
+  // the text plane, the row and whether the row is foreign to its list;
+  // marker and decrypted view are read off it.
   assert.match(
     MESSAGE_FN,
-    /const protectedBody = \(\) =>\s+protectedRow\(\)\s+\? protectedRowBody\(\s+protectedView\(\),\s+protectedTextPlane\(client\(\)\.e2ee\),\s+props\.message,\s+\)\s+: undefined;/,
+    /const protectedBody = createMemo\(\(\) =>\s+protectedRow\(\)\s+\? protectedRowBody\(\s+protectedView\(\),\s+protectedTextPlane\(client\(\)\.e2ee\),\s+props\.message,\s+rowScope\(\) === "foreign",\s+\)\s+: undefined,\s+\);/,
   );
   assert.match(
     MESSAGE_FN,
@@ -250,9 +268,10 @@ test("P2: body order puts the protected branches before any server text", () => 
     /const protectedOk = \(\) => \{\s+const body = protectedBody\(\);\s+return body\?\.kind === "ok" \? body\.view : undefined;\s+\};/,
   );
   assert.equal(code(MESSAGE_FN).split("protectedRowBody(").length - 1, 1);
+  // A foreign row reads no view at all.
   assert.match(
     MESSAGE_FN,
-    /useProtectedMessage\(\(\) =>\s+protectedRow\(\) \? props\.message\.id : undefined,?\s*\)/,
+    /useProtectedMessage\(\(\) =>\s+rowScope\(\) === "protected" \? props\.message\.id : undefined,?\s*\)/,
   );
 });
 
@@ -415,19 +434,45 @@ function code(s: string): string {
     .replace(/^\s*\/\/.*$/gm, "");
 }
 
+/**
+ * The row's scope as `Message.tsx` computes it: the argument object of its
+ * one `protectedRowScope({...})` call is evaluated against stub `props` and
+ * `client`, and handed to the real function.
+ */
+function evalRowScope(
+  props: { message: object; listChannelId?: string },
+  held: readonly string[],
+): string {
+  const call = between(MESSAGE_FN, "protectedRowScope({", "}),");
+  const arg = call.slice("protectedRowScope(".length, -2);
+  const build = new Function(
+    "props",
+    "client",
+    `return ${stripTypeScriptTypes(`(${arg})`)};`,
+  ) as (props: unknown, client: () => unknown) => never;
+  return protectedRowScope(
+    build(props, () => ({
+      isProtectedChannel: (id: string) => held.includes(id),
+    })),
+  );
+}
+
 test("P9: a row carrying `encrypted` is Protected even off a protected channel", () => {
   const src = between(MESSAGE_FN, "const protectedRow = () =>", ";\n");
   const body = src.slice("const protectedRow = () =>".length, -2);
   const evalRow = new Function(
-    "props",
-    "client",
+    "rowScope",
     `return (${stripTypeScriptTypes(body)});`,
-  ) as (props: unknown, client: () => unknown) => boolean;
+  ) as (rowScope: () => string) => boolean;
 
+  // A caller that passes no list (search, the report dialog).
   const run = (encrypted: unknown, channelProtected: boolean) =>
-    evalRow({ message: { encrypted, channelId: "C1" } }, () => ({
-      isProtectedChannel: (id: string) => id === "C1" && channelProtected,
-    }));
+    evalRow(() =>
+      evalRowScope(
+        { message: { encrypted, channelId: "C1" } },
+        channelProtected ? ["C1"] : [],
+      ),
+    );
 
   assert.equal(run({ v: 1 }, false), true, "encrypted, channel not flagged");
   assert.equal(run(undefined, true), true, "channel flagged or pinned");
@@ -495,8 +540,8 @@ test("U2a: only an ordinary body opens the server-text gate", () => {
   assert.equal(run(false, "checking"), false);
 
   // Every server-set field hangs off this gate and nothing else reopens it:
-  // the Protected predicate is left on the picker, the editor and the three
-  // accessors only.
+  // the Protected predicate is left on the picker, the editor, the body and
+  // the gate itself, and the legacy reply target (FXUc) only.
   const uses = code(MESSAGE_FN).match(/protectedRow\(\)/g) ?? [];
   assert.equal(uses.length, 9, "protectedRow() call sites");
   assert.doesNotMatch(code(MESSAGE_FN), /!protectedRow\(\) &&/);
@@ -554,4 +599,111 @@ test("U2c: the notes under a decrypted body are the bridge's, never recomputed h
 test("U2d: the plain and checking placeholder is gone", () => {
   assert.doesNotMatch(SRC, /S4-W4-0 placeholder/);
   assert.doesNotMatch(code(SRC), /function protectedMarkerKind\(/);
+});
+
+// ---- FXU (S4 fix round: audit A1, C10, the reply fetch) ------------------------
+
+test("FXUa: the row is judged against the list's channel, never only its own", () => {
+  // The scope is one memo over `protectedRowScope`, fed the row's
+  // `encrypted`, both channels and the SDK's answer for each of them.
+  assert.match(
+    MESSAGE_FN,
+    /const rowScope = createMemo\(\(\) =>\s+protectedRowScope\(\{\s+encrypted: props\.message\.encrypted,\s+rowChannelId: props\.message\.channelId,\s+listChannelId: props\.listChannelId,\s+rowHeld: client\(\)\.isProtectedChannel\(props\.message\.channelId\),\s+listHeld:\s+props\.listChannelId !== undefined &&\s+client\(\)\.isProtectedChannel\(props\.listChannelId\),\s+\}\),\s+\);/,
+  );
+  assert.equal(code(SRC).split("protectedRowScope(").length - 1, 1);
+  // The SDK predicate is asked nowhere else in the row.
+  assert.equal(code(MESSAGE_FN).split("isProtectedChannel(").length - 1, 2);
+  assert.match(SRC, /\n {2}listChannelId\?: string;\n/);
+
+  // The audit's case, through the real wiring: list X is protected, the
+  // row names Z (not protected) and carries server text.
+  const injected = { encrypted: undefined, channelId: "Z" };
+  assert.equal(
+    evalRowScope({ message: injected, listChannelId: "X" }, ["X"]),
+    "foreign",
+  );
+  assert.deepEqual(
+    protectedRowBody(
+      { status: "plain" },
+      true,
+      { content: "server text" },
+      true,
+    ),
+    { kind: "marker", marker: "error" },
+  );
+  // A row of the list's own channel is an ordinary Protected row.
+  assert.equal(
+    evalRowScope(
+      { message: { encrypted: undefined, channelId: "X" }, listChannelId: "X" },
+      ["X"],
+    ),
+    "protected",
+  );
+  // The same injected row in an unprotected list stays an ordinary message.
+  assert.equal(
+    evalRowScope({ message: injected, listChannelId: "Y" }, ["X"]),
+    "open",
+  );
+
+  // The decrypted reply previews resolve against the shown channel too.
+  assert.match(
+    MESSAGE_FN,
+    /const shownChannelId = \(\) => props\.listChannelId \?\? props\.message\.channelId;/,
+  );
+  assert.match(
+    MESSAGE_FN,
+    /<ProtectedReplyPreview\s+id=\{replyId\}\s+channelId=\{shownChannelId\(\)\}\s+\/>/,
+  );
+});
+
+test("FXUb: the row body is decided in one memo, not once per reader", () => {
+  assert.match(MESSAGE_FN, /const protectedBody = createMemo\(\(\) =>/);
+  assert.doesNotMatch(MESSAGE_FN, /const protectedBody = \(\) =>/);
+  assert.match(MESSAGE_FN, /const rowScope = createMemo\(\(\) =>/);
+  assert.equal(code(MESSAGE_FN).split("protectedRowBody(").length - 1, 1);
+  assert.match(SRC, /import \{[^}]*\bcreateMemo,[^}]*\} from "solid-js";/);
+  // Its readers go through the memo, never around it.
+  const readers = code(MESSAGE_FN).match(/protectedBody\(\)/g) ?? [];
+  assert.equal(readers.length, 3, "guardedRow, protectedMarker, protectedOk");
+});
+
+test("FXUc: the legacy reply fetch is caught, and a Protected row previews only its own channel", () => {
+  const legacy = code(
+    between(
+      MESSAGE_FN,
+      "<For each={guardedRow() ? undefined : props.message.replyIds}>",
+      "</For>",
+    ),
+  );
+  // A rejected fetch (stoat.js refuses a row of another channel) is caught.
+  assert.match(
+    legacy,
+    /props\.message\.channel\s*\?\.fetchMessage\(reply_id\)\s*\.catch\(\(\) => undefined\);/,
+  );
+  assert.doesNotMatch(legacy, /channel!\.fetchMessage/);
+  // Nothing is fetched for an id that is cached, whatever channel holds it.
+  assert.match(
+    legacy,
+    /if \(!client\(\)\.messages\.get\(reply_id\)\) \{\s*props\.message\.channel/,
+  );
+  // The previewed target goes through `replyTargetShown`, on the Protected
+  // predicate and the shown channel; the raw cache read is not rendered.
+  assert.match(
+    legacy,
+    /const message = \(\) => \{\s*const target = client\(\)\.messages\.get\(reply_id\);\s*return replyTargetShown\(\{\s*protectedRow: protectedRow\(\),\s*listChannelId: shownChannelId\(\),\s*targetChannelId: target\?\.channelId,\s*\}\)\s*\? target\s*: undefined;\s*\};/,
+  );
+  assert.match(legacy, /message=\{message\(\)\}/);
+  assert.doesNotMatch(legacy, /message=\{client\(\)/);
+  assert.equal(code(SRC).split("replyTargetShown(").length - 1, 1);
+
+  // What that decides for a plain row of protected list X whose reply id
+  // resolves to a cached row of channel Z.
+  assert.equal(
+    replyTargetShown({
+      protectedRow: true,
+      listChannelId: "X",
+      targetChannelId: "Z",
+    }),
+    false,
+  );
 });

@@ -1,7 +1,8 @@
 // Spec for `messageProtectedView.ts` (S4 W4-3 lane U2, design 9.3 / 9.5):
 // which body a Protected channel row shows, and the notes under a decrypted
 // one. Every call uses the arguments `Message.tsx` passes: the bridge's
-// view, whether this device runs the protected text plane, and the SDK row.
+// view, whether this device runs the protected text plane, the SDK row, and
+// whether the row is foreign to the list (fix lane FXU, audit A1).
 //
 // The last section covers the two R-W4-20 blocks this lane filled, in files
 // Node cannot load: the composer's reply preview (`Composition.tsx`, read as
@@ -22,7 +23,9 @@ import {
   plainRenderable,
   protectedRowBody,
   protectedRowNotes,
+  protectedRowScope,
   protectedViewClass,
+  replyTargetShown,
 } from "./messageProtectedView.ts";
 
 /** A row the verified reveal restored: it has text and a file to leak. */
@@ -65,26 +68,55 @@ const NEVER_ORDINARY: [string, unknown][] = [
   ["no status", {}],
 ];
 
+/** A row of the list's own channel, as `Message.tsx` passes it. */
 const body = (view: unknown, capable: boolean, row: unknown) =>
-  protectedRowBody(view as never, capable, row as never);
+  protectedRowBody(view as never, capable, row as never, false);
+
+/** The same call for a row that names another channel than its list. */
+const foreignBody = (view: unknown, capable: boolean, row: unknown) =>
+  protectedRowBody(view as never, capable, row as never, true);
 
 // ---- The ordinary path -------------------------------------------------------
 
 test("U2: only a plain view reaches the ordinary message path", () => {
-  assert.deepEqual(body({ status: "plain" }, true, FULL_ROW), {
-    kind: "ordinary",
-  });
+  // Every input the function takes, crossed: the body is `ordinary` exactly
+  // when the view is a literal `plain`, the row has something restored and
+  // carries no `encrypted`, and the row is not foreign. Nothing else is.
+  const rows: [unknown, boolean][] = [
+    [FULL_ROW, true],
+    [{ content: "x" }, true],
+    [{ systemMessage: { type: "user_joined" } }, true],
+    [EMPTY_ROW, false],
+    [{ ...FULL_ROW, encrypted: { v: 1 } }, false],
+    [null, false],
+    [undefined, false],
+  ];
+  const views: [string, unknown][] = [
+    ["plain", { status: "plain" }],
+    ...NEVER_ORDINARY,
+  ];
+  let ordinary = 0;
+  let cases = 0;
   for (const capable of [true, false]) {
-    for (const [label, view] of NEVER_ORDINARY) {
-      for (const row of [FULL_ROW, EMPTY_ROW, null, undefined]) {
-        assert.notEqual(
-          body(view, capable, row).kind,
-          "ordinary",
-          `${label} (capable ${capable}) rendered as an ordinary message`,
-        );
+    for (const foreign of [false, true]) {
+      for (const [label, view] of views) {
+        for (const [row, renderable] of rows) {
+          const got = (foreign ? foreignBody : body)(view, capable, row).kind;
+          const want = label === "plain" && renderable && !foreign;
+          cases++;
+          ordinary += got === "ordinary" ? 1 : 0;
+          assert.equal(
+            got === "ordinary",
+            want,
+            `${label}, capable ${capable}, foreign ${foreign}, row ${JSON.stringify(row)}: ${got}`,
+          );
+        }
       }
     }
   }
+  assert.equal(cases, 2 * 2 * 12 * 7);
+  // Three renderable rows, two values of capable: nothing else was ordinary.
+  assert.equal(ordinary, 6);
 });
 
 test("U2: a checking view is the checking line, whatever the row holds", () => {
@@ -169,13 +201,33 @@ test("U2: a plain view of an empty row falls back to the checking line", () => {
     { content: null, attachments: null },
     { attachments: [] },
     { content: "", attachments: [] },
-    // Other fields are not something to show.
-    { embeds: [{ type: "Text" }], replyIds: ["x"], systemMessage: {} },
+    // Fields the reveal does not restore are not something to show.
+    { replyIds: ["x"], masquerade: { name: "n" }, interactions: {} },
+    { reactions: new Map([["x", new Set(["u"])]]), mentionIds: ["u"] },
+    // A restored field that is empty or absent is nothing either.
+    { embeds: [], components: [] },
+    { systemMessage: null, forwarded: null, poll: null, softres: null },
+    {
+      embeds: undefined,
+      components: undefined,
+      systemMessage: undefined,
+      forwarded: undefined,
+      poll: undefined,
+      softres: undefined,
+    },
     // Never a truthy non-string or a non-array.
     { content: 1 },
     { content: ["x"] },
     { attachments: "file" },
     { attachments: { length: 1 } },
+    { embeds: "embed" },
+    { embeds: { length: 1 } },
+    { components: true },
+    // Never a truthy value that is not an object.
+    { systemMessage: "joined" },
+    { forwarded: true },
+    { poll: 1 },
+    { softres: ["x"] },
   ]) {
     assert.equal(plainRenderable(row as never), false, JSON.stringify(row));
     assert.deepEqual(
@@ -203,6 +255,39 @@ test("U2: a plain row with content or attachments renders what it has", () => {
   }
 });
 
+test("FXU: a plain row with any one restored field renders as an ordinary message", () => {
+  // Each field the verified reveal puts back, alone on the row (audit C3):
+  // a join/leave/pin row, an embed-only row and a forwarded row have no
+  // content and no attachments.
+  const rows: [string, object][] = [
+    ["content", { content: "hi" }],
+    ["attachments", { attachments: [{ _id: "f" }] }],
+    ["systemMessage", { systemMessage: { type: "user_joined", id: "u" } }],
+    ["embeds", { embeds: [{ type: "Website" }] }],
+    ["forwarded", { forwarded: { content: "" } }],
+    ["poll", { poll: { question: "q" } }],
+    ["softres", { softres: { title: "t" } }],
+    ["components", { components: [{ type: 1 }] }],
+  ];
+  assert.equal(rows.length, 8);
+  for (const [field, row] of rows) {
+    assert.equal(plainRenderable(row), true, field);
+    for (const capable of [true, false]) {
+      assert.deepEqual(
+        body({ status: "plain" }, capable, row),
+        { kind: "ordinary" },
+        field,
+      );
+    }
+    // The same row is never ordinary under any other view, or with
+    // `encrypted` on it.
+    assert.deepEqual(body({ status: "checking" }, true, row), {
+      kind: "checking",
+    });
+    assert.equal(plainRenderable({ ...row, encrypted: { v: 1 } }), false);
+  }
+});
+
 test("U2: a row carrying encrypted is never an ordinary message", () => {
   for (const encrypted of [{ v: 1 }, null, "", 0, false]) {
     const row = { ...FULL_ROW, encrypted };
@@ -212,6 +297,131 @@ test("U2: a row carrying encrypted is never an ordinary message", () => {
     });
   }
   assert.equal(plainRenderable({ ...FULL_ROW, encrypted: undefined }), true);
+});
+
+// ---- The list's channel (fix lane FXU, audit A1) --------------------------------
+
+/** `client.isProtectedChannel` for a client that holds exactly `held`. */
+const holds =
+  (...held: string[]) =>
+  (id: string) =>
+    held.includes(id);
+
+/** The call `Message.tsx` makes: both SDK answers, the list's only with a list. */
+const scope = (
+  encrypted: unknown,
+  rowChannelId: string | undefined,
+  listChannelId: string | undefined,
+  isProtected: (id: string) => boolean,
+) =>
+  protectedRowScope({
+    encrypted,
+    rowChannelId,
+    listChannelId,
+    rowHeld: isProtected(rowChannelId as string),
+    listHeld: listChannelId !== undefined && isProtected(listChannelId),
+  });
+
+test("FXU: a Protected list makes every row of its channel a Protected row", () => {
+  // The list's channel is protected: the row is Protected with or without
+  // `encrypted`.
+  assert.equal(scope(undefined, "X", "X", holds("X")), "protected");
+  assert.equal(scope({ v: 1 }, "X", "X", holds("X")), "protected");
+  // Neither channel is held: only `encrypted` makes a Protected row.
+  assert.equal(scope(undefined, "Y", "Y", holds()), "open");
+  assert.equal(scope({ v: 1 }, "Y", "Y", holds()), "protected");
+  assert.equal(scope(null, "Y", "Y", holds()), "protected");
+  // Fails closed: any truthy answer from the SDK counts as held.
+  assert.equal(scope(undefined, "Y", "Y", (() => 1) as never), "protected");
+  assert.equal(scope(undefined, "Y", "Y", (() => 0) as never), "open");
+  // The list's answer alone is enough, and it is not read without a list.
+  const only = (listChannelId: string | undefined, listHeld: boolean) =>
+    protectedRowScope({
+      encrypted: undefined,
+      rowChannelId: "X",
+      listChannelId,
+      rowHeld: false,
+      listHeld,
+    });
+  assert.equal(only("X", true), "protected");
+  assert.equal(only("X", false), "open");
+  assert.equal(only(undefined, true), "open");
+});
+
+test("FXU: a row that names another channel than its Protected list is foreign", () => {
+  // The audit's row: list X is protected, the row names Z, which is not.
+  // Keyed on the row's own channel alone it was an ordinary message.
+  assert.equal(scope(undefined, "Z", "X", holds("X")), "foreign");
+  assert.equal(scope({ v: 1 }, "Z", "X", holds("X")), "foreign");
+  assert.equal(scope(undefined, undefined, "X", holds("X")), "foreign");
+  // A row of a protected channel shown in another list, protected or not.
+  assert.equal(scope(undefined, "X", "Y", holds("X")), "foreign");
+  assert.equal(scope(undefined, "X", "W", holds("X", "W")), "foreign");
+  // A row carrying `encrypted` in a list of another channel.
+  assert.equal(scope({ v: 1 }, "Z", "Y", holds()), "foreign");
+  // Nothing held and no `encrypted`: the old behaviour, an ordinary row.
+  assert.equal(scope(undefined, "Z", "Y", holds()), "open");
+});
+
+test("FXU: without a list the row's own channel decides, and no row is foreign", () => {
+  assert.equal(scope(undefined, "X", undefined, holds("X")), "protected");
+  assert.equal(scope({ v: 1 }, "Y", undefined, holds()), "protected");
+  assert.equal(scope(undefined, "Y", undefined, holds("X")), "open");
+  assert.equal(scope(undefined, undefined, undefined, holds("X")), "open");
+});
+
+test("FXU: a foreign row is the red error marker whatever its view and its row", () => {
+  const views: unknown[] = [
+    { status: "plain" },
+    okView({ text: "decrypted" }),
+    { status: "checking" },
+    { status: "pending" },
+    { status: "marker", kind: "sent_before_join" },
+    null,
+    undefined,
+  ];
+  for (const view of views) {
+    for (const capable of [true, false]) {
+      for (const row of [FULL_ROW, EMPTY_ROW, null]) {
+        assert.deepEqual(foreignBody(view, capable, row), {
+          kind: "marker",
+          marker: "error",
+        });
+      }
+    }
+  }
+  // Fails closed: anything but a literal `false` is foreign.
+  for (const loose of [undefined, null, 0, "", "no"]) {
+    assert.deepEqual(
+      protectedRowBody({ status: "plain" }, true, FULL_ROW, loose as never),
+      { kind: "marker", marker: "error" },
+    );
+  }
+  // The control: the same call with `false` is the ordinary row.
+  assert.deepEqual(body({ status: "plain" }, true, FULL_ROW), {
+    kind: "ordinary",
+  });
+});
+
+test("FXU: a Protected row previews only a reply target of the shown channel", () => {
+  const shown = (
+    protectedRow: boolean,
+    listChannelId: string | undefined,
+    targetChannelId: string | undefined,
+  ) => replyTargetShown({ protectedRow, listChannelId, targetChannelId });
+
+  assert.equal(shown(true, "X", "X"), true);
+  // A cached row of another channel, or no cached row at all.
+  assert.equal(shown(true, "X", "Z"), false);
+  assert.equal(shown(true, "X", undefined), false);
+  assert.equal(shown(true, undefined, undefined), false);
+  assert.equal(shown(true, undefined, "X"), false);
+  // Anything but a literal `false` is a Protected row.
+  assert.equal(shown(1 as never, "X", "Z"), false);
+  assert.equal(shown(undefined as never, "X", "Z"), false);
+  // Rows outside Protected channels keep the legacy preview.
+  assert.equal(shown(false, "Y", "Z"), true);
+  assert.equal(shown(false, "Y", undefined), true);
 });
 
 // ---- The reply preview's sort -------------------------------------------------

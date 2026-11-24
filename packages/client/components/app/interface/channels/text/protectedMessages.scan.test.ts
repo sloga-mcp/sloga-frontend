@@ -55,6 +55,12 @@ const EXPORTS = [
   "verifiedHistoryOf",
   "historyVisibleOption",
   "planBoundaryDivider",
+  // S4 fix lane FXU
+  "floorAnchoredTo",
+  "walkOnInitialLoad",
+  "rowsOfChannel",
+  "newestFirst",
+  "reloadAfterEmptied",
 ] as const;
 
 async function loadRegion(): Promise<Record<string, unknown>> {
@@ -559,6 +565,37 @@ const planBoundaryDivider = fn<
     dividerAfter: typeof dividerAfter;
   }) => DividerPlan
 >("planBoundaryDivider");
+const floorAnchoredTo =
+  fn<(marker: { atMs: number; kind?: string }, rowAtMs: number) => boolean>(
+    "floorAnchoredTo",
+  );
+const walkOnInitialLoad =
+  fn<
+    (i: {
+      protectedChannel: boolean;
+      historyFlag: boolean;
+      historyWalk: string | undefined;
+    }) => boolean
+  >("walkOnInitialLoad");
+const rowsOfChannel =
+  fn<
+    <T extends { channelId?: string }>(
+      rows: readonly T[],
+      channelId: string,
+      protectedOrPinned: boolean,
+    ) => T[]
+  >("rowsOfChannel");
+const newestFirst =
+  fn<<T extends { id: string }>(lists: readonly T[][]) => T[]>("newestFirst");
+const reloadAfterEmptied =
+  fn<
+    (i: {
+      before: number;
+      after: number;
+      fetching: boolean;
+      reloads: number;
+    }) => boolean
+  >("reloadAfterEmptied");
 const planFloorMarkers = planTimelineMarkers as unknown as (
   markers: FloorMarker[],
   messagesAtMs: number[],
@@ -889,8 +926,13 @@ describe("S4 history walk trigger", () => {
     assert.equal(keylessView(null), false);
   });
 
-  it("U3: walkHistory is requested once, from the backward paging path only", () => {
-    assert.equal(count(source, "walkHistory("), 1);
+  it("U3: walkHistory is requested once per backward page, by walkHistoryAfterPage", () => {
+    // Two callers in the file: this one, and the initial load (FXU, C4)
+    assert.equal(count(source, "walkHistory("), 2);
+    assert.equal(
+      count(bodyOf(/function walkHistoryAfterPage\(/), "walkHistory("),
+      1,
+    );
     // The definition and one call
     assert.equal(count(source, "walkHistoryAfterPage("), 2);
 
@@ -982,7 +1024,143 @@ describe("S4 history floor marker", () => {
     assert.deepEqual(latestFloorOnly(one), one);
   });
 
-  it("U3: a history floor is ordered by time against device and removal markers", () => {
+  // R-W4-32: the manager raises the floor marker 1 ms after the newest
+  // loaded row at or below the floor epoch. It raises none until such a row
+  // is loaded, and raises it again, later, when a newer such row is. So the
+  // marker's time is a row's time + 1, never a clock time.
+  const R3 = at(10, 12); // newest, readable
+  const R2 = at(10, 11); // readable
+  const R1 = at(10, 10); // newest row at or below the floor
+  const R0 = at(10, 9); // below the floor too
+  const WINDOWS = [
+    [true, true],
+    [true, false],
+    [false, true],
+    [false, false],
+  ] as const;
+
+  it("FXU: the history floor sits directly after the newest loaded row at or below it", () => {
+    for (const [atStart, atEnd] of WINDOWS) {
+      const p = planFloorMarkers(
+        [floor("floor", R1 + 1)],
+        [R3, R2, R1, R0],
+        atStart,
+        atEnd,
+        sameLocalDay,
+      );
+      // The list is built newest first: what is pushed before row R1 shows
+      // right below it, between R1 and the first readable row R2.
+      assert.deepEqual(p.before.map(ids), [[], [], ["floor"], []]);
+      assert.deepEqual(p.breaksTail, [false, true, false, false]);
+      assert.deepEqual(p.beforeDate.map(ids), [[], [], [], []]);
+      assert.deepEqual(p.trailing, []);
+    }
+    // Never under the newest message, where a clock time used to put it
+    // (and only with the end of the conversation loaded).
+    const end = planFloorMarkers(
+      [floor("floor", R1 + 1)],
+      [R3, R2, R1, R0],
+      true,
+      true,
+      sameLocalDay,
+    );
+    assert.deepEqual(end.before[0], []);
+  });
+
+  it("FXU: a floor on the newest loaded row shows wherever the loaded window ends", () => {
+    // The user paged back: the window ends at the floor row, the newer
+    // rows are not loaded. The marker belongs to that row and shows.
+    for (const [atStart, atEnd] of WINDOWS) {
+      const p = planFloorMarkers(
+        [floor("floor", R1 + 1)],
+        [R1, R0],
+        atStart,
+        atEnd,
+        sameLocalDay,
+      );
+      assert.deepEqual(p.before.map(ids), [["floor"], []]);
+    }
+    // A floor that is not this row's (its row is newer and not loaded)
+    // waits for the end of the conversation like any other marker.
+    for (const late of [R1 + 2, R1 + 60_000, R3 + 1]) {
+      const mid = planFloorMarkers(
+        [floor("floor", late)],
+        [R1, R0],
+        true,
+        false,
+        sameLocalDay,
+      );
+      assert.deepEqual(mid.before.map(ids), [[], []], String(late - R1));
+      const end = planFloorMarkers(
+        [floor("floor", late)],
+        [R1, R0],
+        true,
+        true,
+        sameLocalDay,
+      );
+      assert.deepEqual(end.before.map(ids), [["floor"], []]);
+    }
+    // Only a history floor is anchored: a device marker at the same time
+    // still belongs to rows that are not loaded.
+    const dev = planFloorMarkers(
+      [other("dev", "new_device", R1 + 1)],
+      [R1, R0],
+      true,
+      false,
+      sameLocalDay,
+    );
+    assert.deepEqual(dev.before.map(ids), [[], []]);
+
+    assert.equal(floorAnchoredTo(floor("f", R1 + 1), R1), true);
+    assert.equal(floorAnchoredTo(floor("f", R1), R1), true);
+    assert.equal(floorAnchoredTo(floor("f", R1 + 2), R1), false);
+    assert.equal(floorAnchoredTo(floor("f", R1 - 1), R1), false);
+    assert.equal(floorAnchoredTo(floor("f", Number.NaN), R1), false);
+    assert.equal(floorAnchoredTo(other("d", "new_device", R1 + 1), R1), false);
+    assert.equal(floorAnchoredTo({ atMs: R1 + 1 }, R1), false);
+  });
+
+  it("FXU: a floor raised again for a newer row moves there, and the older line goes", () => {
+    // First only R0 was loaded, then R1 (also at or below the floor) came
+    // in: the manager appends a second marker with the later time.
+    const markers = [floor("first", R0 + 1), floor("again", R1 + 1)];
+    const p = planFloorMarkers(
+      markers,
+      [R3, R2, R1, R0],
+      true,
+      true,
+      sameLocalDay,
+    );
+    assert.deepEqual(p.before.map(ids), [[], [], ["again"], []]);
+    assert.deepEqual(placed(p), ["again"]);
+    // Before that second marker the line sat on R0.
+    const early = planFloorMarkers(
+      markers.slice(0, 1),
+      [R3, R2, R1, R0],
+      true,
+      true,
+      sameLocalDay,
+    );
+    assert.deepEqual(early.before.map(ids), [[], [], [], ["first"]]);
+  });
+
+  it("FXU: a floor whose row is not in the loaded window is not drawn inside it", () => {
+    // The floor row is older than everything loaded: only at the start of
+    // the conversation (the row left the window), never between rows.
+    const older = [floor("floor", R0 - 3_600_000 + 1)];
+    for (const [atStart, atEnd] of WINDOWS) {
+      const p = planFloorMarkers(older, [R3, R2], atStart, atEnd, sameLocalDay);
+      assert.deepEqual(p.before.map(ids), [[], []]);
+      assert.deepEqual(ids(p.trailing), atStart ? ["floor"] : []);
+    }
+    // No marker at all (no row at or below the floor is loaded yet):
+    // nothing is placed and no chain is broken.
+    const none = planFloorMarkers([], [R3, R2], true, true, sameLocalDay);
+    assert.deepEqual(placed(none), []);
+    assert.deepEqual(none.breaksTail, [false, false]);
+  });
+
+  it("FXU: a history floor keeps its time order against device and removal markers", () => {
     // Different times: newest first in the plan
     const mixed = [
       other("dev", "new_device", at(10, 10)),
@@ -1402,5 +1580,402 @@ describe("S4 boundary divider placement", () => {
       source,
       /<Match when=\{local\.t === 1\}>\s*<MessageDivider \{\.\.\.\(other as ListEntry & \{ t: 1 \}\)\} \/>/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S4 fix lane FXU: rows of another channel (A1), list order (A5), the walk
+// retry on load (C4), the emptied list (C5), the divider label (C11)
+// ---------------------------------------------------------------------------
+
+describe("FXU rows of another channel", () => {
+  const row = (id: string, channelId?: string) => ({ id, channelId });
+
+  it("FXU: a protected list keeps only rows that name its own channel", () => {
+    // The audit's page: the server answers `GET /channels/X/messages` with
+    // a row whose channel is Z.
+    const page = [row("3", "X"), row("2", "Z"), row("1", "X")];
+    assert.deepEqual(
+      rowsOfChannel(page, "X", true).map((r) => r.id),
+      ["3", "1"],
+    );
+    // A row with no channel at all is not this channel's.
+    assert.deepEqual(rowsOfChannel([row("1"), row("2", "X")], "X", true), [
+      row("2", "X"),
+    ]);
+    assert.deepEqual(rowsOfChannel([row("1", "Z")], "X", true), []);
+    assert.deepEqual(rowsOfChannel([], "X", true), []);
+    // The kept rows are the same objects, in the same order.
+    assert.equal(rowsOfChannel(page, "X", true)[0], page[0]);
+  });
+
+  it("FXU: an ordinary channel keeps its rows as they came", () => {
+    const page = [row("3", "Y"), row("2", "Z"), row("1", "Y")];
+    assert.deepEqual(rowsOfChannel(page, "Y", false), page);
+    // Only a literal true takes the protected rule
+    assert.deepEqual(rowsOfChannel(page, "Y", 1 as unknown as boolean), page);
+  });
+
+  it("FXU: every fetch and the cache restore go through the row filter", () => {
+    const own = bodyOf(/function ownRows\(rows: MessageInterface\[\]\)/);
+    assert.match(
+      own,
+      /const kept = rowsOfChannel\(rows, channelId, protectedOrPinned\(\)\);/,
+    );
+    assert.match(own, /return kept;/);
+    // Logged by count, never the rows
+    assert.match(own, /count: rows\.length - kept\.length,/);
+    assert.ok(!/\.content|\.id\b/.test(own.replace("props.channel.id", "")));
+
+    // The definition and five calls: the initial load (fetch and restore),
+    // both paging directions, both jumps
+    assert.equal(count(source, "ownRows("), 6);
+    assert.equal(count(source, "fetchMessagesWithUsers("), 5);
+
+    const initial = bodyOf(/async function caseInitialLoad\(/);
+    assert.match(initial, /messages = ownRows\(messages\);/);
+    // After either branch produced the rows, before anything reads them
+    assert.ok(
+      initial.indexOf("messages = ownRows(messages);") >
+        initial.indexOf(".then(({ messages }) => messages);"),
+    );
+    assert.ok(
+      initial.indexOf("messages = ownRows(messages);") <
+        initial.indexOf("messages.findIndex("),
+    );
+
+    for (const header of [
+      /async function caseFetchUpwards\(/,
+      /async function caseFetchDownwards\(/,
+    ]) {
+      const body = bodyOf(header);
+      const filter = body.indexOf(
+        "result.messages = ownRows(result.messages);",
+      );
+      assert.ok(filter !== -1, `${header} lists unfiltered rows`);
+      // Before the page is judged or listed
+      assert.ok(filter < body.indexOf("const stalled = pageStalled("));
+    }
+
+    for (const header of [
+      /async function caseJumpToBottom\(/,
+      /async function caseJumpToMessage\(/,
+    ]) {
+      const body = bodyOf(header);
+      assert.match(body, /const fetched = await props\.channel/);
+      assert.match(body, /const messages = ownRows\(fetched\.messages\);/);
+      assert.equal(count(body, "fetched.messages"), 1);
+    }
+
+    // A live row is listed only for its own channel (as before)
+    assert.match(
+      bodyOf(/function onMessage\(message: MessageInterface\)/),
+      /^\{\s*if \(message\.channelId === props\.channel\.id\) \{/,
+    );
+  });
+
+  it("FXU: each row is rendered with the channel of its list", () => {
+    assert.match(
+      source,
+      /<Entry\s*\{\.\.\.entry\}\s*listChannelId=\{props\.channel\.id\}/,
+    );
+    const entry = bodyOf(/function Entry\(/);
+    assert.match(
+      entry,
+      /<Message\s*\{\.\.\.\(other as ListEntry & \{ t: 0 \}\)\}\s*listChannelId=\{local\.listChannelId\}/,
+    );
+    assert.match(entry, /splitProps\(props, \[\s*"t",\s*"listChannelId",/);
+    assert.equal(count(source, "<Message\n"), 1);
+  });
+});
+
+describe("FXU list order", () => {
+  const ids = (rows: { id: string }[]) => rows.map((r) => r.id);
+  const rows = (...n: number[]) => n.map((i) => ({ id: ulid(i) }));
+
+  it("FXU: rows are listed newest first by id, whatever order they came in", () => {
+    // The audit's jump page: an injected row at or below the boundary
+    // comes first in the server's order.
+    const page = rows(10, 42, 41, 40);
+    assert.deepEqual(ids(newestFirst([page])), ids(rows(42, 41, 40, 10)));
+    // Several lists become one
+    assert.deepEqual(
+      ids(newestFirst([rows(5, 9), rows(7), []])),
+      ids(rows(9, 7, 5)),
+    );
+    assert.deepEqual(newestFirst([]), []);
+    // The inputs are left alone
+    assert.deepEqual(ids(page), ids(rows(10, 42, 41, 40)));
+    // With the sorted list the divider is under the right row
+    const plan = planBoundaryDivider({
+      idsNewestFirst: ids(newestFirst([page])),
+      divider: { boundary: ulid(30), preHistory: "kept" },
+      atStart: false,
+      atEnd: false,
+      dividerAfter,
+    });
+    assert.deepEqual(plan, { below: ulid(10), preHistory: "kept" });
+  });
+
+  it("FXU: every setter that takes fetched rows sorts them", () => {
+    assert.match(
+      bodyOf(/function setMessagesSafely\(/),
+      /^\{\s*setMessages\(newestFirst\(messagesArr\)\);\s*\}$/,
+    );
+    // No fetched list is stored as it came
+    assert.equal(count(source, "setMessages(messages)"), 0);
+    assert.ok(!source.includes("result.messages.reverse()"));
+
+    // The jump load (initial load around a message)
+    assert.match(
+      bodyOf(/async function caseInitialLoad\(/),
+      /else \{\s*setMessagesSafely\(messages\);\s*\}/,
+    );
+    assert.match(
+      bodyOf(/async function caseJumpToMessage\(/),
+      /setMessagesSafely\(messages\);/,
+    );
+    assert.match(
+      bodyOf(/async function caseFetchUpwards\(/),
+      /setMessagesSafely\(messages\(\), result\.messages\);/,
+    );
+    assert.match(
+      bodyOf(/async function caseFetchDownwards\(/),
+      /setMessagesSafely\(result\.messages, messages\(\)\);/,
+    );
+    // A live row on a protected or pinned channel is placed by its id
+    assert.match(
+      bodyOf(/function onMessage\(message: MessageInterface\)/),
+      /if \(protectedOrPinned\(\)\) \{\s*setMessagesSafely\(\[message\], messages\(\)\);\s*\} else \{\s*setMessages\(\[message, \.\.\.messages\(\)\]\);/,
+    );
+  });
+});
+
+describe("FXU history walk retry on load", () => {
+  const base = {
+    protectedChannel: true,
+    historyFlag: true,
+    historyWalk: "retry_later" as string | undefined,
+  };
+
+  it("FXU: an initial load asks for the walk only when the last one has to be retried", () => {
+    assert.equal(walkOnInitialLoad(base), true);
+    for (const historyWalk of ["idle", "running", "zz_future", undefined]) {
+      assert.equal(walkOnInitialLoad({ ...base, historyWalk }), false);
+    }
+  });
+
+  it("FXU: no walk on load with the history flag off or outside a protected channel", () => {
+    assert.equal(walkOnInitialLoad({ ...base, historyFlag: false }), false);
+    assert.equal(
+      walkOnInitialLoad({ ...base, protectedChannel: false }),
+      false,
+    );
+    assert.equal(
+      walkOnInitialLoad({ ...base, historyFlag: "true" as unknown as boolean }),
+      false,
+    );
+    assert.equal(
+      walkOnInitialLoad({ ...base, protectedChannel: 1 as unknown as boolean }),
+      false,
+    );
+  });
+
+  it("FXU: the walk is asked once per initial load, after the load, never in a loop", () => {
+    const helper = bodyOf(/function walkHistoryOnLoad\(/);
+    assert.match(helper, /const wanted = walkOnInitialLoad\(\{/);
+    assert.equal(count(helper, "walkHistory("), 1);
+    assert.match(helper, /if \(wanted\) ui\.walkHistory\(channelId\);/);
+    assert.match(
+      helper,
+      /historyFlag: ui\.protectedFlag\(\)\.historySetting === true,/,
+    );
+    assert.match(
+      helper,
+      /historyWalk: ui\.protectedChannels\.get\(channelId\)\?\.historyWalk,/,
+    );
+    assert.match(helper, /protectedChannel: protectedTranscript\(\),/);
+    assert.ok(!/\bwhile\s*\(|\bfor\s*\(/.test(helper));
+    // A failure is logged with the channel id only
+    assert.match(helper, /catch \{\s*console\.error\("\[protected\]/);
+
+    // The definition and one call, from the initial load, once the load is
+    // over. Not from an effect, a memo or a paging path.
+    assert.equal(count(source, "walkHistoryOnLoad("), 2);
+    const initial = bodyOf(/async function caseInitialLoad\(/);
+    const call = initial.indexOf("walkHistoryOnLoad();");
+    assert.ok(call !== -1, "not called from the initial load");
+    assert.ok(
+      call >
+        initial.indexOf(
+          "collectedMessages = undefined;\n\n      // One marker",
+        ),
+    );
+    assert.ok(call > initial.lastIndexOf("setMessagesSafely("));
+    assert.ok(call < initial.indexOf("} catch {"));
+    assert.ok(!/\bwhile\s*\(|\bdo\s*\{/.test(initial));
+    assert.ok(!/caseInitialLoad\(/.test(initial));
+  });
+});
+
+describe("FXU emptied list", () => {
+  const idle = { before: 3, after: 0, fetching: false, reloads: 0 };
+
+  it("FXU: a delete that empties the list asks for a fresh load", () => {
+    assert.equal(reloadAfterEmptied(idle), true);
+    assert.equal(reloadAfterEmptied({ ...idle, before: 1 }), true);
+    // Rows are left, or none were listed before
+    assert.equal(reloadAfterEmptied({ ...idle, after: 1 }), false);
+    assert.equal(reloadAfterEmptied({ ...idle, before: 0 }), false);
+    assert.equal(reloadAfterEmptied({ ...idle, before: Number.NaN }), false);
+  });
+
+  it("FXU: no reload while a fetch is running", () => {
+    assert.equal(reloadAfterEmptied({ ...idle, fetching: true }), false);
+    // Anything but a literal false counts as fetching
+    assert.equal(
+      reloadAfterEmptied({ ...idle, fetching: undefined as never }),
+      false,
+    );
+  });
+
+  it("FXU: a list that keeps being emptied reloads once, not in a loop", () => {
+    // The decisions of `reloadIfEmptied`: a server that answers every load
+    // with rows which are then deleted again.
+    let reloads = 0;
+    let requests = 0;
+    let listed = 3;
+    for (let round = 0; round < 1_000; round++) {
+      const before = listed;
+      listed = 0;
+      if (
+        reloadAfterEmptied({ before, after: listed, fetching: false, reloads })
+      ) {
+        reloads++;
+        requests++;
+        listed = 3;
+      }
+    }
+    assert.equal(requests, 1);
+
+    // A channel that is really empty: the one reload brings nothing, and a
+    // later delete finds no listed row to start from.
+    reloads = 0;
+    requests = 0;
+    listed = 3;
+    for (let round = 0; round < 1_000; round++) {
+      const before = listed;
+      listed = 0;
+      if (
+        reloadAfterEmptied({ before, after: listed, fetching: false, reloads })
+      ) {
+        reloads++;
+        requests++;
+      }
+    }
+    assert.equal(requests, 1);
+    // Even with the budget back, an empty list asks for nothing
+    assert.equal(
+      reloadAfterEmptied({ before: 0, after: 0, fetching: false, reloads: 0 }),
+      false,
+    );
+    assert.equal(reloadAfterEmptied({ ...idle, reloads: 1 }), false);
+    assert.equal(reloadAfterEmptied({ ...idle, reloads: 7 }), false);
+  });
+
+  it("FXU: both delete handlers reload an emptied list, and only a channel switch or a live row gives the reload back", () => {
+    const helper = bodyOf(/function reloadIfEmptied\(before: number\)/);
+    assert.match(
+      helper,
+      /const wanted = reloadAfterEmptied\(\{\s*before,\s*after: messages\(\)\.length,\s*fetching: fetching\(\) !== undefined,\s*reloads: emptiedReloads,\s*\}\);/,
+    );
+    assert.match(
+      helper,
+      /if \(!wanted\) return;\s*emptiedReloads\+\+;\s*caseInitialLoad\(\);/,
+    );
+
+    // The definition and the two delete handlers
+    assert.equal(count(source, "reloadIfEmptied("), 3);
+    for (const header of [
+      /function onMessageDelete\(message: \{ id: string; channelId: string \}\)/,
+      /function onMessageDeleteBulk\(/,
+    ]) {
+      const body = bodyOf(header);
+      assert.match(
+        body,
+        /const before = messages\(\)\.length;\s*setMessages\(\(messages\) =>[\s\S]{0,200}?\);\s*reloadIfEmptied\(before\);/,
+      );
+    }
+    // Never from an effect or the list memo
+    assert.ok(
+      !between(
+        "const messagesWithTail = createMemo<ListEntry[]>(() => {",
+        "return messagesWithTail.reverse();",
+      ).includes("reloadIfEmptied"),
+    );
+
+    // The budget: spent in the helper, given back in two places only
+    assert.equal(count(source, "emptiedReloads++"), 1);
+    assert.equal(count(source, "emptiedReloads = 0;"), 3);
+    assert.match(
+      source,
+      /\(channel\) => \{\s*emptiedReloads = 0;\s*caseInitialLoad\(props\.highlightedMessageId\(\)\);/,
+    );
+    assert.match(
+      bodyOf(/function onMessage\(message: MessageInterface\)/),
+      /emptiedReloads = 0;\s*if \(collectedMessages\) \{/,
+    );
+    // The load itself never gives it back
+    assert.ok(
+      !bodyOf(/async function caseInitialLoad\(/).includes("emptiedReloads"),
+    );
+  });
+});
+
+describe("FXU boundary divider label", () => {
+  const divider = readFileSync(
+    join(
+      here,
+      "../../../../ui/components/features/messaging/elements/MessageDivider.tsx",
+    ),
+    "utf8",
+  );
+
+  it("FXU: the boundary label stays on one line and ends in an ellipsis", () => {
+    const from = divider.indexOf('const Boundary = styled("span", {');
+    assert.ok(from !== -1, "missing the Boundary label");
+    const label = divider.slice(from, divider.indexOf("\n});", from));
+    for (const rule of [
+      /whiteSpace: "nowrap",/,
+      /textOverflow: "ellipsis",/,
+      /overflow: "hidden",/,
+      /minWidth: 0,/,
+      /maxWidth: "100%",/,
+    ]) {
+      assert.match(label, rule);
+    }
+    // String tags only (a styled component at module scope is a blank page)
+    for (const m of divider.matchAll(/\bstyled\(\s*([^,\s]+)/g)) {
+      assert.match(m[1], /^"/, `styled(${m[1]}, ...)`);
+    }
+    assert.ok(!divider.includes("use:floating"));
+  });
+
+  it("FXU: the boundary divider is a separator named by its label", () => {
+    assert.match(
+      divider,
+      /role=\{props\.protectedBoundary \? "separator" : undefined\}/,
+    );
+    assert.match(
+      divider,
+      /aria-label=\{\s*props\.protectedBoundary\s*\? dividerCopy\(props\.protectedBoundary\)\s*: undefined\s*\}/,
+    );
+    // The label itself is still the copy function's, nothing new
+    assert.match(
+      divider,
+      /\{\(boundary\) => <Boundary>\{dividerCopy\(boundary\(\)\)\}<\/Boundary>\}/,
+    );
+    assert.equal(count(divider, "dividerCopy("), 2);
+    assert.ok(!/\bt`|<Trans>(?!NEW)/.test(divider));
   });
 });
