@@ -20,7 +20,12 @@
 //      inline colour on the name only (no `--color` write in the row);
 //  S5  the custom icon and the password lock are unchanged;
 //  S6  blank-page traps: no `styled(<Component>` and the shield icon is
-//      imported by file path.
+//      imported by file path;
+//  S7  every shield state has a row decision here (a new state without one
+//      is red), and the row reads only `state` from the shield and never
+//      names or compares a state: every arm lives in the exhaustive
+//      `shieldPresentation` / `shieldLabel` / `ProtectedShieldIcon` (S2);
+//  S8  capacity (S2 D35) shows the neutral shield and never tints the name.
 //
 // Point `PROTECTED_SIDEBAR_FILE` at another copy (a known-bad control) to
 // check that instead; it must fail.
@@ -110,7 +115,25 @@ function glyphSwitch(): string {
   return ENTRY.slice(from, to);
 }
 
-const EXPECT_TINT = new Set(["protected", "not_available", "unverified"]);
+/**
+ * The row's decision per shield state: does the NAME tint (D14; S2 D35
+ * capacity never does). Keys must be exactly `PROTECTED_SHIELD_STATES`
+ * (S7), so a state added there without a decision here is red.
+ */
+const ROW: Record<string, { tint: boolean }> = {
+  protected: { tint: true },
+  resecuring: { tint: false },
+  not_seated: { tint: false },
+  capacity: { tint: false },
+  not_available: { tint: true },
+  unverified: { tint: true },
+  grace: { tint: false },
+  frozen: { tint: false },
+};
+
+const EXPECT_TINT = new Set(
+  Object.keys(ROW).filter((state) => ROW[state].tint),
+);
 
 describe("ServerSidebar Protected channel row (lane C2)", () => {
   it("S1 tints the name only while normal, and only for tinting states (C-C2a)", async () => {
@@ -240,5 +263,52 @@ describe("ServerSidebar Protected channel row (lane C2)", () => {
       CODE,
       /import \{ ProtectedShieldIcon \} from "@revolt\/ui\/components\/features\/protected\/ProtectedShieldIcon";/,
     );
+  });
+
+  it("S7 every shield state has a row decision; the row never branches on a state", () => {
+    assert.ok(
+      PROTECTED_SHIELD_STATES.includes("capacity"),
+      "S2 D35 capacity state missing",
+    );
+    assert.deepEqual(
+      Object.keys(ROW).sort(),
+      [...PROTECTED_SHIELD_STATES].sort(),
+      "a shield state without a row decision (or a stale one)",
+    );
+    for (const state of PROTECTED_SHIELD_STATES) {
+      assert.doesNotMatch(
+        CODE,
+        new RegExp(`["'\`]${state}["'\`]`),
+        `the sidebar names the ${state} state: the arm belongs in shieldPresentation`,
+      );
+    }
+    assert.doesNotMatch(
+      ENTRY,
+      /\b(?:protectedState\(\)|state\(\)|state)\s*[!=]==?/,
+      "the row compares a shield state",
+    );
+    assert.doesNotMatch(CODE, /\bswitch\s*\(\s*(?:protectedState|state)\b/);
+    // The shield is read once, for its state only: no notice, explanation
+    // or id reaches the row.
+    assert.equal(
+      (CODE.match(/\bprotectedShield\(\)/g) ?? []).length,
+      1,
+      "the row reads the shield more than once",
+    );
+    assert.match(
+      ENTRY,
+      /const protectedState = \(\) => protectedShield\(\)\?\.state;/,
+    );
+  });
+
+  it("S8 capacity (S2 D35) shows the neutral shield and never tints the name", async () => {
+    const tint = await loadTint();
+    const p = shieldPresentation("capacity");
+    assert.equal(p.glyph, "shield", "capacity glyph");
+    assert.equal(p.hueVar, "--sloga-protected-unavailable", "capacity hue");
+    assert.equal(p.tintName, false, "capacity tints the name");
+    for (const attention of ATTENTIONS) {
+      assert.equal(tint(p, attention), undefined, `capacity/${attention}`);
+    }
   });
 });

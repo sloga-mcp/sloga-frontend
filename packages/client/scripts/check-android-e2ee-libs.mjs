@@ -22,8 +22,9 @@
  *    symbol the .kt names (the checksum functions and the contract version
  *    included) and, for the protected text plane, both the method and its
  *    checksum function;
- *  - the .kt declares and checksums the 20 protected-text methods plus
- *    text_capability (a pre-S7 .kt has none of them);
+ *  - the .kt declares and checksums the 21 protected-text methods plus
+ *    text_capability (a pre-S7 .kt has none of them; an S7 .kt lacks S2's
+ *    text_authority_sign);
  *  - no PROVENANCE file sits anywhere under jniLibs/ (the old
  *    build-android.ps1 location), where the APK would package it.
  *
@@ -63,8 +64,8 @@ export const ABIS = {
   x86_64: { elfClass: 64, machine: 62 }, // EM_X86_64
 };
 
-// The protected text plane (S7 A1) plus text_capability, as regen-android.sh
-// lists them (TEXT_METHODS).
+// The protected text plane (S7 A1, plus S2's text_authority_sign) and
+// text_capability, as regen-android.sh lists them (TEXT_METHODS).
 export const TEXT_METHODS = [
   "text_group_create",
   "text_join",
@@ -86,6 +87,7 @@ export const TEXT_METHODS = [
   "text_seat_list_sign",
   "text_owner_confirm_change",
   "text_owner_handover_sign",
+  "text_authority_sign",
   "text_capability",
 ];
 

@@ -182,8 +182,9 @@ describe("the real tree", () => {
     assert.match(
       result.stdout,
       // Phase 2 C-W2-8: the call route and the 100-name split; multi-device
-      // (split_begin/commit/discard) makes it 103.
-      /^ok: table generic 39, native 2, call 22, dedicated 8, out 32;/,
+      // (split_begin/commit/discard) makes it 103; protected channels S2's
+      // e2ee_text_authority_sign (.out) makes it 104.
+      /^ok: table generic 39, native 2, call 22, dedicated 8, out 33;/,
     );
   });
 
@@ -1158,6 +1159,7 @@ const W_OUT = [
   "e2ee_text_owner_pin_state",
   "e2ee_text_owner_confirm_change",
   "e2ee_text_owner_handover_sign",
+  "e2ee_text_authority_sign",
   "e2ee_text_remove",
   "e2ee_text_update",
   "e2ee_text_state",
@@ -1226,7 +1228,7 @@ const W_COMMANDS_SWIFT = [
   "    static let nativeCount = 2",
   "    static let callCount = 22",
   "    static let dedicatedCount = 8",
-  "    static let outCount = 32",
+  "    static let outCount = 33",
   "",
   "    static func route(for name: String) -> E2eeRoute {",
   "        .out",
@@ -1893,16 +1895,16 @@ describe("phase 2: the command table (C-W2-3)", () => {
     );
   });
 
-  test("a 33rd .out name, its static count kept in step", () => {
+  test("a 34th .out name, its static count kept in step", () => {
     worldExpect(
       "G6-count",
-      ["the table has 33 .out lines; the contract pins 32"],
+      ["the table has 34 .out lines; the contract pins 33"],
       [
         COMMANDS,
         '        ("e2ee_rc_start", .out),\n',
         '        ("e2ee_rc_start", .out),\n        ("e2ee_rc_extra", .out),\n',
       ],
-      [COMMANDS, "static let outCount = 32", "static let outCount = 33"],
+      [COMMANDS, "static let outCount = 33", "static let outCount = 34"],
     );
   });
 

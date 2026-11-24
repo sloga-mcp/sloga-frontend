@@ -476,15 +476,15 @@ final class CommandTableTests: XCTestCase {
         XCTAssertEqual(native.count, 2)
         XCTAssertEqual(call.count, pin(22, wrong: 23))
         XCTAssertEqual(dedicated.count, 8)
-        XCTAssertEqual(out.count, 32)
+        XCTAssertEqual(out.count, 33)
         XCTAssertEqual(out.count, E2eeCommands.outCount)
         XCTAssertEqual(E2eeCommands.genericCount, 39)
         XCTAssertEqual(E2eeCommands.nativeCount, 2)
         XCTAssertEqual(E2eeCommands.callCount, pin(22, wrong: 0))
         XCTAssertEqual(E2eeCommands.dedicatedCount, 8)
-        XCTAssertEqual(E2eeCommands.outCount, 32)
-        XCTAssertEqual(E2eeCommands.table.count, 39 + 2 + 22 + 8 + 32)
-        XCTAssertEqual(E2eeCommands.table.count, 103)
+        XCTAssertEqual(E2eeCommands.outCount, 33)
+        XCTAssertEqual(E2eeCommands.table.count, 39 + 2 + 22 + 8 + 33)
+        XCTAssertEqual(E2eeCommands.table.count, 104)
     }
 
     func testEveryNameIsAnE2eeCommandName() {

@@ -4,7 +4,7 @@
  *
  * W4 ran the text plane on the Tauri main window only. S7 adds Electron
  * (Linux) and Android, each behind a native capability AND the server's
- * protected-channels advert. The bridge (`e2ee.ts`, lane C3) cannot be
+ * protected-channels advert. S2 moves the protocol to 2. The bridge (`e2ee.ts`, lane C3) cannot be
  * loaded under `node --test`, so every decision it needs here is a pure
  * function over facts it already holds:
  *
@@ -16,7 +16,7 @@
  *   refreshes only; a successful `off` replaces an earlier `on`.
  * - `storeOwnerAllows`: the A8 store-owner check. Tauri keeps W4's latch
  *   (UNKNOWN is allowed); Electron and Android fail closed on UNKNOWN.
- * - `mapTextInvokeError`: `unavailable` from the 3 dialog commands is
+ * - `mapTextInvokeError`: `unavailable` from the 4 dialog commands is
  *   retryable, so it becomes `busy` (D7, no lockout).
  * - `protectedPlatformTag`: the one-line `[protected]` startup log. It
  *   starts with `PROTECTED_PLATFORM_MARKER`, which the dist check greps for.
@@ -66,8 +66,14 @@ export interface StructuralInput {
   flag: FlagState;
 }
 
-/** The only text-plane protocol this client speaks. */
-const TEXT_PROTOCOL = 1;
+/**
+ * The only text-plane protocol this client speaks: 2 = the S2 formats (the
+ * native `TEXT_PROTOCOL`). Electron and Android must report exactly this
+ * (OR-2: an S1 shell's text plane stays dark until it is updated); Tauri
+ * ships its own frontend, so it is not checked (OR-1). The manager sends it
+ * as `protocol` on a join intent and a Text create (OR-3).
+ */
+export const TEXT_PROTOCOL = 2;
 
 /** Not structural: today's call path, byte for byte. */
 function closed(): { structural: boolean; hold: boolean } {
@@ -123,11 +129,12 @@ function androidState(i: StructuralInput): {
 /**
  * Plan D9: may this window run the text plane, and is routing on hold.
  * - popout or overlay: closed;
- * - tauri: structural, never held, the flag is NOT consulted (W4);
- * - electron: `protectedText === 1`, then the flag;
+ * - tauri: structural, never held, the flag is NOT consulted (W4), and the
+ *   protocol is not checked (S2 OR-1: no native probe; one build);
+ * - electron: `protectedText === TEXT_PROTOCOL` (2), then the flag;
  * - capacitor: Android only; a pending probe holds, a failed one is closed,
- *   an ok one needs protocol 1 and the WebMessageListener bridge, then the
- *   flag;
+ *   an ok one needs protocol `TEXT_PROTOCOL` (2) and the WebMessageListener
+ *   bridge, then the flag;
  * - web: closed.
  *
  * The flag: `on` structural, `unknown` structural + hold, `off` closed.
@@ -234,11 +241,12 @@ export function storeOwnerAllows(
   }
 }
 
-/** The text commands that open a native dialog (D2 / D7). */
+/** The text commands that open a native dialog (D2 / D7; S2 authority). */
 const DIALOG_COMMANDS: readonly string[] = [
   "e2ee_text_seat_list_sign",
   "e2ee_text_owner_confirm_change",
   "e2ee_text_owner_handover_sign",
+  "e2ee_text_authority_sign",
 ];
 
 /**

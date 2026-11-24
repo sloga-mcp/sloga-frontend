@@ -8,7 +8,9 @@
 // startup orphans confirmed, never re-sent. The plan 7 named mutation
 // controls in this module each have a test marked "control:". W4d (lane
 // L-MGR): a row is the own send only when it binds (X#4, C-X4);
-// `not_member` is refused without a retry (X#5, C-X5b).
+// `not_member` is refused without a retry (X#5, C-X5b). S2-W4 (lane L2x):
+// `files` is checked and counted, never shown (OR-20); a newer envelope is
+// the grey `unsupported_version` marker (OR-19).
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
@@ -565,6 +567,8 @@ const decrypted = (over: Record<string, unknown> = {}) => ({
   replies: ["01R"],
   sender_verified: true,
   ts_skew: false,
+  // Always serialized by native (876c034 `TextDecrypted.files`).
+  files: [],
   ...over,
 });
 
@@ -585,6 +589,7 @@ test("decrypt ok → view from native only; args carry the message-level nonce a
     senderVerified: true,
     tsSkew: false,
     cid: CID1,
+    filesUnsupported: 0,
   });
   assert.deepEqual(h.decrypts[0], {
     channelId: CH,
@@ -762,4 +767,179 @@ test("markerForError: design 9.2 message rows, fail closed for anything else", (
   assert.equal(markerForError({ source: "transport" }), "error");
   assert.equal(markerForError("nonsense"), "error");
   assert.equal(markerForError(null), "error");
+});
+
+// ---------------------------------------------------------------------------
+// S2-W4 L2x: v2 files (OR-20) and the S3-N0 grey marker (OR-19)
+// ---------------------------------------------------------------------------
+
+const FILE_NAME = "quarterly-plan.pdf";
+const FILE_MIME = "application/x-plan";
+
+/** Native S2's `FileMeta` (876c034 `unsupported_files`). */
+const fileMeta = (idx: number, over: Record<string, unknown> = {}) => ({
+  idx,
+  name: `${idx}-${FILE_NAME}`,
+  mime: FILE_MIME,
+  size: 12_345 + idx,
+  state: "failed",
+  fail_reason: "unsupported",
+  ...over,
+});
+
+/** `fileMeta(0)` without one key. */
+const without = (key: string) => {
+  const f: Record<string, unknown> = fileMeta(0);
+  delete f[key];
+  return f;
+};
+
+/** A file in another native state: no `fail_reason`, as native omits it. */
+const inState = (idx: number, state: string) => {
+  const f: Record<string, unknown> = fileMeta(idx, { state });
+  delete f.fail_reason;
+  return f;
+};
+
+const OK_VIEW = {
+  status: "ok",
+  text: "hello",
+  replies: ["01R"],
+  senderVerified: true,
+  tsSkew: false,
+  cid: CID1,
+};
+
+const ERROR_VIEW = { status: "marker", kind: "error" };
+
+const MISMATCH_LOG = [
+  "error",
+  "[protected] decrypt result mismatch",
+  { messageId: "01MSG1", channelId: CH },
+];
+
+async function decryptFiles(files: unknown, omit = false) {
+  const d: Record<string, unknown> = decrypted({ files });
+  if (omit) delete d.files;
+  const h = harness({ decrypt: () => d });
+  const v = await decryptRow(h.ops, h.port, prow(), true);
+  return { h, v };
+}
+
+test("S2 files: an empty files array gives filesUnsupported 0", async () => {
+  const { h, v } = await decryptFiles([]);
+  assert.deepEqual(v, { ...OK_VIEW, filesUnsupported: 0 });
+  assert.deepEqual(h.logs, []);
+});
+
+test("S2 files: two failed/unsupported files give filesUnsupported 2, with no name, mime or size on the view or in the logs", async () => {
+  const { h, v } = await decryptFiles([fileMeta(0), fileMeta(1)]);
+  assert.deepEqual(v, { ...OK_VIEW, filesUnsupported: 2 });
+  const out = JSON.stringify([v, h.logs]);
+  for (const leak of [FILE_NAME, FILE_MIME, "12345", "12346"]) {
+    assert.ok(!out.includes(leak), leak);
+  }
+});
+
+test("S2 files: every file counts whatever its native state (S2 shows none)", async () => {
+  const { v } = await decryptFiles([
+    inState(0, "ready"),
+    inState(1, "pending"),
+    inState(2, "expired"),
+    fileMeta(3, { fail_reason: "too_large" }),
+  ]);
+  assert.deepEqual(v, { ...OK_VIEW, filesUnsupported: 4 });
+});
+
+test("S2 files: a file element that is not FileMeta-shaped is the red error marker, never dropped or counted", async () => {
+  const bad: unknown[] = [
+    without("idx"),
+    without("name"),
+    without("mime"),
+    without("size"),
+    without("state"),
+    fileMeta(0, { idx: "0" }),
+    fileMeta(0, { idx: -1 }),
+    fileMeta(0, { idx: 1.5 }),
+    fileMeta(0, { idx: null }),
+    fileMeta(0, { name: 7 }),
+    fileMeta(0, { mime: null }),
+    fileMeta(0, { size: "12345" }),
+    fileMeta(0, { size: -1 }),
+    fileMeta(0, { size: 2 ** 53 }),
+    fileMeta(0, { state: 1 }),
+    fileMeta(0, { state: null }),
+    fileMeta(0, { fail_reason: null }),
+    fileMeta(0, { fail_reason: 3 }),
+    null,
+    "file",
+    0,
+    [fileMeta(0)],
+  ];
+  for (const b of bad) {
+    _resetMessageFlowsForTest();
+    const { h, v } = await decryptFiles([fileMeta(1), b]);
+    assert.deepEqual(v, ERROR_VIEW, JSON.stringify(b));
+    assert.deepEqual(h.logs, [MISMATCH_LOG], JSON.stringify(b));
+  }
+});
+
+test("S2 files: files absent or not an array is the red error marker (native 876c034 always serializes it)", async () => {
+  const absent = await decryptFiles(undefined, true);
+  assert.deepEqual(absent.v, ERROR_VIEW);
+  assert.deepEqual(absent.h.logs, [MISMATCH_LOG]);
+  for (const files of [null, {}, "files", 0, { 0: fileMeta(0), length: 1 }]) {
+    _resetMessageFlowsForTest();
+    const { h, v } = await decryptFiles(files);
+    assert.deepEqual(v, ERROR_VIEW, JSON.stringify(files));
+    assert.deepEqual(h.logs, [MISMATCH_LOG], JSON.stringify(files));
+  }
+});
+
+test("S3-N0 (OR-19): a newer envelope version is the grey unsupported_version marker end to end, never error or malformed, v never shown", async () => {
+  const tagOnly = {
+    messageId: "01MSG1",
+    channelId: CH,
+    tag: "unsupported_envelope_version",
+  };
+  for (const ver of [3, 255]) {
+    _resetMessageFlowsForTest();
+    const h = harness({
+      decrypt: () => {
+        throw { type: "unsupported_envelope_version", v: ver };
+      },
+    });
+    const view = await decryptRow(h.ops, h.port, prow(), true);
+    assert.deepEqual(view, { status: "marker", kind: "unsupported_version" });
+    assert.equal(h.decrypts.length, 1, "no retry");
+    assert.ok(!h.events.some((e) => e.startsWith("catchUp")));
+    assert.deepEqual(h.logs, [["warn", "[protected] decrypt failed", tagOnly]]);
+  }
+  // The same answer after the one catch-up.
+  _resetMessageFlowsForTest();
+  const h2 = harness({
+    decrypt: (_a, n) => {
+      if (n === 1) {
+        throw {
+          type: "unknown_epoch",
+          group_id: "g0",
+          epoch: 9,
+          oldest_held: 1,
+          current: 5,
+        };
+      }
+      throw { type: "unsupported_envelope_version", v: 3 };
+    },
+  });
+  assert.deepEqual(await decryptRow(h2.ops, h2.port, prow(), true), {
+    status: "marker",
+    kind: "unsupported_version",
+  });
+  // Both shapes the manager hands `markerForError`.
+  const v3 = { type: "unsupported_envelope_version", v: 3 };
+  assert.equal(markerForError(v3), "unsupported_version");
+  assert.equal(
+    markerForError({ source: "native", error: v3 }),
+    "unsupported_version",
+  );
 });

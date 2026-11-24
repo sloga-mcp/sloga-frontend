@@ -15,6 +15,11 @@ import { Symbol } from "../../utils/Symbol";
  * here. The hue is a CSS variable defined once in `LoadTheme.tsx` (C14).
  * Static by design: no animation and no transition in any state.
  *
+ * Every state, S2's `capacity` included, is an arm of `shieldPresentation`'s
+ * exhaustive switch (its `never` default fails tsc on a new state), so this
+ * file never names or compares a state and has no arm to fall behind.
+ * `protectedShieldIcon.scan.test.ts` pins that.
+ *
  * Imports are file paths, never a barrel (an import cycle inside
  * `components/ui` would blank the app), and the only `styled` call uses a
  * string tag.

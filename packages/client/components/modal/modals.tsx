@@ -87,6 +87,8 @@ import { PasskeyNameModal } from "./modals/PasskeyName";
 import { PasskeyRemoveModal } from "./modals/PasskeyRemove";
 import { PolicyChangeModal } from "./modals/PolicyChange";
 import { PollVotersModal } from "./modals/PollVoters";
+import { ProtectedDeviceCapModal } from "./modals/ProtectedDeviceCap";
+import { ProtectedOwnerReviewModal } from "./modals/ProtectedOwnerReview";
 import { ProtectedSeatPickerModal } from "./modals/ProtectedSeatPicker";
 import { RemoveMemberModal } from "./modals/RemoveMember";
 import { RenameSessionModal } from "./modals/RenameSession";
@@ -107,6 +109,7 @@ import { SoftResExportModal } from "./modals/SoftResExport";
 import { SoftResReserveModal } from "./modals/SoftResReserve";
 import { SupportSlogaModal } from "./modals/SupportSloga";
 import { SuspendUserModal } from "./modals/SuspendUser";
+import { TakedownQueueModal } from "./modals/TakedownQueue";
 import { TimelockComposeModal } from "./modals/TimelockCompose";
 import { TimeoutMemberModal } from "./modals/TimeoutMember";
 import { UserProfileModal } from "./modals/UserProfile";
@@ -270,6 +273,10 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <E2EEGroupPlaintextConfirmModal {...modalProps} />;
     case "protected_seat_picker":
       return <ProtectedSeatPickerModal {...modalProps} />;
+    case "protected_device_cap":
+      return <ProtectedDeviceCapModal {...modalProps} />;
+    case "protected_owner_review":
+      return <ProtectedOwnerReviewModal {...modalProps} />;
     case "image_editor":
       return <ImageEditorModal {...modalProps} />;
     case "image_viewer":
@@ -312,6 +319,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <ReportContentModal {...modalProps} />;
     case "report_queue":
       return <ReportQueueModal {...modalProps} />;
+    case "takedown_queue":
+      return <TakedownQueueModal {...modalProps} />;
     case "server_identity":
       return <ServerIdentityModal {...modalProps} />;
     case "server_info":

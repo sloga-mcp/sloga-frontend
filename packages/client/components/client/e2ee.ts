@@ -166,6 +166,7 @@ import {
 } from "./mlsResumeKeep";
 import { IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW } from "./popout";
 import { fetchProtectedChannelsFlag } from "./protectedChannelsFlag";
+import { type OwnListingRequest, OwnListingCache } from "./protectedOwnListing";
 import {
   type AndroidProbe,
   type AndroidTextCapability,
@@ -180,6 +181,7 @@ import {
   storeOwnerAllows,
   structuralState,
 } from "./protectedPlatform";
+import type { ResecureInputs } from "./protectedResecurePolicy";
 import {
   type TextSinkSource,
   routeMls,
@@ -196,7 +198,15 @@ import {
   encryptAndSend,
   markerForError,
 } from "./protectedTextMessages";
-import { protect, setSeats } from "./protectedTextOwner";
+import {
+  cancelPendingSeats,
+  moveOwnerKey,
+  pendingSeats,
+  protect,
+  recoverOwnership,
+  setSeats,
+  signOwnerDevices,
+} from "./protectedTextOwner";
 import {
   type ProtectedChannelInfo,
   type ProtectedChannelsFlag,
@@ -207,6 +217,7 @@ import {
   type ProtectedTextPort,
   type ProtectedToastKind,
   type ProtectedUiApi,
+  type TextApiHeaders,
   type TextApiMethod,
   type TextApiResponse,
   type TextCommand,
@@ -743,6 +754,12 @@ export interface MlsCreateGroupPayload {
   channel_id: string;
   device_id: string;
   supersedes?: string | null;
+  /** Protected text groups only (absent = a call group). */
+  kind?: "Text";
+  /** Text only: the group-id generation. */
+  generation?: number;
+  /** Text only: the client's text protocol (S4 floor; not from native). */
+  protocol?: number;
 }
 
 /** Result of `callCreate`: the group id + the `POST /mls/groups` body. */
@@ -756,6 +773,10 @@ export interface MlsJoinIntentPayload {
   device_id: string;
   key_package_ref: string;
   signature: string;
+  /** Text join payload only (v2 lists): the signed generation. */
+  generation?: number;
+  /** Text join payload only (v2 lists): the signed issue time (ms). */
+  issued_at?: number;
 }
 
 /** A fanned-out join intent (the `MlsJoinRequested` bonfire event). */
@@ -766,6 +787,57 @@ export interface MlsJoinRequest {
   device_id: string;
   key_package_ref: string;
   signature: string;
+  /**
+   * Text join payload only (v2 lists): the signed generation. Absent means
+   * the intent was signed over the S1 payload.
+   */
+  generation?: number;
+  /** Text join payload only (v2 lists): the signed issue time (ms). */
+  issued_at?: number;
+}
+
+/**
+ * Why the server admitted a removed device (protected channels 3.12.2,
+ * `wire::MlsRemovalReason`). ADVISORY: native decides from signed
+ * material, and maps a value it does not know to its own `Unknown`.
+ */
+export type MlsRemovalReason =
+  | "own_user"
+  | "pending_removal"
+  | "off_list"
+  | "revoked"
+  | "rejoin"
+  | "pending_device"
+  | "idle";
+
+/** One removed device's advisory reason (Text commits only, S2). */
+export interface MlsRemovedReason {
+  user_id: string;
+  device_id: string;
+  reason: MlsRemovalReason | (string & {});
+}
+
+/**
+ * The signed S2 fields of a fanned-out join intent (OR-6). Absent fields
+ * keep the S1 shape (`{}`; a Call intent never has them). A field that is
+ * present but not a safe non-negative integer (`null` included: the server
+ * omits them, never nulls them) makes the whole intent malformed: `null`,
+ * so the caller drops it instead of native verifying it over the S1 payload.
+ */
+export function joinIntentSignedFields(event: {
+  generation?: unknown;
+  issued_at?: unknown;
+}): Pick<MlsJoinRequest, "generation" | "issued_at"> | null {
+  const out: Pick<MlsJoinRequest, "generation" | "issued_at"> = {};
+  for (const key of ["generation", "issued_at"] as const) {
+    const v = event[key];
+    if (v === undefined) continue;
+    if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) {
+      return null;
+    }
+    out[key] = v;
+  }
+  return out;
 }
 
 /** A KeyPackage claimed for admission (flattened DS claim response). */
@@ -805,6 +877,8 @@ export interface MlsEnvelope {
   group_id: string;
   epoch: number;
   ciphertext: string;
+  /** Text `mls_commit` only (S2): absent = none. */
+  removed_reasons?: MlsRemovedReason[];
 }
 
 /**
@@ -933,6 +1007,8 @@ export interface MlsCommitInfo {
   commit: string;
   added: MlsMemberDevice[];
   removed: MlsMemberDevice[];
+  /** Text groups only (S2): absent = none; never on Call commits. */
+  removed_reasons?: MlsRemovedReason[];
 }
 
 /** Response to `POST /mls/groups` (an `Arbitrated` — 200 Created / 409 Conflict). */
@@ -1511,12 +1587,16 @@ type E2eeCapacitorPlugin = {
    * confirmation, as dedicated methods (the `enableGroup` pattern). Reject
    * `declined` on cancel, `busy` while another consent dialog is open, and
    * `unavailable` on the legacy bridge or when no prompt could be shown.
+   * S2 adds `textAuthoritySign`, the same way.
    */
   textSeatListSign(options: Record<string, unknown>): Promise<{ json: string }>;
   textOwnerConfirmChange(
     options: Record<string, unknown>,
   ): Promise<{ json: string }>;
   textOwnerHandoverSign(
+    options: Record<string, unknown>,
+  ): Promise<{ json: string }>;
+  textAuthoritySign(
     options: Record<string, unknown>,
   ): Promise<{ json: string }>;
   /**
@@ -1676,6 +1756,7 @@ class CapacitorTransport implements NativeTransport {
       // Protected channels (S7 D3): a seat list, an owner change and an
       // owner handover are signed only after a tap on a native dialog the
       // webview cannot draw → dedicated methods, never the generic `call()`.
+      // S2 adds the channel authority, the same way.
       if (command === "e2ee_text_seat_list_sign") {
         const { json } = await this.#plugin.textSeatListSign(
           (args as Record<string, unknown>) ?? {},
@@ -1690,6 +1771,12 @@ class CapacitorTransport implements NativeTransport {
       }
       if (command === "e2ee_text_owner_handover_sign") {
         const { json } = await this.#plugin.textOwnerHandoverSign(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return JSON.parse(json) as T;
+      }
+      if (command === "e2ee_text_authority_sign") {
+        const { json } = await this.#plugin.textAuthoritySign(
           (args as Record<string, unknown>) ?? {},
         );
         return JSON.parse(json) as T;
@@ -3087,6 +3174,19 @@ export class E2EEBridge implements E2EEAdapter {
         // intent to the active call session's admit scheduler. No session ⇒
         // dropped, never held: a joiner re-broadcasts on its retry timer, and
         // a late replay of a held intent could admit a joiner who has left.
+        // S2 (OR-6): a v2 Text intent's signed `generation` / `issued_at`
+        // ride along (a Call or S1 intent has neither, so its object is
+        // unchanged). One present but malformed drops the whole intent, for
+        // the call path too: never a fall back to the S1 shape. Ids only.
+        const signed = joinIntentSignedFields(event);
+        if (signed === null) {
+          console.warn("[protected] malformed join request dropped", {
+            groupId: event.group_id,
+            userId: event.user_id,
+            deviceId: event.device_id,
+          });
+          break;
+        }
         const request: MlsJoinRequest = {
           group_id: event.group_id,
           channel_id: event.channel_id,
@@ -3094,6 +3194,7 @@ export class E2EEBridge implements E2EEAdapter {
           device_id: event.device_id,
           key_package_ref: event.key_package_ref,
           signature: event.signature,
+          ...signed,
         };
         const rejoin = event.rejoin ?? false;
         // Protected channels: an indexed text group's intent goes to the
@@ -3125,6 +3226,16 @@ export class E2EEBridge implements E2EEAdapter {
           this.#protectedRouteEnvelope(event, armType, sinkEvent) === "call"
         ) {
           this.#deliverMlsEnvelope(sinkEvent);
+        }
+        break;
+      }
+      case "ProtectedChannelChanged": {
+        // Protected channels (S2, design 7.5): a refetch hint for the text
+        // manager only (no manager = no-op). Never a security input; the
+        // manager filters the scope items it knows. The call stays guarded
+        // although the method is required: a manager without it is a no-op.
+        if (typeof event.id === "string" && Array.isArray(event.scope)) {
+          this.#ptManager?.onChannelChanged?.(event.id, event.scope);
         }
         break;
       }
@@ -9459,9 +9570,11 @@ export class E2EEBridge implements E2EEAdapter {
    */
   readonly #ptStripped = new Set<string>();
   readonly #ptFlagState = new ReactiveMap<"state", ProtectedChannelsFlag>();
-  #ptOwnListing: { hash: string; listing: unknown[]; at: number } | null = null;
-  #ptOwnListingFlight: Promise<{ hash: string; listing: unknown[] }> | null =
-    null;
+  /** D18 own listing (F-R8); a dispose mid-flight resets `#ptLife`. */
+  readonly #ptOwnListing = new OwnListingCache(
+    () => Date.now(),
+    () => this.#ptLife,
+  );
   /** Last server KeyPackage count the text plane saw (D12). */
   #ptServerKeyPackages = 0;
   #ptReplenishing = false;
@@ -9857,6 +9970,7 @@ export class E2EEBridge implements E2EEAdapter {
       this.#ptFlagState.get("state") ?? {
         enabled: false,
         defaultDeviceCap: null,
+        formatsV2: false,
       }
     );
   }
@@ -10000,6 +10114,27 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
+   * S2 (h): index one group id the manager reported for `channelId` (its
+   * own index already took it). A malformed id is logged and skipped; one this
+   * index maps elsewhere is logged without ids and never re-routed.
+   */
+  #protectedIndexReported(
+    channelId: string,
+    groupId: string,
+    generation: number,
+  ): void {
+    try {
+      this.#ptIndex.addReported(groupId, channelId, generation);
+    } catch (error) {
+      if (error instanceof RangeError) {
+        console.warn("[protected] reported group id malformed", { channelId });
+      } else {
+        console.warn("[protected] reported group id conflict");
+      }
+    }
+  }
+
+  /**
    * End of every `#onReady` (W4a audit, binding): seed the index from the
    * pins and the cache (`allSettled`: a non-ULID pin must not block the
    * rest), rebuild the manager when the account/device changed or the device
@@ -10018,17 +10153,43 @@ export class E2EEBridge implements E2EEAdapter {
       if (this.#ptManager && key !== this.#ptManagerKey) {
         this.#protectedDispose();
       }
+      // S2-D28: a manager this connect keeps (same account and device,
+      // still capable); a new one opens its channels itself.
+      const kept = this.#ptManager;
       this.#protectedBootManager();
       // L1: a manager built while seeding was in flight (enable(), a UI
       // action) missed channels indexed after it; hand them over (deduped).
       for (const channelId of this.#ptIndexed) {
         this.#protectedForward(channelId);
       }
+      if (kept !== null && kept === this.#ptManager) {
+        this.#protectedReconnected(kept);
+      }
     } catch (error) {
       console.error("[protected] startup failed", errorName(error));
     } finally {
       this.#ptIndex.markReady();
       this.#protectedFlushPreIndex();
+    }
+  }
+
+  /**
+   * S2-D28 (FX-R): a reconnect the manager survived. Each channel the UI
+   * has open and this manager was handed is refreshed once, as an early
+   * 60 s tick ("interval", one of `STORED_ADMIT_REASONS`): members admit
+   * the join requests the server stored while this socket was down. Not an
+   * open (no capacity retry, no backoff reset); the 60 s loop is left as
+   * it is. Never throws.
+   */
+  #protectedReconnected(manager: ProtectedTextManager): void {
+    for (const channelId of this.#ptOpen) {
+      if (!this.#ptForwarded.has(channelId)) continue;
+      manager.refresh(channelId, "interval").catch((error: unknown) => {
+        console.warn("[protected] reconnect refresh failed", {
+          channelId,
+          error: errorName(error),
+        });
+      });
     }
   }
 
@@ -10168,12 +10329,26 @@ export class E2EEBridge implements E2EEAdapter {
         this.#ptServerKeyPackages = Math.max(0, this.#ptServerKeyPackages - 1);
         void this.#protectedReplenish();
       },
+      // S2 (h): a group id native or the server reported (v2, g > 63),
+      // indexed for routing before any join or process for it.
+      onGroupReported: (channelId, groupId, generation) => {
+        if (!current()) return;
+        this.#protectedIndexReported(channelId, groupId, generation);
+      },
     };
     manager = new ProtectedTextManager(
       this.#protectedPort(userId, deviceId, life.signal),
       callbacks,
       {
-        owner: { protect, setSeats },
+        owner: {
+          protect,
+          setSeats,
+          signOwnerDevices,
+          moveOwnerKey,
+          pendingSeats,
+          cancelPendingSeats,
+          recoverOwnership,
+        },
         messages: { encryptAndSend, decryptRow, markerForError },
       },
     );
@@ -10227,8 +10402,7 @@ export class E2EEBridge implements E2EEAdapter {
     this.#ptStripped.clear();
     this.#ptLife?.abort();
     this.#ptLife = null;
-    this.#ptOwnListing = null;
-    this.#ptOwnListingFlight = null;
+    this.#ptOwnListing.clear();
     this.#ptServerKeyPackages = 0;
     this.#ptPending.clear();
     if (manager) {
@@ -10358,6 +10532,8 @@ export class E2EEBridge implements E2EEAdapter {
         return this.#invoke<Out>("e2ee_text_owner_confirm_change", a);
       case "e2ee_text_owner_handover_sign":
         return this.#invoke<Out>("e2ee_text_owner_handover_sign", a);
+      case "e2ee_text_authority_sign":
+        return this.#invoke<Out>("e2ee_text_authority_sign", a);
       case "e2ee_text_remove":
         return this.#invoke<Out>("e2ee_text_remove", a);
       case "e2ee_text_update":
@@ -10382,18 +10558,26 @@ export class E2EEBridge implements E2EEAdapter {
    * D6 text courier. Never throws on a non-2xx (the manager owns the 429
    * policy); rejects only on a network failure or abort. Its own signal, no
    * call-plane 429 notifier, never `Idempotency-Key`.
+   *
+   * `headers` (S2 D40) carries only the audit-log reason, sent the way
+   * stoat.js `Server.kickUser` sends it: trimmed, a blank reason sends no
+   * header, otherwise `encodeURIComponent`. The 512-character server cap
+   * is the caller's policy, not checked here.
    */
   async textApi(
     method: TextApiMethod,
     path: string,
     body?: unknown,
     signal?: AbortSignal,
+    headers?: TextApiHeaders,
   ): Promise<TextApiResponse> {
     const [authHeader, authValue] = this.#client.authenticationHeader;
     const transportError = () =>
       Object.assign(new Error("[protected] transport error"), {
         name: "TextTransportError",
       });
+    const rawReason = headers?.["X-Audit-Log-Reason"];
+    const reason = typeof rawReason === "string" ? rawReason.trim() : "";
     let response: Response;
     let text: string;
     try {
@@ -10402,6 +10586,9 @@ export class E2EEBridge implements E2EEAdapter {
         headers: {
           [authHeader]: authValue,
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+          ...(reason
+            ? { "X-Audit-Log-Reason": encodeURIComponent(reason) }
+            : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal,
@@ -10444,8 +10631,9 @@ export class E2EEBridge implements E2EEAdapter {
         }),
       pinCallIdentities: (peer, targets) =>
         this.#protectedPinIdentities(peer, targets),
-      ownDeviceListing: () => this.#protectedOwnListing(),
-      api: (method, path, body) => this.textApi(method, path, body, life),
+      ownDeviceListing: (request) => this.#protectedOwnListing(request),
+      api: (method, path, body, headers) =>
+        this.textApi(method, path, body, life, headers),
       ack: async (ids) => {
         if (!life.aborted) this.ackEnvelopes(ids);
       },
@@ -10533,6 +10721,8 @@ export class E2EEBridge implements E2EEAdapter {
         if (!accessor) throw new Error("[protected] outbox keys not wired");
         return accessor();
       },
+      // S2 (j): the owner flows pick `format: 2` from the root advert.
+      formatsV2: () => this.protectedFlag().formatsV2 === true,
     };
   }
 
@@ -10580,40 +10770,22 @@ export class E2EEBridge implements E2EEAdapter {
   /**
    * D18: this user's COMPLETE signed listing, cached for 60 s and
    * single-flight (the manager asks before every `_process`). A failed
-   * refresh falls back to the last listing.
+   * refresh falls back to the last listing. F-R8: a `force` request, or
+   * one whose `want` the cache does not list, fetches afresh
+   * (`OwnListingCache`).
    */
-  #protectedOwnListing(): Promise<{ hash: string; listing: unknown[] }> {
-    const cached = this.#ptOwnListing;
-    if (cached && Date.now() - cached.at < 60_000) {
-      return Promise.resolve(cached);
-    }
-    if (this.#ptOwnListingFlight) return this.#ptOwnListingFlight;
-    // A dispose mid-flight resets `#ptLife`; a stale answer is not cached.
-    const life = this.#ptLife;
-    const flight = (async () => {
+  #protectedOwnListing(
+    request?: OwnListingRequest,
+  ): Promise<{ hash: string; listing: unknown[] }> {
+    return this.#ptOwnListing.get(async () => {
       const userId = this.#client.user?.id;
       if (!userId || !this.protectedTextCapable()) {
         throw { source: "client", reason: "not_capable" };
       }
       const report = await this.#reconcileDevices(userId);
       if (!report) throw { source: "client", reason: "not_capable" };
-      const entry = {
-        hash: JSON.stringify(report.listing),
-        listing: report.listing,
-        at: Date.now(),
-      };
-      if (this.#ptLife === life) this.#ptOwnListing = entry;
-      return entry;
-    })()
-      .catch((error: unknown) => {
-        if (cached) return cached;
-        throw error;
-      })
-      .finally(() => {
-        if (this.#ptLife === life) this.#ptOwnListingFlight = null;
-      });
-    this.#ptOwnListingFlight = flight;
-    return flight;
+      return { hash: JSON.stringify(report.listing), listing: report.listing };
+    }, request);
   }
 
   /** D13: fetch the flag; when enabled, run the D12 ready-time replenish. */
@@ -10921,6 +11093,14 @@ export class E2EEBridge implements E2EEAdapter {
     this.#ptManager?.close(channelId);
   }
 
+  /**
+   * S2: one manual refresh (`ProtectedUiApi.retryNow`): straight to the
+   * current manager, never `#ptOpen` (no 60 s loop). No manager = no-op.
+   */
+  retryNow(channelId: string): void {
+    this.#ptManager?.retryNow(channelId);
+  }
+
   /** The current manager for a UI action on an indexed channel, or throw. */
   async #protectedManagerFor(channelId: string): Promise<ProtectedTextManager> {
     this.#protectedEnsureManager();
@@ -10949,9 +11129,68 @@ export class E2EEBridge implements E2EEAdapter {
     channelId: string,
     seats: string[],
     deviceCap: number,
+    reason?: string,
   ): Promise<void> {
     const manager = await this.#protectedManagerFor(channelId);
-    return manager.setSeats(channelId, seats, deviceCap);
+    return manager.setSeats(channelId, seats, deviceCap, reason);
+  }
+
+  async authoritySign(
+    channelId: string,
+    ownerDevices: string[],
+  ): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.authoritySign(channelId, ownerDevices);
+  }
+
+  /** S2-D42: same-user owner-key handover from this device (native dialog). */
+  async moveOwnerKey(channelId: string, toDeviceId: string): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.moveOwnerKey(channelId, toDeviceId);
+  }
+
+  /** S2 (design 6.3): only from this UI call, never automatic. */
+  async recoverOwnership(channelId: string): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.recoverOwnership(channelId);
+  }
+
+  /**
+   * S2 F3: the stored seat publish U8 offers to discard, or null. Reads
+   * the view map first so a UI memo re-runs on every view change (a
+   * discard re-emits the view); null while no manager exists.
+   */
+  pendingSeats(channelId: string) {
+    void this.protectedChannels.get(channelId);
+    return this.#ptManager?.pendingSeats(channelId) ?? null;
+  }
+
+  /** S2 F3: discards only a publish the server never accepted. */
+  async cancelPendingSeats(channelId: string) {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.cancelPendingSeats(channelId);
+  }
+
+  /** This device's id for comparisons (never rendered); reactive. */
+  selfDeviceId(): string | null {
+    return this.status.get("state")?.device_id ?? null;
+  }
+
+  /**
+   * S2-D36: the view plus this account's ids, for `resecureCause`. Reads
+   * the reactive view map, so a UI memo re-runs on every view change.
+   */
+  resecureInputs(channelId: string): ResecureInputs | null {
+    const view = this.protectedChannels.get(channelId);
+    const selfUserId = this.#client.user?.id;
+    const selfDeviceId = this.selfDeviceId();
+    if (!view || !selfUserId || !selfDeviceId) return null;
+    return {
+      ...view,
+      resecuringSinceMs: view.resecuringSinceMs ?? null,
+      selfUserId,
+      selfDeviceId,
+    };
   }
 
   async confirmOwnerChange(channelId: string): Promise<void> {

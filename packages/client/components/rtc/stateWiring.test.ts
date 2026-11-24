@@ -2854,11 +2854,11 @@ test("source pin (W3 B-m1): the escalation re-arms when the session's latch heal
   assert.equal(countWired(STATE_CODE, `.rearm(`), 1);
 });
 
-test("source pin (W3 A-3): raw key bytes are zeroed before the provider is dropped, at teardown and in the construct-catch", () => {
+test("source pin (W3 A-3 + the import race): every drop of the provider CLOSES it first, at teardown and in the construct-catch", () => {
   assert.equal(
     countWired(
       bodyAfter(STATE_CODE, `if (e2eeCapable) { try {`),
-      `this.#mlsKeyProvider?.resetForGroup(); this.#mlsKeyProvider = undefined;`,
+      `this.#mlsKeyProvider?.close(); this.#mlsKeyProvider = undefined;`,
     ),
     0,
     "(the try's own body never drops it)",
@@ -2867,7 +2867,7 @@ test("source pin (W3 A-3): raw key bytes are zeroed before the provider is dropp
     countWired(
       STATE_CODE,
       `this.#e2eeWorker?.terminate();
-      this.#mlsKeyProvider?.resetForGroup();
+      this.#mlsKeyProvider?.close();
       this.#mlsKeyProvider = undefined;`,
     ),
     1,
@@ -2877,14 +2877,18 @@ test("source pin (W3 A-3): raw key bytes are zeroed before the provider is dropp
     countWired(
       disconnectBody(),
       `try {
-        this.#mlsKeyProvider?.resetForGroup();
+        this.#mlsKeyProvider?.close();
       } catch {}
       this.#mlsKeyProvider = undefined;`,
     ),
     1,
     "the teardown, guarded",
   );
-  assert.equal(countWired(STATE_CODE, `.resetForGroup(`), 2);
+  // `resetForGroup` clears the fence and leaves the provider open, so an
+  // install still importing would land after it: state.tsx never calls it
+  // (the session's own mid-call group swap does, on its installer).
+  assert.equal(countWired(STATE_CODE, `.resetForGroup(`), 0);
+  assert.equal(countWired(STATE_CODE, `this.#mlsKeyProvider?.close();`), 2);
 });
 
 test("source pin (W3 B-m2/R19): on iOS the no-session in-app press changes nothing while a webkit hold exists", () => {
