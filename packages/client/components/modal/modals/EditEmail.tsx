@@ -1,19 +1,16 @@
 import { createFormControl, createFormGroup } from "solid-forms";
-import {
-  Match,
-  Show,
-  Switch,
-  createEffect,
-  createSignal,
-  onMount,
-} from "solid-js";
+import { Match, Show, Switch, createSignal, onMount } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { useQueryClient } from "@tanstack/solid-query";
 import type { MFA } from "stoat.js";
 
-import { CONFIGURATION } from "@revolt/common";
-import { getPasskeysAdvert } from "@revolt/common/lib/passkey";
+import {
+  type AccountProblem,
+  accountInfoKey,
+  accountProblem,
+} from "@revolt/app/interface/settings/user/account/accountRules";
+import { apiErrorType } from "@revolt/client/apiErrorType";
 import { Column, Dialog, DialogProps, Form2, Text } from "@revolt/ui";
 
 import { useModals } from "..";
@@ -21,12 +18,18 @@ import { Modals } from "../types";
 
 /**
  * Change account email address
+ *
+ * The server only moves an email for an account that has a password and
+ * gives it: a ticket does not stand in for one. An account with no
+ * password is told to add one first, and an account with no email at all
+ * has none to change (Settings offers "Add an email" instead); neither
+ * sends a request from here.
  */
 export function EditEmailModal(
   props: DialogProps & Modals & { type: "edit_email" },
 ) {
   const { t } = useLingui();
-  const { showError, mfaFlow } = useModals();
+  const { showError } = useModals();
   const queryClient = useQueryClient();
 
   const group = createFormGroup({
@@ -34,20 +37,28 @@ export function EditEmailModal(
     currentPassword: createFormControl("", { required: true }),
   });
 
+  // eslint-disable-next-line solid/reactivity
+  const userId = props.client.user!.id;
+
   // Whether the account has a password. Starts from what the settings page
   // already fetched, so the password field does not show and then vanish.
   // Until it is known, and if the lookup fails, the dialog asks for the
   // current password as it always did.
   const [mfa, setMfa] = createSignal<MFA | undefined>(
-    // eslint-disable-next-line solid/reactivity
-    queryClient.getQueryData<MFA>(["mfa", props.client.user!.id]),
+    queryClient.getQueryData<MFA>(["mfa", userId]),
   );
 
-  // Whether the server offers passkeys; undefined until it has answered
-  const [passkeysOffered, setPasskeysOffered] = createSignal<boolean>();
+  // Whether the account has no email at all, likewise from what the
+  // settings page fetched
+  const cachedInfo = queryClient.getQueryData<{ email_absent?: boolean }>(
+    accountInfoKey(userId),
+  );
+  const [emailAbsent, setEmailAbsent] = createSignal(
+    cachedInfo?.email_absent === true,
+  );
 
-  // The no-password path is running: one confirmation, one request
-  const [busy, setBusy] = createSignal(false);
+  // What the server said when it refused the request
+  const [refused, setRefused] = createSignal<AccountProblem>();
 
   onMount(() => {
     props.client.account
@@ -55,68 +66,50 @@ export function EditEmailModal(
       .then(setMfa)
       .catch(() => {});
 
-    // Never rejects; a failed lookup reads as not offered
-    void getPasskeysAdvert(CONFIGURATION.DEFAULT_API_URL).then((advert) =>
-      setPasskeysOffered(advert.available),
-    );
+    props.client.account
+      .fetchInfo()
+      .then((info) => setEmailAbsent(info.email_absent))
+      .catch(() => {});
   });
 
-  /** No password on the account: a ticket takes its place */
-  const passwordAbsent = () => mfa()?.passwordAbsent === true;
-
-  /** No password and nothing else to confirm with */
-  const cannotConfirm = () =>
-    passwordAbsent() && mfa()!.availableMethods.length === 0;
-
-  createEffect(() => {
-    group.controls.currentPassword.markRequired(!passwordAbsent());
-  });
+  /** Why this account cannot change its email here, if it cannot */
+  const blocked = (): AccountProblem | undefined => {
+    if (refused()) return refused();
+    if (emailAbsent()) return "need_email";
+    if (mfa()?.passwordAbsent === true) return "need_password";
+    return undefined;
+  };
 
   async function onSubmit() {
-    // A second click must not open a second confirmation or send twice
-    if (busy()) return;
+    if (blocked()) return;
 
     try {
-      if (passwordAbsent()) {
-        setBusy(true);
-
-        const ticket = await mfaFlow(mfa()!);
-        if (!ticket) return;
-
-        await props.client.account.changeEmail(
-          group.controls.email.value,
-          undefined,
-          ticket.token,
-        );
-      } else {
-        await props.client.account.changeEmail(
-          group.controls.email.value,
-          group.controls.currentPassword.value,
-        );
-      }
+      await props.client.account.changeEmail(
+        group.controls.email.value,
+        group.controls.currentPassword.value,
+      );
 
       props.onClose();
     } catch (err) {
-      showError(err);
-    } finally {
-      setBusy(false);
+      const problem = accountProblem(
+        apiErrorType(err),
+        "change_email",
+        emailAbsent(),
+      );
+
+      if (problem) {
+        setRefused(problem);
+      } else {
+        showError(err);
+      }
     }
   }
 
   const formSubmit = Form2.useSubmitHandler(group, onSubmit);
 
-  /**
-   * The form helper clears the fields after every attempt. Without a
-   * password, backing out of the confirmation is an attempt too, so submit
-   * directly and keep what was typed.
-   */
   function submit(event: Event) {
-    if (!passwordAbsent()) return formSubmit(event);
-
+    if (!blocked()) return formSubmit(event);
     event.preventDefault();
-    if (Form2.canSubmit(group) && !cannotConfirm() && !busy()) {
-      void onSubmit();
-    }
   }
 
   return (
@@ -132,21 +125,21 @@ export function EditEmailModal(
             onSubmit();
             return false;
           },
-          isDisabled: !Form2.canSubmit(group) || cannotConfirm() || busy(),
+          isDisabled: !Form2.canSubmit(group) || !!blocked(),
         },
       ]}
       isDisabled={group.isPending}
     >
       <form onSubmit={submit}>
         <Column>
-          <Form2.TextField
-            name="email"
-            type="email"
-            label={t`Email`}
-            control={group.controls.email}
-            placeholder={t`someone@example.com`}
-          />
-          <Show when={!passwordAbsent()}>
+          <Show when={!blocked()}>
+            <Form2.TextField
+              name="email"
+              type="email"
+              label={t`Email`}
+              control={group.controls.email}
+              placeholder={t`someone@example.com`}
+            />
             <Form2.TextField
               name="currentPassword"
               control={group.controls.currentPassword}
@@ -155,22 +148,14 @@ export function EditEmailModal(
               placeholder={t`Enter your current password...`}
             />
           </Show>
-          <Show when={cannotConfirm()}>
+          <Show when={blocked()}>
             <Text>
-              {/* Nothing until the server has said whether it offers
-                  passkeys: with them off, never point at one */}
               <Switch>
-                <Match when={passkeysOffered()}>
-                  <Trans>
-                    This account has no password yet. Add a passkey in Settings
-                    first, then come back here.
-                  </Trans>
+                <Match when={blocked() === "need_password"}>
+                  <Trans>Add a password first to change your email.</Trans>
                 </Match>
-                <Match when={passkeysOffered() === false}>
-                  <Trans>
-                    This account has no password yet. Use Reset password on the
-                    login screen to set one.
-                  </Trans>
+                <Match when={blocked() === "need_email"}>
+                  <Trans>This account has no email to change.</Trans>
                 </Match>
               </Switch>
             </Text>

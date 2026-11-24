@@ -30,13 +30,17 @@ export function passkeyNameProblem(
   return undefined;
 }
 
-/** What the user was doing when the server refused */
-export type PasskeyAction = "add" | "remove" | "rename" | "confirm";
+/**
+ * What the user was doing when the server refused. `start` is asking for
+ * the options to create a passkey with; `add` is storing the one created.
+ */
+export type PasskeyAction = "start" | "add" | "remove" | "rename" | "confirm";
 
 /** A refusal the passkey screens explain in their own words */
 export type PasskeyProblem =
   | "off"
   | "sign_in_again"
+  | "after_reset"
   | "not_accepted"
   | "already_added"
   | "limit"
@@ -61,6 +65,11 @@ export function passkeyProblem(
     case "NotPrivileged":
       return action === "add" ? "sign_in_again" : undefined;
     case "InvalidCredentials":
+      // No passkey exists yet at the start step, so there the only cause is
+      // a session older than the account's last password reset. The step
+      // that stores the passkey gives the same answer for a passkey it did
+      // not accept, and the two cannot be told apart there.
+      if (action === "start") return "after_reset";
       return action === "add" || action === "confirm"
         ? "not_accepted"
         : undefined;
@@ -82,6 +91,42 @@ export function passkeyProblem(
     default:
       return undefined;
   }
+}
+
+/** What comes after the name when a passkey is being added */
+export type AddPasskeyStep = "create" | "confirm" | "sign_in_again";
+
+/**
+ * What adding a passkey needs next, from what the start step answered.
+ * @param ticketRequired `ticket_required` of the start step
+ * @param methodCount How many ways the account has to confirm an action
+ * @returns `create`: no confirmation, go on to the device prompt (a first
+ * passkey on a fresh Google or Apple sign-in). `confirm`: ask for a ticket
+ * first. `sign_in_again`: a ticket is wanted and the account has nothing to
+ * make one with, so only a fresh sign-in helps; no passkey is created that
+ * the server would refuse.
+ */
+export function addPasskeyStep(
+  ticketRequired: boolean,
+  methodCount: number,
+): AddPasskeyStep {
+  if (!ticketRequired) return "create";
+  return methodCount > 0 ? "confirm" : "sign_in_again";
+}
+
+/**
+ * Whether the device prompt may open now. The start step is asked again
+ * right before it, and a session that needed no ticket a few minutes ago
+ * may need one by then: the device must not make a passkey the server
+ * will not store.
+ * @param ticketRequired `ticket_required` of the start step, asked just now
+ * @param hasTicket Whether a ticket is in hand
+ */
+export function mayCreatePasskeyNow(
+  ticketRequired: boolean,
+  hasTicket: boolean,
+): boolean {
+  return hasTicket || !ticketRequired;
 }
 
 /**

@@ -27,10 +27,13 @@ import { MainTitleBar } from "@revolt/app/interface/desktop/MainTitleBar";
 import FlowCheck from "@revolt/auth/src/flows/FlowCheck";
 import FlowConfirmReset from "@revolt/auth/src/flows/FlowConfirmReset";
 import FlowCreate from "@revolt/auth/src/flows/FlowCreate";
+import FlowCreatePasskey from "@revolt/auth/src/flows/FlowCreatePasskey";
 import FlowDeleteAccount from "@revolt/auth/src/flows/FlowDelete";
 import FlowHome from "@revolt/auth/src/flows/FlowHome";
 import FlowLogin from "@revolt/auth/src/flows/FlowLogin";
 import FlowOAuthCallback from "@revolt/auth/src/flows/FlowOAuthCallback";
+import FlowPasskeyLost from "@revolt/auth/src/flows/FlowPasskeyLost";
+import FlowPasskeyRecover from "@revolt/auth/src/flows/FlowPasskeyRecover";
 import FlowResend from "@revolt/auth/src/flows/FlowResend";
 import FlowReset from "@revolt/auth/src/flows/FlowReset";
 import FlowVerify from "@revolt/auth/src/flows/FlowVerify";
@@ -501,6 +504,18 @@ render(
             <Route path="/reset" component={FlowReset} />
             <Route path="/verify/:token" component={FlowVerify} />
             <Route path="/reset/:token" component={FlowConfirmReset} />
+            {/* Passkey sign-up and lost-passkey recovery. Each page sends
+                the visitor on unless the server offers it. */}
+            <Route path="/passkey/create" component={FlowCreatePasskey} />
+            <Route path="/passkey/create/:code" component={FlowCreatePasskey} />
+            <Route path="/passkey/lost" component={FlowPasskeyLost} />
+            {/* Without a token: where the page below stays once it has taken
+                the token out of the address, and where a reload lands */}
+            <Route path="/passkey/recover" component={FlowPasskeyRecover} />
+            <Route
+              path="/passkey/recover/:token"
+              component={FlowPasskeyRecover}
+            />
             <Route path="/*" component={FlowHome} />
           </Route>
           <Route path="/friends-popout" component={FriendsPopout} />

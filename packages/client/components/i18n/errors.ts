@@ -261,6 +261,11 @@ export function useError() {
       // The server refused to remove a device another live install of this
       // account is using (same lag pattern). `disable()` normally catches
       // this before it wipes anything and offers the split instead.
+      // A way of confirming an action that the server does not take for
+      // this account or action (same lag pattern: the typed switch below
+      // does not name it).
+      if (errType === "DisallowedMFAMethod")
+        return t`That way of confirming cannot be used here. Pick another one.`;
       if (errType === "E2EEDeviceHeldElsewhere")
         return t`This app shares its encryption identity with another of your apps. Turning encryption off here would turn it off there too. Make this app a separate device instead. Don't recognize the other app? Change your password, then remove it in Settings > Encryption on a device you trust.`;
 

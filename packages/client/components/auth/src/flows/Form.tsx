@@ -258,6 +258,12 @@ interface Props {
   handoffPath?: string;
 
   /**
+   * Line shown under the browser handoff, for a step that does not end
+   * where it started (a passkey made in the browser stays in the browser)
+   */
+  handoffNote?: JSX.Element;
+
+  /**
    * Submission handler
    */
   onSubmit: (data: FormData) => Promise<void> | void;
@@ -268,12 +274,17 @@ interface Props {
  * captcha: the shell never loads hCaptcha, so the step continues in the
  * system browser
  */
-function BrowserHandoff(props: { href: string }) {
+function BrowserHandoff(props: { href: string; note?: JSX.Element }) {
   return (
     <Column gap="lg">
       <Text class="body" size="medium">
         <Trans>To keep spam out, this step opens in your web browser.</Trans>
       </Text>
+      <Show when={props.note}>
+        <Text class="body" size="medium">
+          {props.note}
+        </Text>
+      </Show>
       <a href={props.href} target="_blank" rel="noreferrer">
         <Button>
           <Trans>Continue in your browser</Trans>
@@ -468,7 +479,9 @@ export function Form(props: Props) {
   return (
     <Show
       when={!handoffHref()}
-      fallback={<BrowserHandoff href={handoffHref()!} />}
+      fallback={
+        <BrowserHandoff href={handoffHref()!} note={props.handoffNote} />
+      }
     >
       <form onSubmit={onSubmit}>
         <Column gap="lg">

@@ -1,17 +1,28 @@
-import { Match, Show, Switch, createMemo, createSignal } from "solid-js";
+import {
+  Match,
+  Show,
+  Switch,
+  createMemo,
+  createSignal,
+  onMount,
+} from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { useQuery } from "@tanstack/solid-query";
 
 import { useClient, useClientLifecycle } from "@revolt/client";
 import {
   createMfaResource,
   createOwnProfileResource,
 } from "@revolt/client/resources";
+import { CONFIGURATION } from "@revolt/common";
+import { getPasskeysAdvert } from "@revolt/common/lib/passkey";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import { streamerModeHides } from "@revolt/state/streamer";
 import { CategoryButton, Column, Row, Text, iconSize } from "@revolt/ui";
 
+import MdAddCircle from "@material-design-icons/svg/outlined/add_circle_outline.svg?component-solid";
 import MdAlternateEmail from "@material-design-icons/svg/outlined/alternate_email.svg?component-solid";
 import MdBlock from "@material-design-icons/svg/outlined/block.svg?component-solid";
 import MdDelete from "@material-design-icons/svg/outlined/delete.svg?component-solid";
@@ -23,6 +34,12 @@ import MdVerifiedUser from "@material-design-icons/svg/outlined/verified_user.sv
 import { useSettingsNavigation } from "../Settings";
 
 import { Passkeys } from "./account/Passkeys";
+import {
+  DELETION_ASK_TIMEOUT_MS,
+  accountInfoKey,
+  answerWithin,
+  mayAddEmail,
+} from "./account/accountRules";
 import { UserSummary } from "./account/index";
 import {
   deleteRequestStatus,
@@ -56,6 +73,23 @@ export function MyAccount() {
 }
 
 /**
+ * Whether the account has no email address (one created with a passkey may
+ * have none). False until the server has answered, and when it cannot be
+ * asked: the page then reads as it always did.
+ */
+function createEmailAbsent() {
+  const client = useClient();
+
+  const info = useQuery(() => ({
+    queryKey: accountInfoKey(client().user!.id),
+    queryFn: () => client().account.fetchInfo(),
+  }));
+
+  // `data` is read only once loaded: reading it earlier suspends
+  return () => info.isSuccess && info.data.email_absent;
+}
+
+/**
  * Edit account details
  */
 function EditAccount() {
@@ -65,6 +99,17 @@ function EditAccount() {
   const { t } = useLingui();
   const { openModal } = useModals();
   const [email, setEmail] = createSignal("•••••••••••@•••••••••••");
+  const emailAbsent = createEmailAbsent();
+
+  // Whether the server takes "Add an email"; false until it has answered
+  const [addEmailOffered, setAddEmailOffered] = createSignal(false);
+
+  onMount(() => {
+    // Never rejects; a failed lookup reads as not offered
+    void getPasskeysAdvert(CONFIGURATION.DEFAULT_API_URL).then((advert) =>
+      setAddEmailOffered(mayAddEmail(advert)),
+    );
+  });
 
   /** Keep the email masked (even if already revealed) during Streamer Mode */
   const hidePersonal = () => streamerModeHides(state.settings, "personal");
@@ -86,38 +131,71 @@ function EditAccount() {
       >
         <Trans>Username</Trans>
       </CategoryButton>
-      <CategoryButton
-        action="chevron"
-        onClick={() =>
-          openModal({
-            type: "edit_email",
-            client: client(),
-          })
-        }
-        icon={<MdMail {...iconSize(22)} />}
-        description={
-          <Row>
-            {displayEmail()}{" "}
-            <Show when={hidePersonal()}>
-              <Text class="label">
-                <Trans>Hidden by Streamer Mode</Trans>
-              </Text>
-            </Show>
-            <Show when={email().startsWith("•") && !hidePersonal()}>
-              <a
-                onClick={(event) => {
-                  event.stopPropagation();
-                  client().account.fetchEmail().then(setEmail);
-                }}
-              >
-                Reveal
-              </a>
-            </Show>
-          </Row>
+      <Switch
+        fallback={
+          <CategoryButton
+            action="chevron"
+            onClick={() =>
+              openModal({
+                type: "edit_email",
+                client: client(),
+              })
+            }
+            icon={<MdMail {...iconSize(22)} />}
+            description={
+              <Row>
+                {displayEmail()}{" "}
+                <Show when={hidePersonal()}>
+                  <Text class="label">
+                    <Trans>Hidden by Streamer Mode</Trans>
+                  </Text>
+                </Show>
+                <Show when={email().startsWith("•") && !hidePersonal()}>
+                  <a
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      client().account.fetchEmail().then(setEmail);
+                    }}
+                  >
+                    Reveal
+                  </a>
+                </Show>
+              </Row>
+            }
+          >
+            <Trans>Email</Trans>
+          </CategoryButton>
         }
       >
-        <Trans>Email</Trans>
-      </CategoryButton>
+        {/* No address to mask, reveal or change */}
+        <Match when={emailAbsent()}>
+          <CategoryButton
+            icon={<MdMail {...iconSize(22)} />}
+            description={<Trans>No email</Trans>}
+          >
+            <Trans>Email</Trans>
+          </CategoryButton>
+          <Show when={addEmailOffered()}>
+            <CategoryButton
+              action="chevron"
+              onClick={() =>
+                openModal({
+                  type: "add_email",
+                  client: client(),
+                })
+              }
+              icon={<MdAddCircle {...iconSize(22)} />}
+              description={
+                <Trans>
+                  With an email you can get back in if you lose your passkey.
+                </Trans>
+              }
+            >
+              <Trans>Add an email</Trans>
+            </CategoryButton>
+          </Show>
+        </Match>
+      </Switch>
       <CategoryButton
         action="chevron"
         onClick={() =>
@@ -300,6 +378,11 @@ function ManageAccount() {
   const { t } = useLingui();
   const { mfaFlow, openModal, showError } = useModals();
   const { logout } = useClientLifecycle();
+  const emailAbsent = createEmailAbsent();
+
+  // `deleteAccount` is asking the server which deletion applies; the button
+  // is off meanwhile
+  const [askingDeletion, setAskingDeletion] = createSignal(false);
 
   const stillOwnServers = createMemo(
     () =>
@@ -363,10 +446,36 @@ function ManageAccount() {
   }
 
   /**
-   * Delete account: confirm first, then request the emailed link
+   * Delete account: confirm first, then request the emailed link.
+   *
+   * An account with no email has nowhere to get a link: it confirms with
+   * its username and a ticket, and the server deletes it at once. Which of
+   * the two applies is asked fresh. If the answer fails or takes longer
+   * than 8 s, the emailed-link flow goes ahead: it is what the server
+   * applies to every account with an email, and a no-email account that
+   * takes it is refused by the server, so nothing is deleted on a guess.
    */
-  function deleteAccount() {
-    openModal({ type: "delete_account_confirm", onConfirm: requestDeletion });
+  async function deleteAccount() {
+    // A second press while the question is out must not open two dialogs
+    if (askingDeletion()) return;
+    setAskingDeletion(true);
+
+    // Never rejects
+    const absent = await answerWithin(
+      client()
+        .account.fetchInfo()
+        .then((info) => info.email_absent === true),
+      DELETION_ASK_TIMEOUT_MS,
+      false,
+    );
+
+    setAskingDeletion(false);
+
+    if (absent) {
+      openModal({ type: "delete_account_no_email", client: client() });
+    } else {
+      openModal({ type: "delete_account_confirm", onConfirm: requestDeletion });
+    }
   }
 
   return (
@@ -387,8 +496,8 @@ function ManageAccount() {
       </CategoryButton>
       <CategoryButton
         action={stillOwnServers() ? undefined : "chevron"}
-        disabled={mfa.isLoading || stillOwnServers()}
-        onClick={deleteAccount}
+        disabled={mfa.isLoading || stillOwnServers() || askingDeletion()}
+        onClick={() => void deleteAccount()}
         icon={<MdDelete {...iconSize(22)} fill="var(--md-sys-color-error)" />}
         description={
           <Switch
@@ -404,6 +513,13 @@ function ManageAccount() {
               <Trans>
                 Transfer or delete the servers you own first, then come back
                 here.
+              </Trans>
+            </Match>
+            <Match when={emailAbsent()}>
+              <Trans>
+                Your account has no email, so there is no link to confirm. Once
+                you type your username and confirm, your account and data are
+                deleted right away. This can't be undone.
               </Trans>
             </Match>
           </Switch>

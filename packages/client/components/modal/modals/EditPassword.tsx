@@ -12,6 +12,11 @@ import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { useQueryClient } from "@tanstack/solid-query";
 import type { MFA } from "stoat.js";
 
+import {
+  accountInfoKey,
+  accountProblem,
+} from "@revolt/app/interface/settings/user/account/accountRules";
+import { apiErrorType } from "@revolt/client/apiErrorType";
 import { CONFIGURATION } from "@revolt/common";
 import { getPasskeysAdvert } from "@revolt/common/lib/passkey";
 import { Column, Dialog, DialogProps, Form2, Text } from "@revolt/ui";
@@ -21,6 +26,10 @@ import { Modals } from "../types";
 
 /**
  * Change account password
+ *
+ * An account with no email cannot have a password: there would be nothing
+ * to sign in with. The server refuses it, so such an account is told to
+ * add an email first and no request is sent from here.
  */
 export function EditPasswordModal(
   props: DialogProps & Modals & { type: "edit_password" },
@@ -49,10 +58,25 @@ export function EditPasswordModal(
   // The no-password path is running: one confirmation, one request
   const [busy, setBusy] = createSignal(false);
 
+  // Whether the account has no email: known from what the settings page
+  // fetched, from the lookup below, or from the server refusing the request
+  const cachedInfo = queryClient.getQueryData<{ email_absent?: boolean }>(
+    // eslint-disable-next-line solid/reactivity
+    accountInfoKey(props.client.user!.id),
+  );
+  const [emailAbsent, setEmailAbsent] = createSignal(
+    cachedInfo?.email_absent === true,
+  );
+
   onMount(() => {
     props.client.account
       .mfa()
       .then(setMfa)
+      .catch(() => {});
+
+    props.client.account
+      .fetchInfo()
+      .then((info) => setEmailAbsent(info.email_absent))
       .catch(() => {});
 
     // Never rejects; a failed lookup reads as not offered
@@ -74,7 +98,7 @@ export function EditPasswordModal(
 
   async function onSubmit() {
     // A second click must not open a second confirmation or send twice
-    if (busy()) return;
+    if (busy() || emailAbsent()) return;
 
     try {
       if (passwordAbsent()) {
@@ -103,7 +127,12 @@ export function EditPasswordModal(
 
       props.onClose();
     } catch (err) {
-      showError(err);
+      // The only refusal with a meaning of its own here: no email
+      if (accountProblem(apiErrorType(err), "change_password")) {
+        setEmailAbsent(true);
+      } else {
+        showError(err);
+      }
     } finally {
       setBusy(false);
     }
@@ -117,10 +146,15 @@ export function EditPasswordModal(
    * directly and keep what was typed.
    */
   function submit(event: Event) {
-    if (!passwordAbsent()) return formSubmit(event);
+    if (!passwordAbsent() && !emailAbsent()) return formSubmit(event);
 
     event.preventDefault();
-    if (Form2.canSubmit(group) && !cannotConfirm() && !busy()) {
+    if (
+      Form2.canSubmit(group) &&
+      !cannotConfirm() &&
+      !emailAbsent() &&
+      !busy()
+    ) {
       void onSubmit();
     }
   }
@@ -149,14 +183,26 @@ export function EditPasswordModal(
             onSubmit();
             return false;
           },
-          isDisabled: !Form2.canSubmit(group) || cannotConfirm() || busy(),
+          isDisabled:
+            !Form2.canSubmit(group) ||
+            cannotConfirm() ||
+            emailAbsent() ||
+            busy(),
         },
       ]}
       isDisabled={group.isPending}
     >
       <form onSubmit={submit}>
         <Column>
-          <Show when={passwordAbsent() && !cannotConfirm()}>
+          <Show when={emailAbsent()}>
+            <Text>
+              <Trans>
+                This account has no email. Add an email first, then set a
+                password.
+              </Trans>
+            </Text>
+          </Show>
+          <Show when={passwordAbsent() && !cannotConfirm() && !emailAbsent()}>
             <Text>
               <Trans>
                 This account has no password yet. Set one to sign in with your
@@ -164,14 +210,16 @@ export function EditPasswordModal(
               </Trans>
             </Text>
           </Show>
-          <Form2.TextField
-            name="password"
-            control={group.controls.password}
-            label={t`New Password`}
-            type="password"
-            placeholder={t`Enter a new password.`}
-          />
-          <Show when={!passwordAbsent()}>
+          <Show when={!emailAbsent()}>
+            <Form2.TextField
+              name="password"
+              control={group.controls.password}
+              label={t`New Password`}
+              type="password"
+              placeholder={t`Enter a new password.`}
+            />
+          </Show>
+          <Show when={!passwordAbsent() && !emailAbsent()}>
             <Form2.TextField
               name="currentPassword"
               control={group.controls.currentPassword}
@@ -180,7 +228,7 @@ export function EditPasswordModal(
               placeholder={t`Enter your current password...`}
             />
           </Show>
-          <Show when={cannotConfirm()}>
+          <Show when={cannotConfirm() && !emailAbsent()}>
             <Text>
               {/* Nothing until the server has said whether it offers
                   passkeys: with them off, never point at one */}

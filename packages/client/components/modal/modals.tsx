@@ -4,6 +4,7 @@ import { CONFIGURATION } from "@revolt/common";
 
 import { type ActiveModal } from ".";
 import { AddBotModal } from "./modals/AddBot";
+import { AddEmailModal } from "./modals/AddEmail";
 import { AddFriendModal } from "./modals/AddFriend";
 import { AddFriendToGroupModal } from "./modals/AddFriendToGroup";
 import { AddMembersToGroupModal } from "./modals/AddMembersToGroup";
@@ -31,6 +32,7 @@ import { CreateThreadModal } from "./modals/CreateThread";
 import { CreateWebhookModal } from "./modals/CreateWebhook";
 import { CustomStatusModal } from "./modals/CustomStatus";
 import { DeleteAccountConfirmModal } from "./modals/DeleteAccountConfirm";
+import { DeleteAccountNoEmailModal } from "./modals/DeleteAccountNoEmail";
 import { DeleteAccountRequestedModal } from "./modals/DeleteAccountRequested";
 import { DeleteBotModal } from "./modals/DeleteBot";
 import { DeleteCategoryModal } from "./modals/DeleteCategory";
@@ -131,6 +133,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
   switch (modalProps.type) {
     case "add_bot":
       return <AddBotModal {...modalProps} />;
+    case "add_email":
+      return <AddEmailModal {...modalProps} />;
     case "add_friend":
       return <AddFriendModal {...modalProps} />;
     case "ban_member":
@@ -210,6 +214,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <CustomStatusModal {...modalProps} />;
     case "delete_account_confirm":
       return <DeleteAccountConfirmModal {...modalProps} />;
+    case "delete_account_no_email":
+      return <DeleteAccountNoEmailModal {...modalProps} />;
     case "delete_account_requested":
       return <DeleteAccountRequestedModal {...modalProps} />;
     case "delete_bot":

@@ -40,6 +40,7 @@ import { styled } from "styled-system/jsx";
 import { FlowTitle } from "./Flow";
 import { Fields, Form, FormError } from "./Form";
 import hopOnSloga from "./hop-on-sloga.mp4";
+import { passkeyRecoveryOffered } from "./passkeySignup";
 
 /**
  * Outcome of checking a referral code against the server
@@ -96,7 +97,9 @@ async function fetchReferralCheck(code: string): Promise<ReferralCheck> {
  * Server invite code from a pending `/invite/:code` redirect, if signup
  * started from an invite link
  */
-function inviteCodeFromPath(path: string | undefined): string | undefined {
+export function inviteCodeFromPath(
+  path: string | undefined,
+): string | undefined {
   const code = path?.match(/^\/invite\/([^/?#]+)\/?$/)?.[1];
   return code && code.length <= INVITE_CODE_MAX_LENGTH ? code : undefined;
 }
@@ -364,7 +367,29 @@ async function fetchPasskeySignIn(): Promise<PasskeySignIn> {
 
   if (await passkeysSupported()) return "offer";
 
-  return isNativeShell() && !Capacitor.isNativePlatform() ? "desktop" : "off";
+  return isDesktopShell() ? "desktop" : "off";
+}
+
+/**
+ * Whether this is one of the desktop apps (Tauri or Electron), which cannot
+ * use passkeys yet
+ */
+function isDesktopShell(): boolean {
+  return isNativeShell() && !Capacitor.isNativePlatform();
+}
+
+/**
+ * Whether the login form links to lost-passkey recovery. Only when the
+ * server offers it; the link is mailed, so this device needs no passkey
+ * support. Never in the desktop apps: recovery ends by signing in with the
+ * new passkey, which they cannot do.
+ */
+async function fetchPasskeyRecovery(): Promise<boolean> {
+  if (isDesktopShell()) return false;
+
+  return passkeyRecoveryOffered(
+    await getPasskeysAdvert(CONFIGURATION.DEFAULT_API_URL),
+  );
 }
 
 /**
@@ -380,6 +405,7 @@ export default function FlowLogin() {
   const [keepLoggedIn, setKeepLoggedIn] = createSignal(true);
   const [oauthGoogle] = createResource(fetchOauthGoogleEnabled);
   const [passkeySignIn] = createResource(fetchPasskeySignIn);
+  const [passkeyRecovery] = createResource(fetchPasskeyRecovery);
 
   const [passkeyBusy, setPasskeyBusy] = createSignal(false);
   const [passkeyError, setPasskeyError] = createSignal<unknown>();
@@ -608,6 +634,15 @@ export default function FlowLogin() {
                       Settings on your phone to use the desktop app.
                     </Trans>
                   </Text>
+                </Show>
+                <Show when={passkeyRecovery()}>
+                  <Row align justify>
+                    <a href="/login/passkey/lost">
+                      <Button variant="text">
+                        <Trans>Lost your passkey?</Trans>
+                      </Button>
+                    </a>
+                  </Row>
                 </Show>
                 <Show when={oauthGoogle()}>
                   <Row align justify>

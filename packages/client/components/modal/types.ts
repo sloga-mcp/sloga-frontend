@@ -39,6 +39,11 @@ export type Modals =
       invite: PublicBot;
     }
   | {
+      /** Give an account that has no email its first address */
+      type: "add_email";
+      client: Client;
+    }
+  | {
       type: "add_friend";
       client: Client;
       /** Prefill and lock the username (e.g. from a context menu), leaving
@@ -259,6 +264,14 @@ export type Modals =
   | {
       /** Account deletion was requested; the user must confirm from email */
       type: "delete_account_requested";
+    }
+  | {
+      /**
+       * Delete an account that has no email: a typed username and a ticket,
+       * final at once. The modal sends the request and signs out itself.
+       */
+      type: "delete_account_no_email";
+      client: Client;
     }
   | {
       type: "delete_bot";

@@ -8,10 +8,28 @@ import { Button, Row, Text, iconSize } from "@revolt/ui";
 
 import MdArrowBack from "@material-design-icons/svg/filled/arrow_back.svg?component-solid";
 
-import { Show } from "solid-js";
+import {
+  getPasskeysAdvert,
+  passkeysSupported,
+} from "@revolt/common/lib/passkey";
+import { Show, createResource } from "solid-js";
 import { FlowTitle } from "./Flow";
 import { setFlowCheckEmail } from "./FlowCheck";
 import { Fields, Form } from "./Form";
+import { passkeySignupGate } from "./passkeySignup";
+
+/**
+ * Whether the page links to passkey sign-up: only when the server offers it
+ * and this device can create a passkey. Never rejects.
+ */
+async function fetchPasskeySignupOffered(): Promise<boolean> {
+  const [advert, supported] = await Promise.all([
+    getPasskeysAdvert(CONFIGURATION.DEFAULT_API_URL),
+    passkeysSupported(),
+  ]);
+
+  return passkeySignupGate(advert, supported) !== "off";
+}
 
 /**
  * Flow for creating a new account
@@ -23,6 +41,7 @@ export default function FlowCreate() {
   const { code } = useParams();
   const modals = useModals();
   const { login } = useClientLifecycle();
+  const [passkeySignup] = createResource(fetchPasskeySignupOffered);
 
   /**
    * Create an account
@@ -121,6 +140,15 @@ export default function FlowCreate() {
           </Button>
         </Row>
       </Form>
+      <Show when={passkeySignup()}>
+        <Row align justify>
+          <a href={`/login/passkey/create${code ? "/" + code : ""}`}>
+            <Button variant="tonal">
+              <Trans>Sign up with a passkey</Trans>
+            </Button>
+          </a>
+        </Row>
+      </Show>
       {import.meta.env.DEV && (
         <div
           style={{

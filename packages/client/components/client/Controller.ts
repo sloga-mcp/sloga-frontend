@@ -808,7 +808,7 @@ function apiErrorType(error: unknown): string | undefined {
  * Friendly name for a new session on this device, sent with every kind of
  * login
  */
-function sessionFriendlyName(): string {
+export function sessionFriendlyName(): string {
   const browser = detect();
 
   // Generate a friendly name for this browser
@@ -836,6 +836,18 @@ function sessionFriendlyName(): string {
   }
 
   return friendly_name;
+}
+
+/**
+ * Thrown by `completeLogin` when this page cannot take a new session: one is
+ * already in use, or another login is under way. The new session was not
+ * stored.
+ */
+export class SessionInUseError extends Error {
+  constructor() {
+    super("This page already has a session in use");
+    this.name = "SessionInUseError";
+  }
 }
 
 /**
@@ -876,6 +888,7 @@ export default class ClientController {
     this.login = this.login.bind(this);
     this.passkeyLogin = this.passkeyLogin.bind(this);
     this.completeOauth = this.completeOauth.bind(this);
+    this.completeLogin = this.completeLogin.bind(this);
     this.logout = this.logout.bind(this);
     this.selectUsername = this.selectUsername.bind(this);
     this.isLoggedIn = this.isLoggedIn.bind(this);
@@ -1006,14 +1019,48 @@ export default class ClientController {
   }
 
   /**
+   * Enter the app with a login response that was made outside the login
+   * form: the end of a passkey sign-up or of a lost-passkey recovery. Does
+   * with it what `login` does with the server's answer, and keeps the device
+   * signed in, as the login form does unless its box is unticked.
+   *
+   * The caller has no login form to fall back on, so a response that is not
+   * stored is an error here, never a silent return.
+   * @param session Login response
+   * @param friendly_name Session name the response was asked for with
+   * @throws {SessionInUseError} When this page cannot take a new session
+   */
+  async completeLogin(
+    session: API.ResponseLogin,
+    modals: ModalControllerExtended,
+    friendly_name?: string,
+  ) {
+    // Before anything is written. A disabled account is still reported.
+    if (
+      session.result !== "Disabled" &&
+      this.lifecycle.state() !== State.Ready
+    ) {
+      throw new SessionInUseError();
+    }
+
+    this.state.auth.setRemember(true);
+
+    if (!(await this.completeLoginResponse(session, modals, friendly_name))) {
+      throw new SessionInUseError();
+    }
+  }
+
+  /**
    * Handle a login response: walk the MFA flow if required, then store
    * the session and transition into the logged-in lifecycle.
+   * @returns Whether the session was stored; false when another login got
+   * there first
    */
   private async completeLoginResponse(
     session: API.ResponseLogin,
     modals: ModalControllerExtended,
     friendly_name?: string,
-  ) {
+  ): Promise<boolean> {
     // Prompt for MFA verification if necessary
     if (session.result === "MFA") {
       const { allowed_methods } = session;
@@ -1081,7 +1128,7 @@ export default class ClientController {
     // another login got there first, while this one waited on the server or
     // on its MFA step: that session stands and this one is not stored over
     // it.
-    if (this.lifecycle.state() !== State.Ready) return;
+    if (this.lifecycle.state() !== State.Ready) return false;
 
     const createdSession = {
       _id: session._id,
@@ -1095,6 +1142,8 @@ export default class ClientController {
       type: TransitionType.LoginUncached,
       session: createdSession,
     });
+
+    return true;
   }
 
   async selectUsername(

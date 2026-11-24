@@ -34,16 +34,18 @@ import MdKey from "@material-design-icons/svg/outlined/key.svg?component-solid";
 import {
   type PasskeyAction,
   type PasskeyProblem,
+  addPasskeyStep,
+  mayCreatePasskeyNow,
   passkeyProblem,
 } from "./passkeyRules";
 
 /** Something the list tells the user in its own row */
-type Notice = PasskeyProblem | "create_failed" | "unavailable";
+type Notice = PasskeyProblem | "create_failed" | "unavailable" | "start_over";
 
 /** A passkey that is named and confirmed, and only needs its prompt */
 interface PendingPasskey {
   name: string;
-  /** Absent for an account with no way to confirm */
+  /** Absent when the server asked for none */
   ticket?: MFATicket;
 }
 
@@ -172,10 +174,15 @@ function PasskeyList() {
   }
 
   /**
-   * Start adding a passkey. Order matters: the name is settled first, then
-   * the ticket, because a refused request spends the ticket. The prompt
-   * comes last and from a tap of its own (`create`): browsers only open it
-   * shortly after one, and the tap on "Add a passkey" is too old by then.
+   * Start adding a passkey. Order matters: the server is asked first
+   * whether it wants a ticket (and refuses here, before anything is typed,
+   * a session it would not take a passkey from), then the name is settled,
+   * then the ticket, because a refused request spends the ticket. The
+   * prompt comes last and from a tap of its own (`create`): browsers only
+   * open it shortly after one, and the tap on "Add a passkey" is too old
+   * by then.
+   *
+   * The challenge of this first start is not used; `create` asks again.
    */
   async function add() {
     if (busy()) return;
@@ -183,22 +190,37 @@ function PasskeyList() {
     setBusy(true);
     setNotice(undefined);
 
+    let action: PasskeyAction = "start";
+
     try {
+      const start = await client().passkeys.registerStart();
+      action = "add";
+
       const name = await askName(defaultPasskeyName());
       if (!name) return;
 
-      // An account with no way to confirm sends no ticket; the server
-      // decides whether its session is fresh enough
-      const mfa = await client().account.mfa();
+      // No ticket wanted: a first passkey on an account made with Google
+      // or Apple, signed in a moment ago. Nothing is asked for.
       let ticket: MFATicket | undefined;
-      if (mfa.availableMethods.length > 0) {
-        ticket = await mfaFlow(mfa);
-        if (!ticket) return;
+      if (start.ticket_required) {
+        const mfa = await client().account.mfa();
+
+        switch (addPasskeyStep(true, mfa.availableMethods.length)) {
+          case "confirm":
+            ticket = await mfaFlow(mfa);
+            if (!ticket) return;
+            break;
+          case "sign_in_again":
+            setNotice("sign_in_again");
+            return;
+          case "create":
+            break;
+        }
       }
 
       offerCreate({ name, ticket });
     } catch (error) {
-      explain(error, "add");
+      explain(error, action);
     } finally {
       setBusy(false);
     }
@@ -215,8 +237,21 @@ function PasskeyList() {
     setBusy(true);
     setNotice(undefined);
 
+    let action: PasskeyAction = "start";
+
     try {
       const challenge = await client().passkeys.registerStart();
+      action = "add";
+
+      // The server wants a ticket now and none is in hand (the session
+      // got too old while this step waited): stop before the device makes
+      // a passkey that would not be stored
+      if (!mayCreatePasskeyNow(challenge.ticket_required, !!passkey.ticket)) {
+        offerCreate(undefined);
+        setNotice("start_over");
+        return;
+      }
+
       const credential = await createPasskey(challenge.options);
 
       // The ticket is spent from here on, whatever the answer
@@ -231,7 +266,7 @@ function PasskeyList() {
 
       await refresh();
     } catch (error) {
-      explain(error, "add");
+      explain(error, action);
 
       // A prompt that was closed, or never appeared, can be tried again
       // with the same ticket; after anything else the step starts over
@@ -322,8 +357,28 @@ function PasskeyList() {
             minutes.
           </Trans>
         );
+      case "after_reset":
+        return (
+          <Trans>
+            Your password was reset. Sign out and sign in again, then add the
+            passkey.
+          </Trans>
+        );
       case "not_accepted":
-        return <Trans>The passkey was not accepted. Try again.</Trans>;
+        // The server gives this answer too when a password reset came in
+        // while the passkey was being added
+        return (
+          <Trans>
+            The passkey was not accepted. Try again. If your password was just
+            reset, sign out and sign in again first.
+          </Trans>
+        );
+      case "start_over":
+        return (
+          <Trans>
+            That took too long. Select Add a passkey to start again.
+          </Trans>
+        );
       case "already_added":
         return <Trans>This passkey is already on your account.</Trans>;
       case "limit":

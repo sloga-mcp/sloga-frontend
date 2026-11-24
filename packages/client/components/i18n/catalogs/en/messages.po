@@ -2577,6 +2577,326 @@ msgstr "Nothing happened? Try again."
 msgid "Passkeys do not work in the desktop app yet. If your account signs in with a passkey, add a password in Settings on your phone to use the desktop app."
 msgstr "Passkeys do not work in the desktop app yet. If your account signs in with a passkey, add a password in Settings on your phone to use the desktop app."
 
+#: components/auth/src/flows/FlowPasskeyLost.tsx
+#: components/auth/src/flows/FlowLogin.tsx
+msgid "Lost your passkey?"
+msgstr "Lost your passkey?"
+
+#: components/auth/src/flows/FlowCreate.tsx
+msgid "Sign up with a passkey"
+msgstr "Sign up with a passkey"
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Create an account with a passkey"
+msgstr "Create an account with a passkey"
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "No password. You sign in with your fingerprint, face or screen lock."
+msgstr "No password. You sign in with your fingerprint, face or screen lock."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "With an email you can get back in if you lose your passkey. We send a code to confirm it."
+msgstr "With an email you can get back in if you lose your passkey. We send a code to confirm it."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Sign up without an email"
+msgstr "Sign up without an email"
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Without an email, a lost passkey cannot be replaced. Nobody, including Sloga, can get you back into the account. Supporter perks and referral rewards also need an email."
+msgstr "Without an email, a lost passkey cannot be replaced. Nobody, including Sloga, can get you back into the account. Supporter perks and referral rewards also need an email."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "I understand that this account cannot be recovered if I lose my passkey"
+msgstr "I understand that this account cannot be recovered if I lose my passkey"
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Use a password instead"
+msgstr "Use a password instead"
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Confirm your email"
+msgstr "Confirm your email"
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Start again"
+msgstr "Start again"
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Sent. Only the newest code works."
+msgstr "Sent. Only the newest code works."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "If a code could be sent, only the newest one works."
+msgstr "If a code could be sent, only the newest one works."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Then come back here and sign in with your passkey."
+msgstr "Then come back here and sign in with your passkey."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Create your passkey"
+msgstr "Create your passkey"
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Signing up without an email is not available right now. Add an email to continue."
+msgstr "Signing up without an email is not available right now. Add an email to continue."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "That code is wrong or has expired. Check it, or start again."
+msgstr "That code is wrong or has expired. Check it, or start again."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "This sign-up has expired. Start again."
+msgstr "This sign-up has expired. Start again."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "This invite code is not valid."
+msgstr "This invite code is not valid."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "You need an invite code to sign up."
+msgstr "You need an invite code to sign up."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "This passkey is already registered. Start again and create a new one."
+msgstr "This passkey is already registered. Start again and create a new one."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Tick the box to confirm before you continue."
+msgstr "Tick the box to confirm before you continue."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Enter the 8 digits from the email."
+msgstr "Enter the 8 digits from the email."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Too many wrong codes. Start again."
+msgstr "Too many wrong codes. Start again."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "The passkey could not be created. Try again."
+msgstr "The passkey could not be created. Try again."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Enter the 8-digit code sent to {email}. If no code arrives, try again later."
+msgstr "Enter the 8-digit code sent to {email}. If no code arrives, try again later."
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Send again in {seconds} s"
+msgstr "Send again in {seconds} s"
+
+#: components/auth/src/flows/FlowCreatePasskey.tsx
+msgid "Send again"
+msgstr "Send again"
+
+#: components/auth/src/flows/FlowPasskeyLost.tsx
+msgid "If an account with a passkey uses this email, we sent it a link. The link works for 30 minutes."
+msgstr "If an account with a passkey uses this email, we sent it a link. The link works for 30 minutes."
+
+#: components/auth/src/flows/FlowPasskeyLost.tsx
+msgid "Enter the email of your account. We send a link that lets you create a new passkey. This works only for accounts that have an email."
+msgstr "Enter the email of your account. We send a link that lets you create a new passkey. This works only for accounts that have an email."
+
+#: components/auth/src/flows/FlowPasskeyLost.tsx
+msgid "Send link"
+msgstr "Send link"
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "Checking your link…"
+msgstr "Checking your link…"
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "This link does not work"
+msgstr "This link does not work"
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "This link has expired or was already used. You can ask for a new one."
+msgstr "This link has expired or was already used. You can ask for a new one."
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "Ask for a new link"
+msgstr "Ask for a new link"
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "Could not check your link"
+msgstr "Could not check your link"
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "Could not check the link. Try again."
+msgstr "Could not check the link. Try again."
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "Open the link from the email again"
+msgstr "Open the link from the email again"
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "You are signed in on this device. Sign out first, then open the link again."
+msgstr "You are signed in on this device. Sign out first, then open the link again."
+
+#: components/auth/src/flows/passkeySession.ts
+msgid "This device is already signed in, so the new sign-in was not kept. Sign out, then sign in with your passkey."
+msgstr "This device is already signed in, so the new sign-in was not kept. Sign out, then sign in with your passkey."
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "Create a new passkey"
+msgstr "Create a new passkey"
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "This removes every other passkey from your account and signs you out on every device. You then sign in with the new passkey."
+msgstr "This removes every other passkey from your account and signs you out on every device. You then sign in with the new passkey."
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "Your account asks for a second step. Enter a code from your authenticator app, or one of your recovery codes."
+msgstr "Your account asks for a second step. Enter a code from your authenticator app, or one of your recovery codes."
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "Create new passkey"
+msgstr "Create new passkey"
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "This link has expired or was already used."
+msgstr "This link has expired or was already used."
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "That code is wrong, so the new passkey was not saved. Enter a code and try again."
+msgstr "That code is wrong, so the new passkey was not saved. Enter a code and try again."
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "Too many wrong codes. Wait a few minutes, then try again."
+msgstr "Too many wrong codes. Wait a few minutes, then try again."
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "This passkey is already registered. Try again to create a new one."
+msgstr "This passkey is already registered. Try again to create a new one."
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "Enter an authenticator code or a recovery code."
+msgstr "Enter an authenticator code or a recovery code."
+
+#: components/auth/src/flows/FlowPasskeyRecover.tsx
+msgid "Authenticator or recovery code"
+msgstr "Authenticator or recovery code"
+
+#: components/auth/src/flows/FlowConfirmReset.tsx
+msgid "Resetting your password removes the passkeys on your account."
+msgstr "Resetting your password removes the passkeys on your account."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "Your password was reset. Sign out and sign in again, then add the passkey."
+msgstr "Your password was reset. Sign out and sign in again, then add the passkey."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "The passkey was not accepted. Try again. If your password was just reset, sign out and sign in again first."
+msgstr "The passkey was not accepted. Try again. If your password was just reset, sign out and sign in again first."
+
+#: components/app/interface/settings/user/account/Passkeys.tsx
+msgid "That took too long. Select Add a passkey to start again."
+msgstr "That took too long. Select Add a passkey to start again."
+
+#: components/app/interface/settings/user/Account.tsx
+msgid "No email"
+msgstr "No email"
+
+#: components/app/interface/settings/user/Account.tsx
+#: components/modal/modals/AddEmail.tsx
+msgid "Add an email"
+msgstr "Add an email"
+
+#: components/app/interface/settings/user/Account.tsx
+msgid "With an email you can get back in if you lose your passkey."
+msgstr "With an email you can get back in if you lose your passkey."
+
+#: components/app/interface/settings/user/Account.tsx
+msgid "Your account has no email, so there is no link to confirm. Once you type your username and confirm, your account and data are deleted right away. This can't be undone."
+msgstr "Your account has no email, so there is no link to confirm. Once you type your username and confirm, your account and data are deleted right away. This can't be undone."
+
+#: components/modal/modals/AddEmail.tsx
+msgid "Send code"
+msgstr "Send code"
+
+#: components/modal/modals/AddEmail.tsx
+msgid "You confirm it is you, then we email a code to this address."
+msgstr "You confirm it is you, then we email a code to this address."
+
+#: components/modal/modals/AddEmail.tsx
+msgid "If that address can be used, we sent an 8-digit code to it. Enter the code here. It works for 15 minutes."
+msgstr "If that address can be used, we sent an 8-digit code to it. Enter the code here. It works for 15 minutes."
+
+#: components/modal/modals/AddEmail.tsx
+msgid "Adding an email is turned off right now."
+msgstr "Adding an email is turned off right now."
+
+#: components/modal/modals/AddEmail.tsx
+msgid "This account already has an email."
+msgstr "This account already has an email."
+
+#: components/modal/modals/AddEmail.tsx
+msgid "That email address cannot be used."
+msgstr "That email address cannot be used."
+
+#: components/modal/modals/AddEmail.tsx
+msgid "The email could not be sent. Try again later."
+msgstr "The email could not be sent. Try again later."
+
+#: components/modal/modals/AddEmail.tsx
+msgid "That code is wrong or has expired. Check it, or send a new one."
+msgstr "That code is wrong or has expired. Check it, or send a new one."
+
+#: components/modal/modals/AddEmail.tsx
+#: components/modal/modals/DeleteAccountNoEmail.tsx
+msgid "That was not confirmed in time. Try again."
+msgstr "That was not confirmed in time. Try again."
+
+#: components/modal/modals/DeleteAccountNoEmail.tsx
+msgid "Your account is deleted"
+msgstr "Your account is deleted"
+
+#: components/modal/modals/DeleteAccountNoEmail.tsx
+msgid "Your account and everything tied to it are being removed. You are signed out when you close this."
+msgstr "Your account and everything tied to it are being removed. You are signed out when you close this."
+
+#: components/modal/modals/DeleteAccountNoEmail.tsx
+msgid "Your account has no email, so there is no link to confirm. Your account and everything tied to it are deleted as soon as you confirm. This can't be undone."
+msgstr "Your account has no email, so there is no link to confirm. Your account and everything tied to it are deleted as soon as you confirm. This can't be undone."
+
+#: components/modal/modals/DeleteAccountNoEmail.tsx
+msgid "Type your username to confirm"
+msgstr "Type your username to confirm"
+
+#: components/modal/modals/DeleteAccountNoEmail.tsx
+msgid "That is not your username. Type it exactly, capitals included."
+msgstr "That is not your username. Type it exactly, capitals included."
+
+#: components/modal/modals/DeleteAccountNoEmail.tsx
+msgid "Nothing was deleted"
+msgstr "Nothing was deleted"
+
+#: components/modal/modals/DeleteAccountNoEmail.tsx
+msgid "Your account has an email now, so deleting it is confirmed from a link we email you. Close this and select Delete Account again."
+msgstr "Your account has an email now, so deleting it is confirmed from a link we email you. Close this and select Delete Account again."
+
+#: components/modal/modals/DeleteAccountNoEmail.tsx
+msgid "Nothing was deleted. Try again. If you own a server, transfer or delete it first."
+msgstr "Nothing was deleted. Try again. If you own a server, transfer or delete it first."
+
+#: components/modal/modals/EditEmail.tsx
+msgid "Add a password first to change your email."
+msgstr "Add a password first to change your email."
+
+#: components/modal/modals/EditEmail.tsx
+msgid "This account has no email to change."
+msgstr "This account has no email to change."
+
+#: components/modal/modals/EditPassword.tsx
+msgid "This account has no email. Add an email first, then set a password."
+msgstr "This account has no email. Add an email first, then set a password."
+
+#: components/i18n/errors.ts
+msgid "That way of confirming cannot be used here. Pick another one."
+msgstr "That way of confirming cannot be used here. Pick another one."
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Contrast"
 msgstr "Contrast"
