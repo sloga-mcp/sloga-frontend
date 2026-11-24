@@ -657,6 +657,11 @@ export const CLIENT_REASONS_WITH_COPY = [
   // S4 `protect` that went through with something left out (R-W4-35, B7).
   "protected_members_pending",
   "wipe_not_done",
+  // Second fix round (RB2, RB3): the member step rejected over a seat list
+  // that is not the owner alone, and the two left out at once.
+  "protected_members_unconfirmed",
+  "wipe_not_done_members_pending",
+  "wipe_not_done_members_unconfirmed",
 ] as const;
 
 export type ClientReasonWithCopy = (typeof CLIENT_REASONS_WITH_COPY)[number];
@@ -691,6 +696,12 @@ export function clientReasonCopy(reason: ClientReasonWithCopy): string {
       return protectedMembersPendingCopy();
     case "wipe_not_done":
       return protectedWipeNotDoneCopy();
+    case "protected_members_unconfirmed":
+      return protectedMembersUnconfirmedCopy();
+    case "wipe_not_done_members_pending":
+      return protectedWipeNotDoneMembersPendingCopy();
+    case "wipe_not_done_members_unconfirmed":
+      return protectedWipeNotDoneMembersUnconfirmedCopy();
     default: {
       const _exhaustive: never = reason;
       return verifyChannelFailedCopy();
@@ -879,6 +890,34 @@ function protectedWipeNotDoneCopy(): string {
   return t`This channel is now protected, but the earlier messages were not deleted.`;
 }
 
+/**
+ * `protect` rejected `protected_members_unconfirmed` (re-review RB2): the
+ * channel is protected and the member step rejected, but the seat list
+ * read afterwards names more than the owner, or could not be read. The
+ * line claims neither "only you" nor "added": the seat list below shows
+ * what is there.
+ */
+function protectedMembersUnconfirmedCopy(): string {
+  return t`This channel is now protected. Adding the members you picked didn't finish. Check the seats below.`;
+}
+
+/**
+ * `protect` rejected `wipe_not_done_members_pending` (re-review RB3): both
+ * of the above at once, with the owner alone on the list.
+ */
+function protectedWipeNotDoneMembersPendingCopy(): string {
+  return t`This channel is now protected, with only you in it. The earlier messages were not deleted, and the members you picked weren't added yet. You can add them below.`;
+}
+
+/**
+ * `protect` rejected `wipe_not_done_members_unconfirmed` (RB2 + RB3): the
+ * wipe was not done and the member step rejected with a seat list that
+ * names more than the owner, or that could not be read.
+ */
+function protectedWipeNotDoneMembersUnconfirmedCopy(): string {
+  return t`This channel is now protected, but the earlier messages were not deleted. Adding the members you picked didn't finish. Check the seats below.`;
+}
+
 export const settingsCopy = {
   /** Settings tab label and page title. */
   title: protectedChannelCopy,
@@ -941,6 +980,12 @@ export const settingsCopy = {
   membersPending: protectedMembersPendingCopy,
   /** After a protect that could not do the wipe that was ticked. */
   wipeNotDone: protectedWipeNotDoneCopy,
+  /** The member step rejected, and the seat list is not the owner alone. */
+  membersUnconfirmed: protectedMembersUnconfirmedCopy,
+  /** No wipe and no members, with the owner alone on the list. */
+  wipeNotDoneMembersPending: protectedWipeNotDoneMembersPendingCopy,
+  /** No wipe, and the member step rejected with more than the owner seated. */
+  wipeNotDoneMembersUnconfirmed: protectedWipeNotDoneMembersUnconfirmedCopy,
   /** Checkbox on the protect form (off by default). */
   deleteEarlierOption: (): string => t`Also delete the earlier messages`,
   /** What a wipe does, under the checkbox and the wipe action. */
@@ -1127,13 +1172,18 @@ export const notificationCopy = {
 
 /**
  * What a backup or a restore left out of the protected channel history.
- * `oldest` / `all`: the bundle's or report's `text_truncated`.
+ * `oldest` / `all`: the bundle's `text_truncated`.
+ * `restore_oldest` / `restore_all`: a restore report's `text_truncated`
+ * (what the restored backup had left out). Worded about the restore, so
+ * neither repeats a bundle line shown on the same page.
  * `skipped_partial` / `skipped_all`: the report's `text_skipped`, with and
  * without `text_truncated` beside it.
  */
 export type BackupTextKind =
   | "oldest"
   | "all"
+  | "restore_oldest"
+  | "restore_all"
   | "skipped_partial"
   | "skipped_all";
 
@@ -1144,6 +1194,10 @@ export function backupTextCopy(kind: BackupTextKind): string {
       return t`The oldest history from your protected channels didn't fit in this backup.`;
     case "all":
       return t`History from your protected channels didn't fit in this backup.`;
+    case "restore_oldest":
+      return t`The oldest history from your protected channels wasn't in the backup, so it couldn't be restored.`;
+    case "restore_all":
+      return t`History from your protected channels wasn't in the backup, so it couldn't be restored.`;
     case "skipped_partial":
       return t`Some history from your protected channels couldn't be restored.`;
     case "skipped_all":
@@ -1155,10 +1209,12 @@ export function backupTextCopy(kind: BackupTextKind): string {
   }
 }
 
-/** The two general backup lines of design 9.5. */
+/**
+ * The general backup line of design 9.5. The design's second line
+ * ("Restoring replaces your old device.") is not here: a restore adds a
+ * device and the others keep working, and nothing rendered it.
+ */
 export const backupNoteCopy = {
-  /** Before a restore. */
-  replacesOldDevice: (): string => t`Restoring replaces your old device.`,
   /** The protected channel section shares the backup's size limit. */
   textBudget: (): string =>
     t`History from protected channels uses up to 2 MB of your backup, so fewer direct messages may fit.`,

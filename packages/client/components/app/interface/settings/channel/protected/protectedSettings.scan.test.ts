@@ -1870,6 +1870,7 @@ describe("protected channel settings (C11)", () => {
     assert.ok(at !== -1, "helper import missing");
     const imp = PAGE.slice(PAGE.lastIndexOf("import {", at), at);
     for (const name of [
+      "historyCheckWaitMs",
       "historyCheckingShown",
       "historyFailureKind",
       "historySectionModel",
@@ -1912,15 +1913,18 @@ describe("protected channel settings (C11)", () => {
       fn,
       /\} finally \{\s*setPending\(null\);\s*\}\s*setDraft\(protectDraftStep\(draft\(\), \{ type: "done" \}\)\);\s*setProtectOutcome\(outcome\);\s*rereadSeats\(\);\s*$/,
     );
-    // The line: the two settingsCopy strings, as a status, outside the
-    // error notice.
+    // The line: one settingsCopy string per outcome (RB2, RB3: five of
+    // them), as a status, outside the error notice.
     assert.match(
       PAGE_BODY,
-      /case "members_pending":\s*return settingsCopy\.membersPending\(\);\s*case "wipe_not_done":\s*return settingsCopy\.wipeNotDone\(\);/,
+      /case "members_pending":\s*return settingsCopy\.membersPending\(\);\s*case "members_unconfirmed":\s*return settingsCopy\.membersUnconfirmed\(\);\s*case "wipe_not_done":\s*return settingsCopy\.wipeNotDone\(\);\s*case "wipe_not_done_members_pending":\s*return settingsCopy\.wipeNotDoneMembersPending\(\);\s*case "wipe_not_done_members_unconfirmed":\s*return settingsCopy\.wipeNotDoneMembersUnconfirmed\(\);\s*default: \{\s*const _exhaustive: never = outcome;/,
     );
     for (const name of [
       "settingsCopy.membersPending()",
+      "settingsCopy.membersUnconfirmed()",
       "settingsCopy.wipeNotDone()",
+      "settingsCopy.wipeNotDoneMembersPending()",
+      "settingsCopy.wipeNotDoneMembersUnconfirmed()",
     ]) {
       assert.equal(PAGE_BODY.split(name).length, 2, name);
     }
@@ -1945,14 +1949,22 @@ describe("protected channel settings (C11)", () => {
     }
   });
 
-  test("S35 W4 fix: the page asks the bridge for a verify through the once-per-channel rule only, and shows the checking line meanwhile (C6)", () => {
+  test("S35 W4 fix: the page source asks the bridge for a verify through the once-per-channel rule only, and ends the checking line with one timer of its own that is cleared on unmount and on every run of the effect (C6, RB6)", () => {
     // Three retryNow call sites in all: Finish now, the re-read after a
     // rejected history call, and this one.
     assert.equal((PAGE_BODY.match(/\.retryNow\(/g) ?? []).length, 3);
+    // RB6: the ask is stamped with the real time, never the page's 30 s
+    // tick. Each run of the effect (a channel change included) clears the
+    // timer, and sets one for what the pure rule says is left.
     assert.match(
       PAGE_BODY,
-      /createEffect\(\(\) => \{\s*const input = verifyInput\(untrack\(now\)\);\s*const step = historyVerifyStep\(untrack\(verifyAsks\), input\);\s*if \(!step\.ask\) return;\s*setVerifyAsks\(step\.asks\);\s*readUi\(\(api\) => api\.retryNow\(input\.channelId\), undefined\);\s*\}\);/,
+      /createEffect\(\(\) => \{\s*const at = Date\.now\(\);\s*const input = verifyInput\(at\);\s*const step = historyVerifyStep\(untrack\(verifyAsks\), input\);\s*clearCheckTimer\(\);\s*setCheckNow\(at\);\s*const wait = historyCheckWaitMs\(step\.asks, input\.channelId, at\);\s*if \(wait !== null\) \{\s*checkTimer = setTimeout\(\(\) => \{\s*checkTimer = undefined;\s*setCheckNow\(Math\.max\(Date\.now\(\), at \+ wait\)\);\s*\}, wait\);\s*\}\s*if \(!step\.ask\) return;\s*setVerifyAsks\(step\.asks\);\s*readUi\(\(api\) => api\.retryNow\(input\.channelId\), undefined\);\s*\}\);/,
     );
+    assert.match(
+      PAGE_BODY,
+      /const clearCheckTimer = \(\) => \{\s*if \(checkTimer === undefined\) return;\s*clearTimeout\(checkTimer\);\s*checkTimer = undefined;\s*\};\s*onCleanup\(clearCheckTimer\);/,
+    );
+    assert.doesNotMatch(PAGE_BODY, /untrack\(now\)/);
     assert.equal((PAGE_BODY.match(/\bhistoryVerifyStep\(/g) ?? []).length, 1);
     // What was asked is kept for as long as the page is mounted: written
     // from the rule's answer only, never cleared.
@@ -1970,15 +1982,20 @@ describe("protected channel settings (C11)", () => {
     // The line: the existing "Checking" copy, from the pure rule.
     assert.match(
       PAGE_BODY,
-      /const historyChecking = \(\) =>\s*historyCheckingShown\(verifyAsks\(\), verifyInput\(now\(\)\)\);/,
+      /const historyChecking = \(\) =>\s*historyCheckingShown\(verifyAsks\(\), verifyInput\(checkNow\(\)\)\);/,
     );
     assert.match(
       PAGE_BODY,
       /<Show when=\{historyChecking\(\)\}>\s*<Info data-history-checking>\{rowStateCopy\("checking"\)\}<\/Info>\s*<\/Show>/,
     );
     assert.equal((PAGE_BODY.match(/rowStateCopy\(/g) ?? []).length, 1);
-    // No timer of its own: the page's one interval is the removal recheck.
+    // One timer of its own, and one place that moves the line's clock
+    // besides the effect: the page's one interval stays the removal
+    // recheck and no longer times this line.
     assert.equal((PAGE_BODY.match(/setInterval\(/g) ?? []).length, 1);
-    assert.doesNotMatch(PAGE_BODY, /setTimeout\(/);
+    assert.equal((PAGE_BODY.match(/setTimeout\(/g) ?? []).length, 1);
+    assert.equal((PAGE_BODY.match(/clearTimeout\(/g) ?? []).length, 1);
+    assert.equal((PAGE_BODY.match(/\bsetCheckNow\(/g) ?? []).length, 2);
+    assert.equal((PAGE_BODY.match(/\bcheckNow\(\)/g) ?? []).length, 1);
   });
 });

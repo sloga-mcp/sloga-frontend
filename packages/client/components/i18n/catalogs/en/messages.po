@@ -7742,16 +7742,20 @@ msgid "History from your protected channels didn't fit in this backup."
 msgstr "History from your protected channels didn't fit in this backup."
 
 #: components/client/protectedCopy.ts
+msgid "The oldest history from your protected channels wasn't in the backup, so it couldn't be restored."
+msgstr "The oldest history from your protected channels wasn't in the backup, so it couldn't be restored."
+
+#: components/client/protectedCopy.ts
+msgid "History from your protected channels wasn't in the backup, so it couldn't be restored."
+msgstr "History from your protected channels wasn't in the backup, so it couldn't be restored."
+
+#: components/client/protectedCopy.ts
 msgid "Some history from your protected channels couldn't be restored."
 msgstr "Some history from your protected channels couldn't be restored."
 
 #: components/client/protectedCopy.ts
 msgid "None of the history from your protected channels could be restored."
 msgstr "None of the history from your protected channels could be restored."
-
-#: components/client/protectedCopy.ts
-msgid "Restoring replaces your old device."
-msgstr "Restoring replaces your old device."
 
 #: components/client/protectedCopy.ts
 msgid "History from protected channels uses up to 2 MB of your backup, so fewer direct messages may fit."
@@ -11223,6 +11227,18 @@ msgstr "This channel is now protected, with only you in it. The members you pick
 #: components/client/protectedCopy.ts
 msgid "This channel is now protected, but the earlier messages were not deleted."
 msgstr "This channel is now protected, but the earlier messages were not deleted."
+
+#: components/client/protectedCopy.ts
+msgid "This channel is now protected. Adding the members you picked didn't finish. Check the seats below."
+msgstr "This channel is now protected. Adding the members you picked didn't finish. Check the seats below."
+
+#: components/client/protectedCopy.ts
+msgid "This channel is now protected, with only you in it. The earlier messages were not deleted, and the members you picked weren't added yet. You can add them below."
+msgstr "This channel is now protected, with only you in it. The earlier messages were not deleted, and the members you picked weren't added yet. You can add them below."
+
+#: components/client/protectedCopy.ts
+msgid "This channel is now protected, but the earlier messages were not deleted. Adding the members you picked didn't finish. Check the seats below."
+msgstr "This channel is now protected, but the earlier messages were not deleted. Adding the members you picked didn't finish. Check the seats below."
 
 #: components/client/protectedCopy.ts
 msgid "Messages in a protected channel are end-to-end encrypted. Only members you give a seat can read and send messages, on devices that support Protected channels."

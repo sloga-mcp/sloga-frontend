@@ -68,6 +68,8 @@
  *   a failed member step rejects `protected_members_pending`, and a wipe
  *   the caller asked for that the landed list does not carry rejects
  *   `wipe_not_done`. Both mean "protected, with something left out".
+ *   Second fix round (RB2, RB3): three more reasons of the same kind, see
+ *   `protect`.
  * - All three are refused while `history_setting` is off. Without `opts`,
  *   `protect` is the S2 flow, request for request.
  *
@@ -1649,9 +1651,12 @@ function failureTag(e: unknown): { source: string; tag: string | null } {
  * (refused while `history_setting` is off): an owner-only genesis over the
  * newest message (`protectFromBoundary`), then `seats` through `setSeats`
  * with its own growth dialog. If that second step fails for any reason (a
- * declined dialog included) the channel stays protected with the owner
- * alone and this rejects `protected_members_pending` (R-W4-35); nothing is
- * rolled back. A channel that turns out to have no message is protected by
+ * declined dialog included) the channel stays protected and nothing is
+ * rolled back (R-W4-35). The seats are then read once more: with the owner
+ * alone on the list this rejects `protected_members_pending`; with anyone
+ * else on it (the member list landed before the step failed), or when that
+ * read gives no list, it rejects `protected_members_unconfirmed` (RB2).
+ * A channel that turns out to have no message is protected by
  * the flow above (no boundary, and no wipe: there is nothing to delete).
  * `wipe: true` signs the genesis `pre_history: "wiped"` behind native's
  * dialog and is valid only with `withHistory`.
@@ -1661,7 +1666,16 @@ function failureTag(e: unknown): { source: string; tag: string | null } {
  * that resumed, or this device's genesis found on the server) and does not
  * say `wiped`. Nothing is signed to change that here: the channel is
  * protected, the earlier messages are still there, and the caller is told.
- * It is reported after the member step and wins over a failed one.
+ * It is reported after the member step. When that step failed as well the
+ * caller hears both (RB3): `wipe_not_done_members_pending` or
+ * `wipe_not_done_members_unconfirmed`, split as above.
+ *
+ * R-W4-40, the one exception to R-W4-34: with `wipe: true` every call signs
+ * its genesis through native and never re-sends stored bytes, but whether
+ * that sign shows a dialog is native's decision. Native keeps the owner's
+ * confirmation for the channel in memory for 60 s, so a second call inside
+ * that window, on a channel that is still unprotected, can sign and send
+ * `wipe_history` without a dialog of its own.
  */
 export async function protect(
   ops: GroupOps,
@@ -1746,6 +1760,7 @@ export async function protect(
     await publishProtect(ctx, signed);
   });
   let membersPending = false;
+  let seated: SeatedNow = "unknown";
   if (ownerOnly && unique.length > 1) {
     try {
       await setSeats(ops, port, channelId, unique, deviceCap);
@@ -1758,16 +1773,68 @@ export async function protect(
         channelId,
         ...failureTag(e),
       });
+      // RB2: the rejection can come after the member list landed (its
+      // read-back, verify or removals failed), so who is seated is read
+      // again rather than assumed.
+      seated = await seatedAfterMemberStep(ops, port, channelId, self);
     }
   }
+  const ownerAlone = seated === "owner";
   if (wipeMissed) {
     port.log("warn", "[protected] protected, the wipe asked for was not done", {
       channelId,
       membersPending,
     });
-    throw clientFailure("wipe_not_done");
+    // RB3: when the member step failed as well, the caller hears both.
+    if (!membersPending) throw clientFailure("wipe_not_done");
+    throw clientFailure(
+      ownerAlone
+        ? "wipe_not_done_members_pending"
+        : "wipe_not_done_members_unconfirmed",
+    );
   }
-  if (membersPending) throw clientFailure("protected_members_pending");
+  if (membersPending) {
+    throw clientFailure(
+      ownerAlone
+        ? "protected_members_pending"
+        : "protected_members_unconfirmed",
+    );
+  }
+}
+
+/** Who the server's seat list names after a failed member step. */
+type SeatedNow = "owner" | "more" | "unknown";
+
+/**
+ * One read of the seats after `protect`'s member step rejected (RB2).
+ * `owner`: the list seats the owner alone. `more`: it names someone else
+ * too. `unknown`: no answer, an unreadable one, or no list. One request and
+ * no retry: this only picks which of two reasons the caller hears, and
+ * anything but a readable owner-only list picks the one that claims less.
+ * The list is the server's word, not verified here; the seat list the page
+ * shows under the line is the verified one.
+ */
+async function seatedAfterMemberStep(
+  ops: GroupOps,
+  port: ProtectedTextPort,
+  channelId: string,
+  self: string,
+): Promise<SeatedNow> {
+  let seated: SeatedNow = "unknown";
+  try {
+    await run(ops, port, channelId, async (ctx) => {
+      const a = await request(ctx, "GET", `/channels/${channelId}/seats`);
+      if (a.kind !== "response" || !is2xx(a.response.status)) return;
+      const list = parseSeats(a.response.body)?.list ?? null;
+      if (list !== null) seated = seatsOnly(list, self) ? "owner" : "more";
+    });
+  } catch (e) {
+    port.log("warn", "[protected] seats not read after the member step", {
+      channelId,
+      ...failureTag(e),
+    });
+  }
+  return seated;
 }
 
 /**

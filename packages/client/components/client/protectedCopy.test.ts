@@ -164,8 +164,9 @@ function ownerCopy(failure: unknown): string | null {
 
 test("authority_needs_v2: the owner UI shows its own copy, not the catch-all", () => {
   // U11b added the four `moveOwnerKey` refusals (spec'd below); S4 added
-  // `protect_busy`, and the W4 fix round the two "protected, with something
-  // left out" reasons (all spec'd with the S4 copy).
+  // `protect_busy`, the W4 fix round the two "protected, with something
+  // left out" reasons and its second round three more (all spec'd with the
+  // S4 copy).
   assert.deepEqual(
     [...CLIENT_REASONS_WITH_COPY],
     [
@@ -174,6 +175,9 @@ test("authority_needs_v2: the owner UI shows its own copy, not the catch-all", (
       "protect_busy",
       "protected_members_pending",
       "wipe_not_done",
+      "protected_members_unconfirmed",
+      "wipe_not_done_members_pending",
+      "wipe_not_done_members_unconfirmed",
     ],
   );
   const text = ownerCopy(authorityFailure);
@@ -712,6 +716,10 @@ const BACKUP_TEXT = {
   oldest:
     "The oldest history from your protected channels didn't fit in this backup.",
   all: "History from your protected channels didn't fit in this backup.",
+  restore_oldest:
+    "The oldest history from your protected channels wasn't in the backup, so it couldn't be restored.",
+  restore_all:
+    "History from your protected channels wasn't in the backup, so it couldn't be restored.",
   skipped_partial:
     "Some history from your protected channels couldn't be restored.",
   skipped_all:
@@ -753,6 +761,12 @@ const SETTINGS_S4: Record<string, string> = {
     "This channel is now protected, with only you in it. The members you picked weren't added yet. You can add them below.",
   wipeNotDone:
     "This channel is now protected, but the earlier messages were not deleted.",
+  membersUnconfirmed:
+    "This channel is now protected. Adding the members you picked didn't finish. Check the seats below.",
+  wipeNotDoneMembersPending:
+    "This channel is now protected, with only you in it. The earlier messages were not deleted, and the members you picked weren't added yet. You can add them below.",
+  wipeNotDoneMembersUnconfirmed:
+    "This channel is now protected, but the earlier messages were not deleted. Adding the members you picked didn't finish. Check the seats below.",
   deleteEarlierOption: "Also delete the earlier messages",
   wipeDescription:
     "Earlier messages and their files will be deleted from Sloga's servers. This can't be undone. Copies on people's devices, forwards, crossposts and reports may remain.",
@@ -846,6 +860,9 @@ function settingsNow(): Record<string, string> {
     protectOrder: settingsCopy.protectOrder(),
     membersPending: settingsCopy.membersPending(),
     wipeNotDone: settingsCopy.wipeNotDone(),
+    membersUnconfirmed: settingsCopy.membersUnconfirmed(),
+    wipeNotDoneMembersPending: settingsCopy.wipeNotDoneMembersPending(),
+    wipeNotDoneMembersUnconfirmed: settingsCopy.wipeNotDoneMembersUnconfirmed(),
     deleteEarlierOption: settingsCopy.deleteEarlierOption(),
     wipeDescription: settingsCopy.wipeDescription(),
     historyToggle: settingsCopy.historyToggle(),
@@ -1101,7 +1118,13 @@ test("FXO B2 B7: protected with the members or the ticked wipe left out reads it
   assert.doesNotMatch(SETTINGS_S4.wipeNotDone, /member|below/);
   assert.doesNotMatch(SETTINGS_S4.membersPending, /delet/);
   // Only a client failure: the same reason from elsewhere keeps its mapping.
-  for (const reason of ["protected_members_pending", "wipe_not_done"]) {
+  for (const reason of [
+    "protected_members_pending",
+    "wipe_not_done",
+    "protected_members_unconfirmed",
+    "wipe_not_done_members_pending",
+    "wipe_not_done_members_unconfirmed",
+  ]) {
     for (const other of [
       { source: "native", reason },
       { source: "server", reason },
@@ -1112,10 +1135,59 @@ test("FXO B2 B7: protected with the members or the ticked wipe left out reads it
   }
 });
 
+test("FX2O RB2 RB3: a member step that rejected over a seat list that is not the owner alone never says only you, and a missed wipe with a failed member step says both", () => {
+  const lines = {
+    protected_members_unconfirmed: SETTINGS_S4.membersUnconfirmed,
+    wipe_not_done_members_pending: SETTINGS_S4.wipeNotDoneMembersPending,
+    wipe_not_done_members_unconfirmed:
+      SETTINGS_S4.wipeNotDoneMembersUnconfirmed,
+  } as const;
+  for (const [reason, text] of Object.entries(lines)) {
+    assert.equal(ownerCopy({ source: "client", reason }), text, reason);
+    assert.equal(clientReasonCopy(reason as keyof typeof lines), text);
+    assert.notEqual(text, CATCH_ALL);
+    assert.notEqual(text, noticeCopy("protect_failed"));
+    assert.match(text, /^This channel is now protected/);
+    assert.doesNotMatch(text, /couldn't|failed|error/i);
+  }
+  // RB2: with more than the owner seated (or the seats unread) the line
+  // claims nothing about who is in the channel, and points at the list.
+  for (const text of [
+    SETTINGS_S4.membersUnconfirmed,
+    SETTINGS_S4.wipeNotDoneMembersUnconfirmed,
+  ]) {
+    assert.doesNotMatch(text, /only you|weren't added|were added|You can add/);
+    assert.match(text, /didn't finish\. Check the seats below\.$/);
+  }
+  assert.doesNotMatch(SETTINGS_S4.membersUnconfirmed, /delet/);
+  // RB3: both things left out are both said.
+  for (const text of [
+    SETTINGS_S4.wipeNotDoneMembersPending,
+    SETTINGS_S4.wipeNotDoneMembersUnconfirmed,
+  ]) {
+    assert.match(text, /earlier messages were not deleted/);
+    assert.match(text, /members you picked/);
+  }
+  assert.match(SETTINGS_S4.wipeNotDoneMembersPending, /with only you in it/);
+  assert.match(SETTINGS_S4.wipeNotDoneMembersPending, /weren't added yet/);
+  // The five outcome lines are five different lines.
+  assert.equal(
+    new Set([
+      SETTINGS_S4.membersPending,
+      SETTINGS_S4.wipeNotDone,
+      ...Object.values(lines),
+    ]).size,
+    5,
+  );
+});
+
 test("FXO safety: a client reason this build does not know still reads the fail-closed line", () => {
   for (const reason of [
     "protected_members_pendin",
     "wipe_not_done_",
+    "wipe_not_done_members",
+    "protected_members",
+    "members_unconfirmed",
     "WIPE_NOT_DONE",
     "wipe_done",
     "later_reason",
@@ -1198,16 +1270,15 @@ test("S4 protect_busy: the client refusal reads the busy line through the owner 
   }
 });
 
-test("S4 backup: four lines, each its own", () => {
+test("S4 backup: six lines, each its own, and the one general note", () => {
   const kinds = Object.keys(BACKUP_TEXT) as (keyof typeof BACKUP_TEXT)[];
   for (const kind of kinds) {
     assert.equal(backupTextCopy(kind), BACKUP_TEXT[kind], kind);
   }
-  assert.equal(new Set(kinds.map((k) => backupTextCopy(k))).size, 4);
-  assert.equal(
-    backupNoteCopy.replacesOldDevice(),
-    "Restoring replaces your old device.",
-  );
+  assert.equal(new Set(kinds.map((k) => backupTextCopy(k))).size, 6);
+  // RB11: the design's "Restoring replaces your old device." is gone; a
+  // restore adds a device and nothing rendered the line.
+  assert.deepEqual(Object.keys(backupNoteCopy), ["textBudget"]);
   assert.equal(
     backupNoteCopy.textBudget(),
     "History from protected channels uses up to 2 MB of your backup, so fewer direct messages may fit.",
@@ -1223,6 +1294,25 @@ test("S4 backup: a partly restored history never reads like a wholly skipped one
   assert.match(backupTextCopy("skipped_all"), /^None /);
   assert.notEqual(backupTextCopy("oldest"), backupTextCopy("all"));
   assert.match(backupTextCopy("oldest"), /^The oldest /);
+});
+
+test("FX2O RB7: the two restore lines talk about the restore, never about this backup, and repeat no other backup line", () => {
+  const restore = [
+    backupTextCopy("restore_oldest"),
+    backupTextCopy("restore_all"),
+  ];
+  for (const text of restore) {
+    assert.doesNotMatch(text, /this backup|didn't fit/);
+    assert.match(text, /wasn't in the backup, so it couldn't be restored\.$/);
+  }
+  assert.match(restore[0], /^The oldest history /);
+  assert.match(restore[1], /^History /);
+  assert.notEqual(restore[0], restore[1]);
+  // Shown under a bundle line on the same page: never the same sentence.
+  for (const bundle of [backupTextCopy("oldest"), backupTextCopy("all")]) {
+    assert.match(bundle, /this backup\.$/);
+    assert.ok(!restore.includes(bundle));
+  }
 });
 
 test("S4 audit: the protect and wipe sentences and the two filter labels", () => {
@@ -1358,7 +1448,6 @@ test("S4 copy: every string is its own, plain ASCII, and carries no placeholder,
       settingsCopy.historyHiddenDescription(true),
       "",
     ],
-    "backup.replacesOldDevice": [backupNoteCopy.replacesOldDevice(), ""],
     "backup.textBudget": [backupNoteCopy.textBudget(), "2"],
     "audit.label.protect": [auditActionLabel("channel_protect"), ""],
     "audit.label.wipe": [auditActionLabel("channel_history_wipe"), ""],
@@ -1391,7 +1480,9 @@ test("S4 copy: every string is its own, plain ASCII, and carries no placeholder,
   // already had, ellipsis character included.
   // 41 from the lanes, 8 from the W4 fix round: three settings lines, the
   // kept variant of the hidden description, four unnamed audit sentences.
-  assert.equal(Object.keys(all).length, 49);
+  // Its second round: three more settings lines and two restore lines in,
+  // "Restoring replaces your old device." out.
+  assert.equal(Object.keys(all).length, 53);
 
   const seen = new Map<string, string>();
   // The strings that were there before S4 count too.

@@ -15,6 +15,7 @@ import {
   type HistoryVerifyInput,
   type ProtectDraft,
   HISTORY_CHECK_LINE_MS,
+  historyCheckWaitMs,
   historyCheckingShown,
   historyFailureKind,
   historySectionModel,
@@ -557,18 +558,24 @@ test("FXO B3: the model says when the earlier messages are kept behind a boundar
   );
 });
 
-test("FXO B2 B7: only the two exact client reasons are a protect that went through", () => {
-  assert.equal(
-    protectOutcomeKind({
-      source: "client",
-      reason: "protected_members_pending",
-    }),
-    "members_pending",
-  );
-  assert.equal(
-    protectOutcomeKind({ source: "client", reason: "wipe_not_done" }),
-    "wipe_not_done",
-  );
+test("FXO B2 B7, RB2 RB3: only the five exact client reasons are a protect that went through, each its own outcome", () => {
+  const OUTCOMES = [
+    ["protected_members_pending", "members_pending"],
+    ["protected_members_unconfirmed", "members_unconfirmed"],
+    ["wipe_not_done", "wipe_not_done"],
+    ["wipe_not_done_members_pending", "wipe_not_done_members_pending"],
+    ["wipe_not_done_members_unconfirmed", "wipe_not_done_members_unconfirmed"],
+  ] as const;
+  for (const [reason, kind] of OUTCOMES) {
+    assert.equal(protectOutcomeKind({ source: "client", reason }), kind);
+    // Only the bridge's own client failures.
+    for (const source of ["native", "server", "transport", undefined, 1]) {
+      assert.equal(protectOutcomeKind({ source, reason }), null, reason);
+    }
+    // None is one of the inline history errors.
+    assert.equal(historyFailureKind({ source: "client", reason }), null);
+  }
+  assert.equal(new Set(OUTCOMES.map(([, kind]) => kind)).size, 5);
 });
 
 test("FXO safety: any other rejection is a failed protect and gets the page's ordinary failure text", () => {
@@ -581,6 +588,11 @@ test("FXO safety: any other rejection is a failed protect and gets the page's or
     "protected_members_pendin",
     "PROTECTED_MEMBERS_PENDING",
     "wipe_not_done ",
+    "wipe_not_done_members",
+    "wipe_not_done_members_pending_",
+    "members_pending",
+    "members_unconfirmed",
+    "protected_members",
     "wipe_refused",
     "toString",
     "",
@@ -638,16 +650,18 @@ const UNVERIFIED: HistoryVerifyInput = {
 
 const NO_ASKS: HistoryVerifyAsks = new Map();
 
-test("FXO C6: the page asks for a verify when the history section could show but has no model", () => {
+test("FXO C6, RB9: the page asks for a verify when the history section could show, has no model, and native has not loaded the channel", () => {
   const step = historyVerifyStep(NO_ASKS, UNVERIFIED);
   assert.equal(step.ask, true);
   assert.deepEqual([...step.asks], [[CH_A, 1_000]]);
   assert.equal(NO_ASKS.size, 0, "the caller's map is not written");
-  // Loaded but unverified is asked for too: one refresh may verify it.
-  assert.equal(
-    historyVerifyStep(NO_ASKS, { ...UNVERIFIED, nativeLoaded: true }).ask,
-    true,
-  );
+  // RB9: a channel native has loaded is never asked for, whatever keeps
+  // its model at `none`. Only an exact `false` is "not loaded".
+  for (const nativeLoaded of [true, undefined, null, "false", 0]) {
+    const loaded = historyVerifyStep(NO_ASKS, { ...UNVERIFIED, nativeLoaded });
+    assert.equal(loaded.ask, false, String(nativeLoaded));
+    assert.equal(loaded.asks, NO_ASKS, "and nothing is remembered");
+  }
   // An unreadable clock still asks; the line then simply does not show.
   const odd = historyVerifyStep(NO_ASKS, { ...UNVERIFIED, now: "soon" });
   assert.equal(odd.ask, true);
@@ -700,6 +714,9 @@ test("FXO C6: one ask per channel for as long as the page is mounted, never a lo
   // The state loads but stays unverified, time passes: still one.
   for (let i = 0; i < 50; i++) run({ nativeLoaded: true, now: 1e6 + i });
   assert.equal(asked, 1);
+  // It unloads again: this channel was asked for already.
+  for (let i = 0; i < 10; i++) run({ nativeLoaded: false, now: 15e5 + i });
+  assert.equal(asked, 1);
   // The section shows, then goes away again: no second ask.
   assert.equal(run({ modelKind: "owner" }), false);
   assert.equal(run({ modelKind: "none", now: 2e6 }), false);
@@ -721,7 +738,7 @@ test("FXO C6: one ask per channel for as long as the page is mounted, never a lo
   );
 });
 
-test("FXO C6: the checking line shows only after an ask, while nothing is loaded, and for a limited time", () => {
+test("FXO C6: historyCheckingShown is true only for an asked channel native has not loaded, at a time less than HISTORY_CHECK_LINE_MS after the ask", () => {
   const asks = historyVerifyStep(NO_ASKS, UNVERIFIED).asks;
   assert.equal(historyCheckingShown(asks, UNVERIFIED), true);
   // Not asked for: no line.
@@ -751,4 +768,52 @@ test("FXO C6: the checking line shows only after an ask, while nothing is loaded
     assert.equal(at(now), false, String(now));
   }
   assert.ok(HISTORY_CHECK_LINE_MS > 0 && HISTORY_CHECK_LINE_MS <= 60_000);
+});
+
+test("FXO RB6: the wait for the page's timer is what is left of HISTORY_CHECK_LINE_MS since the ask, and the line is over exactly when that wait has passed", () => {
+  const asks = historyVerifyStep(NO_ASKS, UNVERIFIED).asks;
+  // At the ask: the whole time, never the page's 30 s tick.
+  assert.equal(historyCheckWaitMs(asks, CH_A, 1_000), HISTORY_CHECK_LINE_MS);
+  assert.equal(HISTORY_CHECK_LINE_MS, 20_000);
+  // Later (the page came back to the channel): only what is left.
+  assert.equal(
+    historyCheckWaitMs(asks, CH_A, 1_001),
+    HISTORY_CHECK_LINE_MS - 1,
+  );
+  assert.equal(
+    historyCheckWaitMs(asks, CH_A, 1_000 + HISTORY_CHECK_LINE_MS - 1),
+    1,
+  );
+  // Nothing to wait for: time is up, not asked for, an unusable input.
+  assert.equal(
+    historyCheckWaitMs(asks, CH_A, 1_000 + HISTORY_CHECK_LINE_MS),
+    null,
+  );
+  assert.equal(historyCheckWaitMs(asks, CH_A, 9e9), null);
+  assert.equal(historyCheckWaitMs(asks, CH_A, 999), null);
+  assert.equal(historyCheckWaitMs(asks, CH_B, 1_000), null);
+  assert.equal(historyCheckWaitMs(NO_ASKS, CH_A, 1_000), null);
+  for (const now of [undefined, null, "1000", Number.NaN, Infinity]) {
+    assert.equal(historyCheckWaitMs(asks, CH_A, now), null, String(now));
+  }
+  for (const id of [undefined, null, 5, {}]) {
+    assert.equal(historyCheckWaitMs(asks, id, 1_000), null, String(id));
+  }
+  // The timer and the line agree at every point of the window: while a
+  // wait is left the line shows, and at `now + wait` it does not.
+  for (const waited of [0, 1, 7_500, HISTORY_CHECK_LINE_MS - 1]) {
+    const now = 1_000 + waited;
+    const wait = historyCheckWaitMs(asks, CH_A, now);
+    assert.ok(wait !== null && wait > 0 && wait <= HISTORY_CHECK_LINE_MS);
+    assert.equal(historyCheckingShown(asks, { ...UNVERIFIED, now }), true);
+    assert.equal(
+      historyCheckingShown(asks, { ...UNVERIFIED, now: now + wait }),
+      false,
+      `over after ${waited} + ${wait}`,
+    );
+    assert.equal(
+      historyCheckingShown(asks, { ...UNVERIFIED, now: now + wait - 1 }),
+      true,
+    );
+  }
 });

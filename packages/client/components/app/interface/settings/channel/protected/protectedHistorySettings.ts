@@ -19,7 +19,8 @@
 // Fix round W4: a protect that went through with something left out has an
 // outcome of its own (`protectOutcomeKind`), the wipe progress shows only
 // once native says `wiped`, and the page asks for one verify per channel
-// when it has no verified state to show (`historyVerifyStep`).
+// when native has not loaded it (`historyVerifyStep`). The checking line
+// that follows an ask ends on a timer of its own (`historyCheckWaitMs`).
 
 // ---------------------------------------------------------------------------
 // Protect form (a channel that already has messages)
@@ -270,29 +271,49 @@ export function historyFailureKind(err: unknown): HistoryFailureKind | null {
 /**
  * - `members_pending`: the channel is protected with the owner alone; the
  *   picked members were not added.
+ * - `members_unconfirmed`: the channel is protected and the member step
+ *   rejected, but the seat list read afterwards is not the owner alone (or
+ *   was not readable): nothing is claimed about who is seated (RB2).
  * - `wipe_not_done`: the channel is protected; the wipe that was ticked was
  *   not performed.
+ * - `wipe_not_done_members_pending` / `wipe_not_done_members_unconfirmed`:
+ *   both at once (RB3).
  */
-export type ProtectOutcomeKind = "members_pending" | "wipe_not_done";
+export type ProtectOutcomeKind =
+  | "members_pending"
+  | "members_unconfirmed"
+  | "wipe_not_done"
+  | "wipe_not_done_members_pending"
+  | "wipe_not_done_members_unconfirmed";
+
+/** The owner flow's reason for each outcome. */
+const PROTECT_OUTCOMES: readonly (readonly [string, ProtectOutcomeKind])[] = [
+  ["protected_members_pending", "members_pending"],
+  ["protected_members_unconfirmed", "members_unconfirmed"],
+  ["wipe_not_done", "wipe_not_done"],
+  ["wipe_not_done_members_pending", "wipe_not_done_members_pending"],
+  ["wipe_not_done_members_unconfirmed", "wipe_not_done_members_unconfirmed"],
+];
 
 /**
  * The outcome of a rejected protect call when the rejection means "the
  * channel is protected now" (`{ source: "client", reason }` from the
  * bridge's owner flow), or null: the protect failed, or failed for a cause
  * this build does not know, and the page shows what it shows for any failed
- * owner action. Only the two exact reasons count.
+ * owner action. Only the five exact reasons count.
  */
 export function protectOutcomeKind(err: unknown): ProtectOutcomeKind | null {
   if (typeof err !== "object" || err === null) return null;
   const e = err as { source?: unknown; reason?: unknown };
   if (e.source !== "client") return null;
-  if (e.reason === "protected_members_pending") return "members_pending";
-  if (e.reason === "wipe_not_done") return "wipe_not_done";
+  for (const [reason, kind] of PROTECT_OUTCOMES) {
+    if (e.reason === reason) return kind;
+  }
   return null;
 }
 
 // ---------------------------------------------------------------------------
-// One verify per channel when the page has no verified state (audit C6)
+// One verify per channel native has not loaded (audit C6, re-review RB9)
 // ---------------------------------------------------------------------------
 
 /** How long the checking line may show for one ask. */
@@ -308,9 +329,12 @@ export interface HistoryVerifyInput {
   canAct: unknown;
   /** `historySectionModel(...).kind`. */
   modelKind: unknown;
-  /** Whether native's state for the channel is loaded at all. */
+  /**
+   * Whether native's state for the channel is loaded at all: the bridge's
+   * view of the channel exists and carries native's state.
+   */
   nativeLoaded: unknown;
-  /** `Date.now()`. */
+  /** `Date.now()`, read when the input is built. */
   now: unknown;
 }
 
@@ -332,10 +356,13 @@ function verifyChannel(i: HistoryVerifyInput): string | null {
  * Whether the page asks the bridge for one refresh of the channel now
  * (`retryNow`), and the asks to remember. It asks when the history section
  * could show (owner, history flag on, a protected channel this device can
- * act on) but its model is `none`, and only ONCE per channel for the life
- * of `asks`: the page keeps `asks` for as long as it is mounted, so
- * switching away and back, or a state that stays unverified, never asks
- * again. With the flag off it never asks.
+ * act on), its model is `none` and native has not loaded the channel
+ * (`nativeLoaded` exactly false). A channel native has loaded whose model
+ * is `none` for another reason (an unverified list, a setting this build
+ * does not know) is never asked for (RB9): a refresh would not change it.
+ * Only ONCE per channel for the life of `asks`: the page keeps `asks` for
+ * as long as it is mounted, so switching away and back, or a state that
+ * stays unloaded, never asks again. With the flag off it never asks.
  */
 export function historyVerifyStep(
   asks: HistoryVerifyAsks,
@@ -345,6 +372,7 @@ export function historyVerifyStep(
   if (id === null || i.modelKind !== "none" || asks.has(id)) {
     return { asks, ask: false };
   }
+  if (i.nativeLoaded !== false) return { asks, ask: false };
   const at = typeof i.now === "number" && Number.isFinite(i.now) ? i.now : 0;
   const next = new Map(asks);
   next.set(id, at);
@@ -370,4 +398,25 @@ export function historyCheckingShown(
   if (typeof i.now !== "number" || !Number.isFinite(i.now)) return false;
   const waited = i.now - at;
   return waited >= 0 && waited < HISTORY_CHECK_LINE_MS;
+}
+
+/**
+ * How long from `now` until the checking line of `channelId` ends, for the
+ * page's one timer: `HISTORY_CHECK_LINE_MS` after the ask, whatever else
+ * redraws the page in between (RB6). Null when there is nothing to wait
+ * for: the channel was not asked for, the time is up, or an input is not
+ * usable. Never more than `HISTORY_CHECK_LINE_MS` and never 0.
+ */
+export function historyCheckWaitMs(
+  asks: HistoryVerifyAsks,
+  channelId: unknown,
+  now: unknown,
+): number | null {
+  if (typeof channelId !== "string") return null;
+  if (typeof now !== "number" || !Number.isFinite(now)) return null;
+  const at = asks.get(channelId);
+  if (at === undefined) return null;
+  const waited = now - at;
+  if (waited < 0 || waited >= HISTORY_CHECK_LINE_MS) return null;
+  return HISTORY_CHECK_LINE_MS - waited;
 }

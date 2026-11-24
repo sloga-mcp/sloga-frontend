@@ -45,8 +45,8 @@ const BUNDLE_LINE: [unknown, string[]][] = [
 const RESTORE_LINE: [unknown, string[]][] = [
   [summary("none"), []],
   [summary("none", "none"), []],
-  [summary("none", "oldest"), ["oldest"]],
-  [summary("none", "all"), ["all"]],
+  [summary("none", "oldest"), ["restore_oldest"]],
+  [summary("none", "all"), ["restore_all"]],
   [summary("partial", "oldest"), ["skipped_partial"]],
   [summary("all"), ["skipped_all"]],
   [UNREPORTED, []],
@@ -184,13 +184,13 @@ test("backupTextLines: a real native report and bundle, through the bridge's rea
   assert.deepEqual(lines(bundle, { ...report, text_skipped: false }), []);
 });
 
-test("backupTextLines R-W4-12: a restore of a truncated backup shows the oldest or the all line; epochs add nothing and skipped comes first", () => {
+test("backupTextLines R-W4-12, RB7: a restore of a truncated backup shows the restore's own oldest or all line; epochs add nothing and skipped comes first", () => {
   const TRUNCATED: [unknown, string[]][] = [
     ["none", []],
     [null, []],
     [undefined, []],
-    ["oldest", ["oldest"]],
-    ["all", ["all"]],
+    ["oldest", ["restore_oldest"]],
+    ["all", ["restore_all"]],
   ];
   for (const epochs of [0, 1, 500]) {
     for (const [truncated, lines] of TRUNCATED) {
@@ -214,17 +214,21 @@ test("backupTextLines R-W4-12: a restore of a truncated backup shows the oldest 
   }
   // A report with `truncated` and no `skipped` key at all
   assert.deepEqual(backupTextLines(undefined, { truncated: "oldest" }, true), [
-    "oldest",
+    "restore_oldest",
   ]);
   assert.deepEqual(
     backupTextLines(undefined, { truncated: "all", skipped: null }, true),
-    ["all"],
+    ["restore_all"],
   );
-  // A `truncated` this build does not know reads as the careful line
-  assert.deepEqual(
-    backupTextLines(undefined, summary("none", "newest"), true),
-    ["all"],
-  );
+  // A `truncated` this build does not know reads as the careful line, the
+  // seam's "unknown" (RB8) included
+  for (const value of ["newest", "unknown", "OLDEST", 1, true, {}]) {
+    assert.deepEqual(
+      backupTextLines(undefined, summary("none", value), true),
+      ["restore_all"],
+      JSON.stringify(value),
+    );
+  }
   // Through the bridge's reader, from a native report
   const report = { device_id: "A", new_device_id: "B", text_epochs: 2 };
   const read = (text_truncated: string) =>
@@ -233,9 +237,39 @@ test("backupTextLines R-W4-12: a restore of a truncated backup shows the oldest 
       restoreTextSummary({ ...report, text_truncated }),
       true,
     );
-  assert.deepEqual(read("oldest"), ["oldest"]);
-  assert.deepEqual(read("all"), ["all"]);
+  assert.deepEqual(read("oldest"), ["restore_oldest"]);
+  assert.deepEqual(read("all"), ["restore_all"]);
   assert.deepEqual(read("none"), []);
+});
+
+test("backupTextLines RB7: the page's bundle lines and restore lines never share a line, whatever the two report", () => {
+  // `Encryption.tsx` renders two lists: the bundle's and the restore's.
+  const values = ["none", "oldest", "all", "newest", null, undefined];
+  let pairs = 0;
+  for (const bundle of values) {
+    for (const truncated of values) {
+      for (const skipped of ["none", "partial", "all", "later", null]) {
+        const bundleLines = backupTextLines(bundle, undefined, true);
+        const restoreLines = backupTextLines(
+          undefined,
+          summary(skipped, truncated),
+          true,
+        );
+        for (const kind of restoreLines) {
+          assert.ok(
+            !bundleLines.includes(kind),
+            `${String(bundle)} / ${String(truncated)} / ${String(skipped)}`,
+          );
+          assert.match(kind, /^(restore|skipped)_/);
+        }
+        for (const kind of bundleLines) {
+          assert.match(kind, /^(oldest|all)$/);
+        }
+        pairs++;
+      }
+    }
+  }
+  assert.equal(pairs, 180);
 });
 
 test("restore text: kept per bridge, replaced by the next restore, listeners told", () => {

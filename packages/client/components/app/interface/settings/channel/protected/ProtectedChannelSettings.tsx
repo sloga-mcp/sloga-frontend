@@ -72,6 +72,7 @@ import {
 import {
   type HistoryVerifyAsks,
   type ProtectOutcomeKind,
+  historyCheckWaitMs,
   historyCheckingShown,
   historyFailureKind,
   historySectionModel,
@@ -495,9 +496,10 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
    * picker was opened from; the confirmation is native's dialog, and a
    * decline comes back as a silent rejection.
    *
-   * Two rejections mean the channel IS protected (`protectOutcomeKind`):
-   * the members were not added, or the ticked wipe was not done. Those
-   * resolve here, so the picker closes, and the page says which.
+   * Some rejections mean the channel IS protected (`protectOutcomeKind`):
+   * the member step did not go through, the ticked wipe was not done, or
+   * both. Those resolve here, so the picker closes, and the page says
+   * which.
    */
   async function runProtect(userIds: string[]): Promise<void> {
     const a = availability();
@@ -853,15 +855,25 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
   };
 
   /**
-   * The history section needs the bridge's verified view, and a channel
-   * that was not opened in this session has none. The page then asks for
-   * ONE refresh of the channel (`retryNow`, never the open's loop), once
-   * per channel for as long as it is mounted (`historyVerifyStep`), and
-   * shows the checking line for a short while. Never with the flag off.
+   * The history section needs the bridge's verified view. When native has
+   * not loaded the channel the page asks for ONE refresh of it (`retryNow`,
+   * never the open's loop), once per channel for as long as it is mounted
+   * (`historyVerifyStep`), and shows the checking line until its own timer
+   * ends it, `HISTORY_CHECK_LINE_MS` after the ask. Never with the flag
+   * off, and never for a channel native has loaded.
    */
   const [verifyAsks, setVerifyAsks] = createSignal<HistoryVerifyAsks>(
     new Map(),
   );
+  /** The time the checking line is judged at: an ask, or its timer. */
+  const [checkNow, setCheckNow] = createSignal(Date.now());
+  let checkTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearCheckTimer = () => {
+    if (checkTimer === undefined) return;
+    clearTimeout(checkTimer);
+    checkTimer = undefined;
+  };
+  onCleanup(clearCheckTimer);
   const verifyInput = (at: number) => ({
     channelId: props.channel.id,
     isOwner: eligible(),
@@ -871,15 +883,28 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     nativeLoaded: historyNative() !== null,
     now: at,
   });
+  // Runs again on a channel change (and on any other change of the input):
+  // the timer of the channel left behind is cleared each time, and one is
+  // set only for what is left of this channel's own ask.
   createEffect(() => {
-    const input = verifyInput(untrack(now));
+    const at = Date.now();
+    const input = verifyInput(at);
     const step = historyVerifyStep(untrack(verifyAsks), input);
+    clearCheckTimer();
+    setCheckNow(at);
+    const wait = historyCheckWaitMs(step.asks, input.channelId, at);
+    if (wait !== null) {
+      checkTimer = setTimeout(() => {
+        checkTimer = undefined;
+        setCheckNow(Math.max(Date.now(), at + wait));
+      }, wait);
+    }
     if (!step.ask) return;
     setVerifyAsks(step.asks);
     readUi((api) => api.retryNow(input.channelId), undefined);
   });
   const historyChecking = () =>
-    historyCheckingShown(verifyAsks(), verifyInput(now()));
+    historyCheckingShown(verifyAsks(), verifyInput(checkNow()));
 
   /** The line for a protect that left something out, or null. */
   const protectOutcomeLine = (): string | null => {
@@ -889,8 +914,14 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
         return null;
       case "members_pending":
         return settingsCopy.membersPending();
+      case "members_unconfirmed":
+        return settingsCopy.membersUnconfirmed();
       case "wipe_not_done":
         return settingsCopy.wipeNotDone();
+      case "wipe_not_done_members_pending":
+        return settingsCopy.wipeNotDoneMembersPending();
+      case "wipe_not_done_members_unconfirmed":
+        return settingsCopy.wipeNotDoneMembersUnconfirmed();
       default: {
         const _exhaustive: never = outcome;
         return null;
