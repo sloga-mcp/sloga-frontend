@@ -10541,6 +10541,16 @@ export class E2EEBridge implements E2EEAdapter {
     this.#ptOwnListing.clear();
     this.#ptServerKeyPackages = 0;
     this.#ptPending.clear();
+    // RA5: on a sign-out (`disposeProtected` set `#ptSignedOut` first) this
+    // user's stored history lines go too, asked of the manager before it is
+    // disposed. Any other dispose keeps them.
+    if (manager && this.#ptSignedOut) {
+      try {
+        manager.forgetHistoryLines();
+      } catch (error) {
+        console.error("[protected] history clear failed", errorName(error));
+      }
+    }
     if (manager) {
       try {
         manager.dispose();

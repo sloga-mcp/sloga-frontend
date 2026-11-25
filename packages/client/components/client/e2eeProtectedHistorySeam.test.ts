@@ -1207,6 +1207,50 @@ test("e2ee.ts (R-W4-31): the history flag never reaches the seam, and a failed f
   );
 });
 
+test("e2ee.ts (RA5): a sign-out dispose forgets the stored history lines on the live manager, and no other dispose does", () => {
+  // One call in the bridge, in the dispose, only under the sign-out latch.
+  const calls = callsOf("forgetHistoryLines");
+  assert.equal(calls.length, 1);
+  assert.equal(memberOf(calls[0]), "#protectedDispose");
+  const dispose = bridgeMember("#protectedDispose");
+  assert.ok(ts.isMethodDeclaration(dispose) && dispose.body);
+  const statements = dispose.body.statements.map((s) => code(s));
+  const at = statements.indexOf(
+    "if(manager&&this.#ptSignedOut){try{manager.forgetHistoryLines();}" +
+      'catch(error){console.error("[protected]historyclearfailed",errorName(error));}}',
+  );
+  assert.ok(at >= 0, "guarded, a top-level statement of the dispose");
+  // `manager` is the one this dispose took, and it is not disposed yet.
+  assert.equal(statements[0], "constmanager=this.#ptManager;");
+  const end = statements.findIndex((s) => s.includes("manager.dispose()"));
+  assert.ok(end > at, "before the manager is disposed");
+  // The latch is set in one place: the session teardown (a sign-out hook
+  // or a replaced client), straight before its dispose. A wipe, a flag or
+  // a device change disposes without it and keeps the lines.
+  const sets: ts.BinaryExpression[] = [];
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      code(node.left) === "this.#ptSignedOut"
+    ) {
+      sets.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(SF);
+  assert.deepEqual(
+    sets.map((n) => `${memberOf(n)} ${code(n)}`),
+    ["disposeProtected this.#ptSignedOut=true"],
+  );
+  const teardown = bridgeMember("disposeProtected");
+  assert.ok(ts.isMethodDeclaration(teardown) && teardown.body);
+  assert.deepEqual(
+    teardown.body.statements.slice(0, 2).map((s) => code(s)),
+    ["this.#ptSignedOut=true;", "this.#protectedDispose();"],
+  );
+});
+
 test("the app: no other file calls the reveal, the pin write or the purge", () => {
   const names = [
     "revealPreProtectRows",
