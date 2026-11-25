@@ -41,6 +41,12 @@
 //  S16 S1-final F2: the tab and page stay invisible while the feature is
 //      dark: shown only with the D13 flag on or a protected/pinned
 //      channel, and always only to the owner (C-F2a/b/c).
+//  S17-S27 S2 (D39 / D40 / R27 / F3, lanes U9 + U10): released seats with
+//      their cause, the cap clamp, "Update the list", Removal waiting /
+//      Finish now, the device column, the revoked-owner-devices banner,
+//      reason refusals before the notice, "Discard this change", the
+//      unseat reason re-sending the stored change, the shared policy and
+//      the seat picker's msgids.
 //
 // Point `PROTECTED_SETTINGS_FILE`, `PROTECTED_SEAT_LIST_FILE` or
 // `PROTECTED_CHANNEL_SETTINGS_FILE` at another copy (a known-bad control)
@@ -142,7 +148,6 @@ interface ListRules {
     removed: string[],
     target: string,
   ): string[];
-  seatsUsedOf(r: Record<string, unknown>): number;
   deviceCapLine(v: unknown): { kind: string; max?: number };
   coolingRows(c: unknown): { userId: string; until: string | null }[];
   listSeatIds(body: unknown): string[] | null;
@@ -390,8 +395,12 @@ describe("protected channel settings (C11)", () => {
     assert.deepEqual(l.deviceCapLine(null), { kind: "unknown" });
     assert.deepEqual(l.deviceCapLine(0), { kind: "unlimited" });
     assert.deepEqual(l.deviceCapLine(4), { kind: "max", max: 4 });
-    assert.equal(l.seatsUsedOf({ seats_used: 3, seats: [] }), 3);
-    assert.equal(l.seatsUsedOf({ seats_used: null, seats: [{}, {}] }), 2);
+    // Seats used: the server's count (never a cap); its fallback is the
+    // shared policy's (S18; `seatsUsedOf` gave way to `seatUsedCount`).
+    assert.match(
+      LIST_BODY,
+      /const used = \(\) =>\s*seatCount\(props\.seats\.seats_used\) \?\?\s*seatUsedCount\(/,
+    );
     // Device cap for the genesis list: entitlement, else flag default.
     assert.equal(p.deviceCapForProtect(5, 3), 5);
     assert.equal(p.deviceCapForProtect(0, 3), 0, "0 = unlimited is a real cap");
@@ -592,10 +601,17 @@ describe("protected channel settings (C11)", () => {
       PAGE_BODY,
       /return protectedNoticeForError\(err, \{ op: "owner" \}\);/,
     );
-    // W4d: the removed-users copy names who was left off when it can.
+    // W4d: the removed-users copy names who was left off when it can. S2
+    // F2: the failure rides along (a client reason with its own copy, such
+    // as authority_needs_v2, replaces the catch-all notice).
     assert.match(
       PAGE_BODY,
-      /return errorUiCopy\(ui, \{ removedUserNames: displayNames \}\);/,
+      /return errorUiCopy\(ui, \{ removedUserNames: displayNames, failure: err \}\);/,
+    );
+    assert.equal(
+      (PAGE_BODY.match(/\berrorUiCopy\(/g) ?? []).length,
+      1,
+      "every failure goes through errorText's one errorUiCopy call",
     );
     assert.match(
       PAGE_BODY,
@@ -657,9 +673,10 @@ describe("protected channel settings (C11)", () => {
       PAGE_BODY,
       /await api\.protect\(\s*props\.channel\.id,\s*ownerFirst\(userIds, owner\),\s*a\.deviceCap,\s*\);/,
     );
+    // S2 D40: the optional unseat reason rides along (absent = no header).
     assert.match(
       PAGE_BODY,
-      /await api\.setSeats\(props\.channel\.id, ownerFirst\(userIds, owner\), cap\);/,
+      /await api\.setSeats\(\s*props\.channel\.id,\s*ownerFirst\(userIds, owner\),\s*cap,\s*reason,\s*\);/,
     );
     assert.match(
       PAGE_BODY,
@@ -965,10 +982,23 @@ describe("protected channel settings (C11)", () => {
       1,
       "one setSeats call site",
     );
+    // Every runSetSeats call is a user's press: its declaration, the
+    // picker's onConfirm, Remove seat, and (S2) "Update the list" and the
+    // reason section's re-send. None sits on a refusal path.
     assert.equal(
       (PAGE_BODY.match(/\brunSetSeats\(/g) ?? []).length,
-      3,
-      "runSetSeats: its declaration, the picker's onConfirm, Remove seat",
+      5,
+      "runSetSeats: declaration, onConfirm, Remove seat, Update the list, reason",
+    );
+    assert.match(PAGE_BODY, /async function runSetSeats\(/);
+    assert.match(pageFn("removeSeat"), /void runSetSeats\(next, false\);/);
+    assert.match(
+      pageFn("updateList"),
+      /void runSetSeats\(editableIds\(\), false\);/,
+    );
+    assert.match(
+      pageFn("submitReason"),
+      /void runSetSeats\(editableIds\(\), false, check\.reason\);/,
     );
     // The re-read is the page's one read-only GET, over the snapshot.
     assert.match(refresh, /await fetchSeatsBody\(\);/);
@@ -1137,5 +1167,403 @@ describe("protected channel settings (C11)", () => {
       REGISTRY,
       /import \{ protectedUiOf \} from "@revolt\/client\/useProtectedChannel";/,
     );
+  });
+
+  // ---- S2 (D39 / D40 / R27 / F3; lanes U9 + U10) -------------------------
+
+  /** One component-scope arrow, `const <name> = ` to its `\n  };\n`. */
+  function arrowIn(body: string, name: string): string {
+    const from = body.indexOf(`const ${name} = `);
+    assert.ok(from !== -1, `${name} missing`);
+    const to = body.indexOf("\n  };\n", from);
+    assert.ok(to > from, `${name}: end missing`);
+    return body.slice(from, to);
+  }
+
+  it("S17 S2 D39: released seats show their cause and never an id (C-U9a)", () => {
+    assert.match(
+      LIST_BODY,
+      /const released = createMemo\(\(\) => seatReleasedRows\(props\.seats\.cooling\)\);/,
+    );
+    // Every wire cause has its line; an unknown one (null) has none.
+    const sw = LIST_BODY.slice(LIST_BODY.indexOf("function causeLine("));
+    assert.match(sw, /\(cause: SeatReleaseCause \| null\): string \| null/);
+    assert.match(sw, /case null:\s*return null;/);
+    for (const [cause, text] of [
+      ["owner_unseat", "Removed from the seat list"],
+      ["server_removal", "Removed from the server"],
+      ["access_lost", "Lost access to this channel"],
+      ["device_never_joined", "No device joined before the seat was released"],
+    ]) {
+      assert.match(
+        sw,
+        new RegExp(`case "${cause}":\\s*return t\`${text}\`;`),
+        cause,
+      );
+    }
+    assert.match(sw, /const _exhaustive: never = cause;/);
+    // The released block: the cause line, the readable time, and a name
+    // that is never the id (this client may not know the user).
+    const from = LIST_BODY.indexOf("<Show when={released().length > 0}>");
+    const to = LIST_BODY.indexOf("</For>", from);
+    assert.ok(from !== -1 && to > from, "released block missing");
+    const block = LIST_BODY.slice(from, to);
+    assert.match(block, /<For each=\{released\(\)\}>/);
+    assert.match(
+      block,
+      /<Show when=\{causeLine\(row\.cause\)\}>\s*\{\(line\) => <RowNote data-cause>\{line\(\)\}<\/RowNote>\}/,
+    );
+    assert.match(block, /const until = seatUntilText\(row\.until\);/);
+    assert.match(block, /: untilLine\(until\);/);
+    assert.match(
+      block,
+      /const name = \(\) => who\(\)\.known \?\? unknownMember\(\);/,
+    );
+    assert.doesNotMatch(block, /who\(\)\.name/, "the id fallback");
+    assert.match(
+      LIST_BODY,
+      /const known = member\?\.displayName \?\? user\?\.displayName \?\? null;/,
+    );
+  });
+
+  it("S18 S2 D39 cap clamp: released seats still count toward the seat limit (C-U9b)", () => {
+    // The server's count (active + cooling, design 2.3) wins; without it,
+    // the seated rows PLUS every cooling seat (`seatUsedCount`), never the
+    // rows alone.
+    assert.match(
+      LIST_BODY,
+      /const used = \(\) =>\s*seatCount\(props\.seats\.seats_used\) \?\?\s*seatUsedCount\(\s*seatRows\(props\.seats\.seats, props\.ownerId\)\.map\(\(r\) => r\.userId\),\s*released\(\)\.map\(\(r\) => r\.userId\),\s*\);/,
+    );
+  });
+
+  it("S19 S2 D39: the no-longer-seated banner and a removal-only Update the list (C-U9c / C-U10a)", () => {
+    // SeatList: the count line for the removed group, the button only
+    // where Remove is offered; the page decides what is signed.
+    const from = LIST_BODY.indexOf('<Callout role="status" data-update-list>');
+    assert.ok(from !== -1, "banner missing");
+    const banner = LIST_BODY.slice(from, LIST_BODY.indexOf("</Callout>", from));
+    assert.match(
+      banner,
+      /<span>\{noSeatsLine\(props\.removed\.length\)\}<\/span>/,
+    );
+    assert.match(
+      banner,
+      /<Show when=\{!props\.hideRemove\}>\s*<Button[^>]*isDisabled=\{props\.disabled\}\s*onPress=\{\(\) => props\.onUpdateList\(\)\}\s*>\s*\{updateListLabel\(\)\}/,
+    );
+    assert.equal((LIST_BODY.match(/props\.onUpdateList\(/g) ?? []).length, 1);
+    // The page: exactly the editable seats (the list without the removed
+    // users), never while a reason is asked for, never without one to drop.
+    const fn = pageFn("updateList");
+    assert.match(
+      fn,
+      /if \(busy\(\) \|\| askReason\(\) \|\| !canChangeSeats\(\)\) return;\s*if \(removedIds\(\)\.length === 0\) return;\s*void runSetSeats\(editableIds\(\), false\);/,
+    );
+    assert.match(PAGE_BODY, /onUpdateList=\{updateList\}/);
+  });
+
+  it("S20 S2 D39: Removal waiting after 10 minutes; Finish now is one retryNow (C-U10b)", () => {
+    assert.match(
+      PAGE_BODY,
+      /const waiting = createMemo\(\(\) =>\s*isProtected\(\)\s*\? seatRemovalsWaiting\(view\(\)\?\.serverGroup\?\.pending_removals, now\(\)\)\s*: \[\]/,
+    );
+    assert.match(
+      PAGE_BODY,
+      /const timer = setInterval\(\(\) => setNow\(Date\.now\(\)\), REMOVAL_RECHECK_MS\);\s*onCleanup\(\(\) => clearInterval\(timer\)\);/,
+    );
+    const fn = pageFn("finishNow");
+    assert.match(
+      fn,
+      /if \(busy\(\) \|\| !canAct\(\)\) return;\s*const id = props\.channel\.id;\s*readUi\(\(api\) => api\.retryNow\(id\), undefined\);/,
+    );
+    assert.doesNotMatch(PAGE, /\bprotectedOpen\b/, "never the open lifecycle");
+    // A poisoned group: no Finish now (it can't help); names, never ids.
+    assert.match(
+      PAGE_BODY,
+      /<Show when=\{waiting\(\)\.length > 0\}>\s*<Callout role="status" data-removal-waiting>\s*<CalloutTitle>\{waitingTitle\(\)\}<\/CalloutTitle>\s*<span>\{waiting\(\)\.map\(nameOf\)\.join\(", "\)\}<\/span>\s*<Show when=\{!poisoned\(\) && canAct\(\)\}>\s*<Button[^>]*onPress=\{finishNow\}\s*>\s*\{finishLabel\(\)\}/,
+    );
+    assert.match(
+      PAGE_BODY,
+      /const poisoned = \(\) => view\(\)\?\.native\?\.state === "poisoned";/,
+    );
+    assert.match(
+      PAGE_BODY,
+      /const nameOf = \(id: string\): string =>\s*displayNames\(\[id\]\)\[0\] \?\? unknownMember\(\);/,
+    );
+  });
+
+  it("S21 S2 D39: a device count per seated row; unknown members are not 0 (C-U9d)", () => {
+    assert.match(
+      PAGE_BODY,
+      /const deviceCounts = createMemo\(\(\) =>\s*seatDeviceCounts\(view\(\)\?\.serverGroup\?\.members\),?\s*\);/,
+    );
+    assert.match(PAGE_BODY, /deviceCounts=\{deviceCounts\(\)\}/);
+    const fn = arrowIn(LIST_BODY, "devicesOf");
+    assert.match(fn, /if \(counts === null\) return null;/);
+    assert.match(
+      fn,
+      /const n = counts\.get\(userId\);\s*return \{ count: n === undefined \? 0 : n \};/,
+    );
+    assert.match(
+      LIST_BODY,
+      /<Show when=\{devicesOf\(row\.userId\)\}>\s*\{\(d\) => \(\s*<RowDevices data-devices>\s*\{devicesLine\(d\(\)\.count\)\}\s*<\/RowDevices>\s*\)\}/,
+    );
+  });
+
+  it("S22 S2 R27: revoked owner devices go to authoritySign via proposedOwnerDevices (C-U10c)", () => {
+    assert.match(
+      arrowIn(PAGE_BODY, "revoked"),
+      /return isProtected\(\) && Array\.isArray\(r\) && r\.length > 0;/,
+    );
+    assert.match(
+      PAGE_BODY,
+      /<Show when=\{revoked\(\)\}>\s*<Alert role="alert" data-revoked-owner-devices>\s*<span>\{noticeCopy\("revoked_owner_devices"\)\}<\/span>\s*<Show when=\{proposedDevices\(\) !== null && canAct\(\)\}>/,
+    );
+    assert.match(
+      PAGE_BODY,
+      /const self = readUi\(\(api\) => api\.selfDeviceId\(\), null\);\s*if \(self === null\) return null;\s*try \{\s*return proposedOwnerDevices\(snapshot\(\), self\);\s*\} catch \{/,
+    );
+    const fn = pageFn("resignDevices");
+    assert.match(
+      fn,
+      /const devices = proposedDevices\(\);\s*if \(!api \|\| devices === null \|\| busy\(\) \|\| !canAct\(\)\) return;/,
+    );
+    assert.match(
+      fn,
+      /await api\.authoritySign\(props\.channel\.id, devices\);/,
+    );
+    assert.match(
+      fn,
+      /\} catch \(err\) \{\s*(?:\/\/[^\n]*\s*)?setError\(errorText\(err\)\);/,
+    );
+    assert.equal((PAGE_BODY.match(/\.authoritySign\(/g) ?? []).length, 1);
+    assert.match(
+      PAGE,
+      /import \{ proposedOwnerDevices \} from "@revolt\/client\/protectedTextOwner";/,
+    );
+  });
+
+  it("S23 S2 errors: reason refusals and publish_not_persisted map before the notice; failure passed (C-U10d)", () => {
+    const fn = pageFn("errorText");
+    const inFlight = fn.indexOf('isClientReason(err, "publish_in_flight")');
+    const tooLong = fn.indexOf(
+      'if (reasonRefusal(seatFailureBody(err)) === "too_long") {',
+    );
+    const notPersisted = fn.indexOf(
+      'if (seatClientReason(err) === "publish_not_persisted") {',
+    );
+    const mapped = fn.indexOf("const ui = errorUiOf(err);");
+    const asked = fn.indexOf(
+      "if (seatReasonRequired(ui) && askReason()) return null;",
+    );
+    const copy = fn.indexOf("return errorUiCopy(ui,");
+    assert.ok(
+      inFlight !== -1 &&
+        tooLong > inFlight &&
+        notPersisted > tooLong &&
+        mapped > notPersisted &&
+        asked > mapped &&
+        copy > asked,
+      "errorText order",
+    );
+    assert.match(
+      fn,
+      /=== "too_long"\) \{\s*return reasonProblemCopy\("too_long", AUDIT_LOG_REASON_MAX_CHARS\);/,
+    );
+    assert.match(
+      fn,
+      /=== "publish_not_persisted"\) \{\s*return notPersistedLine\(\);/,
+    );
+    // A missing reason is silenced here ONLY while the reason section (which
+    // says it, with its input) is showing: never a silent failure.
+    assert.match(
+      PAGE_BODY,
+      /const askReason = \(\) => stored\(\)\?\.reasonRequired === true;/,
+    );
+    // Every S2 failure goes through errorText (one errorUiCopy, S8).
+    for (const name of ["resignDevices", "discard"]) {
+      assert.match(
+        pageFn(name),
+        /\} catch \(err\) \{\s*(?:\/\/[^\n]*\s*)?setError\(errorText\(err\)\);/,
+        name,
+      );
+    }
+  });
+
+  it("S24 F3: Discard this change only via cancelPendingSeats, disabled when not discardable (C-U10e)", () => {
+    const fn = pageFn("discard");
+    assert.match(
+      fn,
+      /try \{\s*const outcome = seatDiscardOutcome\(\s*await api\.cancelPendingSeats\(props\.channel\.id\),?\s*\);\s*setNote\(discardLine\(outcome\)\);/,
+    );
+    assert.equal((PAGE_BODY.match(/\.cancelPendingSeats\(/g) ?? []).length, 1);
+    // pendingSeats is read guarded (an older bridge lacks it: no throw).
+    assert.match(
+      PAGE_BODY,
+      /return readUi\(\(api\) => api\.pendingSeats\(id\), null\);/,
+    );
+    // The stored-change callout: not while a send runs, the button
+    // disabled unless discardable, and it says why.
+    assert.match(
+      PAGE_BODY,
+      /<Show when=\{canAct\(\) && !busy\(\) && stored\(\)\}>\s*\{\(s\) => \(\s*<Callout role="status" data-stored-change>\s*<span>\{storedLine\(\)\}<\/span>/,
+    );
+    assert.match(
+      PAGE_BODY,
+      /<Button[^>]*isDisabled=\{busy\(\) \|\| s\(\)\.discardable === false\}\s*onPress=\{\(\) => void discard\(\)\}\s*>\s*\{discardLabel\(\)\}/,
+    );
+    assert.match(
+      PAGE_BODY,
+      /<Show when=\{s\(\)\.discardable === false\}>\s*<span>\{cantDiscardLine\(\)\}<\/span>/,
+    );
+    // Every answer is worded; an unreadable one reads as maybe accepted.
+    const sw = PAGE_BODY.slice(PAGE_BODY.indexOf("function discardLine("));
+    assert.match(sw, /\(outcome: SeatDiscardOutcome\)/);
+    assert.match(
+      sw,
+      /case "maybe_accepted":\s*case "unknown":\s*return maybeAcceptedLine\(\);/,
+    );
+    assert.match(sw, /const _exhaustive: never = outcome;/);
+  });
+
+  it("S25 S2 D40: the page asks for the unseat reason and re-sends the stored change with it (C-U10f)", () => {
+    // Checked as the server will, before anything runs; the SANITIZED
+    // reason goes out; the list argument is never what decides (4.9).
+    const fn = pageFn("submitReason");
+    assert.match(
+      fn,
+      /if \(busy\(\) \|\| !askReason\(\) \|\| !canChangeSeats\(\)\) return;\s*const check = validReason\(reason\(\), "header"\);\s*if \(!check\.ok\) \{\s*setReasonProblem\(\s*reasonProblemCopy\(check\.why, AUDIT_LOG_REASON_MAX_CHARS\),?\s*\);\s*return;\s*\}/,
+    );
+    assert.match(
+      fn,
+      /\}\s*setReasonProblem\(null\);\s*void runSetSeats\(editableIds\(\), false, check\.reason\);/,
+    );
+    assert.doesNotMatch(
+      fn,
+      /runSetSeats\([^;]*\breason\(\)/,
+      "never the raw input",
+    );
+    // The input: inside the stored-change callout, with the 9.2 copy.
+    assert.match(
+      PAGE_BODY,
+      /<Show when=\{s\(\)\.reasonRequired\}>\s*<ReasonSection data-reason>\s*<span>\{noticeCopy\("removal_reason_required"\)\}<\/span>\s*<ReasonInput/,
+    );
+    assert.match(
+      PAGE_BODY,
+      /<Button[^>]*isDisabled=\{busy\(\) \|\| !canChangeSeats\(\)\}\s*onPress=\{submitReason\}\s*>\s*\{seatPickerCopy\.confirm\(\)\}/,
+    );
+    // While it waits, a new removal would only re-send the stored change
+    // without a reason: Remove (and Update the list) are hidden.
+    assert.match(
+      PAGE_BODY,
+      /hideRemove=\{!canChangeSeats\(\) \|\| askReason\(\)\}/,
+    );
+    assert.match(
+      pageFn("removeSeat"),
+      /if \(askReason\(\)\) return;\s*const next = seatsAfterRemoval/,
+    );
+  });
+
+  it("S26 the seat-UI rules come from protectedSeatUiPolicy, never redefined here", () => {
+    for (const [tag, src, names] of [
+      ["list", LIST, ["seatReleasedRows", "seatUntilText", "seatUsedCount"]],
+      [
+        "page",
+        PAGE,
+        [
+          "seatClientReason",
+          "seatDeviceCounts",
+          "seatDiscardOutcome",
+          "seatFailureBody",
+          "seatReasonRequired",
+          "seatRemovalsWaiting",
+        ],
+      ],
+    ] as const) {
+      const at = src.indexOf('} from "@revolt/client/protectedSeatUiPolicy";');
+      assert.ok(at !== -1, `${tag}: policy import missing`);
+      const imp = src.slice(src.lastIndexOf("import {", at), at);
+      for (const name of names) {
+        assert.match(imp, new RegExp(`\\b${name},`), `${tag}: ${name}`);
+      }
+      for (const name of [
+        "seatReleasedRows",
+        "seatUntilText",
+        "seatUsedCount",
+        "seatClientReason",
+        "seatDeviceCounts",
+        "seatDiscardOutcome",
+        "seatFailureBody",
+        "seatReasonRequired",
+        "seatRemovalsWaiting",
+      ]) {
+        assert.doesNotMatch(
+          src,
+          new RegExp(`function ${name}\\(`),
+          `${tag}: ${name} redefined`,
+        );
+      }
+      assert.doesNotMatch(src, /\bREMOVAL_WAITING_MS = /, `${tag}: 10 min`);
+    }
+  });
+
+  it("S27 every S2 string is the seat picker's msgid, exactly (no new msgid)", () => {
+    const picker = readFileSync(
+      process.env.PROTECTED_SEAT_PICKER_FILE ||
+        join(here, "../../../../../modal/modals/ProtectedSeatPicker.tsx"),
+      "utf8",
+    );
+    const shared = [
+      "Unknown member",
+      "Released seats",
+      "Counts toward the seat limit until ${until}",
+      "People on your signed list who no longer have seats: ${count}",
+      "Update the list",
+      "Devices: ${count}",
+      "Removed from the seat list",
+      "Removed from the server",
+      "Lost access to this channel",
+      "No device joined before the seat was released",
+      "Removal waiting",
+      "Finish now",
+      "Trying the removal again…",
+      "Re-sign signing devices",
+      "Reason for the removal",
+      "Discard this change",
+      "An earlier change to the seats hasn't finished saving. Trying again sends that same change, exactly as it was.",
+      "This change can't be discarded now. The server may already have it.",
+      "The server may already have this change, so it can't be discarded.",
+      "This change couldn't be stored on this device, so it wasn't sent. Try again.",
+      "The change was discarded.",
+      "There's no change waiting to be discarded.",
+      "This change is being sent right now. Try again in a moment.",
+    ];
+    for (const text of shared) {
+      assert.ok(picker.includes(`t\`${text}\``), `picker lacks: ${text}`);
+    }
+    // The page's and the list's local msgids: the pre-S2 ones, else shared.
+    const before = [
+      "Seats used: ${count}. The seat limit isn't known yet.",
+      "Remove ${name}'s seat? They lose access to this channel on all their devices, and the released seat still counts toward the seat limit for 14 days.",
+      "Will be left off the seat list: ${names}",
+      "Each member can use any number of devices.",
+      "The device limit isn't known yet.",
+      "Can't view this channel anymore.",
+      "Counts as a used seat for 14 days after release.",
+      "Staff accounts can't be seated.",
+      "Only a channel without messages can be protected.",
+      "Protected channels aren't enabled for this channel yet.",
+    ];
+    const used = [...(PAGE_BODY + LIST_BODY).matchAll(/\bt`([^`]*)`/g)].map(
+      (m) => m[1],
+    );
+    for (const text of used) {
+      assert.ok(
+        shared.includes(text) || before.includes(text),
+        `a new msgid: ${text}`,
+      );
+    }
+    for (const text of shared) {
+      assert.ok(used.includes(text), `not used here: ${text}`);
+    }
   });
 });

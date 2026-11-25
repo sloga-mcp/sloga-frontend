@@ -11,30 +11,58 @@
 // marked "control:". W4d (lane L-MGR): the own-send binding (X#4, control
 // C-X4) and `not_member` on a send and a commit (X#5, C-X5a / C-X5b). S7 C9
 // (the tests named "C9 protector ..."): the protector back-off reducers and
-// the `protector` envelope verdict (EL-F7, AND-F13).
+// the `protector` envelope verdict (EL-F7, AND-F13). S2-W4 lane L1p (the
+// tests named "S2 ..."): `holdsCurrentGroup` (OR-8), the `_commit_won`
+// removal labels (OR-5), `catch_up_leaf_unresolvable` (S2-D31) and
+// `joinRefusal` (OR-4, OR-11).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { SHIELD_LOUD_GROUP_ERRORS } from "./protectedShield.ts";
 import {
+  type CapacityReason,
   type PublishAnswer,
   type PublishStep,
   type SendContext,
   type SendTrigger,
   type SubmitContext,
   type TextEnvelopeVerdict,
+  ADMIT_REFUSED_CAP,
+  admitRefusalKey,
+  admitRefusedByNative,
   classifySendAnswer,
   classifySubmit,
   classifyTextEnvelopeError,
+  coalescedRefreshReason,
+  COMMIT_CAP_REFUSALS,
   CONFIRM_WINDOW_MS,
   confirmAfterId,
   errorTypeOf,
+  holdsCurrentGroup,
   isCatchUpDesync,
   isProtectorError,
+  JOIN_EVENT_RESET_GAP_MS,
+  JOIN_REBROADCAST,
   JOIN_RETRIES,
   JOIN_RETRY_MS,
+  joinEventResetAllowed,
+  joinIntentHeldByOwnerChange,
+  joinRebroadcastDelayMs,
+  joinRefusal,
   LEAF_STAGGER_MS,
+  leafMissingApplies,
+  leafMissingSigner,
+  leafMissingSpent,
   leafStaggerMs,
+  MAX_TEXT_LEAVES,
+  mergeRefusalPaceEntry,
+  ownAddedEntry,
   ownSendRowBinds,
+  parkedReplay,
+  parseRefusalPaces,
+  pinFailureOutcome,
+  pinRetryAllowed,
+  pinRetryKey,
   PROTECTOR_BACKOFF,
   PROTECTOR_GATE_OPEN,
   protectorBackoffMs,
@@ -45,16 +73,39 @@ import {
   publishResolved,
   publishStep,
   REFRESH_INTERVAL_MS,
+  REFUSAL_PACE_BASE_MS,
+  REFUSAL_PACE_CAP_MS,
+  REFUSAL_PACE_ENTRIES_MAX,
+  refusalPaceAfterGrant,
+  refusalPaceAllows,
+  refusalPaceWindowMs,
+  refusalRetryable,
   resolveProtectReadBack,
   RETRY_AFTER_MAX_MS,
   retryAfterMs,
   ROSTER_MISMATCH_GRACE_MS,
   signAllowed,
   SIGNER_LEAF_MISSING_BUDGET,
+  STORED_ADMIT_REASONS,
+  storedJoinRequests,
+  WELCOME_FETCH_AFTER_MS,
+  WELCOME_FETCH_RETRY_BUDGET,
+  WELCOME_PIN_DEVICES_MAX,
+  welcomeDue,
+  welcomeFetchStep,
+  welcomeParkedFor,
+  welcomePending,
+  welcomeRefusalOf,
+  welcomeRefusalRejoin,
 } from "./protectedTextPolicy.ts";
 import {
+  type ProtectedChannelView,
   type SignedSeatList,
   type TextApiResponse,
+  type TextChannelState,
+  type TextGroupState,
+  type TextLeftReason,
+  type TextVerdict,
   TEXT_NATIVE_ERROR_TAGS,
 } from "./protectedTextTypes.ts";
 
@@ -422,6 +473,7 @@ const sctx = (over: Partial<SubmitContext> = {}): SubmitContext => ({
   ownCommitB64: "T1dO",
   resubmit: false,
   failures: 0,
+  ownRemoved: null,
   ...over,
 });
 
@@ -451,13 +503,20 @@ const INTENT = {
 
 const UNKNOWN = { kind: "unknown_outcome" } as const;
 
-test("D20: 2xx is won with our own bytes and no rejoin intents", () => {
+// S2 OR-5: this was "2xx is won" for any body; a plain 2xx is now `won` only
+// when the submitted body removed nothing (see the OR-5 tests below).
+test("D20: 2xx with nothing removed is won with our own bytes, no rejoin intents, no labels", () => {
   assert.deepEqual(
     classifySubmit(
       { kind: "submit", response: res(200, { result: "Won" }) },
-      sctx(),
+      sctx({ ownRemoved: [] }),
     ),
-    { kind: "won", storedCommitB64: "T1dO", rejoinIntents: [] },
+    {
+      kind: "won",
+      storedCommitB64: "T1dO",
+      rejoinIntents: [],
+      removedReasons: [],
+    },
   );
 });
 
@@ -497,6 +556,7 @@ test("D20: 409 Lost naming this device confirms by refetch, then won with the ST
     kind: "won",
     storedCommitB64: "U1RPUkVE",
     rejoinIntents: [INTENT],
+    removedReasons: [],
   });
 });
 
@@ -552,7 +612,12 @@ test("D20: a refusal that raced a winning own insert is won", () => {
       { kind: "refetch", purpose, response: res(200, commits(row(SELF))) },
       sctx(),
     ),
-    { kind: "won", storedCommitB64: "U1RPUkVE", rejoinIntents: [] },
+    {
+      kind: "won",
+      storedCommitB64: "U1RPUkVE",
+      rejoinIntents: [],
+      removedReasons: [],
+    },
   );
   // Raced another committer's insert: lost to that winner.
   assert.deepEqual(
@@ -633,6 +698,7 @@ test("D20 committer rule: an own row with DIFFERENT bytes still goes to _commit_
     kind: "won",
     storedCommitB64: "RElGRkVSRU5U",
     rejoinIntents: [],
+    removedReasons: [],
   });
 });
 
@@ -848,6 +914,256 @@ test("M5 isCatchUpDesync", () => {
   assert.equal(isCatchUpDesync(5, [{ epoch: 4 }]), true);
   assert.equal(isCatchUpDesync(5, [{ epoch: 5 }, { epoch: 7 }]), true);
   assert.equal(isCatchUpDesync(5, [{ epoch: 5 }, { epoch: 5 }]), true);
+});
+
+// ---------------------------------------------------------------------------
+// S2 OR-5: `_commit_won` removal labels
+// ---------------------------------------------------------------------------
+
+const LABELS = { kind: "labels" } as const;
+const LABEL = {
+  user_id: OTHER.user_id,
+  device_id: OTHER.device_id,
+  reason: "off_list",
+};
+/** An unknown reason passes verbatim (native maps it to `Unknown`). */
+const FUTURE_LABEL = {
+  user_id: OTHER.user_id,
+  device_id: "c".repeat(32),
+  reason: "from_the_future",
+};
+const WON_2XX = res(200, { result: "Won" });
+
+test("S2 OR-5 control: a plain 2xx whose body removed devices reads the stored row for its labels, never won", () => {
+  for (const over of [
+    { ownRemoved: [OTHER] },
+    { ownRemoved: [OTHER], resubmit: true, failures: 3 },
+    // Unknown removals are never read as none.
+    {},
+    { ownRemoved: null },
+  ] as Partial<SubmitContext>[]) {
+    for (const status of [200, 201, 204]) {
+      const out = classifySubmit(
+        { kind: "submit", response: res(status, { result: "Won" }) },
+        sctx(over),
+      );
+      assert.deepEqual(
+        out,
+        { kind: "refetch", purpose: LABELS, delayMs: 0 },
+        JSON.stringify(over),
+      );
+    }
+  }
+  // Known-empty removals: won with no labels, on a resubmit too.
+  assert.deepEqual(
+    classifySubmit(
+      { kind: "submit", response: WON_2XX },
+      sctx({ ownRemoved: [], resubmit: true }),
+    ),
+    {
+      kind: "won",
+      storedCommitB64: "T1dO",
+      rejoinIntents: [],
+      removedReasons: [],
+    },
+  );
+});
+
+test("S2 OR-5: the labels refetch is won with the stored row's labels, verbatim, wire keys only", () => {
+  const stored = row(SELF, {
+    removed: [OTHER, { user_id: OTHER.user_id, device_id: "c".repeat(32) }],
+    removed_reasons: [LABEL, { ...FUTURE_LABEL, extra: "dropped" }],
+    rejoin_intents: [INTENT],
+  });
+  assert.deepEqual(
+    classifySubmit(
+      { kind: "refetch", purpose: LABELS, response: res(200, commits(stored)) },
+      sctx({ ownRemoved: [OTHER] }),
+    ),
+    {
+      kind: "won",
+      storedCommitB64: "U1RPUkVE",
+      rejoinIntents: [INTENT],
+      removedReasons: [LABEL, FUTURE_LABEL],
+    },
+  );
+  // The DS stored none (it omits an empty vector), or null: the row says [].
+  for (const labels of [undefined, null, []]) {
+    const r = row(SELF, { removed: [OTHER], removed_reasons: labels });
+    const out = classifySubmit(
+      { kind: "refetch", purpose: LABELS, response: res(200, commits(r)) },
+      sctx({ ownRemoved: [OTHER] }),
+    );
+    assert.deepEqual(
+      out,
+      {
+        kind: "won",
+        storedCommitB64: "U1RPUkVE",
+        rejoinIntents: [],
+        removedReasons: [],
+      },
+      String(labels),
+    );
+  }
+});
+
+test("S2 OR-5: a labels refetch never resubmits or drops the stage; a failed read is read again", () => {
+  for (const r of [
+    res(200, commits()),
+    res(500),
+    res(503, { type: "DatabaseError" }),
+    res(200, "<html>"),
+    res(200, { commits: [{ epoch: 7 }] }),
+  ]) {
+    assert.deepEqual(
+      classifySubmit(
+        { kind: "refetch", purpose: LABELS, response: r },
+        sctx({ ownRemoved: [OTHER], failures: 2 }),
+      ),
+      { kind: "refetch", purpose: LABELS, delayMs: 1000 },
+      JSON.stringify(r.body),
+    );
+  }
+  assert.deepEqual(
+    classifySubmit(
+      { kind: "refetch_transport_error", purpose: LABELS },
+      sctx({ failures: 1 }),
+    ),
+    { kind: "refetch", purpose: LABELS, delayMs: 500 },
+  );
+  // A refused read after a won commit: never `lost` (no `_commit_lost` of
+  // the won stage) and never `mark_left`, on a first submit or a resubmit.
+  for (const r of [
+    res(404, { type: "NotFound" }),
+    res(403, { type: "NotSeated" }),
+    res(403, { type: "MissingPermission" }),
+  ]) {
+    for (const resubmit of [false, true]) {
+      assert.deepEqual(
+        classifySubmit(
+          { kind: "refetch", purpose: LABELS, response: r },
+          sctx({ ownRemoved: [OTHER], resubmit, failures: 2 }),
+        ),
+        { kind: "refetch", purpose: LABELS, delayMs: 1000 },
+        `${r.status} resubmit=${resubmit}`,
+      );
+    }
+  }
+  // The committer rule still applies to the stored row.
+  assert.deepEqual(
+    classifySubmit(
+      {
+        kind: "refetch",
+        purpose: LABELS,
+        response: res(200, commits(row(OTHER))),
+      },
+      sctx(),
+    ),
+    { kind: "lost", winner: row(OTHER), then: "process_winner" },
+  );
+});
+
+test("S2 OR-5: every refetch path's won carries the stored row's labels", () => {
+  for (const purpose of [
+    UNKNOWN,
+    { kind: "lost_self" } as const,
+    {
+      kind: "after_refusal",
+      status: 409,
+      type: "ProtectedChannelResecuring",
+      reason: "stale_seat_list",
+    } as const,
+    LABELS,
+  ]) {
+    const stored = row(SELF, {
+      removed: [OTHER],
+      removed_reasons: [LABEL, FUTURE_LABEL],
+    });
+    assert.deepEqual(
+      classifySubmit(
+        { kind: "refetch", purpose, response: res(200, commits(stored)) },
+        sctx(),
+      ),
+      {
+        kind: "won",
+        storedCommitB64: "U1RPUkVE",
+        rejoinIntents: [],
+        removedReasons: [LABEL, FUTURE_LABEL],
+      },
+      purpose.kind,
+    );
+  }
+});
+
+test("S2 OR-5 control: a malformed removed_reasons makes the stored row malformed", () => {
+  const bad: unknown[] = [
+    "off_list",
+    3,
+    {},
+    { ...LABEL },
+    [null],
+    ["off_list"],
+    [[LABEL]],
+    [LABEL, null],
+    [{ user_id: OTHER.user_id, device_id: OTHER.device_id }],
+    [{ ...LABEL, reason: 3 }],
+    [{ ...LABEL, reason: null }],
+    [{ ...LABEL, user_id: null }],
+    [{ ...LABEL, device_id: 7 }],
+  ];
+  for (const labels of bad) {
+    const tag = JSON.stringify(labels);
+    // A 409 Lost whose winner carries them: the outcome is unknown.
+    assert.deepEqual(
+      classifySubmit(
+        {
+          kind: "submit",
+          response: res(409, {
+            result: "Lost",
+            winning: row(OTHER, { removed_reasons: labels }),
+          }),
+        },
+        sctx(),
+      ),
+      { kind: "refetch", purpose: UNKNOWN, delayMs: 0 },
+      tag,
+    );
+    // A refetched row carrying them: read again, never won or lost.
+    for (const purpose of [UNKNOWN, LABELS]) {
+      assert.deepEqual(
+        classifySubmit(
+          {
+            kind: "refetch",
+            purpose,
+            response: res(200, commits(row(SELF, { removed_reasons: labels }))),
+          },
+          sctx({ failures: 1 }),
+        ),
+        { kind: "refetch", purpose, delayMs: 500 },
+        tag,
+      );
+    }
+  }
+  // Well-formed labels keep the winner (copied with wire keys only).
+  assert.deepEqual(
+    classifySubmit(
+      {
+        kind: "submit",
+        response: res(409, {
+          result: "Lost",
+          winning: row(OTHER, {
+            removed_reasons: [{ ...FUTURE_LABEL, extra: 1 }],
+          }),
+        }),
+      },
+      sctx(),
+    ),
+    {
+      kind: "lost",
+      winner: row(OTHER, { removed_reasons: [FUTURE_LABEL] }),
+      then: "process_winner",
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1261,6 +1577,7 @@ const EXPECTED: Record<
     ack: boolean,
     action: TextEnvelopeVerdict["action"],
     recordsGroupError: boolean,
+    markLeft?: TextLeftReason,
   ]
 > = {
   unknown_epoch: [false, "hold", true],
@@ -1290,6 +1607,10 @@ const EXPECTED: Record<
   wrong_group_kind: [false, "refuse_wrong_kind", true],
   identity_pin_required: [false, "pin_identities_retry", false],
   handover_target_invalid: [false, "hold", true],
+  // S2-D31 (L1p): replaces the W4-0 placeholder row [false, "hold", true].
+  catch_up_leaf_unresolvable: [true, "rejoin", true, "catch_up_failed"],
+  // Decrypt-only (native `text_decrypt`); unexpected from `_process`: held.
+  unsupported_envelope_version: [false, "hold", true],
   mls_group_not_found: [true, "join", true],
   mls_unsolicited_welcome: [true, "drop_unsolicited_welcome", false],
   mls_leaf_rejected: [true, "await_successor", true],
@@ -1304,10 +1625,11 @@ test("envelope classifier: every text tag, as pinned", () => {
     [...TEXT_NATIVE_ERROR_TAGS].sort(),
   );
   for (const tag of TEXT_NATIVE_ERROR_TAGS) {
-    const [ack, action, records] = EXPECTED[tag];
+    const [ack, action, records, markLeft] = EXPECTED[tag];
     const expected: TextEnvelopeVerdict = records
       ? { ack, action, groupError: tag }
       : { ack, action };
+    if (markLeft !== undefined) expected.markLeft = markLeft;
     assert.deepEqual(classifyTextEnvelopeError({ type: tag }), expected, tag);
     // Unwrapped from a TextFlowFailure the same way.
     assert.deepEqual(
@@ -1333,6 +1655,56 @@ test("envelope classifier: anything else fails closed (held, never acked)", () =
     { source: "server", status: 500, type: null, body: null },
   ]) {
     assert.deepEqual(classifyTextEnvelopeError(err), hold);
+  }
+});
+
+test("S2-D31 control: catch_up_leaf_unresolvable marks the group left (catch_up_failed) and rejoins; never held, never loud", () => {
+  for (const err of [
+    { type: "catch_up_leaf_unresolvable", group_id: GROUP, epoch: 3 },
+    {
+      source: "native",
+      error: { type: "catch_up_leaf_unresolvable", group_id: GROUP, epoch: 3 },
+    },
+  ]) {
+    const v = classifyTextEnvelopeError(err);
+    assert.deepEqual(v, {
+      ack: true,
+      action: "rejoin",
+      groupError: "catch_up_leaf_unresolvable",
+      markLeft: "catch_up_failed",
+    });
+    // Not the placeholder hold, and not the poisoned path.
+    assert.notEqual(v.action, "hold");
+    assert.notEqual(v.action, "await_successor");
+  }
+  // The recorded tag is never a loud (hence never a sticky) one.
+  assert.equal(
+    (SHIELD_LOUD_GROUP_ERRORS as readonly string[]).includes(
+      "catch_up_leaf_unresolvable",
+    ),
+    false,
+  );
+  // No other tag asks for a mark_left.
+  for (const tag of TEXT_NATIVE_ERROR_TAGS) {
+    if (tag === "catch_up_leaf_unresolvable") continue;
+    assert.equal(
+      "markLeft" in classifyTextEnvelopeError({ type: tag }),
+      false,
+      tag,
+    );
+  }
+});
+
+test("S2: unsupported_envelope_version on a channel op is held and recorded, never acked or dropped", () => {
+  for (const err of [
+    { type: "unsupported_envelope_version", v: 3 },
+    { source: "native", error: { type: "unsupported_envelope_version", v: 2 } },
+  ]) {
+    assert.deepEqual(classifyTextEnvelopeError(err), {
+      ack: false,
+      action: "hold",
+      groupError: "unsupported_envelope_version",
+    });
   }
 });
 
@@ -1505,6 +1877,238 @@ test("envelope classifier: never acks a parked owner change or a wrong-kind id",
 });
 
 // ---------------------------------------------------------------------------
+// S2 held group (superseded verdict, OR-8)
+// ---------------------------------------------------------------------------
+
+// Every member, checked by tsc (`satisfies` a total record).
+const GROUP_STATES = Object.keys({
+  none: 1,
+  joining: 1,
+  active: 1,
+  poisoned: 1,
+  left: 1,
+} satisfies Record<TextGroupState, 1>) as TextGroupState[];
+const VERDICTS = Object.keys({
+  ok: 1,
+  no_group: 1,
+  joining: 1,
+  not_seated: 1,
+  no_seat_list: 1,
+  roster_mismatch: 1,
+  owner_changed: 1,
+  poisoned: 1,
+} satisfies Record<TextVerdict, 1>) as TextVerdict[];
+
+const nativeState = (
+  state: TextGroupState,
+  verdict: TextVerdict,
+): TextChannelState => ({
+  channel_id: CHAN,
+  group_id: GROUP,
+  generation: 1,
+  epoch: 3,
+  state,
+  members: [],
+  seat_list: null,
+  owner_pin: {
+    channel_id: CHAN,
+    status: "pinned",
+    owner_user_id: OTHER.user_id,
+    owner_device_id: OTHER.device_id,
+    owner_verified: true,
+    source: "protect",
+    pending_signer: null,
+  },
+  self_seated: true,
+  roster_matches_list: true,
+  update_due: false,
+  update_required: false,
+  verdict,
+});
+
+test("S2 OR-8 control: a superseded group (active, verdict no_group) is not the held current group", () => {
+  assert.equal(holdsCurrentGroup(nativeState("active", "no_group")), false);
+  assert.equal(holdsCurrentGroup(nativeState("active", "ok")), true);
+  // Other verdicts of an active group still hold it (the shield decides).
+  for (const v of ["joining", "roster_mismatch", "owner_changed"] as const) {
+    assert.equal(holdsCurrentGroup(nativeState("active", v)), true, v);
+  }
+});
+
+test("S2 OR-8: holdsCurrentGroup is state active AND verdict not no_group, for every pair", () => {
+  assert.equal(GROUP_STATES.length, 5);
+  assert.equal(VERDICTS.length, 8);
+  for (const s of GROUP_STATES) {
+    for (const v of VERDICTS) {
+      assert.equal(
+        holdsCurrentGroup(nativeState(s, v)),
+        s === "active" && v !== "no_group",
+        `${s}/${v}`,
+      );
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// S2 join refusal (D35 capacity, S4 protocol floor; OR-4, OR-11)
+// ---------------------------------------------------------------------------
+
+/** `CapacityReason` is exactly the view's `capacity.reason` (tsc). */
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const capacityReasonIsTheView: Same<
+  CapacityReason,
+  NonNullable<ProtectedChannelView["capacity"]>["reason"]
+> = true;
+void capacityReasonIsTheView;
+
+const DEVICE_CAP = { kind: "capacity", reason: "device_cap" } as const;
+const GROUP_FULL = { kind: "capacity", reason: "group_full" } as const;
+
+/** The manager's `serverFailure(r)` shape for the same answer. */
+const failure = (r: TextApiResponse) => ({
+  source: "server" as const,
+  status: r.status,
+  type: errorTypeOf(r.body),
+  body: r.body,
+});
+
+test("S2 joinRefusal: DeviceCapReached 400 is device_cap; MlsCallFull 409 is group_full", () => {
+  const cap = res(400, { type: "DeviceCapReached", max: 5 });
+  const full = res(409, { type: "MlsCallFull", max: 100 });
+  assert.deepEqual(joinRefusal(cap), DEVICE_CAP);
+  assert.deepEqual(joinRefusal(failure(cap)), DEVICE_CAP);
+  assert.deepEqual(joinRefusal(full), GROUP_FULL);
+  assert.deepEqual(joinRefusal(failure(full)), GROUP_FULL);
+  // The commit transaction's typed refusals are unchanged.
+  assert.deepEqual(COMMIT_CAP_REFUSALS, ["DeviceCapReached", "MlsCallFull"]);
+});
+
+test("S2 joinRefusal: native text_group_full is device_cap below the 100-leaf ceiling, else group_full", () => {
+  assert.equal(MAX_TEXT_LEAVES, 100);
+  const cases: [unknown, "device_cap" | "group_full"][] = [
+    // `text_admit`: the signed per-user cap (`max` = that cap) ...
+    [1, "device_cap"],
+    [5, "device_cap"],
+    [99, "device_cap"],
+    // ... and the leaf ceiling (`max` = 100), or a cap at or above it.
+    [100, "group_full"],
+    [150, "group_full"],
+    // Unreadable: the group_full default.
+    [0, "group_full"],
+    [-1, "group_full"],
+    [2.5, "group_full"],
+    ["5", "group_full"],
+    [null, "group_full"],
+    [undefined, "group_full"],
+  ];
+  for (const [max, reason] of cases) {
+    const err =
+      max === undefined
+        ? { type: "text_group_full" }
+        : { type: "text_group_full", max };
+    const want = { kind: "capacity", reason };
+    assert.deepEqual(joinRefusal(err), want, String(max));
+    assert.deepEqual(
+      joinRefusal({ source: "native", error: err }),
+      want,
+      String(max),
+    );
+  }
+});
+
+test("S2 joinRefusal OR-4: ProtectedClientOutdated 400 is outdated only with a safe integer min of at least 1", () => {
+  for (const min of [1, 2, 3, 4_294_967_295, Number.MAX_SAFE_INTEGER]) {
+    const r = res(400, { type: "ProtectedClientOutdated", min });
+    assert.deepEqual(joinRefusal(r), { kind: "outdated", min }, String(min));
+    assert.deepEqual(joinRefusal(failure(r)), { kind: "outdated", min });
+  }
+  for (const min of [
+    0,
+    -1,
+    1.5,
+    "2",
+    null,
+    true,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    2 ** 53,
+    undefined,
+  ]) {
+    const body =
+      min === undefined
+        ? { type: "ProtectedClientOutdated" }
+        : { type: "ProtectedClientOutdated", min };
+    assert.equal(joinRefusal(res(400, body)), null, String(min));
+    assert.equal(joinRefusal(failure(res(400, body))), null, String(min));
+  }
+  for (const status of [200, 409, 403, 429, 500]) {
+    assert.equal(
+      joinRefusal(res(status, { type: "ProtectedClientOutdated", min: 2 })),
+      null,
+      String(status),
+    );
+  }
+});
+
+test("S2 control: capacity comes only from a join answer, never a seats or group read", () => {
+  // A seats read that shows the cap reached is not a refusal (OR-11).
+  const seatsAtCap = {
+    ...seatsBody(serverList()),
+    entitlement_device_cap: 1,
+    device_cap: 1,
+    seats_used: 1,
+    slot_cap: 1,
+  };
+  const answers: unknown[] = [
+    res(200, seatsAtCap),
+    failure(res(200, seatsAtCap)),
+    res(200, { group_id: GROUP, generation: 1, epoch: 3, members: [] }),
+    // A cap type at another status is not the route's refusal.
+    res(200, { type: "DeviceCapReached", max: 5 }),
+    res(409, { type: "DeviceCapReached", max: 5 }),
+    res(403, { type: "DeviceCapReached", max: 5 }),
+    res(429, { type: "DeviceCapReached", max: 5 }),
+    res(500, { type: "DeviceCapReached", max: 5 }),
+    res(400, { type: "MlsCallFull", max: 100 }),
+    res(200, { type: "MlsCallFull", max: 100 }),
+    res(400, { type: "SeatCapReached", max: 10 }),
+    // A native tag in a server body, a server type from native.
+    res(400, { type: "text_group_full", max: 100 }),
+    { source: "native", error: { type: "DeviceCapReached", max: 5 } },
+    { source: "native", error: { type: "MlsCallFull", max: 100 } },
+    // A bare error body (no status) is not an answer.
+    { type: "DeviceCapReached", max: 5 },
+    { type: "MlsCallFull", max: 100 },
+    // The server failure's body decides, not its `type` field.
+    { source: "server", status: 400, type: "DeviceCapReached", body: null },
+    { source: "transport" },
+    { source: "client", reason: "join_stalled" },
+    { type: "roster_mismatch" },
+    { source: "native", error: { type: "busy" } },
+    "DeviceCapReached",
+    new Error("DeviceCapReached"),
+    null,
+    undefined,
+  ];
+  for (const a of answers) {
+    assert.equal(joinRefusal(a), null, JSON.stringify(a));
+  }
+  // No other classifier reads a cap answer as capacity.
+  assert.deepEqual(
+    classifyTextEnvelopeError({ type: "text_group_full", max: 100 }),
+    { ack: true, action: "await_successor", groupError: "text_group_full" },
+  );
+  const first = classifySubmit(
+    {
+      kind: "submit",
+      response: res(400, { type: "DeviceCapReached", max: 5 }),
+    },
+    sctx(),
+  );
+  assert.equal(first.kind, "refetch");
+});
+
+// ---------------------------------------------------------------------------
 // Admission stagger (D19)
 // ---------------------------------------------------------------------------
 
@@ -1513,4 +2117,794 @@ test("leafStaggerMs: own leaf index x 2 s", () => {
   for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
     assert.equal(leafStaggerMs(bad), 0);
   }
+});
+
+// ---------------------------------------------------------------------------
+// S2-W4 fix lane FX-J: async Text join (S2-D28 / S2-D29). Tests named
+// "FXJ ..." are the targets of /home/mcp/pc-logs/s2/w4/ctl/FXJ.
+// ---------------------------------------------------------------------------
+
+const G = "ab".repeat(32);
+const G_OTHER = "cd".repeat(32);
+
+test("FXJ joinRebroadcastDelayMs: 10 s doubling, held at 15 min; a broken count fails to the cap", () => {
+  assert.equal(JOIN_REBROADCAST.startMs, JOIN_RETRY_MS);
+  assert.equal(JOIN_REBROADCAST.capMs, 900_000);
+  assert.deepEqual(
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 50, 10_000].map(joinRebroadcastDelayMs),
+    [
+      10_000, 20_000, 40_000, 80_000, 160_000, 320_000, 640_000, 900_000,
+      900_000, 900_000, 900_000,
+    ],
+  );
+  for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(joinRebroadcastDelayMs(bad), 900_000, String(bad));
+  }
+});
+
+test("FXJ welcomeFetchStep: a 404 rejoins; a 2xx is used only for the group asked for with an epoch and bytes; 429/5xx/transport retried within the budget; other answers give up", () => {
+  const ctx = (failures = 0) => ({ groupId: G, failures });
+  const welcome = { group_id: G, epoch: 4, welcome: "V0VM" };
+  assert.equal(WELCOME_FETCH_AFTER_MS, 20_000);
+  assert.deepEqual(
+    welcomeFetchStep({ kind: "response", response: res(200, welcome) }, ctx()),
+    {
+      kind: "process",
+      welcome,
+    },
+  );
+  // only the three fields reach the caller
+  assert.deepEqual(
+    welcomeFetchStep(
+      { kind: "response", response: res(200, { ...welcome, extra: 1 }) },
+      ctx(),
+    ),
+    { kind: "process", welcome },
+  );
+  assert.deepEqual(
+    welcomeFetchStep(
+      { kind: "response", response: res(404, { type: "NotFound" }) },
+      ctx(),
+    ),
+    { kind: "rejoin" },
+  );
+  assert.deepEqual(
+    welcomeFetchStep(
+      {
+        kind: "response",
+        response: res(200, { ...welcome, group_id: G_OTHER }),
+      },
+      ctx(),
+    ),
+    { kind: "give_up", why: "wrong_group" },
+  );
+  for (const bad of [
+    null,
+    [],
+    { ...welcome, epoch: -1 },
+    { ...welcome, epoch: 1.5 },
+    { ...welcome, epoch: "4" },
+    { ...welcome, welcome: "" },
+    { ...welcome, welcome: 7 },
+    { epoch: 4, welcome: "V0VM" },
+  ]) {
+    assert.deepEqual(
+      welcomeFetchStep({ kind: "response", response: res(200, bad) }, ctx()),
+      { kind: "give_up", why: "malformed" },
+      JSON.stringify(bad),
+    );
+  }
+  for (const status of [400, 401, 403, 409, 301]) {
+    assert.deepEqual(
+      welcomeFetchStep(
+        { kind: "response", response: res(status, { type: "X" }) },
+        ctx(),
+      ),
+      { kind: "give_up", why: "refused" },
+      String(status),
+    );
+  }
+  // unknown outcomes: retried with backoff, never read as "none stored"
+  assert.deepEqual(welcomeFetchStep({ kind: "transport_error" }, ctx(0)), {
+    kind: "retry",
+    delayMs: 250,
+  });
+  assert.deepEqual(
+    welcomeFetchStep({ kind: "response", response: res(503) }, ctx(1)),
+    { kind: "retry", delayMs: 500 },
+  );
+  assert.deepEqual(
+    welcomeFetchStep(
+      { kind: "response", response: res(429, null, 1_500) },
+      ctx(0),
+    ),
+    { kind: "retry", delayMs: 1_500 },
+  );
+  for (const answer of [
+    { kind: "transport_error" as const },
+    { kind: "response" as const, response: res(500) },
+    { kind: "response" as const, response: res(429, null, 1_000) },
+  ]) {
+    assert.deepEqual(
+      welcomeFetchStep(answer, ctx(WELCOME_FETCH_RETRY_BUDGET)),
+      { kind: "give_up", why: "budget" },
+    );
+    assert.deepEqual(welcomeFetchStep(answer, ctx(Number.NaN)), {
+      kind: "give_up",
+      why: "budget",
+    });
+  }
+});
+
+test("FXJ ownAddedEntry / welcomeDue: this device's latest Add keys the observation; a Welcome is due only at/after the epoch of the last intent", () => {
+  const g = (member_added: unknown[]) => ({ group_id: G, member_added });
+  assert.equal(ownAddedEntry(g([]), "U", "D"), null);
+  const added = ownAddedEntry(
+    g([
+      { user_id: "U", device_id: "D", epoch: 4, at: "" },
+      { user_id: "U", device_id: "D", epoch: 6, at: "" },
+      { user_id: "U", device_id: "D2", epoch: 9, at: "" },
+      { user_id: "V", device_id: "D", epoch: 9, at: "" },
+      { user_id: "U", device_id: "D", epoch: 1.5, at: "" },
+      null,
+    ]),
+    "U",
+    "D",
+  );
+  assert.deepEqual(added, { key: `${G}:6`, epoch: 6 });
+  assert.equal(welcomeDue(added, 6), true);
+  assert.equal(welcomeDue(added, 5), true);
+  assert.equal(welcomeDue(added, 7), false, "an Add before our intent");
+  assert.equal(welcomeDue(added, null), false, "no intent sent");
+  assert.equal(welcomeDue(null, 0), false);
+});
+
+test("FXJ storedJoinRequests: the live request shape (S1 strings, OR-6 generation/issued_at, rejoin boolean); a malformed entry is dropped whole; created_at never kept; a repeat keeps the first", () => {
+  const CHAN = "01J9Z3K4M5N6P7Q8R9S0T1V2W3";
+  const row = (over: Record<string, unknown> = {}) => ({
+    user_id: "U",
+    device_id: "D",
+    key_package_ref: "KPR",
+    signature: "SIG",
+    created_at: "2026-11-12T00:00:00Z",
+    rejoin: false,
+    ...over,
+  });
+  assert.deepEqual(storedJoinRequests(undefined, G, CHAN), {
+    requests: [],
+    dropped: 0,
+  });
+  assert.deepEqual(storedJoinRequests({}, G, CHAN), {
+    requests: [],
+    dropped: 1,
+  });
+  const out = storedJoinRequests(
+    [
+      row({ generation: 2, issued_at: 1_700_000_000_000 }),
+      row({ device_id: "D-REJOIN", rejoin: true }),
+      row({ signature: "SIG-AGAIN" }),
+      row({ device_id: "BAD1", issued_at: 1.5, generation: 2 }),
+      row({ device_id: "BAD2", generation: null }),
+      row({ device_id: "BAD3", generation: -1 }),
+      row({ device_id: "BAD4", rejoin: "false" }),
+      row({ device_id: "BAD5", rejoin: undefined }),
+      row({ device_id: 7 }),
+      row({ signature: undefined }),
+      "x",
+    ],
+    G,
+    CHAN,
+  );
+  assert.equal(out.dropped, 8);
+  assert.deepEqual(out.requests, [
+    {
+      request: {
+        group_id: G,
+        channel_id: CHAN,
+        user_id: "U",
+        device_id: "D",
+        key_package_ref: "KPR",
+        signature: "SIG",
+        generation: 2,
+        issued_at: 1_700_000_000_000,
+      },
+      rejoin: false,
+    },
+    {
+      request: {
+        group_id: G,
+        channel_id: CHAN,
+        user_id: "U",
+        device_id: "D-REJOIN",
+        key_package_ref: "KPR",
+        signature: "SIG",
+      },
+      rejoin: true,
+    },
+  ]);
+  // An S1 entry keeps the S1 shape: no generation / issued_at keys.
+  const s1 = storedJoinRequests([row()], G, CHAN).requests[0].request;
+  assert.equal("generation" in s1, false);
+  assert.equal("issued_at" in s1, false);
+  assert.equal("created_at" in s1, false);
+});
+
+test("FXJ STORED_ADMIT_REASONS: open, the 60 s refresh, start, event and manual; never a commit refresh", () => {
+  for (const r of ["open", "interval", "start", "event", "manual"] as const) {
+    assert.ok(STORED_ADMIT_REASONS.includes(r), r);
+  }
+  for (const r of [
+    "commit",
+    "resecuring",
+    "owner_confirmed",
+    "send_refused",
+  ] as const) {
+    assert.equal(STORED_ADMIT_REASONS.includes(r), false, r);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// S2-W4 fix lane FX-J2 (re-review NEW-1, NEW-2, NEW-3, NEW-5). Tests named
+// "FXJ2 ..." are the targets of /home/mcp/pc-logs/s2/w4/ctl/FXJ2.
+// ---------------------------------------------------------------------------
+
+test("FXJ2 welcomePending: an Add owes ONE Welcome path while due and not done; done, a new Add owes its own", () => {
+  const a4 = { key: "G:4", epoch: 4 };
+  assert.equal(welcomePending(a4, 3, null), true, "due, never ran");
+  assert.equal(welcomePending(a4, 4, "G:2"), true, "another Add ran");
+  assert.equal(welcomePending(a4, 3, "G:4"), false, "this Add is done");
+  assert.equal(welcomePending(a4, 5, null), false, "before our last intent");
+  assert.equal(welcomePending(a4, null, null), false, "no intent sent yet");
+  assert.equal(welcomePending(null, 3, null), false, "no Add");
+  assert.equal(
+    welcomePending({ key: "G:6", epoch: 6 }, 3, "G:4"),
+    true,
+    "a new Add is a new path",
+  );
+});
+
+test("FXJ2 joinEventResetAllowed: an event restarts the join backoff at most once per window (the backoff cap); a broken clock refuses", () => {
+  assert.equal(JOIN_EVENT_RESET_GAP_MS, JOIN_REBROADCAST.capMs);
+  const t = 1_700_000_000_000;
+  assert.equal(joinEventResetAllowed(null, t), true, "the first one");
+  assert.equal(joinEventResetAllowed(t, t), false);
+  assert.equal(
+    joinEventResetAllowed(t, t + JOIN_EVENT_RESET_GAP_MS - 1),
+    false,
+  );
+  assert.equal(joinEventResetAllowed(t, t + JOIN_EVENT_RESET_GAP_MS), true);
+  assert.equal(joinEventResetAllowed(t, t - 1), false, "clock ran backwards");
+  assert.equal(joinEventResetAllowed(Number.NaN, t), false);
+  assert.equal(joinEventResetAllowed(t, Number.POSITIVE_INFINITY), false);
+});
+
+test("FXJ2 coalescedRefreshReason: a stored-admit reason wins over one that does not admit; open is strongest; a tie keeps the running reason", () => {
+  const admits = ["open", "interval", "event", "manual", "start"] as const;
+  const plain = [
+    "commit",
+    "resecuring",
+    "owner_confirmed",
+    "send_refused",
+  ] as const;
+  for (const a of admits) {
+    for (const p of plain) {
+      assert.equal(coalescedRefreshReason(p, a), a, `${p} + ${a}`);
+      assert.equal(coalescedRefreshReason(a, p), a, `${a} + ${p}`);
+    }
+    assert.ok(STORED_ADMIT_REASONS.includes(a), a);
+  }
+  for (const r of [...admits, ...plain]) {
+    assert.equal(coalescedRefreshReason(r, "open"), "open", r);
+    assert.equal(coalescedRefreshReason(r, r), r, `${r} tie`);
+  }
+  assert.equal(coalescedRefreshReason("interval", "event"), "interval");
+  assert.equal(coalescedRefreshReason("commit", "send_refused"), "commit");
+  // "start" admits but joins only a left group: any other admit beats it.
+  assert.equal(coalescedRefreshReason("start", "interval"), "interval");
+  assert.equal(coalescedRefreshReason("interval", "start"), "interval");
+});
+
+test("FXJ2 admitRefusalKey / admitRefusedByNative: a request is its group, device and KeyPackage ref; only a native refusal that is not transient counts", () => {
+  const req = {
+    group_id: "G",
+    channel_id: "C",
+    user_id: "U",
+    device_id: "D",
+    key_package_ref: "K1",
+    signature: "S",
+  };
+  assert.equal(
+    admitRefusalKey(req),
+    admitRefusalKey({ ...req, signature: "X" }),
+  );
+  assert.equal(
+    admitRefusalKey(req),
+    admitRefusalKey({ ...req, generation: 2 }),
+  );
+  for (const over of [
+    { key_package_ref: "K2" },
+    { device_id: "D2" },
+    { group_id: "G2" },
+  ]) {
+    assert.notEqual(admitRefusalKey(req), admitRefusalKey({ ...req, ...over }));
+  }
+  // No separator collision between fields.
+  assert.notEqual(
+    admitRefusalKey({ ...req, group_id: "a:b", device_id: "c" }),
+    admitRefusalKey({ ...req, group_id: "a", device_id: "b:c" }),
+  );
+  for (const type of [
+    "mls_leaf_rejected",
+    "roster_mismatch",
+    "replayed_rejoin_intent",
+    "duplicate_leaf",
+    "text_group_full",
+    "channel_mismatch",
+    "invalid_argument",
+  ]) {
+    assert.equal(admitRefusedByNative({ type }), true, type);
+    assert.equal(
+      admitRefusedByNative({ source: "native", error: { type } }),
+      true,
+      `wrapped ${type}`,
+    );
+  }
+  for (const type of [
+    "busy",
+    "storage",
+    "protector",
+    "protector_locked",
+    "identity_pin_required",
+  ]) {
+    assert.equal(admitRefusedByNative({ type }), false, type);
+  }
+  for (const err of [
+    { source: "server", status: 403, type: "NotSeated", body: null },
+    { source: "transport" },
+    { source: "client", reason: "disposed" },
+    new Error("x"),
+    null,
+    "busy",
+  ]) {
+    assert.equal(admitRefusedByNative(err), false, JSON.stringify(err));
+  }
+  assert.ok(Number.isSafeInteger(ADMIT_REFUSED_CAP) && ADMIT_REFUSED_CAP > 0);
+});
+
+// ---------------------------------------------------------------------------
+// S2 final audit fix lane FXF (MAJOR 6c budget binding, MINOR parked
+// Welcome). Tests named "FXF ..." are the targets of
+// /home/mcp/pc-logs/s2/w4/ctl/FXF.
+// ---------------------------------------------------------------------------
+
+test("FXF leafMissingApplies / leafMissingSpent: the 6c budget binds to the group and the held list signer it was spent on; a successor group or another signer starts over; a non-finite or unbound spent count fails closed", () => {
+  const listed = (signer_device_id: string): TextChannelState => ({
+    ...nativeState("none", "no_group"),
+    seat_list: {
+      version: 1,
+      signer_user_id: "UO",
+      signer_device_id,
+      seats: ["UO"],
+      device_cap: 5,
+      issued_at: 0,
+    },
+  });
+  const s1 = leafMissingSigner(listed("D1"));
+  const s2 = leafMissingSigner(listed("D2"));
+  assert.notEqual(s1, null);
+  assert.notEqual(s1, s2, "another signer device");
+  assert.equal(leafMissingSigner(null), null);
+  assert.equal(leafMissingSigner(nativeState("none", "no_group")), null);
+  assert.equal(leafMissingSigner(listed("D1")), s1, "stable");
+  const on = { groupId: "G0", signer: s1 };
+  assert.equal(leafMissingApplies(on, "G0", s1), true);
+  assert.equal(leafMissingApplies(on, "G1", s1), false, "successor group");
+  assert.equal(leafMissingApplies(on, "G0", s2), false, "another signer");
+  assert.equal(leafMissingApplies(null, "G0", s1), false);
+  const B = SIGNER_LEAF_MISSING_BUDGET;
+  assert.equal(leafMissingSpent(B - 1, on, "G0", s1), false, "below");
+  assert.equal(leafMissingSpent(B, on, "G0", s1), true, "6c");
+  assert.equal(leafMissingSpent(B + 4, on, "G0", s1), true);
+  assert.equal(leafMissingSpent(B, on, "G1", s1), false, "another group");
+  assert.equal(leafMissingSpent(B, on, "G0", s2), false, "another signer");
+  assert.equal(leafMissingSpent(Number.NaN, on, "G0", s1), true, "NaN");
+  assert.equal(leafMissingSpent(B, null, "G0", s1), true, "unbound");
+  assert.equal(leafMissingSpent(0, null, "G0", s1), false);
+});
+
+test("FXF welcomeParkedFor / parkedReplay: a parked Welcome for the group keeps its Add pending; a confirm replays only the latest one for the current group, drops the others, and keeps every other envelope in order", () => {
+  const w = (id: string, group_id: string, epoch: number) => ({
+    id,
+    content_type: "mls_welcome",
+    group_id,
+    epoch,
+  });
+  const c = (id: string, group_id: string, epoch: number) => ({
+    id,
+    content_type: "mls_commit",
+    group_id,
+    epoch,
+  });
+  const parked = [
+    c("C0", "G0", 4),
+    w("WA", "G0", 4),
+    w("WB", "G1", 2),
+    c("C1", "G1", 3),
+    w("WC", "G1", 5),
+    w("WD", "G1", 3),
+  ];
+  assert.equal(welcomeParkedFor(parked, "G1"), true);
+  assert.equal(welcomeParkedFor(parked, "G0"), true);
+  assert.equal(welcomeParkedFor([c("C1", "G1", 3)], "G1"), false, "commit");
+  assert.equal(welcomeParkedFor(parked, "G2"), false);
+  assert.equal(welcomeParkedFor([], "G1"), false);
+
+  const r = parkedReplay(parked, "G1");
+  assert.deepEqual(
+    r.replay.map((p) => p.id),
+    ["C0", "C1", "WC"],
+  );
+  assert.deepEqual(
+    r.dropped.map((p) => p.id),
+    ["WA", "WB", "WD"],
+  );
+  // Equal epochs: the last one parked.
+  const tie = parkedReplay([w("W1", "G1", 5), w("W2", "G1", 5)], "G1");
+  assert.deepEqual(
+    tie.replay.map((p) => p.id),
+    ["W2"],
+  );
+  // No current group: no Welcome is replayed.
+  const none = parkedReplay(parked, null);
+  assert.deepEqual(
+    none.replay.map((p) => p.id),
+    ["C0", "C1"],
+  );
+  assert.equal(none.dropped.length, 4);
+  assert.deepEqual(parkedReplay([], "G1"), { replay: [], dropped: [] });
+});
+
+// ---------------------------------------------------------------------------
+// S2 live-leg fix lane FXP (F-L6, F-L7). Tests named "FXP ..." are targets of
+// /home/mcp/pc-logs/s2/w4/ctl/FXP.
+// ---------------------------------------------------------------------------
+
+test("FXP pinRetryAllowed: a Welcome pins each distinct device once (one unpinned leaf per refusal), a device named twice ends it, the leaf cap bounds it; a commit retries once whatever device it names (D28)", () => {
+  const a = { user_id: "U1", device_id: "dA" };
+  const b = { user_id: "U1", device_id: "dB" };
+  const c = { user_id: "U2", device_id: "dA" };
+  const w = "mls_welcome";
+  assert.equal(pinRetryAllowed(w, new Set(), a), true);
+  assert.equal(pinRetryAllowed(w, new Set([pinRetryKey(a)]), b), true);
+  assert.equal(pinRetryAllowed(w, new Set([pinRetryKey(a)]), c), true, "user");
+  assert.equal(pinRetryAllowed(w, new Set([pinRetryKey(a)]), a), false);
+  assert.equal(
+    pinRetryAllowed(w, new Set([pinRetryKey(a), pinRetryKey(b)]), a),
+    false,
+  );
+  // Ids never collide through a separator.
+  assert.notEqual(
+    pinRetryKey({ user_id: "U1\n", device_id: "d" }),
+    pinRetryKey({ user_id: "U1", device_id: "\nd" }),
+  );
+  const full = new Set(
+    Array.from({ length: WELCOME_PIN_DEVICES_MAX }, (_, i) =>
+      pinRetryKey({ user_id: "U", device_id: `d${i}` }),
+    ),
+  );
+  assert.equal(WELCOME_PIN_DEVICES_MAX, MAX_TEXT_LEAVES);
+  const fresh = { user_id: "U", device_id: "x" };
+  assert.equal(pinRetryAllowed(w, full, fresh), false, "the cap");
+  full.delete(pinRetryKey({ user_id: "U", device_id: "d0" }));
+  assert.equal(pinRetryAllowed(w, full, fresh), true, "below the cap");
+  for (const ct of ["mls_commit", "", "mls_welcome2"]) {
+    assert.equal(pinRetryAllowed(ct, new Set(), a), true, ct);
+    assert.equal(pinRetryAllowed(ct, new Set([pinRetryKey(a)]), b), false, ct);
+  }
+});
+
+test("FXP pinFailureOutcome: only a fetch, rate-limit or timeout failure, or a 429 / 5xx, is transport; a 4xx, a native error or an unknown shape is refused", () => {
+  const named = (name: string) => {
+    const e = new Error("x");
+    e.name = name;
+    return e;
+  };
+  for (const err of [
+    new TypeError("Failed to fetch"),
+    named("E2EERateLimitError"),
+    named("E2EERequestTimeoutError"),
+    Object.assign(new Error("E2EE API GET failed: 503"), { status: 503 }),
+    Object.assign(new Error("E2EE API GET failed: 429"), { status: 429 }),
+  ]) {
+    assert.equal(pinFailureOutcome(err), "transport", String(err));
+  }
+  for (const err of [
+    Object.assign(new Error("E2EE API GET failed: 404"), { status: 404 }),
+    Object.assign(new Error("E2EE API GET failed: 403"), { status: 403 }),
+    { type: "identity_changed" },
+    { source: "client", reason: "not_capable" },
+    new Error("anything else"),
+    null,
+    "network",
+  ]) {
+    assert.equal(pinFailureOutcome(err), "refused", JSON.stringify(err));
+  }
+});
+
+test("FXP welcomeRefusalOf / refusalRetryable: only a Welcome's mls_leaf_rejected naming a device is a refusal; unknown_identity (a spent pin budget, never a verdict on the device) is retryable, every other reason hard", () => {
+  const welcome = { content_type: "mls_welcome", group_id: "G1", epoch: 7 };
+  const rejected = (reason: unknown) => ({
+    type: "mls_leaf_rejected",
+    user_id: "U",
+    device_id: "D",
+    reason,
+  });
+  const want = {
+    groupId: "G1",
+    epoch: 7,
+    userId: "U",
+    deviceId: "D",
+    reason: "unknown_identity",
+  };
+  assert.deepEqual(
+    welcomeRefusalOf(rejected("unknown_identity"), welcome),
+    want,
+  );
+  assert.deepEqual(
+    welcomeRefusalOf(
+      { source: "native", error: rejected("unknown_identity") },
+      welcome,
+    ),
+    want,
+    "wrapped",
+  );
+  assert.equal(welcomeRefusalOf(rejected(7), welcome)?.reason, "");
+  const commit = { ...welcome, content_type: "mls_commit" };
+  assert.equal(welcomeRefusalOf(rejected("unknown_identity"), commit), null);
+  for (const err of [
+    { type: "mls_leaf_rejected", reason: "unknown_identity" },
+    { type: "identity_pin_required", user_id: "U", device_id: "D" },
+    { source: "server", error: rejected("unknown_identity") },
+    null,
+  ]) {
+    assert.equal(welcomeRefusalOf(err, welcome), null, JSON.stringify(err));
+  }
+  assert.equal(refusalRetryable("unknown_identity"), true);
+  for (const reason of ["identity_changed", "bad_binding_signature", ""]) {
+    assert.equal(refusalRetryable(reason), false, reason);
+  }
+});
+
+test("FXP refusal pace: the first grant is free, then one per window from the S2-D28 cap, doubling per grant up to 24 h; a future stamp counts from now; a broken clock refuses; stored entries are read whole or dropped", () => {
+  assert.equal(REFUSAL_PACE_BASE_MS, JOIN_REBROADCAST.capMs);
+  assert.equal(REFUSAL_PACE_CAP_MS, 24 * 3_600_000);
+  assert.equal(refusalPaceWindowMs(0), 0);
+  assert.equal(refusalPaceWindowMs(1), REFUSAL_PACE_BASE_MS);
+  assert.equal(refusalPaceWindowMs(2), 2 * REFUSAL_PACE_BASE_MS);
+  assert.equal(refusalPaceWindowMs(3), 4 * REFUSAL_PACE_BASE_MS);
+  assert.equal(refusalPaceWindowMs(40), REFUSAL_PACE_CAP_MS, "capped");
+  assert.equal(refusalPaceWindowMs(Number.NaN), REFUSAL_PACE_CAP_MS);
+  const t = 1_000_000_000;
+  assert.equal(refusalPaceAllows(null, t), true);
+  assert.equal(refusalPaceAllows({ grants: 0, atMs: 0 }, t), true, "none yet");
+  const one = refusalPaceAfterGrant(null, t);
+  assert.deepEqual(one, { grants: 1, atMs: t });
+  assert.equal(refusalPaceAllows(one, t + REFUSAL_PACE_BASE_MS - 1), false);
+  assert.equal(refusalPaceAllows(one, t + REFUSAL_PACE_BASE_MS), true);
+  const two = refusalPaceAfterGrant(one, t + REFUSAL_PACE_BASE_MS);
+  assert.equal(two.grants, 2);
+  assert.equal(
+    refusalPaceAllows(two, two.atMs + 2 * REFUSAL_PACE_BASE_MS - 1),
+    false,
+    "doubled",
+  );
+  const many = { grants: 30, atMs: t };
+  assert.equal(refusalPaceAllows(many, t + REFUSAL_PACE_CAP_MS), true, "cap");
+  // m-c: a stamp in the future is read as now, never a wait until then.
+  const future = { grants: 1, atMs: t + 365 * 86_400_000 };
+  assert.equal(refusalPaceAllows(future, t), false);
+  assert.equal(refusalPaceAllows(future, t + REFUSAL_PACE_BASE_MS), false);
+  assert.equal(
+    refusalPaceAllows({ grants: 0, atMs: t + 10 }, t),
+    true,
+    "no grant yet: nothing to wait for",
+  );
+  assert.equal(refusalPaceAllows(one, Number.NaN), false);
+  const entry = {
+    groupId: "G",
+    userId: "U",
+    deviceId: "D",
+    epoch: 4,
+    reason: "identity_changed",
+    grants: 0,
+    atMs: 0,
+  };
+  assert.deepEqual(
+    parseRefusalPaces(JSON.stringify({ v: 2, entries: [entry] })),
+    [entry],
+  );
+  for (const bad of [
+    { ...entry, grants: -1 },
+    { ...entry, grants: 1.5 },
+    { ...entry, atMs: "t" },
+    { ...entry, deviceId: 7 },
+    { ...entry, epoch: -1 },
+    { ...entry, reason: null },
+    null,
+  ]) {
+    assert.deepEqual(
+      parseRefusalPaces(JSON.stringify({ v: 2, entries: [bad, entry] })),
+      [entry],
+      JSON.stringify(bad),
+    );
+  }
+  for (const raw of [
+    null,
+    "",
+    "{",
+    "[]",
+    JSON.stringify({ v: 1, entries: [entry] }),
+  ]) {
+    assert.deepEqual(parseRefusalPaces(raw), [], String(raw));
+  }
+  const lots = Array.from({ length: REFUSAL_PACE_ENTRIES_MAX + 3 }, (_, i) => ({
+    ...entry,
+    deviceId: `D${i}`,
+  }));
+  const kept = parseRefusalPaces(JSON.stringify({ v: 2, entries: lots }));
+  assert.equal(kept.length, REFUSAL_PACE_ENTRIES_MAX);
+  assert.equal(kept.at(-1)?.deviceId, `D${REFUSAL_PACE_ENTRIES_MAX + 2}`);
+});
+
+test("FXP mergeRefusalPaceEntry (m4-2): the stored and in-memory copies merge to the larger grant count and the later grant, taken separately, whichever order; the later refusal's epoch and reason", () => {
+  const T0 = 1_700_000_000_000;
+  const base = {
+    groupId: "G1",
+    userId: "U",
+    deviceId: "D",
+    reason: "unknown_identity",
+  };
+  const a = { ...base, epoch: 4, grants: 2, atMs: T0 };
+  const b = { ...base, epoch: 6, grants: 1, atMs: T0 + 29 * 60_000 };
+  const want = { ...base, epoch: 6, grants: 2, atMs: T0 + 29 * 60_000 };
+  assert.deepEqual(mergeRefusalPaceEntry(a, b), want);
+  assert.deepEqual(mergeRefusalPaceEntry(b, a), want);
+  assert.deepEqual(mergeRefusalPaceEntry(a, a), a);
+});
+
+test("FXP welcomeRefusalRejoin: a newer Add not tried yet runs its own Welcome path; a tried one and the refused Add rejoin under the pace; retryable at once, hard once the group moved past the refused epoch or the member list dropped the device", () => {
+  const refusal = (retryable: boolean) => ({
+    groupId: "G1",
+    epoch: 7,
+    userId: "U",
+    deviceId: "D",
+    reason: retryable ? "unknown_identity" : "identity_changed",
+    retryable,
+  });
+  const listed = [
+    { user_id: "U", device_id: "D" },
+    { user_id: "SELF", device_id: "S" },
+  ];
+  const gone = [{ user_id: "SELF", device_id: "S" }];
+  type In = Parameters<typeof welcomeRefusalRejoin>[0];
+  const go = (o: Partial<In>) =>
+    welcomeRefusalRejoin({
+      refusal: refusal(true),
+      group: { group_id: "G1", current_epoch: 7, members: listed },
+      ownAddEpoch: 7,
+      newerAddTried: false,
+      newerAddPathRuns: true,
+      pace: null,
+      nowMs: 1_000,
+      ...o,
+    });
+  assert.equal(go({}), "rejoin", "retryable, same epoch, still listed");
+  assert.equal(go({ ownAddEpoch: 9 }), "newer_add", "m1");
+  assert.equal(
+    go({ ownAddEpoch: 9, newerAddPathRuns: false }),
+    "rejoin",
+    "MJ-2b: a newer Add whose path would not run is judged now",
+  );
+  assert.equal(
+    go({
+      ownAddEpoch: 9,
+      newerAddPathRuns: false,
+      pace: { grants: 1, atMs: 1_000 },
+      nowMs: 1_001,
+    }),
+    "none",
+    "MJ-2b: and paced",
+  );
+  assert.equal(
+    go({ ownAddEpoch: 9, newerAddTried: true }),
+    "rejoin",
+    "MJ-2: a tried newer Add is paced like the refused one",
+  );
+  assert.equal(
+    go({
+      ownAddEpoch: 9,
+      newerAddTried: true,
+      pace: { grants: 1, atMs: 1_000 },
+      nowMs: 1_001,
+    }),
+    "none",
+  );
+  // m4-3 (round 5): no Add, or an older one, is judged like the refused
+  // Add (paced), never "none" for good (was "none" through round 4).
+  assert.equal(go({ ownAddEpoch: 6 }), "rejoin", "m4-3: an older Add");
+  assert.equal(go({ ownAddEpoch: null }), "rejoin", "m4-3: no Add");
+  assert.equal(
+    go({ ownAddEpoch: null, pace: { grants: 1, atMs: 1_000 }, nowMs: 1_001 }),
+    "none",
+    "m4-3: paced",
+  );
+  assert.equal(go({ refusal: null }), "none");
+  assert.equal(go({ group: null }), "none");
+  assert.equal(
+    go({ group: { group_id: "G2", current_epoch: 9, members: gone } }),
+    "none",
+    "another group",
+  );
+  const hard = refusal(false);
+  assert.equal(go({ refusal: hard }), "none", "hard, listed, same epoch");
+  assert.equal(
+    go({
+      refusal: hard,
+      group: { group_id: "G1", current_epoch: 9, members: listed },
+    }),
+    "rejoin",
+    "hard, moved on: paced, even listed",
+  );
+  assert.equal(
+    go({
+      refusal: hard,
+      group: { group_id: "G1", current_epoch: 7, members: gone },
+    }),
+    "rejoin",
+    "hard, the device gone: at once",
+  );
+  const paced = { grants: 1, atMs: 1_000 };
+  assert.equal(
+    go({ pace: paced, nowMs: 1_000 + REFUSAL_PACE_BASE_MS - 1 }),
+    "none",
+  );
+  assert.equal(
+    go({ pace: paced, nowMs: 1_000 + REFUSAL_PACE_BASE_MS }),
+    "rejoin",
+  );
+  assert.equal(
+    go({ pace: paced, ownAddEpoch: 9, nowMs: 1_001 }),
+    "newer_add",
+    "a newer Add's fetch is not an intent",
+  );
+});
+
+test("FXP joinIntentHeldByOwnerChange: held while a confirm replays the Welcome, or while native holds a same-user pending signer and the Welcome is parked or native discarded this Add's Welcome for signer_leaf_missing; released otherwise", () => {
+  type Hold = Parameters<typeof joinIntentHeldByOwnerChange>[0];
+  const held = (o: Partial<Hold>) =>
+    joinIntentHeldByOwnerChange({
+      welcomeReplaying: false,
+      welcomeParked: false,
+      slmForAdd: true,
+      ownerChangePending: true,
+      ...o,
+    });
+  assert.equal(held({}), true);
+  assert.equal(held({ ownerChangePending: false }), false, "settled");
+  assert.equal(held({ slmForAdd: false }), false, "no SLM for this Add");
+  assert.equal(held({ slmForAdd: false, welcomeParked: true }), true);
+  assert.equal(
+    held({ slmForAdd: false, welcomeParked: true, ownerChangePending: false }),
+    false,
+    "MJ-3: a parked Welcome without a pending signer holds nothing",
+  );
+  assert.equal(
+    held({
+      welcomeReplaying: true,
+      slmForAdd: false,
+      ownerChangePending: false,
+    }),
+    true,
+    "the replay window",
+  );
 });

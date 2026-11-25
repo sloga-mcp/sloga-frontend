@@ -365,8 +365,13 @@ final class BridgeGuardTests: XCTestCase {
 
     /// The running app's bridge view controller once its page has loaded.
     private func liveApp() throws -> LiveApp {
-        let root = UIApplication.shared.delegate?.window??.rootViewController
-        let vc = try XCTUnwrap(root as? SlogaBridgeViewController,
+        // The app runs under a UIScene, so its window belongs to the scene, not the app delegate.
+        let root = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+            .compactMap { $0.rootViewController as? SlogaBridgeViewController }
+            .first
+        let vc = try XCTUnwrap(root,
                                "the root view controller is not SlogaBridgeViewController")
         XCTAssertTrue(spin(timeout: 30) { vc.bridge != nil && vc.webView?.url != nil && vc.webView?.isLoading == false },
                       "the app's webview did not finish loading")

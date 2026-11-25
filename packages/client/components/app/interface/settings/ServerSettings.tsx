@@ -6,6 +6,7 @@ import {
   BiSolidGroup,
   BiSolidHappyBeaming,
   BiSolidInfoCircle,
+  BiSolidLock,
   BiSolidMusic,
   BiSolidSticker,
   BiSolidTrash,
@@ -15,7 +16,7 @@ import {
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { Server } from "stoat.js";
 
-import { useUser } from "@revolt/client";
+import { useClient, useUser } from "@revolt/client";
 import { TextWithEmoji } from "@revolt/markdown";
 import { useModals } from "@revolt/modal";
 import { ColouredText } from "@revolt/ui";
@@ -23,6 +24,10 @@ import { ColouredText } from "@revolt/ui";
 import { SettingsConfiguration } from ".";
 import { ChannelPermissionsEditor } from "./channel/permissions/ChannelPermissionsEditor";
 import Overview from "./server/Overview";
+import {
+  ProtectedChannels,
+  protectedChannelsEntryShown,
+} from "./server/ProtectedChannels";
 import { AppsList } from "./server/apps/AppsList";
 import { AuditLogPage } from "./server/auditLog/AuditLogPage";
 import { ListServerBans } from "./server/bans/ListBans";
@@ -95,6 +100,9 @@ const Config: SettingsConfiguration<Server> = {
         return <ListServerBans server={server} />;
       case "audit_log":
         return <AuditLogPage server={server} />;
+      case "protected_channels":
+        // S2-D42: the page re-checks the owner itself.
+        return <ProtectedChannels server={server} />;
 
       default:
         return null;
@@ -108,6 +116,7 @@ const Config: SettingsConfiguration<Server> = {
    */
   list(server, onClose) {
     const user = useUser();
+    const client = useClient();
     const { openModal } = useModals();
 
     return {
@@ -196,6 +205,24 @@ const Config: SettingsConfiguration<Server> = {
               id: "audit_log",
               icon: <BiSolidBookContent size={20} />,
               title: <Trans>Audit Log</Trans>,
+            },
+          ],
+        },
+        {
+          // S2-D42: the server owner only, once a channel is protected.
+          hidden: !protectedChannelsEntryShown({
+            ownerId: server.ownerId,
+            selfId: user()?.id,
+            protectedCount: server.channels.filter((channel) =>
+              client().isProtectedChannel(channel.id),
+            ).length,
+          }),
+          title: <Trans>Protected channels</Trans>,
+          entries: [
+            {
+              id: "protected_channels",
+              icon: <BiSolidLock size={20} />,
+              title: <Trans>Protected channels</Trans>,
             },
           ],
         },

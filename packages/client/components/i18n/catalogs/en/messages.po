@@ -38,6 +38,62 @@ msgstr "[Last] dddd [at] LT"
 msgid "dddd [at] LT"
 msgstr "dddd [at] LT"
 
+#: components/i18n/errors.ts
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "This person only accepts encrypted messages."
+msgstr "This person only accepts encrypted messages."
+
+#: components/i18n/errors.ts
+#: src/interface/channels/text/Composition.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "You only send encrypted messages. This chat is not encrypted yet."
+msgstr "You only send encrypted messages. This chat is not encrypted yet."
+
+#: components/i18n/errors.ts
+#: src/interface/channels/text/Composition.tsx
+msgid "This group is encrypted. Send from a device where encryption is set up."
+msgstr "This group is encrypted. Send from a device where encryption is set up."
+
+#: components/i18n/errors.ts
+#: components/modal/modals/AddFriendToGroup.tsx
+#: components/modal/modals/AddMembersToGroup.tsx
+#: components/modal/modals/CreateGroup.tsx
+msgid "This group is encrypted. Only people with encryption turned on can be added (up to 24)."
+msgstr "This group is encrypted. Only people with encryption turned on can be added (up to 24)."
+
+#: components/i18n/errors.ts
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+#: src/interface/channels/ChannelPage.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Open the Sloga app to read and send encrypted chats."
+msgstr "Open the Sloga app to read and send encrypted chats."
+
+#: components/i18n/errors.ts
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+#: src/interface/channels/ChannelPage.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Finish setting up encryption on this device to use your chats."
+msgstr "Finish setting up encryption on this device to use your chats."
+
+#: components/i18n/errors.ts
+msgid "This person may no longer use Encrypted-only chats. If you send anyway, your message may not be encrypted."
+msgstr "This person may no longer use Encrypted-only chats. If you send anyway, your message may not be encrypted."
+
+#: components/i18n/errors.ts
+#: src/interface/channels/text/Composition.tsx
+msgid "Add a message to send with your first file."
+msgstr "Add a message to send with your first file."
+
+#: components/i18n/errors.ts
+msgid "Sloga's servers kept a different backup. Delete the backup in Settings > Encryption, then make a new recovery code."
+msgstr "Sloga's servers kept a different backup. Delete the backup in Settings > Encryption, then make a new recovery code."
+
+#: components/i18n/errors.ts
+msgid "Your backup did not reach Sloga. Try again."
+msgstr "Your backup did not reach Sloga. Try again."
+
 #: components/app/interface/settings/server/roles/ServerRoleOverview.tsx
 msgid "(changes are being saved…)"
 msgstr "(changes are being saved…)"
@@ -254,6 +310,28 @@ msgstr "{0} reported ({1})"
 msgid "{0} reports awaiting review"
 msgstr "{0} reports awaiting review"
 
+#: src/interface/Home.tsx
+msgid "A request is due within 12 hours or overdue."
+msgstr "A request is due within 12 hours or overdue."
+
+#: src/interface/Home.tsx
+msgid "Requests to remove intimate images shared without consent."
+msgstr "Requests to remove intimate images shared without consent."
+
+#. placeholder {0}: count()
+#: src/interface/Home.tsx
+msgid "{0} open Take It Down requests, at least one due within 12 hours"
+msgstr "{0} open Take It Down requests, at least one due within 12 hours"
+
+#. placeholder {0}: count()
+#: src/interface/Home.tsx
+msgid "{0} open Take It Down requests"
+msgstr "{0} open Take It Down requests"
+
+#: src/interface/Home.tsx
+msgid "Take It Down"
+msgstr "Take It Down"
+
 #. placeholder {0}: state()?.totalReserves ?? 0
 #: components/app/interface/channels/text/SoftResMessage.tsx
 msgid "{0} reserved"
@@ -352,6 +430,10 @@ msgstr "{sec} seconds"
 #: src/interface/channels/text/Composition.tsx
 msgid "You are timed out until {time}"
 msgstr "You are timed out until {time}"
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Send anyway"
+msgstr "Send anyway"
 
 #: components/ui/components/features/messaging/elements/Reactions.tsx
 msgid "{unknown} reacted"
@@ -544,6 +626,40 @@ msgstr "3 days"
 #: components/modal/modals/SuspendUser.tsx
 msgid "30 days"
 msgstr "30 days"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Received"
+msgstr "Received"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Needs more information"
+msgstr "Needs more information"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Under review"
+msgstr "Under review"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Removed"
+msgstr "Removed"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Partly removed"
+msgstr "Partly removed"
+
+#: components/modal/modals/TimelockCompose.tsx
+msgid "This person may no longer use Encrypted-only chats. Confirm with Send anyway in the message box first."
+msgstr "This person may no longer use Encrypted-only chats. Confirm with Send anyway in the message box first."
+
+#: components/modal/modals/TimelockCompose.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Turn on encryption for this group to send messages."
+msgstr "Turn on encryption for this group to send messages."
+
+#: components/modal/modals/TimelockCompose.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "You can't write in this group while Encrypted-only chats is on."
+msgstr "You can't write in this group while Encrypted-only chats is on."
 
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "30 minutes"
@@ -1366,6 +1482,10 @@ msgstr "Shows only your chats and calls. Servers are hidden, not left. Server no
 msgid "You can't change Slim view during a call."
 msgstr "You can't change Slim view during a call."
 
+#: components/app/interface/settings/user/appearance/SlimViewChoice.tsx
+msgid "Set up Encrypted-only chats"
+msgstr "Set up Encrypted-only chats"
+
 #: src/interface/channels/text/TextChannel.tsx
 msgid "Auto-archive"
 msgstr "Auto-archive"
@@ -1392,6 +1512,10 @@ msgstr "You already have an import from {sourceLabel} running."
 #: components/modal/modals/ReportQueue.tsx
 msgid "Automated detection"
 msgstr "Automated detection"
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "Supplied by the reporter"
+msgstr "Supplied by the reporter"
 
 #: components/app/interface/settings/user/Language.tsx
 #: components/app/interface/settings/user/Language.tsx
@@ -1489,6 +1613,11 @@ msgstr "Background effects aren't supported on this device."
 msgid "Badges"
 msgstr "Badges"
 
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+#: src/interface/channels/ChannelHeader.tsx
+msgid "Encrypted-only"
+msgstr "Encrypted-only"
+
 #: components/modal/modals/BanNonMember.tsx
 #: components/modal/modals/BanMember.tsx
 msgid "Ban"
@@ -1567,6 +1696,11 @@ msgstr "Bans"
 #: components/app/interface/settings/ServerSettings.tsx
 msgid "Audit Log"
 msgstr "Audit Log"
+
+#: components/app/interface/settings/ServerSettings.tsx
+#: components/app/interface/settings/ServerSettings.tsx
+msgid "Protected channels"
+msgstr "Protected channels"
 
 #. placeholder {0}: voice.cameraBeautify
 #: components/modal/modals/CameraSettings.tsx
@@ -1888,6 +2022,11 @@ msgstr "Canceled"
 msgid "Cannot delete account until servers are deleted or transferred"
 msgstr "Cannot delete account until servers are deleted or transferred"
 
+#. placeholder {0}: protectedOwned()
+#: components/app/interface/settings/user/Account.tsx
+msgid "{0, plural, one {You own # server with protected channels. Delete it or transfer it before deleting your account. Deleting a server deletes its protected channels for everyone.} other {You own # servers with protected channels. Delete or transfer them before deleting your account. Deleting a server deletes its protected channels for everyone.}}"
+msgstr "{0, plural, one {You own # server with protected channels. Delete it or transfer it before deleting your account. Deleting a server deletes its protected channels for everyone.} other {You own # servers with protected channels. Delete or transfer them before deleting your account. Deleting a server deletes its protected channels for everyone.}}"
+
 #: components/i18n/errors.ts
 msgid "Cannot edit this message."
 msgstr "Cannot edit this message."
@@ -1966,6 +2105,24 @@ msgstr "Change tag emoji"
 #: components/modal/modals/EditUsername.tsx
 msgid "Change username"
 msgstr "Change username"
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted-only chats isn't available on this server right now."
+msgstr "Encrypted-only chats isn't available on this server right now."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Sloga couldn't confirm whether Encrypted-only chats turned on. For now, this device only sends encrypted messages."
+msgstr "Sloga couldn't confirm whether Encrypted-only chats turned on. For now, this device only sends encrypted messages."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted-only chats was not turned on."
+msgstr "Encrypted-only chats was not turned on."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Your identity check didn't go through. Try again."
+msgstr "Your identity check didn't go through. Try again."
 
 #: components/app/interface/settings/user/profile/EditProfile.tsx
 msgid "Change your profile per-server"
@@ -2120,6 +2277,10 @@ msgstr "Click to play again"
 #: src/interface/channels/ChannelHeader.tsx
 msgid "Click to show full description"
 msgstr "Click to show full description"
+
+#: src/interface/channels/ChannelHeader.tsx
+msgid "Stored on Sloga's servers, not end-to-end encrypted."
+msgstr "Stored on Sloga's servers, not end-to-end encrypted."
 
 #: components/ui/components/utils/Spoiler.tsx
 msgid "Click to show spoiler"
@@ -2351,6 +2512,51 @@ msgstr "Contested items"
 #: components/modal/modals/AndroidScreenShareSheet.tsx
 msgid "Continue"
 msgstr "Continue"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Released seats"
+msgstr "Released seats"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Counts toward the seat limit until {until}"
+msgstr "Counts toward the seat limit until {until}"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "People on your signed list who no longer have seats: {count}"
+msgstr "People on your signed list who no longer have seats: {count}"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Update the list"
+msgstr "Update the list"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Devices: {count}"
+msgstr "Devices: {count}"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Removed from the seat list"
+msgstr "Removed from the seat list"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Removed from the server"
+msgstr "Removed from the server"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Lost access to this channel"
+msgstr "Lost access to this channel"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "No device joined before the seat was released"
+msgstr "No device joined before the seat was released"
 
 #: components/app/interface/settings/channel/protected/SeatList.tsx
 #: components/modal/modals/ProtectedSeatPicker.tsx
@@ -3012,6 +3218,259 @@ msgstr "Deafened by a moderator. They cannot hear this call."
 msgid "Decline"
 msgstr "Decline"
 
+#: components/modal/modals/TakedownQueue.tsx
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Ask for more information"
+msgstr "Ask for more information"
+
+#: components/modal/modals/TakedownQueue.tsx
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Move to child safety"
+msgstr "Move to child safety"
+
+#: components/modal/modals/TakedownQueue.tsx
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Unhide files"
+msgstr "Unhide files"
+
+#: components/modal/modals/TakedownQueue.tsx
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Restore files"
+msgstr "Restore files"
+
+#: components/modal/modals/TakedownQueue.tsx
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Close request"
+msgstr "Close request"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "No preview"
+msgstr "No preview"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Reveal"
+msgstr "Reveal"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "The preview could not be loaded."
+msgstr "The preview could not be loaded."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Load preview (blurred)"
+msgstr "Load preview (blurred)"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Each preview you load is recorded in the staff log."
+msgstr "Each preview you load is recorded in the staff log."
+
+#. placeholder {0}: author()
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Posted by {0}"
+msgstr "Posted by {0}"
+
+#. placeholder {0}: created()
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Created {0}"
+msgstr "Created {0}"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "End-to-end encrypted: Sloga can't see this message's content."
+msgstr "End-to-end encrypted: Sloga can't see this message's content."
+
+#. placeholder {0}: unresolvable()
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Could not be resolved: {0}"
+msgstr "Could not be resolved: {0}"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "No files"
+msgstr "No files"
+
+#. placeholder {0}: copies()
+#: components/modal/modals/TakedownQueue.tsx
+msgid "{0, plural, one {# copy elsewhere} other {# copies elsewhere}}"
+msgstr "{0, plural, one {# copy elsewhere} other {# copies elsewhere}}"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Hidden"
+msgstr "Hidden"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Hide the files of the targets you pick, take them out of their messages, profiles and servers, and email the requester and each uploader."
+msgstr "Hide the files of the targets you pick, take them out of their messages, profiles and servers, and email the requester and each uploader."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Delete the whole message, text included"
+msgstr "Delete the whole message, text included"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Also remove identical copies elsewhere on Sloga"
+msgstr "Also remove identical copies elsewhere on Sloga"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Block re-uploads of the same image"
+msgstr "Block re-uploads of the same image"
+
+#. placeholder {0}: copies()
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Identical copies elsewhere on Sloga: {0}"
+msgstr "Identical copies elsewhere on Sloga: {0}"
+
+#. placeholder {0}: copies()
+#: components/modal/modals/TakedownQueue.tsx
+msgid "{0, plural, one {Yes, also remove this # copy} other {Yes, also remove all # copies}}"
+msgstr "{0, plural, one {Yes, also remove this # copy} other {Yes, also remove all # copies}}"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Reason the requester is told"
+msgstr "Reason the requester is told"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Pick a reason"
+msgstr "Pick a reason"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Not an intimate image"
+msgstr "Not an intimate image"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Could not find it"
+msgstr "Could not find it"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Not on Sloga"
+msgstr "Not on Sloga"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Duplicate request"
+msgstr "Duplicate request"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Made in bad faith (the requester is told \"other\", and later requests from this address are flagged)"
+msgstr "Made in bad faith (the requester is told \"other\", and later requests from this address are flagged)"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Internal note (optional, never sent to the requester)"
+msgstr "Internal note (optional, never sent to the requester)"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "The requester gets an email asking them to add details from their status link."
+msgstr "The requester gets an email asking them to add details from their status link."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Every file of every target is hidden now and kept on hold with no end date. The files are kept hidden, not deleted, so they stay available as evidence. Uploaders are not emailed, and unhide and restore stop working for this request."
+msgstr "Every file of every target is hidden now and kept on hold with no end date. The files are kept hidden, not deleted, so they stay available as evidence. Uploaders are not emailed, and unhide and restore stop working for this request."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Copies and the re-upload block still need a removal. File the CyberTipline report by hand."
+msgstr "Copies and the re-upload block still need a removal. File the CyberTipline report by hand."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Only files this request hid automatically can be shown again. Pick them below. If any file you pick was hidden another way, for example by a removal, nothing changes."
+msgstr "Only files this request hid automatically can be shown again. Pick them below. If any file you pick was hidden another way, for example by a removal, nothing changes."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "After a successful appeal: show again the files this request hid that are still in place, and lift its re-upload blocks. Deleted messages stay deleted."
+msgstr "After a successful appeal: show again the files this request hid that are still in place, and lift its re-upload blocks. Deleted messages stay deleted."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Removed files stay hidden for the hold period, then are deleted. Files hidden automatically that no removal took are shown again."
+msgstr "Removed files stay hidden for the hold period, then are deleted. Files hidden automatically that no removal took are shown again."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Reason for the staff log (required)"
+msgstr "Reason for the staff log (required)"
+
+#. placeholder {0}: received()
+#: components/modal/modals/TakedownQueue.tsx
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Received {0}"
+msgstr "Received {0}"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Requester"
+msgstr "Requester"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "The requester's details were deleted after the retention period."
+msgstr "The requester's details were deleted after the retention period."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Role"
+msgstr "Role"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Authorized to act for the person shown"
+msgstr "Authorized to act for the person shown"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "The person shown"
+msgstr "The person shown"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "How they are authorized"
+msgstr "How they are authorized"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Signature"
+msgstr "Signature"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Description"
+msgstr "Description"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "More details"
+msgstr "More details"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Added later"
+msgstr "Added later"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Where the image is (as given)"
+msgstr "Where the image is (as given)"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "No links given."
+msgstr "No links given."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Targets"
+msgstr "Targets"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Nothing on Sloga was found for this request yet."
+msgstr "Nothing on Sloga was found for this request yet."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Linked requests"
+msgstr "Linked requests"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Staff log"
+msgstr "Staff log"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Actions"
+msgstr "Actions"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Reload"
+msgstr "Reload"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Take It Down requests"
+msgstr "Take It Down requests"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Take It Down request"
+msgstr "Take It Down request"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "No Take It Down requests in the last 30 days."
+msgstr "No Take It Down requests in the last 30 days."
+
 #: components/ui/components/features/voice/IncomingCallOverlay.tsx
 msgid "Unlock to answer"
 msgstr "Unlock to answer"
@@ -3023,6 +3482,114 @@ msgstr "No answer"
 #: components/ui/components/features/voice/IncomingCallOverlay.tsx
 msgid "Declined"
 msgstr "Declined"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Closed"
+msgstr "Closed"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "File"
+msgstr "File"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Emoji"
+msgstr "Emoji"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Could not be resolved"
+msgstr "Could not be resolved"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Overdue by {hours} h {minutes} min"
+msgstr "Overdue by {hours} h {minutes} min"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "{hours} h {minutes} min left"
+msgstr "{hours} h {minutes} min left"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Under 18 claimed"
+msgstr "Under 18 claimed"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "In-app report"
+msgstr "In-app report"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Child safety"
+msgstr "Child safety"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Throttled"
+msgstr "Throttled"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Bad-faith history"
+msgstr "Bad-faith history"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "{autoHidden} auto-hidden"
+msgstr "{autoHidden} auto-hidden"
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Another removal is running. Try again in a moment."
+msgstr "Another removal is running. Try again in a moment."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Enter a reason for the staff log."
+msgstr "Enter a reason for the staff log."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "The reason is too long. Keep it under 512 characters."
+msgstr "The reason is too long. Keep it under 512 characters."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "The server did not accept this form. Check it and try again."
+msgstr "The server did not accept this form. Check it and try again."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Only reviewers with two-factor authentication turned on can handle these requests."
+msgstr "Only reviewers with two-factor authentication turned on can handle these requests."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "The two-factor check failed or expired. Try again."
+msgstr "The two-factor check failed or expired. Try again."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Restoring files is turned off."
+msgstr "Restoring files is turned off."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "This request could not be found."
+msgstr "This request could not be found."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Too many requests. Try again later."
+msgstr "Too many requests. Try again later."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Nothing was removed. The copy count may have changed, or there was nothing left to remove. Reload the request and try again, or remove one target at a time."
+msgstr "Nothing was removed. The copy count may have changed, or there was nothing left to remove. Reload the request and try again, or remove one target at a time."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "These files can't be shown again. Only files this request hid automatically, and that are still in place, can be."
+msgstr "These files can't be shown again. Only files this request hid automatically, and that are still in place, can be."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "This action doesn't apply to the request in its current state."
+msgstr "This action doesn't apply to the request in its current state."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Something went wrong. Try again."
+msgstr "Something went wrong. Try again."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Removed. Files hidden: {files} (copies: {copies}). Messages deleted: {messages}. Re-upload blocks: {blocked}."
+msgstr "Removed. Files hidden: {files} (copies: {copies}). Messages deleted: {messages}. Re-upload blocks: {blocked}."
+
+#: components/modal/modals/TakedownQueue.tsx
+msgid "Done."
+msgstr "Done."
 
 #: components/ui/components/features/voice/IncomingCallOverlay.tsx
 msgid "Call ended"
@@ -3907,6 +4474,74 @@ msgstr "Encrypted calls aren't set up on this device, so your audio and video ar
 msgid "Encrypted direct messages"
 msgstr "Encrypted direct messages"
 
+#: components/app/interface/settings/user/Encryption.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Sloga's servers refuse unencrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption."
+msgstr "Sloga's servers refuse unencrypted direct messages to me. To message me, turn on encryption in the Sloga app: Settings > Encryption."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Invite copied to the clipboard."
+msgstr "Invite copied to the clipboard."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "On for your account."
+msgstr "On for your account."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Sloga's servers refuse unencrypted direct messages to you, and nobody can add you to an unencrypted group."
+msgstr "Sloga's servers refuse unencrypted direct messages to you, and nobody can add you to an unencrypted group."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/app/interface/settings/user/Privacy.tsx
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Other people can see that you only accept encrypted messages."
+msgstr "Other people can see that you only accept encrypted messages."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "Turned off on another device"
+msgstr "Turned off on another device"
+
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "This device still only sends encrypted messages. Turn it off here too, or turn it on again for your account."
+msgstr "This device still only sends encrypted messages. Turn it off here too, or turn it on again for your account."
+
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "Not available on this server yet."
+msgstr "Not available on this server yet."
+
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "Only send encrypted direct messages and group messages from this account."
+msgstr "Only send encrypted direct messages and group messages from this account."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/app/interface/settings/user/Privacy.tsx
+#: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted-only chats"
+msgstr "Encrypted-only chats"
+
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "Turn off on this device too"
+msgstr "Turn off on this device too"
+
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "Turn on again"
+msgstr "Turn on again"
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Share invite"
+msgstr "Share invite"
+
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "A device restored from a recovery code has no backup of its own until you make a new recovery code."
+msgstr "A device restored from a recovery code has no backup of its own until you make a new recovery code."
+
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Encrypted direct messages are on for this device. Messages you send in an encrypted conversation are stored only on the devices that receive them — not on the server, and not in your web session."
 msgstr "Encrypted direct messages are on for this device. Messages you send in an encrypted conversation are stored only on the devices that receive them — not on the server, and not in your web session."
@@ -4474,6 +5109,10 @@ msgid "Allow unencrypted"
 msgstr "Allow unencrypted"
 
 #: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
+msgid "Encrypted-only chats applies to this group, so nothing can be sent to it unencrypted. Nothing has been sent."
+msgstr "Encrypted-only chats applies to this group, so nothing can be sent to it unencrypted. Nothing has been sent."
+
+#: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
 msgid "This device can't confirm this group is unencrypted. Other members may have turned on encryption. Send unencrypted?"
 msgstr "This device can't confirm this group is unencrypted. Other members may have turned on encryption. Send unencrypted?"
 
@@ -4540,6 +5179,62 @@ msgstr "Give respect"
 #: components/modal/modals/ReportContent.tsx
 msgid "Give us some detail"
 msgstr "Give us some detail"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "This also asks us to remove the image under the Take It Down Act."
+msgstr "This also asks us to remove the image under the Take It Down Act."
+
+#: components/modal/modals/ReportContent.tsx
+msgid "I am the person shown"
+msgstr "I am the person shown"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "I am authorized to act for the person shown (for example a parent, guardian or lawyer)"
+msgstr "I am authorized to act for the person shown (for example a parent, guardian or lawyer)"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "I'm not the person shown or acting for them"
+msgstr "I'm not the person shown or acting for them"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "The person shown, or someone acting for them, can file a Take It Down request. The link below explains how."
+msgstr "The person shown, or someone acting for them, can file a Take It Down request. The link below explains how."
+
+#: components/modal/modals/ReportContent.tsx
+msgid "How are you authorized? (optional)"
+msgstr "How are you authorized? (optional)"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Your full name (your signature)"
+msgstr "Your full name (your signature)"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Typing my name here counts as my signature."
+msgstr "Typing my name here counts as my signature."
+
+#: components/modal/modals/ReportContent.tsx
+msgid "The person shown has a good faith belief that the image(s) described were published without their consent."
+msgstr "The person shown has a good faith belief that the image(s) described were published without their consent."
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Contact email (optional)"
+msgstr "Contact email (optional)"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Leave empty to use your account email"
+msgstr "Leave empty to use your account email"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Enter a valid email address, or leave it empty."
+msgstr "Enter a valid email address, or leave it empty."
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Anything else that helps us understand what happened (optional)"
+msgstr "Anything else that helps us understand what happened (optional)"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "How removal requests work"
+msgstr "How removal requests work"
 
 #: components/app/interface/settings/user/Keybinds.tsx
 msgid "Global keybinds"
@@ -5009,8 +5704,24 @@ msgid "Incorrect password."
 msgstr "Incorrect password."
 
 #: src/interface/channels/ProtectedChannelPill.tsx
+msgid "Re-securing is taking longer than usual."
+msgstr "Re-securing is taking longer than usual."
+
+#: src/interface/channels/ProtectedChannelPill.tsx
+msgid "Waiting for the channel owner…"
+msgstr "Waiting for the channel owner…"
+
+#: src/interface/channels/ProtectedChannelPill.tsx
+msgid "Waiting for {owner}…"
+msgstr "Waiting for {owner}…"
+
+#: src/interface/channels/ProtectedChannelPill.tsx
 msgid "Seats used: {used}"
 msgstr "Seats used: {used}"
+
+#: src/interface/channels/ProtectedChannelPill.tsx
+msgid "Retry removal"
+msgstr "Retry removal"
 
 #: components/modal/modals/SuspendUser.tsx
 msgid "Indefinite"
@@ -6358,6 +7069,77 @@ msgid "No permissions set yet"
 msgstr "No permissions set yet"
 
 #: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Unknown member"
+msgstr "Unknown member"
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Removal waiting"
+msgstr "Removal waiting"
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Finish now"
+msgstr "Finish now"
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Trying the removal again…"
+msgstr "Trying the removal again…"
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Re-sign signing devices"
+msgstr "Re-sign signing devices"
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Reason for the removal"
+msgstr "Reason for the removal"
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Discard this change"
+msgstr "Discard this change"
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "An earlier change to the seats hasn't finished saving. Trying again sends that same change, exactly as it was."
+msgstr "An earlier change to the seats hasn't finished saving. Trying again sends that same change, exactly as it was."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "This change can't be discarded now. The server may already have it."
+msgstr "This change can't be discarded now. The server may already have it."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "The server may already have this change, so it can't be discarded."
+msgstr "The server may already have this change, so it can't be discarded."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "This change couldn't be stored on this device, so it wasn't sent. Try again."
+msgstr "This change couldn't be stored on this device, so it wasn't sent. Try again."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "The change was discarded."
+msgstr "The change was discarded."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "There's no change waiting to be discarded."
+msgstr "There's no change waiting to be discarded."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "This change is being sent right now. Try again in a moment."
+msgstr "This change is being sent right now. Try again in a moment."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
 #: components/modal/modals/ProtectedSeatPicker.tsx
 msgid "Staff accounts can't be seated."
 msgstr "Staff accounts can't be seated."
@@ -6403,6 +7185,42 @@ msgstr "No verifiable devices yet — send or receive an encrypted message first
 #: components/modal/modals/PollVoters.tsx
 msgid "No votes for this answer yet"
 msgstr "No votes for this answer yet"
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Couldn't sign out that device. Try again."
+msgstr "Couldn't sign out that device. Try again."
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Waiting for a member to add this device…"
+msgstr "Waiting for a member to add this device…"
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Sign out one of your other devices to make room for this one, then try again."
+msgstr "Sign out one of your other devices to make room for this one, then try again."
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Signs this channel's member list"
+msgstr "Signs this channel's member list"
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Sign out that device"
+msgstr "Sign out that device"
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "That device will be signed out and will have to sign in again."
+msgstr "That device will be signed out and will have to sign in again."
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Raise the device limit"
+msgstr "Raise the device limit"
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Raise the limit from the device that signs this channel's member list."
+msgstr "Raise the limit from the device that signs this channel's member list."
+
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Seats you pick here aren't included. Discard the earlier change to make a different one."
+msgstr "Seats you pick here aren't included. Discard the earlier change to make a different one."
 
 #: components/modal/modals/ProtectedSeatPicker.tsx
 msgid "Search to find more members."
@@ -6535,6 +7353,10 @@ msgstr "Your devices"
 #: components/modal/modals/ReportContent.tsx
 msgid "Not of minimum age to use the platform"
 msgstr "Not of minimum age to use the platform"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Report sent"
+msgstr "Report sent"
 
 #: components/ui/components/design/presenceText.ts
 msgid "Not online, or appearing offline"
@@ -6867,6 +7689,23 @@ msgid "Voice and announcement settings aren't available for protected channels."
 msgstr "Voice and announcement settings aren't available for protected channels."
 
 #: components/client/protectedCopy.ts
+msgid "Move ownership key to another device"
+msgstr "Move ownership key to another device"
+
+#: components/client/protectedCopy.ts
+msgid "Choose the device to move this channel's ownership key to."
+msgstr "Choose the device to move this channel's ownership key to."
+
+#: components/client/protectedCopy.ts
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Unnamed device"
+msgstr "Unnamed device"
+
+#: components/client/protectedCopy.ts
+msgid "This channel's ownership key is on another of your devices. Open this page on that device to move it."
+msgstr "This channel's ownership key is on another of your devices. Open this page on that device to move it."
+
+#: components/client/protectedCopy.ts
 msgid "Give seats"
 msgstr "Give seats"
 
@@ -6889,6 +7728,18 @@ msgstr "Seats left: {left}"
 #: components/client/protectedCopy.ts
 msgid "Save seats"
 msgstr "Save seats"
+
+#: components/client/protectedCopy.ts
+msgid "Use a shorter reason (up to {cap} characters)."
+msgstr "Use a shorter reason (up to {cap} characters)."
+
+#: components/client/protectedCopy.ts
+msgid "Add a reason to continue."
+msgstr "Add a reason to continue."
+
+#: components/client/protectedCopy.ts
+msgid "This server has protected channels, so removing someone needs a reason."
+msgstr "This server has protected channels, so removing someone needs a reason."
 
 #: components/client/protectedCopy.ts
 msgid "Message (Protected channel)"
@@ -6921,6 +7772,10 @@ msgstr "Sent time doesn't match."
 #: components/client/protectedCopy.ts
 msgid "The sender's device isn't verified on this device yet."
 msgstr "The sender's device isn't verified on this device yet."
+
+#: components/client/protectedCopy.ts
+msgid "This message has attachments. Update Sloga to see them."
+msgstr "This message has attachments. Update Sloga to see them."
 
 #: components/client/protectedCopy.ts
 msgid "Search can't look inside protected channel messages."
@@ -7229,6 +8084,14 @@ msgstr "Please select a method to authenticate your request."
 msgid "Please select a reason"
 msgstr "Please select a reason"
 
+#: components/modal/modals/ReportContent.tsx
+msgid "If a child is in immediate danger, contact your local emergency services."
+msgstr "If a child is in immediate danger, contact your local emergency services."
+
+#: components/modal/modals/ReportContent.tsx
+msgid "This message is end-to-end encrypted, so Sloga can't see it. A person reviews what you send us and can act on the sender's account, but we can't remove copies from people's devices."
+msgstr "This message is end-to-end encrypted, so Sloga can't see it. A person reviews what you send us and can act on the sender's account, but we can't remove copies from people's devices."
+
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Podcast"
@@ -7304,6 +8167,10 @@ msgstr "Privacy & Safety"
 #: components/app/interface/settings/UserSettings.tsx
 msgid "Privacy Policy"
 msgstr "Privacy Policy"
+
+#: components/app/interface/settings/UserSettings.tsx
+msgid "Remove intimate images"
+msgstr "Remove intimate images"
 
 #: components/modal/modals/ScreenShareSettings.tsx
 #~ msgid "Privacy shield — hide pop-up notifications (blurs the corner of full-screen shares when something appears there)"
@@ -7794,6 +8661,10 @@ msgstr "Replying to"
 msgid "Report"
 msgstr "Report"
 
+#: components/modal/modals/ReportContent.tsx
+msgid "A person reviews your report within 48 hours. We'll email you to confirm we got it."
+msgstr "A person reviews your report within 48 hours. We'll email you to confirm we got it."
+
 #: components/app/menus/MessageContextMenu.tsx
 msgid "Report message"
 msgstr "Report message"
@@ -7821,12 +8692,28 @@ msgid "Reported content (as seen by the reporter)"
 msgstr "Reported content (as seen by the reporter)"
 
 #: components/modal/modals/ReportQueue.tsx
+msgid "Unverified: this text was supplied by the reporter. Sloga has no copy of this message (it was end-to-end encrypted or deleted) and cannot confirm who sent it or what it said."
+msgstr "Unverified: this text was supplied by the reporter. Sloga has no copy of this message (it was end-to-end encrypted or deleted) and cannot confirm who sent it or what it said."
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "The reporter's app marked it as end-to-end encrypted."
+msgstr "The reporter's app marked it as end-to-end encrypted."
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "Does not match the stored message"
+msgstr "Does not match the stored message"
+
+#: components/modal/modals/ReportQueue.tsx
 msgid "Reported content (server copy)"
 msgstr "Reported content (server copy)"
 
 #: components/app/interface/settings/server/Overview.tsx
 msgid "Request public listing"
 msgstr "Request public listing"
+
+#: components/app/interface/settings/server/ProtectedChannels.tsx
+msgid "Open this channel to see its seats."
+msgstr "Open this channel to see its seats."
 
 #: components/app/interface/settings/channel/ForumSettings.tsx
 msgid "Require tags"
@@ -7969,6 +8856,14 @@ msgstr "Reveal Channel"
 #: components/modal/modals/ReportContent.tsx
 msgid "Revenge or underage pornography"
 msgstr "Revenge or underage pornography"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Intimate image shared without consent"
+msgstr "Intimate image shared without consent"
+
+#: components/modal/modals/ReportContent.tsx
+msgid "Child sexual abuse material"
+msgstr "Child sexual abuse material"
 
 #: src/interface/Home.tsx
 msgid "Review and resolve open content reports."
@@ -8236,6 +9131,10 @@ msgstr "Search for groups..."
 msgid "Search for users..."
 msgstr "Search for users..."
 
+#: components/modal/modals/AddMembersToGroup.tsx
+msgid "People who only accept encrypted messages can't be added to this group."
+msgstr "People who only accept encrypted messages can't be added to this group."
+
 #: components/modal/modals/InviteToServer.tsx
 msgid "Search friends..."
 msgstr "Search friends..."
@@ -8318,6 +9217,15 @@ msgstr "Select audio output"
 #: components/modal/modals/CreateGroup.tsx
 msgid "Select members to add"
 msgstr "Select members to add"
+
+#. placeholder {0}: withoutEncryptionNames()
+#: components/modal/modals/CreateGroup.tsx
+msgid "These people have not turned on encryption: {0}"
+msgstr "These people have not turned on encryption: {0}"
+
+#: components/modal/modals/CreateGroup.tsx
+msgid "Remove people until the group has 24 or fewer, you included."
+msgstr "Remove people until the group has 24 or fewer, you included."
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Select noise suppression"
@@ -9582,6 +10490,16 @@ msgstr "Suspend"
 msgid "Suspend {0}"
 msgstr "Suspend {0}"
 
+#. placeholder {0}: username(reportedUserId())
+#: components/modal/modals/ReportQueue.tsx
+msgid "Suspend {0} (named by the reporter)"
+msgstr "Suspend {0} (named by the reporter)"
+
+#. placeholder {0}: username(reportedUserId())
+#: components/modal/modals/ReportQueue.tsx
+msgid "Suspend {0} anyway"
+msgstr "Suspend {0} anyway"
+
 #: components/app/menus/UserContextMenu.tsx
 msgid "Suspend from platform"
 msgstr "Suspend from platform"
@@ -9993,6 +10911,40 @@ msgid "Turn on end-to-end encryption on this device to use Protected channels."
 msgstr "Turn on end-to-end encryption on this device to use Protected channels."
 
 #: components/client/protectedCopy.ts
+msgid "This device can't open this channel yet."
+msgstr "This device can't open this channel yet."
+
+#: components/client/protectedCopy.ts
+msgid "This device can't open #{channel} yet."
+msgstr "This device can't open #{channel} yet."
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "Update Sloga to use this protected channel."
+msgstr "Update Sloga to use this protected channel."
+
+#: components/client/protectedCopy.ts
+msgid "Waiting for a member to come online…"
+msgstr "Waiting for a member to come online…"
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "The owner's signing device was signed out. Messages are paused until the owner signs in on another device."
+msgstr "The owner's signing device was signed out. Messages are paused until the owner signs in on another device."
+
+#: components/client/protectedCopy.ts
+msgid "The owner's account is unavailable. Messages are paused."
+msgstr "The owner's account is unavailable. Messages are paused."
+
+#: components/client/protectedCopy.ts
+msgid "Your other device isn't on this channel's list of signing devices, so it can't take over. Sign from a listed device to add it."
+msgstr "Your other device isn't on this channel's list of signing devices, so it can't take over. Sign from a listed device to add it."
+
+#: components/client/protectedCopy.ts
+msgid "A device that could sign this channel's member list was signed out or changed its key. Re-sign your signing devices."
+msgstr "A device that could sign this channel's member list was signed out or changed its key. Re-sign your signing devices."
+
+#: components/client/protectedCopy.ts
 msgid "The server stopped marking this channel as protected. This device still treats it as a protected channel and won't send unencrypted messages here."
 msgstr "The server stopped marking this channel as protected. This device still treats it as a protected channel and won't send unencrypted messages here."
 
@@ -10005,12 +10957,28 @@ msgid "Someone in this channel isn't on the owner's member list."
 msgstr "Someone in this channel isn't on the owner's member list."
 
 #: components/client/protectedCopy.ts
+msgid "A member made an invalid change to this channel. This device can't read new messages here until the device that signs this channel's member list makes a new group."
+msgstr "A member made an invalid change to this channel. This device can't read new messages here until the device that signs this channel's member list makes a new group."
+
+#: components/client/protectedCopy.ts
+msgid "This channel received a replayed membership change. This device can't read new messages here until the device that signs this channel's member list makes a new group."
+msgstr "This channel received a replayed membership change. This device can't read new messages here until the device that signs this channel's member list makes a new group."
+
+#: components/client/protectedCopy.ts
 msgid "A member made an invalid change to this channel. Re-securing with a new group…"
 msgstr "A member made an invalid change to this channel. Re-securing with a new group…"
 
 #: components/client/protectedCopy.ts
+msgid "A member made an invalid change to this channel, so this device can't read new messages here. The channel owner has to re-create the protected group from their device; that doesn't happen automatically."
+msgstr "A member made an invalid change to this channel, so this device can't read new messages here. The channel owner has to re-create the protected group from their device; that doesn't happen automatically."
+
+#: components/client/protectedCopy.ts
 msgid "This channel received a replayed membership change. Re-securing with a new group…"
 msgstr "This channel received a replayed membership change. Re-securing with a new group…"
+
+#: components/client/protectedCopy.ts
+msgid "This channel received a replayed membership change, so this device can't read new messages here. The channel owner has to re-create the protected group from their device; that doesn't happen automatically."
+msgstr "This channel received a replayed membership change, so this device can't read new messages here. The channel owner has to re-create the protected group from their device; that doesn't happen automatically."
 
 #: components/client/protectedCopy.ts
 msgid "This channel's security check failed."
@@ -10031,6 +10999,31 @@ msgstr "This device couldn't finish joining this protected channel. Try opening 
 #: components/client/protectedCopy.ts
 msgid "This protected channel is full."
 msgstr "This protected channel is full."
+
+#: components/client/protectedCopy.ts
+msgid "This device can no longer sign this channel's member list. If you didn't do this, secure your account."
+msgstr "This device can no longer sign this channel's member list. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
+msgid "This device can no longer sign #{channel}'s member list. If you didn't do this, secure your account."
+msgstr "This device can no longer sign #{channel}'s member list. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
+msgid "Some members no longer have a seat. They'll be left off the next seat list you save."
+msgstr "Some members no longer have a seat. They'll be left off the next seat list you save."
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "The seat list wasn't saved because it includes members who no longer have a seat."
+msgstr "The seat list wasn't saved because it includes members who no longer have a seat."
+
+#: components/client/protectedCopy.ts
+msgid "The seat list wasn't saved because it includes members who no longer have a seat: {list}"
+msgstr "The seat list wasn't saved because it includes members who no longer have a seat: {list}"
+
+#: components/client/protectedCopy.ts
+msgid "This channel's protected group failed a security check on this device, so this device hasn't joined it and can't read new messages here."
+msgstr "This channel's protected group failed a security check on this device, so this device hasn't joined it and can't read new messages here."
 
 #: components/client/protectedCopy.ts
 #: components/i18n/errors.ts
@@ -10097,6 +11090,55 @@ msgid "Couldn't reach the server. Check your connection and try again."
 msgstr "Couldn't reach the server. Check your connection and try again."
 
 #: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "This member is protected from removal without a reason. Add a reason to continue."
+msgstr "This member is protected from removal without a reason. Add a reason to continue."
+
+#: components/client/protectedCopy.ts
+msgid "This channel was re-secured too many times today. Try again later."
+msgstr "This channel was re-secured too many times today. Try again later."
+
+#: components/client/protectedCopy.ts
+msgid "That device hasn't joined this channel yet. Open the channel on it, then try again."
+msgstr "That device hasn't joined this channel yet. Open the channel on it, then try again."
+
+#: components/client/protectedCopy.ts
+msgid "Ownership can't be recovered on this device right now."
+msgstr "Ownership can't be recovered on this device right now."
+
+#: components/client/protectedCopy.ts
+msgid "This reason can't be used. Check it and try again."
+msgstr "This reason can't be used. Check it and try again."
+
+#: components/client/protectedCopy.ts
+msgid "This channel's group couldn't be re-created right now. Try again later."
+msgstr "This channel's group couldn't be re-created right now. Try again later."
+
+#: components/client/protectedCopy.ts
+msgid "Your signing devices were changed from another device. If you didn't do this, secure your account."
+msgstr "Your signing devices were changed from another device. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
+msgid "Your signing devices were changed from {device}. If you didn't do this, secure your account."
+msgstr "Your signing devices were changed from {device}. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
+msgid "Another of your devices seated new members. If you didn't do this, secure your account."
+msgstr "Another of your devices seated new members. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
+msgid "Another of your devices seated {names}. If you didn't do this, secure your account."
+msgstr "Another of your devices seated {names}. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
+msgid "Your other device {device} seated new members. If you didn't do this, secure your account."
+msgstr "Your other device {device} seated new members. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
+msgid "Your other device {device} seated {names}. If you didn't do this, secure your account."
+msgstr "Your other device {device} seated {names}. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
 msgid "Sent before this device joined."
 msgstr "Sent before this device joined."
 
@@ -10129,6 +11171,10 @@ msgid "Unencrypted message in a protected channel. It did not come from a member
 msgstr "Unencrypted message in a protected channel. It did not come from a member's protected app."
 
 #: components/client/protectedCopy.ts
+msgid "Update Sloga to see this message."
+msgstr "Update Sloga to see this message."
+
+#: components/client/protectedCopy.ts
 msgid "{name} added a new device."
 msgstr "{name} added a new device."
 
@@ -10140,6 +11186,34 @@ msgstr "{name} was removed by the server and can't rejoin until the owner re-sea
 msgid "Blocked an unexpected invitation to a protected channel."
 msgstr "Blocked an unexpected invitation to a protected channel."
 
+#: components/client/protectedCopy.ts
+msgid "Another of your devices changed a protected channel. Open the channel to see what changed."
+msgstr "Another of your devices changed a protected channel. Open the channel to see what changed."
+
+#: components/client/protectedCopy.ts
+msgid "This channel's member list uses an older format, so its signing devices can't be changed yet. Try again later."
+msgstr "This channel's member list uses an older format, so its signing devices can't be changed yet. Try again later."
+
+#: components/client/protectedCopy.ts
+msgid "Choose another of your devices to move the ownership key to."
+msgstr "Choose another of your devices to move the ownership key to."
+
+#: components/client/protectedCopy.ts
+msgid "You can only move the ownership key to another of your own devices."
+msgstr "You can only move the ownership key to another of your own devices."
+
+#: components/client/protectedCopy.ts
+msgid "Only the device that holds this channel's ownership key can move it."
+msgstr "Only the device that holds this channel's ownership key can move it."
+
+#: components/client/protectedCopy.ts
+msgid "This channel names its owner devices. Update that list to move ownership instead."
+msgstr "This channel names its owner devices. Update that list to move ownership instead."
+
+#: components/client/protectedCopy.ts
+msgid "This change was refused because it isn't valid for this channel."
+msgstr "This change was refused because it isn't valid for this channel."
+
 #. Protected channel state
 #: components/client/protectedCopy.ts
 msgid "Re-securing"
@@ -10149,6 +11223,11 @@ msgstr "Re-securing"
 #: components/client/protectedCopy.ts
 msgid "Not seated"
 msgstr "Not seated"
+
+#. Protected channel state
+#: components/client/protectedCopy.ts
+msgid "At capacity"
+msgstr "At capacity"
 
 #: components/client/protectedCopy.ts
 msgid "Not available on this device"
@@ -10371,6 +11450,22 @@ msgstr "The owner's device changed. Review the change before you trust this chan
 #: components/client/protectedCopy.ts
 msgid "Review owner change"
 msgstr "Review owner change"
+
+#: components/client/protectedCopy.ts
+msgid "Still locked."
+msgstr "Still locked."
+
+#: components/client/protectedCopy.ts
+msgid "Review again"
+msgstr "Review again"
+
+#: components/client/protectedCopy.ts
+msgid "Leave channel"
+msgstr "Leave channel"
+
+#: components/client/protectedCopy.ts
+msgid "Recover ownership on this device"
+msgstr "Recover ownership on this device"
 
 #: components/client/protectedCopy.ts
 msgid "Re-create the protected group"
@@ -11089,6 +12184,10 @@ msgstr "this contact"
 msgid "This contact turned off end-to-end encryption for this conversation."
 msgstr "This contact turned off end-to-end encryption for this conversation."
 
+#: components/modal/modals/E2EEPeerDowngrade.tsx
+msgid "Encrypted-only chats applies to this conversation, so it can't continue unencrypted. Keep it encrypted on your side."
+msgstr "Encrypted-only chats applies to this conversation, so it can't continue unencrypted. Keep it encrypted on your side."
+
 #: src/interface/channels/text/Composition.tsx
 msgid "This contact's security identity changed — review before sending."
 msgstr "This contact's security identity changed — review before sending."
@@ -11677,6 +12776,14 @@ msgid "Translated from {0}"
 msgstr "Translated from {0}"
 
 #: components/app/interface/channels/text/Messages.tsx
+msgid "{name} turned off Encrypted-only chats."
+msgstr "{name} turned off Encrypted-only chats."
+
+#: components/app/interface/channels/text/Messages.tsx
+msgid "This group is not encrypted. You can read it, but you can't write here while Encrypted-only chats is on."
+msgstr "This group is not encrypted. You can read it, but you can't write here while Encrypted-only chats is on."
+
+#: components/app/interface/channels/text/Messages.tsx
 msgid "A member"
 msgstr "A member"
 
@@ -11779,6 +12886,10 @@ msgstr "Turn length"
 msgid "Turn off"
 msgstr "Turn off"
 
+#: components/app/interface/settings/user/Privacy.tsx
+msgid "This device still only sends encrypted messages until you turn it off here too."
+msgstr "This device still only sends encrypted messages until you turn it off here too."
+
 #: components/modal/modals/E2EEDisable.tsx
 msgid "This app was sharing encryption with another of your apps, which keeps working. Set this app up again as a new device."
 msgstr "This app was sharing encryption with another of your apps, which keeps working. Set this app up again as a new device."
@@ -11822,6 +12933,126 @@ msgstr "Turn on encrypted direct messages"
 #: components/modal/modals/E2EEEnableGroup.tsx
 msgid "Turn on encryption"
 msgstr "Turn on encryption"
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "You will only send encrypted direct messages and group messages from this account. Channels in servers work as before."
+msgstr "You will only send encrypted direct messages and group messages from this account. Channels in servers work as before."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Groups you were already in stay unencrypted for other members until the group is encrypted or you leave."
+msgstr "Groups you were already in stay unencrypted for other members until the group is encrypted or you leave."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Older Sloga apps on your other devices are stopped by Sloga's servers, not by the app itself. Update them."
+msgstr "Older Sloga apps on your other devices are stopped by Sloga's servers, not by the app itself. Update them."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Calls in direct messages and groups are not covered by this setting."
+msgstr "Calls in direct messages and groups are not covered by this setting."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Message content is encrypted. Names, group names, descriptions and pictures, who is in a group and when messages are sent are not."
+msgstr "Message content is encrypted. Names, group names, descriptions and pictures, who is in a group and when messages are sent are not."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted files can be up to 20 MB."
+msgstr "Encrypted files can be up to 20 MB."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "You need encryption on this device and a recovery code. You will confirm your identity before it turns on."
+msgstr "You need encryption on this device and a recovery code. You will confirm your identity before it turns on."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Checking your groups."
+msgstr "Checking your groups."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "You are not in any unencrypted groups."
+msgstr "You are not in any unencrypted groups."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Your unencrypted groups"
+msgstr "Your unencrypted groups"
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Tick a group to leave it once Encrypted-only chats is on. Groups you keep become read-only for you."
+msgstr "Tick a group to leave it once Encrypted-only chats is on. Groups you keep become read-only for you."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Turn on encryption on this device first. You will confirm your identity."
+msgstr "Turn on encryption on this device first. You will confirm your identity."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encryption is on for this device."
+msgstr "Encryption is on for this device."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Make a recovery code. You need it to restore this device's encrypted backup. The backup holds what was on this device when the code was made. This step can't be skipped."
+msgstr "Make a recovery code. You need it to restore this device's encrypted backup. The backup holds what was on this device when the code was made. This step can't be skipped."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Your recovery code was made and its backup is saved on Sloga's servers. Keep the code somewhere safe."
+msgstr "Your recovery code was made and its backup is saved on Sloga's servers. Keep the code somewhere safe."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Waiting for your recovery code."
+msgstr "Waiting for your recovery code."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "If you cancelled it, make it again."
+msgstr "If you cancelled it, make it again."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Last step: confirm your identity to turn on Encrypted-only chats."
+msgstr "Last step: confirm your identity to turn on Encrypted-only chats."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Once it is on, you leave the groups you ticked."
+msgstr "Once it is on, you leave the groups you ticked."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted-only chats is on."
+msgstr "Encrypted-only chats is on."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Could not leave {name}. You can leave it from the group's menu."
+msgstr "Could not leave {name}. You can leave it from the group's menu."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted-only chats is still on. Try again."
+msgstr "Encrypted-only chats is still on. Try again."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted-only chats is still on."
+msgstr "Encrypted-only chats is still on."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Turn off on this device too?"
+msgstr "Turn off on this device too?"
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Turn off Encrypted-only chats?"
+msgstr "Turn off Encrypted-only chats?"
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Sloga's servers will accept unencrypted direct messages to you again, and people can add you to unencrypted groups."
+msgstr "Sloga's servers will accept unencrypted direct messages to you again, and people can add you to unencrypted groups."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Your contacts' apps may show that you turned it off."
+msgstr "Your contacts' apps may show that you turned it off."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Encrypted-only chats was turned off on another device. This device still only sends encrypted messages until you turn it off here too."
+msgstr "Encrypted-only chats was turned off on another device. This device still only sends encrypted messages until you turn it off here too."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "Chats that are already encrypted stay encrypted."
+msgstr "Chats that are already encrypted stay encrypted."
+
+#: components/modal/modals/EncryptedOnlyOnboarding.tsx
+msgid "You will confirm your identity to continue."
+msgstr "You will confirm your identity to continue."
 
 #: components/app/interface/settings/user/Encryption.tsx
 msgid "Turn on end-to-end encrypted direct messages for this device."
@@ -12764,6 +13995,18 @@ msgstr "You'll join unencrypted — the call will show a warning"
 #: components/modal/modals/SignOut.tsx
 msgid "You'll need to log in again to get back to your messages."
 msgstr "You'll need to log in again to get back to your messages."
+
+#: components/modal/modals/SignOut.tsx
+msgid "Encrypted-only chats stays on for your account after you sign out."
+msgstr "Encrypted-only chats stays on for your account after you sign out."
+
+#: components/modal/modals/SignOut.tsx
+msgid "To send direct messages and group messages, use a Sloga app where encryption is set up."
+msgstr "To send direct messages and group messages, use a Sloga app where encryption is set up."
+
+#: components/modal/modals/SignOut.tsx
+msgid "Your encryption keys and encrypted chats stay on this device. Sign in here again to use them."
+msgstr "Your encryption keys and encrypted chats stay on this device. Sign in here again to use them."
 
 #: components/i18n/errors.ts
 msgid "You're already part of this group."

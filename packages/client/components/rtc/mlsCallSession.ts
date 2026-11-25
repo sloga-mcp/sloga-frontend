@@ -1665,6 +1665,14 @@ export class MlsCallSession {
    * `#graceTimer` is only an intent (LDA-M1).
    */
   #ownSendKeyEpoch = -1;
+  /**
+   * Moves on every `#resetRotationState`: the group the key state stands for
+   * was replaced. A keys-changed push takes it before its frame-key fetch
+   * and, if it moved across the fetch or the install, claims nothing
+   * (`#replacedSince`). Epochs cannot say this: they
+   * restart per group, and a group can be re-established under the same id.
+   */
+  #rotationResetGeneration = 0;
   /** True while a rotation is "known" for the §4.4 loud-state debounce. */
   #rotationWindow = false;
   #rotationWindowTimer: ReturnType<typeof setTimeout> | null = null;
@@ -5822,11 +5830,15 @@ export class MlsCallSession {
     // Past the floor (checked above): the monotonic check now covers it.
     this.#staleKeysFence.delete(groupId);
     this.#openRotationWindow(timing);
+    // Taken BEFORE the fetch: a group replaced during it (a same-id rejoin
+    // can reach this very epoch again) must not install this reply.
+    const generation = this.#rotationResetGeneration;
 
     let frameKeys: MlsFrameKeys;
     try {
       frameKeys = await this.#deps.bridge.callFrameKeys(groupId);
     } catch (error) {
+      if (this.#replacedSince(generation, error)) return;
       // Fail-closed (§4.2): a native frame-key error surfaces loud/re-securing,
       // never a silent unencrypted send.
       this.#onMediaError(error);
@@ -5834,6 +5846,7 @@ export class MlsCallSession {
     }
     // Re-check across the await: a group transition / dispose may have raced.
     if (this.#terminal() || groupId !== this.#groupId) return;
+    if (this.#replacedSince(generation)) return;
     // …and so may a NEWER EPOCH. This method is driven fire-and-forget from the
     // native push and is not serialized, so two pushes (an Add at N+1, a Remove
     // at N+2) each await `callFrameKeys` independently and their replies can
@@ -5864,6 +5877,7 @@ export class MlsCallSession {
     try {
       if (timing === "immediate") {
         await media.installer.applyKeys(frameKeys, identity);
+        if (this.#replacedSince(generation)) return;
         if (this.#installEpoch === epoch) this.#ownSendKeyEpoch = epoch;
         this.#onEpochKeysApplied(
           installRef,
@@ -5879,6 +5893,7 @@ export class MlsCallSession {
         // epoch-fenced (NEW-1). We keep publishing on the OLD local key
         // meanwhile (already installed from the previous epoch).
         await media.installer.applyRemoteKeys(frameKeys, identity);
+        if (this.#replacedSince(generation)) return;
         this.#onEpochKeysApplied(
           installRef,
           installEntries(frameKeys, identity, false),
@@ -5892,6 +5907,7 @@ export class MlsCallSession {
       // D7: the group was live here at this epoch, as of now.
       this.#touchResumeRecord(groupId, epoch);
     } catch (error) {
+      if (this.#replacedSince(generation, error)) return;
       this.#onRotationError(error);
     }
   }
@@ -6027,6 +6043,20 @@ export class MlsCallSession {
     if (!this.#e2eeEnabled) void this.reconcileNow();
   }
 
+  /**
+   * Whether the group was replaced (`#resetRotationState`) since an install
+   * took `generation`. That install's result, or its error, is the replaced
+   * group's: claiming it would mark a send key installed for the group that
+   * replaced it (`#hasLocalKey`, so the next reconcile enables E2EE before
+   * that group installed anything), and its error would latch that group
+   * loud. The provider refuses to land such an install on its own side.
+   */
+  #replacedSince(generation: number, error?: unknown): boolean {
+    if (generation === this.#rotationResetGeneration) return false;
+    console.info("[mls] key install outlived its group — dropped", error);
+    return true;
+  }
+
   /** Schedule the deferred, epoch-fenced local send-key install (Add-grace). */
   #scheduleGraceLocal(
     frameKeys: MlsFrameKeys,
@@ -6041,11 +6071,14 @@ export class MlsCallSession {
       // timer can never regress the send index back onto an old epoch a removed
       // member can still read.
       if (this.#terminal() || this.#installEpoch !== epoch) return;
+      const generation = this.#rotationResetGeneration;
       try {
         await this.#media?.installer.applyLocalKey(frameKeys, identity);
+        if (this.#replacedSince(generation)) return;
         if (this.#installEpoch === epoch) this.#ownSendKeyEpoch = epoch;
         this.#onLocalKeyInstalled(epoch);
       } catch (error) {
+        if (this.#replacedSince(generation, error)) return;
         this.#onRotationError(error);
       }
     }, ADD_GRACE_MS);
@@ -7082,6 +7115,7 @@ export class MlsCallSession {
     // ack re-arms the encoder onto it for the whole negotiating window. The
     // publish gate stands in front of that; not holding the key is stronger.
     this.#media?.installer.resetForGroup();
+    this.#rotationResetGeneration += 1;
     this.#installEpoch = -1;
     this.#ownSendKeyEpoch = -1;
     this.#hasLocalKey = false;

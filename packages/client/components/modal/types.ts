@@ -32,6 +32,8 @@ import {
 } from "@revolt/state/stores/Voice";
 
 import type { ChangelogResponse } from "./modals/Changelog";
+import type { ProtectedDeviceCapProps } from "./modals/ProtectedDeviceCap";
+import type { ProtectedOwnerReviewProps } from "./modals/ProtectedOwnerReview";
 
 export type Modals =
   | {
@@ -354,6 +356,16 @@ export type Modals =
       onConfirm: (userIds: string[]) => Promise<void>;
       removed?: string[];
     }
+  /**
+   * S2-D38 device-cap screen: `{ type: "protected_device_cap"; channel }`,
+   * the protected channel this device can't open (capacity `device_cap`).
+   */
+  | ProtectedDeviceCapProps
+  /**
+   * S2-D41 owner-change review: `{ type: "protected_owner_review"; channel }`,
+   * the protected channel whose owner change is under review.
+   */
+  | ProtectedOwnerReviewProps
   | {
       /**
        * A Protected channel's Prot tank (S5b, contracts 16.3 L6c): stage
@@ -418,6 +430,18 @@ export type Modals =
     }
   | {
       type: "e2ee_disable";
+    }
+  | {
+      /** Guided setup that turns Encrypted-only chats on */
+      type: "encrypted_only_onboarding";
+    }
+  | {
+      /**
+       * Turn Encrypted-only chats off. `elsewhere`: it was already turned
+       * off on another device and this device is still latched.
+       */
+      type: "encrypted_only_leave";
+      elsewhere?: boolean;
     }
   | {
       /**
@@ -552,6 +576,10 @@ export type Modals =
     }
   | {
       type: "discovery_queue";
+      client: Client;
+    }
+  | {
+      type: "takedown_queue";
       client: Client;
     }
   | {

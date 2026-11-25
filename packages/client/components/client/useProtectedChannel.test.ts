@@ -26,7 +26,11 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { type StructuralInput, structuralState } from "./protectedPlatform.ts";
+import {
+  type StructuralInput,
+  TEXT_PROTOCOL,
+  structuralState,
+} from "./protectedPlatform.ts";
 import { explainShield, shieldInputsFromView } from "./protectedShield.ts";
 import type { ProtectedChannelView } from "./protectedTextTypes";
 
@@ -256,7 +260,7 @@ type Notice = "enable_e2ee" | "not_available";
 
 const OK_PROBE = {
   state: "ok",
-  value: { protocol: 1, listenerBridge: true },
+  value: { protocol: TEXT_PROTOCOL, listenerBridge: true },
 } as const;
 
 const DEFAULT_INPUT: StructuralInput = {
@@ -316,13 +320,17 @@ const TRANSPORT_CASES: {
     notice: "enable_e2ee",
   },
   {
-    name: "electron capable (protocol 1, flag on)",
-    input: { transport: "electron", electronProtocol: 1 },
+    name: "electron capable (protocol 2, flag on)",
+    input: { transport: "electron", electronProtocol: TEXT_PROTOCOL },
     notice: "enable_e2ee",
   },
   {
     name: "electron capable, flag unknown (hold)",
-    input: { transport: "electron", electronProtocol: 1, flag: "unknown" },
+    input: {
+      transport: "electron",
+      electronProtocol: TEXT_PROTOCOL,
+      flag: "unknown",
+    },
     notice: "enable_e2ee",
   },
   {
@@ -331,13 +339,17 @@ const TRANSPORT_CASES: {
     notice: "not_available",
   },
   {
-    name: "electron not capable (protocol 2)",
-    input: { transport: "electron", electronProtocol: 2 },
+    name: "electron not capable (protocol 1, an S1 shell)",
+    input: { transport: "electron", electronProtocol: 1 },
     notice: "not_available",
   },
   {
     name: "electron, server flag off",
-    input: { transport: "electron", electronProtocol: 1, flag: "off" },
+    input: {
+      transport: "electron",
+      electronProtocol: TEXT_PROTOCOL,
+      flag: "off",
+    },
     notice: "not_available",
   },
   {
@@ -365,7 +377,7 @@ const TRANSPORT_CASES: {
       platform: "android",
       androidProbe: {
         state: "ok",
-        value: { protocol: 1, listenerBridge: false },
+        value: { protocol: TEXT_PROTOCOL, listenerBridge: false },
       },
     },
     notice: "not_available",
@@ -402,7 +414,11 @@ const TRANSPORT_CASES: {
   },
   {
     name: "electron popout (capable shell)",
-    input: { transport: "electron", electronProtocol: 1, popout: true },
+    input: {
+      transport: "electron",
+      electronProtocol: TEXT_PROTOCOL,
+      popout: true,
+    },
     notice: "not_available",
   },
   {

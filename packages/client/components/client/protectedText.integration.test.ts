@@ -27,8 +27,13 @@ import {
 } from "./protectedTextMessages.ts";
 import {
   _resetOwnerFlowsForTest,
+  cancelPendingSeats,
+  moveOwnerKey,
+  pendingSeats,
   protect,
+  recoverOwnership,
   setSeats,
+  signOwnerDevices,
 } from "./protectedTextOwner.ts";
 import type {
   PendingCommit,
@@ -53,7 +58,15 @@ const G0 = await textGroupId(CH, 0);
 const CID = "01J9Z3K4M5N6P7Q8R9S0T1V2W7";
 
 const DEPS: ProtectedTextManagerDeps = {
-  owner: { protect, setSeats },
+  owner: {
+    protect,
+    setSeats,
+    signOwnerDevices,
+    moveOwnerKey,
+    pendingSeats,
+    cancelPendingSeats,
+    recoverOwnership,
+  },
   messages: { encryptAndSend, decryptRow, markerForError },
 };
 
@@ -405,6 +418,7 @@ test("send → update_required → in-flight Update awaited → retry encrypts o
       replies: [],
       sender_verified: true,
       ts_skew: false,
+      files: [],
     };
   };
   const m = make(port);
@@ -544,6 +558,8 @@ test("protect → genesis end to end (real B2): sign, PUT, read back, verify, cr
     channelId: CH,
     userId: SELF,
     supersedes: null,
+    recovery: false,
+    supersedesGeneration: null,
   });
   const posts = port.apiCalls.filter(
     (c) => c.method === "POST" && c.path === "/mls/groups",
@@ -583,6 +599,7 @@ test("C9 protector: a refused decrypt (real B4) stays pending, never a red marke
       replies: [],
       sender_verified: true,
       ts_skew: false,
+      files: [],
     };
   };
   const row = {

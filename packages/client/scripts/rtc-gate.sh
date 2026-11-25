@@ -99,7 +99,9 @@ EXPECTED=(
   "components/rtc/mlsAdmitPolicy.test.ts 15 0"
   # Re-measured (32 -> 45) by iOS call E2EE phase 2 wave 3: the raw key
   # bytes, the ack-gated local install and its zeroing (L3n).
-  "components/rtc/mlsCallKeys.test.ts 45 0"
+  # Re-measured (45 -> 49) by the import-race fix: close() is terminal, so an
+  # install still importing when the call ends lands nothing.
+  "components/rtc/mlsCallKeys.test.ts 57 0"
   # Re-measured (117 -> 132) by wave J: the witness-only amber escalation,
   # the join-window ledger and readiness "paused" (WJ1); 132 -> 139 by Stage
   # 5 fix round F2 (the chip's pausedByServer, M1's unresolved identities,
@@ -137,6 +139,10 @@ EXPECTED=(
   "components/rtc/mlsCallSession.welcomedrop.test.ts 11 0"
   "components/rtc/mlsCallSession.iosconfirm.test.ts 9 0"
   "components/rtc/mlsCallSession.keyack.test.ts 3 0"
+  # A key install that outlives its group (#resetRotationState mid-await):
+  # the session claims nothing for the group that replaced it. First
+  # measured at 8.
+  "components/rtc/mlsCallSession.resetrace.test.ts 8 0"
   "components/rtc/mlsCallSession.locked.test.ts 5 0"
   # Fix round F3: noteFatalMediaError, the control-origin latch remote
   # evidence never heals. First measured at 6; 9 after the re-review's
@@ -298,13 +304,18 @@ EXPECTED=(
   "components/rtc/iosCallAudio.test.ts 20 0"
   "components/rtc/livekitPatchHunks.test.ts 23 0"
   "components/rtc/e2eeDeviceReadiness.test.ts 13 0"
-  "components/client/e2eePlatform.test.ts 12 0"
+  # 12 -> 26: the backup refresh shells and the hourly focus throttle, with
+  # their in-suite mutants. 26 -> 37: Tauri out of the refresh (sync
+  # main-thread backup commands) and the `recoveryPollMs` setup poll rule,
+  # with their mutants and wiring scans.
+  "components/client/e2eePlatform.test.ts 37 0"
   "components/client/e2eeCallPlaneIos.test.ts 8 0"
   # 181 -> 218 by fix round F (L3q: the fetched switch, the offer helper,
   # the prejoin and Settings readers); 218 -> 220 for the Settings card's
   # behaviour (no Always-on before the switch answers; the paused copy),
-  # which two `settings-*` mutations survived until then.
-  "components/client/e2eeIosGate.test.ts 220 0"
+  # which two `settings-*` mutations survived until then. 220 -> 245: the
+  # backup courier pins re-stated for Tauri, Electron and iOS (R4-R9).
+  "components/client/e2eeIosGate.test.ts 245 0"
 )
 
 # --- skips -------------------------------------------------------------------
@@ -785,6 +796,7 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/mlsCallSession.welcomedrop.test.ts
   components/rtc/mlsCallSession.iosconfirm.test.ts
   components/rtc/mlsCallSession.keyack.test.ts
+  components/rtc/mlsCallSession.resetrace.test.ts
   components/rtc/mlsCallSession.locked.test.ts
   components/rtc/mlsCallSession.fatal.test.ts
   components/client/e2eePlatform.ts components/client/e2eePlatform.test.ts

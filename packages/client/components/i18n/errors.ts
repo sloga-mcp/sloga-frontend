@@ -2,6 +2,11 @@ import { useLingui } from "@lingui-solid/solid/macro";
 import { i18n } from "@lingui/core";
 import { API } from "stoat.js";
 
+import {
+  FIRST_FILE_NEEDS_TEXT_SEND_ERROR,
+  sendRefusalSide,
+} from "@revolt/state/stores/draftSendError";
+
 import { databaseErrorDetail, untranslatedErrorText } from "./errorDetail";
 
 const RE_BREAK = /\s*\n\s*/g;
@@ -43,6 +48,59 @@ export function useError() {
       } catch {
         // Ignore JSON parse errors
       }
+    }
+
+    // A write refused for not being encrypted: the server's
+    // `EncryptionRequired` body, or the error the app's own guard or the
+    // encryption bridge throws before any request. Ahead of the message
+    // pass-through below, since the guard's message is only its reason.
+    // The bridge's English for each side is the same text.
+    const encryptionSide = sendRefusalSide(error);
+    if (encryptionSide) {
+      switch (encryptionSide) {
+        case "recipient":
+          return t`This person only accepts encrypted messages.`;
+        case "sender":
+          return t`You only send encrypted messages. This chat is not encrypted yet.`;
+        case "group":
+          return t`This group is encrypted. Send from a device where encryption is set up.`;
+        case "member":
+          return t`This group is encrypted. Only people with encryption turned on can be added (up to 24).`;
+        case "open-app":
+          return t`Open the Sloga app to read and send encrypted chats.`;
+        case "setup":
+          return t`Finish setting up encryption on this device to use your chats.`;
+        case "peer-changed":
+          return t`This person may no longer use Encrypted-only chats. If you send anyway, your message may not be encrypted.`;
+        default: {
+          const exhaustive: never = encryptionSide;
+          return exhaustive;
+        }
+      }
+    }
+
+    // Files that wait for a text message, thrown or stored as a marker
+    if (
+      error === FIRST_FILE_NEEDS_TEXT_SEND_ERROR ||
+      (error as { name?: unknown } | null)?.name === "FirstFileNeedsTextError"
+    ) {
+      return t`Add a message to send with your first file.`;
+    }
+
+    // The server kept another key backup than the one this app sent
+    // (`BackupNotStoredError` in the encryption bridge, matched by name so
+    // this file does not import the bridge). Its message is English for logs.
+    if ((error as { name?: unknown } | null)?.name === "BackupNotStoredError") {
+      return t`Sloga's servers kept a different backup. Delete the backup in Settings > Encryption, then make a new recovery code.`;
+    }
+
+    // A recovery code's backup upload failed for any other reason, or had
+    // no outcome in time (`BackupUploadFailedError` in the encryption
+    // bridge, matched by name likewise). Its message is English for logs.
+    if (
+      (error as { name?: unknown } | null)?.name === "BackupUploadFailedError"
+    ) {
+      return t`Your backup did not reach Sloga. Try again.`;
     }
 
     // handle Revolt API errors
@@ -129,9 +187,12 @@ export function useError() {
         return t`The payment provider didn't respond. Please try again.`;
       // Protected channels (same lag pattern). The protected-channel UI maps
       // these itself through `protectedNoticeForError`; this is the copy for
-      // anywhere else. Same msgids as `protectedCopy.ts` (design 9.2). The
-      // Resecuring `reason` does not change the copy, and `ChannelProtected`
-      // carries no context here, so it gets the general wording.
+      // anywhere else. Same msgids as `protectedCopy.ts` (design 9.2). Only
+      // the S2 Resecuring `reason` `owner_device_lost` changes the copy, and
+      // `ChannelProtected` carries no context here, so it gets the general
+      // wording. `InSlowmode` is a generic server type: its protected copy
+      // comes from the owner's successor create only (OR-21), so it keeps
+      // the generic copy in the switch below.
       const rawMax = (err as { max?: unknown }).max;
       const max =
         typeof rawMax === "number" &&
@@ -140,7 +201,9 @@ export function useError() {
           ? rawMax
           : null;
       if (errType === "ProtectedChannelResecuring")
-        return t`Re-securing this channel…`;
+        return (err as { reason?: unknown }).reason === "owner_device_lost"
+          ? t`The owner's signing device was signed out. Messages are paused until the owner signs in on another device.`
+          : t`Re-securing this channel…`;
       if (errType === "NotSeated")
         return t`You don't have a seat in this protected channel. Ask the owner for a seat.`;
       if (errType === "SeatCapReached")
@@ -155,10 +218,22 @@ export function useError() {
         return t`Not available in protected channels.`;
       if (errType === "ProtectedFieldRefused")
         return t`This message couldn't be sent securely.`;
-      // Seat PUT refused for naming users the server removed (the users are
-      // ids, so the generic copy here; the owner UI can name them).
+      // Seat PUT refused for naming users who no longer have a seat, for any
+      // release cause; nothing was saved (the users are ids, so the generic
+      // copy here; the owner UI can name them).
       if (errType === "SeatListNamesRemovedUsers")
-        return t`Some members were removed from this server and were left off the seat list.`;
+        return t`The seat list wasn't saved because it includes members who no longer have a seat.`;
+      // S2 D40: a kick, ban or unseat of a protected member needs a reason.
+      if (errType === "RemovalReasonRequired")
+        return t`This member is protected from removal without a reason. Add a reason to continue.`;
+      // S4 floor (OR-4): only a well-formed refusal (`min` a positive safe
+      // integer, never shown) says this app is outdated; any other body
+      // falls through to the generic copy in the switch below.
+      if (errType === "ProtectedClientOutdated") {
+        const min = (err as { min?: unknown }).min;
+        if (typeof min === "number" && Number.isSafeInteger(min) && min >= 1)
+          return t`Update Sloga to use this protected channel.`;
+      }
       // `FeatureDisabled` for the two protected-channel features; any other
       // feature falls through to the generic copy in the switch below.
       if (errType === "FeatureDisabled") {

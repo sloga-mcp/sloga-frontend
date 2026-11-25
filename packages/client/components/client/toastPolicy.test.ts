@@ -1,7 +1,7 @@
 // Unit spec for the Sloga toast's rules — run with Node's built-in runner
 // from packages/client:
 //   node --conditions=browser --test components/client/toastPolicy.test.ts
-// Declared test count: 46 (compare against the runner's pass count, since the
+// Declared test count: 47 (compare against the runner's pass count, since the
 // runner also exits 0 when it finds no tests at all).
 // Focus: only a Windows Tauri window or an Electron shell answering exactly
 // "window" gets a Sloga toast, any sign of Electron rules out the protected
@@ -208,6 +208,35 @@ test("classifySendError: E2EE by name, ahead of anything else", () => {
     classifySendError({ name: "E2EESendError", status: 429 }),
     "e2ee",
   );
+});
+
+// Known-bad control: toastPolicy.ts before this rule reads every one of
+// these as "other", so the toast said "could not send".
+test("classifySendError: a refusal for not being encrypted is E2EE, from the server, the guard or the bridge", () => {
+  const guard = Object.assign(new Error("recipient"), {
+    name: "EncryptedOnlyBlockedError",
+    reason: "recipient",
+  });
+  const changed = Object.assign(new Error("This person may no longer"), {
+    name: "EncryptedOnlyBlockedError",
+    reason: "peer-changed",
+    kind: "peer_changed",
+  });
+  for (const error of [
+    guard,
+    changed,
+    { name: "EncryptedOnlyBlockedError", reason: "open-app" },
+    '{"type":"EncryptionRequired","side":"recipient"}',
+    { type: "EncryptionRequired", side: "group" },
+    '{"type":"EncryptionRequired"}',
+  ]) {
+    assert.equal(classifySendError(error), "e2ee", String(error));
+    assert.equal(
+      replyErrorFor({ kind: "failed", error }),
+      "review",
+      String(error),
+    );
+  }
 });
 
 test("classifySendError: rate limits in every shape stoat-api can throw", () => {

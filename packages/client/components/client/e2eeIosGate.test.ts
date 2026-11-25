@@ -103,9 +103,12 @@
 //       `protectorSendErrorCopy(<the binding>, Capacitor.getPlatform()) ?? "<the old text>"`,
 //       the old text being one of the two existing messages, kind "native".
 //   F2. There are exactly PROTECTOR_SITES such catch sites (L4a wired 6).
-//   R1-R7: the iOS orphaned recovery bundle (audit M2). A recovery sheet
-//   that outlives its page keeps the minted bundle for the next
-//   `e2ee_backup_refresh_if_due`, and only the webview sends that command.
+//   R1-R9: the backup refresh courier. On iOS a recovery sheet that
+//   outlives its page keeps the minted bundle for the next
+//   `e2ee_backup_refresh_if_due` (audit M2), and only the webview sends that
+//   command. The same courier refreshes a due backup on Tauri, Electron and
+//   iOS after each accepted claim and on main-window focus (at most hourly),
+//   never on Android (R4, R8, R9 re-stated for three platforms).
 //   R1. CapacitorTransport's one `subscribeBackupBundleWaiting` member is
 //       `readonly subscribeBackupBundleWaiting =
 //       capacitorCouriersOrphanedRecovery(Capacitor.getPlatform()) ? <fn> :
@@ -119,27 +122,53 @@
 //       `this.#backupBundleWaiting = this.#transport.subscribeBackupBundleWaiting(`
 //       inside `#watchOrphanedBackup` (one), whose body starts with
 //       `if (this.#backupBundleWaiting) return;`; its one argument is a
-//       no-parameter arrow that only does `void this.#courierOrphanedBackup()`;
+//       no-parameter arrow that only does `void this.#courierBackupRefresh()`;
 //       and `this.#watchOrphanedBackup();` is called once, as a statement of
 //       the constructor (once per bridge).
 //   R4. `#onClaimResult` (one) ends with
-//       `if (this.#transport.subscribeBackupBundleWaiting) { await this.#courierOrphanedBackup(); }`
+//       `if (this.#transport.refreshesBackup) { await this.#courierBackupRefresh(); }`
 //       (braces optional): the last statement, so after the
-//       `#replenish()` housekeeping and outside its try.
-//   R5. `this.#courierOrphanedBackup(` is called exactly twice (R3, R4).
-//   R6. `#courierOrphanedBackup` (one) is exactly
+//       `#replenish()` housekeeping and outside its try. Gated on the
+//       transport's three-platform answer (R8), not on the iOS-only bundle
+//       listener.
+//   R5. `this.#courierBackupRefresh(` is called exactly three times: the
+//       iOS event (R3), the claim (R4) and the focus listener (R9).
+//   R6. `#courierBackupRefresh` (one) is exactly
 //       `const s = this.status.get("state"); if (<terms>) return;
+//       this.#backupRefreshAt = Date.now();
 //       try { await this.refreshBackupIfDue(); } catch (e) { ... }`, the
-//       `||` terms including `!this.#client.user?.id`, `!s?.enabled`,
-//       `!s?.published` (the core opens, so provisions, the store on any
-//       engine call) and `this.#claimAccepted !== true` (this connection's
-//       accepted claim: the backup PUT needs a device-bound session and the
-//       native take always clears, so a take before the claim could lose
-//       the bundle); the catch does not throw and uses its binding only as
-//       `errorName(e)`.
+//       `||` terms including `this.#disposed`, `this.#socketDown`,
+//       `!this.#client.user?.id`, `!s?.enabled`, `!s?.published` (the core
+//       opens, so provisions, the store on any engine call), `!s?.device_id`
+//       and `this.#claimAccepted !== true` (this connection's accepted
+//       claim: the backup PUT needs a device-bound session and the native
+//       take always clears, so a take before the claim could lose the
+//       bundle); the focus stamp comes only after the guard; the catch does
+//       not throw and uses its binding only as `errorName(e)`.
 //   R7. `.refreshBackupIfDue(` is called once, inside the courier, and
 //       "e2ee_backup_refresh_if_due" appears once, inside
 //       `refreshBackupIfDue()`.
+//   R8. TauriTransport, ElectronTransport and CapacitorTransport each have
+//       one `refreshesBackup` member, exactly
+//       `readonly refreshesBackup = shellRefreshesBackup({ shell: "<tauri |
+//       electron | capacitor>", capacitorPlatform: Capacitor.getPlatform(),
+//       mainWindow: IS_MAIN_WINDOW });`; `shellRefreshesBackup(` is called
+//       exactly those three times; and `IS_MAIN_WINDOW` is declared once, as
+//       `const IS_MAIN_WINDOW = !IS_POPOUT_WINDOW && !IS_OVERLAY_WINDOW;`.
+//       The platform answer itself (Android and web false; iOS, Tauri and
+//       Electron true) is pinned by behaviour in e2eePlatform.test.ts.
+//   R9. `#watchBackupFocus` (one) is exactly
+//       `if (this.#backupFocusListener || !this.#transport.refreshesBackup) return;
+//       const listener = () => { if (!backupRefreshFocusDue(this.#backupRefreshAt,
+//       Date.now())) return; void this.#courierBackupRefresh(); };
+//       this.#backupFocusListener = listener;
+//       window.addEventListener("focus", listener);` (the main window, the
+//       hourly throttle, only where the transport refreshes); it is called
+//       once, as a statement of the constructor; the file adds one "focus"
+//       listener and removes one, the removal in `dispose()` (one) as
+//       `const focus = this.#backupFocusListener; if (focus) {
+//       this.#backupFocusListener = null; window.removeEventListener("focus",
+//       focus); }`, before any return but the disposed guard.
 // useCallPrejoinMode.ts (the prejoin copy; plan D6, C-W3-8):
 //   P0. The file lexes to balanced braces.
 //   P1. `shellMediaE2EESupported` is imported unaliased from e2eePlatform
@@ -1141,12 +1170,14 @@ const BRIDGE_MEDIA_BODY =
   "returnmediaE2EEPlatformSupported(this.nativeKeyPushAvailable());";
 const BRIDGE_KEY_PUSH_BODY = "returnthis.#transport.keyPushAvailable();";
 const PLATFORM_IMPORTS = [
+  "backupRefreshFocusDue",
   "capacitorAttachmentUrl",
   "capacitorClipboardImageInWebview",
   "capacitorCouriersOrphanedRecovery",
   "capacitorNativeE2EE",
   "iosMediaE2EEReady",
   "mediaE2EEPlatformSupported",
+  "shellRefreshesBackup",
 ];
 const PLATFORM_FUNCTIONS = [
   ...PLATFORM_IMPORTS,
@@ -1467,17 +1498,39 @@ const WATCH_GUARD = "if(this.#backupBundleWaiting)return;";
 const WATCH_HELD =
   "this.#backupBundleWaiting=this.#transport.subscribeBackupBundleWaiting(";
 const WATCH_CALLBACKS = [
-  "()=>{voidthis.#courierOrphanedBackup();}",
-  "()=>voidthis.#courierOrphanedBackup()",
+  "()=>{voidthis.#courierBackupRefresh();}",
+  "()=>voidthis.#courierBackupRefresh()",
 ];
 const WATCH_CALL = "this.#watchOrphanedBackup();";
 const CLAIM_TAILS = [
-  "if(this.#transport.subscribeBackupBundleWaiting){awaitthis.#courierOrphanedBackup();}",
-  "if(this.#transport.subscribeBackupBundleWaiting)awaitthis.#courierOrphanedBackup();",
+  "if(this.#transport.refreshesBackup){awaitthis.#courierBackupRefresh();}",
+  "if(this.#transport.refreshesBackup)awaitthis.#courierBackupRefresh();",
 ];
 const COURIER_BODY =
-  /^const([\w$]+)=this\.status\.get\("state"\);if\((.+?)\)return;try\{awaitthis\.refreshBackupIfDue\(\);\}catch\(([\w$]+)\)\{(.*)\}$/;
+  /^const([\w$]+)=this\.status\.get\("state"\);if\((.+?)\)return;this\.#backupRefreshAt=Date\.now\(\);try\{awaitthis\.refreshBackupIfDue\(\);\}catch\(([\w$]+)\)\{(.*)\}$/;
 const REFRESH_COMMAND = /["'`]e2ee_backup_refresh_if_due["'`]/g;
+/** R8: each transport's declaration, by class. */
+const REFRESH_TRANSPORTS: [string, string][] = [
+  ["TauriTransport", "tauri"],
+  ["ElectronTransport", "electron"],
+  ["CapacitorTransport", "capacitor"],
+];
+const refreshDecl = (shell: string) =>
+  `readonlyrefreshesBackup=shellRefreshesBackup({shell:"${shell}",` +
+  "capacitorPlatform:Capacitor.getPlatform(),mainWindow:IS_MAIN_WINDOW});";
+const MAIN_WINDOW_DECL =
+  "constIS_MAIN_WINDOW=!IS_POPOUT_WINDOW&&!IS_OVERLAY_WINDOW;";
+/** R9: the focus watch body, the constructor call and the dispose block. */
+const FOCUS_WATCH_BODY =
+  "if(this.#backupFocusListener||!this.#transport.refreshesBackup)return;" +
+  "constlistener=()=>{if(!backupRefreshFocusDue(this.#backupRefreshAt," +
+  "Date.now()))return;voidthis.#courierBackupRefresh();};" +
+  'this.#backupFocusListener=listener;window.addEventListener("focus",listener);';
+const FOCUS_WATCH_CALL = "this.#watchBackupFocus();";
+const FOCUS_DISPOSE_BLOCK =
+  "constfocus=this.#backupFocusListener;if(focus){" +
+  'this.#backupFocusListener=null;window.removeEventListener("focus",focus);}';
+const DISPOSED_GUARD = "if(this.#disposed)return;";
 
 /** Index where the statement holding index `at` starts (masked code). */
 function stmtStart(code: string, at: number): number {
@@ -1641,7 +1694,7 @@ function orphanBridgeViolations(src: string, m: Masked): string[] {
     if (args.length !== 1 || !WATCH_CALLBACKS.includes(args[0])) {
       out.push(
         `R3 line ${line}: the callback is \`${args.join(",")}\`, want` +
-          " () => { void this.#courierOrphanedBackup(); } (no payload)",
+          " () => { void this.#courierBackupRefresh(); } (no payload)",
       );
     }
   }
@@ -1670,45 +1723,49 @@ function orphanBridgeViolations(src: string, m: Masked): string[] {
     if (!CLAIM_TAILS.some((t) => body.endsWith(t))) {
       out.push(
         `R4 line ${lineOf(src, claim[0][0])}: #onClaimResult does not end` +
-          " with if (this.#transport.subscribeBackupBundleWaiting) await" +
-          " this.#courierOrphanedBackup();",
+          " with if (this.#transport.refreshesBackup) await" +
+          " this.#courierBackupRefresh();",
       );
     }
   }
 
-  // R5: two callers, the event and the claim.
+  // R5: three callers, the event, the claim and the focus listener.
   const courierCalls = hitsOf(
     m.code,
-    /\bthis\s*\.\s*#courierOrphanedBackup\s*\(/g,
+    /\bthis\s*\.\s*#courierBackupRefresh\s*\(/g,
   );
-  if (courierCalls.length !== 2) {
+  if (courierCalls.length !== 3) {
     out.push(
-      `R5 this.#courierOrphanedBackup( called ${courierCalls.length} times,` +
-        " want 2 (the event and the claim)",
+      `R5 this.#courierBackupRefresh( called ${courierCalls.length} times,` +
+        " want 3 (the event, the claim and the focus listener)",
     );
   }
 
   // R6: guarded before any native call; best effort.
-  const courier = privateMethodBodies(m.code, "courierOrphanedBackup");
+  const courier = privateMethodBodies(m.code, "courierBackupRefresh");
   if (courier.length !== 1) {
-    out.push(`R6 #courierOrphanedBackup defined ${courier.length} times`);
+    out.push(`R6 #courierBackupRefresh defined ${courier.length} times`);
   } else {
     const line = lineOf(src, courier[0][0]);
     const body = norm(m.text.slice(courier[0][0] + 1, courier[0][1]));
     const shape = COURIER_BODY.exec(body);
     if (!shape) {
       out.push(
-        `R6 line ${line}: #courierOrphanedBackup is \`${body}\`, want const s` +
-          ' = this.status.get("state"); if (...) return; try { await' +
+        `R6 line ${line}: #courierBackupRefresh is \`${body}\`, want const s` +
+          ' = this.status.get("state"); if (...) return;' +
+          " this.#backupRefreshAt = Date.now(); try { await" +
           " this.refreshBackupIfDue(); } catch (e) { ... }",
       );
     } else {
       const [, s, cond, binding] = shape;
       const terms = cond.split("||");
       const needs: [string, string[]][] = [
+        ["the disposed bridge", ["this.#disposed"]],
+        ["the dropped socket", ["this.#socketDown"]],
         ["user", ["!this.#client.user?.id"]],
         ["enabled", [`!${s}?.enabled`, `!${s}.enabled`]],
         ["published", [`!${s}?.published`, `!${s}.published`]],
+        ["the device id", [`!${s}?.device_id`, `!${s}.device_id`]],
         ["the accepted claim", ["this.#claimAccepted!==true"]],
       ];
       for (const [what, forms] of needs) {
@@ -1753,7 +1810,7 @@ function orphanBridgeViolations(src: string, m: Masked): string[] {
   ) {
     out.push(
       `R7 .refreshBackupIfDue( called ${refreshCalls.length} times; want` +
-        " once, inside #courierOrphanedBackup",
+        " once, inside #courierBackupRefresh",
     );
   }
   const refresh = oneMember(m, bridge, "refreshBackupIfDue");
@@ -1771,6 +1828,136 @@ function orphanBridgeViolations(src: string, m: Masked): string[] {
   return out;
 }
 
+function refreshTransportViolations(src: string, m: Masked): string[] {
+  const out: string[] = [];
+
+  // R8: one declaration per transport, from the one predicate.
+  for (const [name, shell] of REFRESH_TRANSPORTS) {
+    const bodies = classBodies(m.code, name);
+    if (bodies.length !== 1) {
+      // G1 reports a missing or split CapacitorTransport
+      if (name !== "CapacitorTransport") {
+        out.push(`R8 class ${name} defined ${bodies.length} times, want 1`);
+      }
+      continue;
+    }
+    const member = oneMember(m, bodies[0], "refreshesBackup");
+    if (typeof member === "string") {
+      out.push(`R8 line ${lineOf(src, bodies[0][0])}: ${name}: ${member}`);
+      continue;
+    }
+    const stmt = memberStatement(m, member);
+    if (stmt !== refreshDecl(shell)) {
+      out.push(
+        `R8 line ${lineOf(src, member)}: ${name}.refreshesBackup is` +
+          ` \`${stmt}\`, want \`${refreshDecl(shell)}\``,
+      );
+    }
+  }
+  const calls = hitsOf(
+    m.code,
+    /(?<!\bfunction\s+)\bshellRefreshesBackup\s*\(/g,
+  );
+  if (calls.length !== REFRESH_TRANSPORTS.length) {
+    out.push(
+      `R8 shellRefreshesBackup( is called ${calls.length} times in e2ee.ts,` +
+        ` want ${REFRESH_TRANSPORTS.length} (one per transport)`,
+    );
+  }
+  const decls = hitsOf(m.code, /\b(?:const|let|var)\s+IS_MAIN_WINDOW\b/g);
+  if (decls.length !== 1 || statementAt(m, decls[0]) !== MAIN_WINDOW_DECL) {
+    out.push(
+      `R8 IS_MAIN_WINDOW is declared ${decls.length} times` +
+        (decls.length === 1 ? ` as \`${statementAt(m, decls[0])}\`` : "") +
+        ", want once as const IS_MAIN_WINDOW = !IS_POPOUT_WINDOW &&" +
+        " !IS_OVERLAY_WINDOW;",
+    );
+  }
+  return out;
+}
+
+function focusViolations(src: string, m: Masked): string[] {
+  const out: string[] = [];
+  const bridges = classBodies(m.code, "E2EEBridge");
+  if (bridges.length !== 1) return out; // G8 reports it
+  const bridge = bridges[0];
+
+  // R9: the watch body, exactly.
+  const watch = privateMethodBodies(m.code, "watchBackupFocus");
+  if (watch.length !== 1) {
+    out.push(`R9 #watchBackupFocus defined ${watch.length} times`);
+  } else {
+    const body = norm(m.text.slice(watch[0][0] + 1, watch[0][1]));
+    if (body !== FOCUS_WATCH_BODY) {
+      out.push(
+        `R9 line ${lineOf(src, watch[0][0])}: #watchBackupFocus is` +
+          ` \`${body}\`, want \`${FOCUS_WATCH_BODY}\``,
+      );
+    }
+  }
+
+  // R9: set up once, from the constructor.
+  const ctor = oneMember(m, bridge, "constructor");
+  const ctorBody =
+    typeof ctor === "string" ? null : methodBodyAt(m.code, ctor, "constructor");
+  const watchCalls = hitsOf(m.code, /\bthis\s*\.\s*#watchBackupFocus\s*\(/g);
+  if (
+    watchCalls.length !== 1 ||
+    !within(ctorBody, watchCalls[0]) ||
+    enclosingBlocks(m.code, watchCalls[0]).at(-1) !== ctorBody?.[0] ||
+    statementAt(m, watchCalls[0]) !== FOCUS_WATCH_CALL
+  ) {
+    out.push(
+      `R9 this.#watchBackupFocus( called ${watchCalls.length} times; want` +
+        " once, as a statement of the E2EEBridge constructor",
+    );
+  }
+
+  // R9: one focus listener added and one removed in the whole file.
+  const adds = hitsOf(m.text, /\.\s*addEventListener\s*\(\s*["'`]focus["'`]/g);
+  if (adds.length !== 1 || watch.length !== 1 || !within(watch[0], adds[0])) {
+    out.push(
+      `R9 ${adds.length} focus listeners added in e2ee.ts, want 1, inside` +
+        " #watchBackupFocus",
+    );
+  }
+  const removes = hitsOf(
+    m.text,
+    /\.\s*removeEventListener\s*\(\s*["'`]focus["'`]/g,
+  );
+  const dispose = oneMember(m, bridge, "dispose");
+  const disposeBody =
+    typeof dispose === "string"
+      ? null
+      : methodBodyAt(m.code, dispose, "dispose");
+  if (!disposeBody) {
+    out.push(`R9 E2EEBridge has no single dispose() method`);
+  } else if (removes.length !== 1 || !within(disposeBody, removes[0])) {
+    out.push(
+      `R9 ${removes.length} focus listener removals in e2ee.ts, want 1,` +
+        " inside dispose()",
+    );
+  } else {
+    const body = norm(m.text.slice(disposeBody[0] + 1, disposeBody[1]));
+    const at = body.indexOf(FOCUS_DISPOSE_BLOCK);
+    const before = at < 0 ? "" : body.slice(0, at);
+    if (at < 0) {
+      out.push(
+        `R9 line ${lineOf(src, removes[0])}: dispose() does not hold` +
+          ` \`${FOCUS_DISPOSE_BLOCK}\``,
+      );
+    } else if (
+      before.split("return").length !== before.split(DISPOSED_GUARD).length
+    ) {
+      out.push(
+        `R9 line ${lineOf(src, removes[0])}: the focus listener is removed` +
+          " after an early return other than the disposed guard",
+      );
+    }
+  }
+  return out;
+}
+
 function tsViolations(src: string, expectedSites: number): string[] {
   const m = maskTs(src);
   return [
@@ -1780,6 +1967,8 @@ function tsViolations(src: string, expectedSites: number): string[] {
     ...protectorViolations(src, m, expectedSites),
     ...orphanTransportViolations(src, m),
     ...orphanBridgeViolations(src, m),
+    ...refreshTransportViolations(src, m),
+    ...focusViolations(src, m),
   ];
 }
 
@@ -2623,12 +2812,14 @@ import { Capacitor, registerPlugin } from "@capacitor/core";
 
 import { workerProbeResult } from "../rtc/workerProbe";
 import {
+  backupRefreshFocusDue,
   capacitorAttachmentUrl,
   capacitorClipboardImageInWebview,
   capacitorCouriersOrphanedRecovery,
   capacitorNativeE2EE,
   iosMediaE2EEReady,
   mediaE2EEPlatformSupported,
+  shellRefreshesBackup,
 } from "./e2eePlatform";
 import { protectorSendErrorCopy } from "./e2eeProtectorCopy";
 import { errorName } from "./e2eeSendSettle";
@@ -2645,9 +2836,27 @@ export function nativeE2EEAvailable(): boolean {
   );
 }
 
+// A comment does not count: const IS_MAIN_WINDOW = true;
+const IS_MAIN_WINDOW = !IS_POPOUT_WINDOW && !IS_OVERLAY_WINDOW;
+
+class TauriTransport implements NativeTransport {
+  readonly nativeBlobTransfer = false;
+  readonly clipboardImageInWebview = false;
+  readonly refreshesBackup = shellRefreshesBackup({
+    shell: "tauri",
+    capacitorPlatform: Capacitor.getPlatform(),
+    mainWindow: IS_MAIN_WINDOW,
+  });
+}
+
 class ElectronTransport implements NativeTransport {
   readonly nativeBlobTransfer = false;
   readonly clipboardImageInWebview = false;
+  readonly refreshesBackup = shellRefreshesBackup({
+    shell: "electron",
+    capacitorPlatform: Capacitor.getPlatform(),
+    mainWindow: IS_MAIN_WINDOW,
+  });
 
   attachmentUrl(messageId: string, idx: number): string {
     return "e2ee-att://att/" + messageId + "/" + idx;
@@ -2664,6 +2873,12 @@ class CapacitorTransport implements NativeTransport {
   readonly clipboardImageInWebview = capacitorClipboardImageInWebview(
     Capacitor.getPlatform(),
   );
+  // A comment does not count: readonly refreshesBackup = true;
+  readonly refreshesBackup = shellRefreshesBackup({
+    shell: "capacitor",
+    capacitorPlatform: Capacitor.getPlatform(),
+    mainWindow: IS_MAIN_WINDOW,
+  });
   #plugin = registerPlugin<E2eeCapacitorPlugin>("E2ee");
 
   // iOS only. A comment does not count: async subscribeBackupBundleWaiting() {}
@@ -2724,12 +2939,15 @@ class CapacitorTransport implements NativeTransport {
 
 export class E2EEBridge implements E2EEAdapter {
   #backupBundleWaiting: Promise<() => void> | null = null;
+  #backupRefreshAt: number | null = null;
+  #backupFocusListener: (() => void) | null = null;
 
   constructor(client: Client) {
     this.#client = client;
     this.#transport = createNativeTransport();
     // this.#watchOrphanedBackup(); in a comment does not count
     this.#watchOrphanedBackup();
+    this.#watchBackupFocus();
   }
 
   async #onClaimResult(accepted: boolean): Promise<void> {
@@ -2744,8 +2962,18 @@ export class E2EEBridge implements E2EEAdapter {
       console.error("[e2ee] post-claim housekeeping failed", error);
     }
 
-    if (this.#transport.subscribeBackupBundleWaiting) {
-      await this.#courierOrphanedBackup();
+    if (this.#transport.refreshesBackup) {
+      await this.#courierBackupRefresh();
+    }
+  }
+
+  async dispose(): Promise<void> {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    const focus = this.#backupFocusListener;
+    if (focus) {
+      this.#backupFocusListener = null;
+      window.removeEventListener("focus", focus);
     }
   }
 
@@ -2764,7 +2992,7 @@ export class E2EEBridge implements E2EEAdapter {
     if (!this.#transport.subscribeBackupBundleWaiting) return;
     this.#backupBundleWaiting = this.#transport
       .subscribeBackupBundleWaiting(() => {
-        void this.#courierOrphanedBackup();
+        void this.#courierBackupRefresh();
       })
       .catch((error: unknown) => {
         console.error("[e2ee] listener failed:", errorName(error));
@@ -2772,19 +3000,33 @@ export class E2EEBridge implements E2EEAdapter {
       });
   }
 
-  async #courierOrphanedBackup(): Promise<void> {
+  #watchBackupFocus(): void {
+    if (this.#backupFocusListener || !this.#transport.refreshesBackup) return;
+    const listener = () => {
+      if (!backupRefreshFocusDue(this.#backupRefreshAt, Date.now())) return;
+      void this.#courierBackupRefresh();
+    };
+    this.#backupFocusListener = listener;
+    window.addEventListener("focus", listener);
+  }
+
+  async #courierBackupRefresh(): Promise<void> {
     const state = this.status.get("state");
     if (
+      this.#disposed ||
+      this.#socketDown ||
       !this.#client.user?.id ||
       !state?.enabled ||
       !state.published ||
+      !state.device_id ||
       this.#claimAccepted !== true
     )
       return;
+    this.#backupRefreshAt = Date.now();
     try {
       await this.refreshBackupIfDue();
     } catch (error) {
-      console.error("[e2ee] orphaned backup upload failed:", errorName(error));
+      console.error("[e2ee] backup refresh failed:", errorName(error));
     }
   }
 
@@ -2911,26 +3153,45 @@ const ORPHAN_METHOD_SRC = `  async subscribeBackupBundleWaiting(
   }
 `;
 const CLAIM_COURIER = `
-    if (this.#transport.subscribeBackupBundleWaiting) {
-      await this.#courierOrphanedBackup();
+    if (this.#transport.refreshesBackup) {
+      await this.#courierBackupRefresh();
     }
 `;
 const CLAIM_BEFORE = `    }
-    if (this.#transport.subscribeBackupBundleWaiting) {
-      await this.#courierOrphanedBackup();
+    if (this.#transport.refreshesBackup) {
+      await this.#courierBackupRefresh();
     }
     try {
       await this.#reconcileDevices(`;
 const COURIER_GUARD = `    if (
+      this.#disposed ||
+      this.#socketDown ||
       !this.#client.user?.id ||
       !state?.enabled ||
       !state.published ||
+      !state.device_id ||
       this.#claimAccepted !== true
     )
       return;
 `;
+const COURIER_STAMP = "    this.#backupRefreshAt = Date.now();\n";
 const COURIER_LOG =
-  '      console.error("[e2ee] orphaned backup upload failed:", errorName(error));\n';
+  '      console.error("[e2ee] backup refresh failed:", errorName(error));\n';
+const TAURI_REFRESH_DECL = `  readonly refreshesBackup = shellRefreshesBackup({
+    shell: "tauri",
+    capacitorPlatform: Capacitor.getPlatform(),
+    mainWindow: IS_MAIN_WINDOW,
+  });
+`;
+const CAPACITOR_REFRESH_DECL = `  readonly refreshesBackup = shellRefreshesBackup({
+    shell: "capacitor",
+    capacitorPlatform: Capacitor.getPlatform(),
+    mainWindow: IS_MAIN_WINDOW,
+  });
+`;
+const FOCUS_THROTTLE =
+  "      if (!backupRefreshFocusDue(this.#backupRefreshAt, Date.now())) return;\n";
+const FOCUS_REMOVE = '      window.removeEventListener("focus", focus);\n';
 const COURIER_TRY = `    try {
       await this.refreshBackupIfDue();
     } catch (error) {
@@ -3317,8 +3578,8 @@ const TS_MUTATIONS: Mutation[] = [
     label: "the media predicate no longer imported",
     swaps: [
       [
-        '  mediaE2EEPlatformSupported,\n} from "./e2eePlatform";',
-        '} from "./e2eePlatform";',
+        '  mediaE2EEPlatformSupported,\n  shellRefreshesBackup,\n} from "./e2eePlatform";',
+        '  shellRefreshesBackup,\n} from "./e2eePlatform";',
       ],
     ],
     rules: ["G9"],
@@ -3328,8 +3589,8 @@ const TS_MUTATIONS: Mutation[] = [
     label: "the media predicate imported under another name",
     swaps: [
       [
-        '  mediaE2EEPlatformSupported,\n} from "./e2eePlatform";',
-        '  mediaE2EEPlatformSupported as mediaGate,\n} from "./e2eePlatform";',
+        '  mediaE2EEPlatformSupported,\n  shellRefreshesBackup,\n} from "./e2eePlatform";',
+        '  mediaE2EEPlatformSupported as mediaGate,\n  shellRefreshesBackup,\n} from "./e2eePlatform";',
       ],
     ],
     rules: ["G9"],
@@ -3579,8 +3840,30 @@ const TS_MUTATIONS: Mutation[] = [
     expected: /R4 .*does not end with/,
   },
   {
-    label: "the post-claim courier on every platform",
-    swaps: [[CLAIM_COURIER, "\n    await this.#courierOrphanedBackup();\n"]],
+    label: "the post-claim courier on every platform (Android too)",
+    swaps: [[CLAIM_COURIER, "\n    await this.#courierBackupRefresh();\n"]],
+    rules: ["R4"],
+    expected: /R4 .*does not end with/,
+  },
+  {
+    label: "the post-claim courier gated on the iOS-only bundle listener",
+    swaps: [
+      [
+        "    if (this.#transport.refreshesBackup) {\n      await this.#courierBackupRefresh();",
+        "    if (this.#transport.subscribeBackupBundleWaiting) {\n      await this.#courierBackupRefresh();",
+      ],
+    ],
+    rules: ["R4"],
+    expected: /R4 .*does not end with/,
+  },
+  {
+    label: "the post-claim courier gated on a negated answer",
+    swaps: [
+      [
+        "    if (this.#transport.refreshesBackup) {\n      await this.#courierBackupRefresh();",
+        "    if (!this.#transport.refreshesBackup) {\n      await this.#courierBackupRefresh();",
+      ],
+    ],
     rules: ["R4"],
     expected: /R4 .*does not end with/,
   },
@@ -3600,8 +3883,8 @@ const TS_MUTATIONS: Mutation[] = [
       [
         "      await this.#replenish();\n",
         "      await this.#replenish();\n" +
-          "      if (this.#transport.subscribeBackupBundleWaiting) {\n" +
-          "        await this.#courierOrphanedBackup();\n      }\n",
+          "      if (this.#transport.refreshesBackup) {\n" +
+          "        await this.#courierBackupRefresh();\n      }\n",
       ],
     ],
     rules: ["R4"],
@@ -3614,29 +3897,29 @@ const TS_MUTATIONS: Mutation[] = [
       [
         '      console.error("[e2ee] device claim REJECTED");\n',
         '      console.error("[e2ee] device claim REJECTED");\n' +
-          "      await this.#courierOrphanedBackup();\n",
+          "      await this.#courierBackupRefresh();\n",
       ],
     ],
     rules: ["R4"],
     expected: /R4 .*does not end with/,
   },
   {
-    label: "a third courier call, on connect",
+    label: "a fourth courier call, on connect",
     swaps: [
       [
         "    this.#watchOrphanedBackup();\n",
         "    this.#watchOrphanedBackup();\n" +
-          "    void this.#courierOrphanedBackup();\n",
+          "    void this.#courierBackupRefresh();\n",
       ],
     ],
     rules: ["R5"],
-    expected: /called 3 times, want 2/,
+    expected: /called 4 times, want 3/,
   },
   {
     label: "the courier guard dropped",
     swaps: [[COURIER_GUARD, ""]],
     rules: ["R6"],
-    expected: /R6 .*#courierOrphanedBackup is/,
+    expected: /R6 .*#courierBackupRefresh is/,
   },
   {
     label: "the courier guard does not require published",
@@ -3671,6 +3954,45 @@ const TS_MUTATIONS: Mutation[] = [
     expected: /the guard does not check user/,
   },
   {
+    label: "the courier guard lets a disposed bridge through",
+    swaps: [["      this.#disposed ||\n", ""]],
+    rules: ["R6"],
+    expected: /the guard does not check the disposed bridge/,
+  },
+  {
+    label: "the courier guard ignores a dropped socket",
+    swaps: [["      this.#socketDown ||\n", ""]],
+    rules: ["R6"],
+    expected: /the guard does not check the dropped socket/,
+  },
+  {
+    label: "the courier guard does not require a device id",
+    swaps: [["      !state.device_id ||\n", ""]],
+    rules: ["R6"],
+    expected: /the guard does not check the device id/,
+  },
+  {
+    label: "the courier never stamps the focus throttle",
+    swaps: [[COURIER_STAMP, ""]],
+    rules: ["R6"],
+    expected: /R6 .*#courierBackupRefresh is/,
+  },
+  {
+    label:
+      "the courier stamps before its guard (a refused check uses up the hour)",
+    swaps: [
+      [COURIER_STAMP, ""],
+      [
+        '    const state = this.status.get("state");\n    if (\n      this.#disposed',
+        '    const state = this.status.get("state");\n' +
+          COURIER_STAMP +
+          "    if (\n      this.#disposed",
+      ],
+    ],
+    rules: ["R6"],
+    expected: /R6 .*#courierBackupRefresh is/,
+  },
+  {
     label: "the courier asks native before the guard",
     swaps: [
       [COURIER_GUARD, ""],
@@ -3680,13 +4002,13 @@ const TS_MUTATIONS: Mutation[] = [
       ],
     ],
     rules: ["R6"],
-    expected: /R6 .*#courierOrphanedBackup is/,
+    expected: /R6 .*#courierBackupRefresh is/,
   },
   {
     label: "the courier does not catch",
     swaps: [[COURIER_TRY, "    await this.refreshBackupIfDue();\n"]],
     rules: ["R6"],
-    expected: /R6 .*#courierOrphanedBackup is/,
+    expected: /R6 .*#courierBackupRefresh is/,
   },
   {
     label: "the courier catch rethrows",
@@ -3699,7 +4021,7 @@ const TS_MUTATIONS: Mutation[] = [
     swaps: [
       [
         COURIER_LOG,
-        '      console.error("[e2ee] orphaned backup upload failed:", error);\n',
+        '      console.error("[e2ee] backup refresh failed:", error);\n',
       ],
     ],
     rules: ["R6"],
@@ -3727,6 +4049,154 @@ const TS_MUTATIONS: Mutation[] = [
     ],
     rules: ["R7"],
     expected: /"e2ee_backup_refresh_if_due" appears 2 times/,
+  },
+  {
+    label: "the refresh predicate no longer imported",
+    swaps: [["  shellRefreshesBackup,\n", ""]],
+    rules: ["G9"],
+    expected: /shellRefreshesBackup is not imported/,
+  },
+  {
+    label: "Tauri has no refresh answer (declaration dropped)",
+    swaps: [[TAURI_REFRESH_DECL, ""]],
+    rules: ["R8"],
+    expected: /R8 .*TauriTransport: 0 top-level `refreshesBackup` members/,
+  },
+  {
+    label: "Electron asks as the Capacitor shell",
+    swaps: [['    shell: "electron",\n', '    shell: "capacitor",\n']],
+    rules: ["R8"],
+    expected: /R8 .*ElectronTransport\.refreshesBackup is/,
+  },
+  {
+    label: "the Capacitor transport answers for a fixed platform",
+    swaps: [
+      [
+        '    shell: "capacitor",\n    capacitorPlatform: Capacitor.getPlatform(),',
+        '    shell: "capacitor",\n    capacitorPlatform: "ios",',
+      ],
+    ],
+    rules: ["R8"],
+    expected: /R8 .*CapacitorTransport\.refreshesBackup is/,
+  },
+  {
+    label: "the Capacitor transport refreshes everywhere (Android too)",
+    swaps: [[CAPACITOR_REFRESH_DECL, "  readonly refreshesBackup = true;\n"]],
+    rules: ["R8"],
+    expected:
+      /R8 .*CapacitorTransport\.refreshesBackup is `readonlyrefreshesBackup=true;`/,
+  },
+  {
+    label: "the main window flag ignored",
+    swaps: [
+      [
+        "const IS_MAIN_WINDOW = !IS_POPOUT_WINDOW && !IS_OVERLAY_WINDOW;",
+        "const IS_MAIN_WINDOW = true;",
+      ],
+    ],
+    rules: ["R8"],
+    expected:
+      /R8 IS_MAIN_WINDOW is declared 1 times as `constIS_MAIN_WINDOW=true;`/,
+  },
+  {
+    label: "a fourth shellRefreshesBackup call",
+    swaps: [
+      [
+        "    this.#watchBackupFocus();\n",
+        '    void shellRefreshesBackup({ shell: "tauri", capacitorPlatform: "web", mainWindow: true });\n' +
+          "    this.#watchBackupFocus();\n",
+      ],
+    ],
+    rules: ["R8"],
+    expected: /R8 shellRefreshesBackup\( is called 4 times/,
+  },
+  {
+    label: "no focus re-check (constructor call removed)",
+    swaps: [["    this.#watchBackupFocus();\n", ""]],
+    rules: ["R9"],
+    expected: /R9 this\.#watchBackupFocus\( called 0 times/,
+  },
+  {
+    label: "the focus watch attached on every connect",
+    swaps: [
+      [
+        "    this.#watchBackupFocus();\n",
+        '    client.on("ready", () => this.#watchBackupFocus());\n',
+      ],
+    ],
+    rules: ["R9"],
+    expected: /once, as a statement of the E2EEBridge constructor/,
+  },
+  {
+    label: "the focus throttle dropped",
+    swaps: [[FOCUS_THROTTLE, ""]],
+    rules: ["R9"],
+    expected: /R9 .*#watchBackupFocus is/,
+  },
+  {
+    label: "the focus watch on every platform (refresh answer not read)",
+    swaps: [
+      [
+        "    if (this.#backupFocusListener || !this.#transport.refreshesBackup) return;\n",
+        "    if (this.#backupFocusListener) return;\n",
+      ],
+    ],
+    rules: ["R9"],
+    expected: /R9 .*#watchBackupFocus is/,
+  },
+  {
+    label: "the focus listener on document instead of the main window",
+    swaps: [
+      [
+        '    window.addEventListener("focus", listener);\n',
+        '    document.addEventListener("focus", listener);\n',
+      ],
+    ],
+    rules: ["R9"],
+    expected: /R9 .*#watchBackupFocus is/,
+  },
+  {
+    label: "the focus listener skips the courier's guard",
+    swaps: [
+      [
+        "      void this.#courierBackupRefresh();\n    };",
+        "      void this.refreshBackupIfDue();\n    };",
+      ],
+    ],
+    rules: ["R5", "R7", "R9"],
+    expected: /R9 .*#watchBackupFocus is/,
+  },
+  {
+    label: "a second focus listener (on a chat window)",
+    swaps: [
+      [
+        "  async #courierBackupRefresh(): Promise<void> {\n",
+        "  #watchChatFocus(win: Window): void {\n" +
+          '    win.addEventListener("focus", () => {});\n' +
+          "  }\n\n" +
+          "  async #courierBackupRefresh(): Promise<void> {\n",
+      ],
+    ],
+    rules: ["R9"],
+    expected: /R9 2 focus listeners added/,
+  },
+  {
+    label: "dispose keeps the focus listener",
+    swaps: [[FOCUS_REMOVE, ""]],
+    rules: ["R9"],
+    expected: /R9 0 focus listener removals/,
+  },
+  {
+    label: "the focus listener removed only after an early return",
+    swaps: [
+      [
+        "    this.#disposed = true;\n    const focus",
+        "    this.#disposed = true;\n" +
+          "    if (!this.#backupBundleWaiting) return;\n    const focus",
+      ],
+    ],
+    rules: ["R9"],
+    expected: /removed after an early return other than the disposed guard/,
   },
 ];
 
@@ -4984,11 +5454,19 @@ test("e2ee.ts: CapacitorTransport has the backupBundleWaiting listener only on i
   assert.deepEqual(ruleFilter(realTs(), ["R1", "R2"]), []);
 });
 
-test("e2ee.ts: the bridge uploads an orphaned recovery bundle on the event and after a claim, guarded and best effort", () => {
+test("e2ee.ts: the bridge runs the backup courier on the iOS event, after a claim where the transport refreshes, and on focus, guarded and best effort", () => {
   assert.deepEqual(ruleFilter(realTs(), ["R3", "R4", "R5", "R6", "R7"]), []);
 });
 
-test("e2ee.ts: the whole scan is clean (G0-G9, F1-F2, R1-R7; G0 = it lexed)", () => {
+test("e2ee.ts: Tauri, Electron and Capacitor each take their refresh answer from shellRefreshesBackup in the main window", () => {
+  assert.deepEqual(ruleFilter(realTs(), ["R8"]), []);
+});
+
+test("e2ee.ts: the main-window focus re-check is throttled, attached once where the transport refreshes, and removed on dispose", () => {
+  assert.deepEqual(ruleFilter(realTs(), ["R9"]), []);
+});
+
+test("e2ee.ts: the whole scan is clean (G0-G9, F1-F2, R1-R9; G0 = it lexed)", () => {
   assert.deepEqual(realTs(), []);
 });
 

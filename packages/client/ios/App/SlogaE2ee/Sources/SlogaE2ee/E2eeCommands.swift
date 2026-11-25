@@ -50,6 +50,10 @@
 // (generic: no dialog, the consent was the begin's). The grep yields 110
 // names; 103 = 39 generic + 2 native + 22 call + 8 dedicated + 32 out.
 //
+// Protected channels S2 adds e2ee_text_authority_sign, so the text plane is
+// 21 names, all `.out`. The grep yields 111 names; 104 = 39 generic +
+// 2 native + 22 call + 8 dedicated + 33 out.
+//
 // e2ee_recovery_* (context/create/rotate/restore/finish) are NOT here: no FE
 // file sends them (only the desktop recovery window does). They are unknown
 // names, so `route(for:)` answers `.out` for them anyway.
@@ -172,7 +176,7 @@ enum E2eeCommands {
         ("e2ee_call_confirm_downgrade", .dedicated("callConfirmDowngrade")),
         ("e2ee_split_begin", .dedicated("splitBegin")),
 
-        // Out (32): desktop-only. `call` rejects invalid_argument{field:"name"}.
+        // Out (33): desktop-only. `call` rejects invalid_argument{field:"name"}.
         // Desktop binary attachment path (iOS moves ciphertext natively)
         ("e2ee_attachment_ciphertext", .out),
         ("e2ee_attachment_store", .out),
@@ -205,6 +209,7 @@ enum E2eeCommands {
         ("e2ee_text_owner_pin_state", .out),
         ("e2ee_text_owner_confirm_change", .out),
         ("e2ee_text_owner_handover_sign", .out),
+        ("e2ee_text_authority_sign", .out),
         ("e2ee_text_remove", .out),
         ("e2ee_text_update", .out),
         ("e2ee_text_state", .out),
@@ -237,7 +242,7 @@ enum E2eeCommands {
     static let callCount = 22
     static let dedicatedCount = 8
     /// Desktop-only FE names in the table; tests pin it with the others.
-    static let outCount = 32
+    static let outCount = 33
 
     // Built once. A duplicate name keeps its FIRST entry rather than
     // trapping: a crash here would be reachable from any webview message,

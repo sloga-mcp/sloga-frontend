@@ -30,6 +30,7 @@ import { Symbol } from "@revolt/ui/components/utils/Symbol";
 import MdAccountCircle from "@material-design-icons/svg/outlined/account_circle.svg?component-solid";
 import MdCampaign from "@material-design-icons/svg/outlined/campaign.svg?component-solid";
 import MdGavel from "@material-design-icons/svg/outlined/gavel.svg?component-solid";
+import MdHideImage from "@material-design-icons/svg/outlined/hide_image.svg?component-solid";
 import MdLanguage from "@material-design-icons/svg/outlined/language.svg?component-solid";
 import MdLogout from "@material-design-icons/svg/outlined/logout.svg?component-solid";
 import MdMic from "@material-design-icons/svg/outlined/mic.svg?component-solid";
@@ -563,6 +564,14 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               icon: <MdPolicy {...iconSize(20)} />,
               title: <Trans>Privacy Policy</Trans>,
               href: "https://sloga.gg/legal/privacy.html",
+            },
+            {
+              // Take It Down Act requests: how to ask for an intimate image
+              // to be removed, with or without an account
+              id: "take_it_down",
+              icon: <MdHideImage {...iconSize(20)} />,
+              title: <Trans>Remove intimate images</Trans>,
+              href: "https://sloga.gg/legal/take-it-down.html",
             },
           ],
         },

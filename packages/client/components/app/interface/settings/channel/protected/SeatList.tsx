@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import type { Channel } from "stoat.js";
@@ -7,6 +7,12 @@ import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
 import { noticeCopy, settingsCopy } from "@revolt/client/protectedCopy";
+import {
+  type SeatReleaseCause,
+  seatReleasedRows,
+  seatUntilText,
+  seatUsedCount,
+} from "@revolt/client/protectedSeatUiPolicy";
 import type { ProtectedSeatsResponse } from "@revolt/client/protectedTextTypes";
 import { Avatar } from "@revolt/ui/components/design/Avatar";
 import { Button } from "@revolt/ui/components/design/Button";
@@ -27,6 +33,16 @@ export interface SeatListProps {
   /** Disable Remove (a seat publish is in flight, D7). */
   disabled: boolean;
   onRemove: (userId: string) => void;
+  /**
+   * S2 D39: devices per user in the open Text group
+   * (`seatDeviceCounts`); null when unknown (no device column, never 0).
+   */
+  deviceCounts: ReadonlyMap<string, number> | null;
+  /**
+   * S2 D39 "Update the list": sign the list without `removed`. Removal
+   * only, so no native dialog and never blocked by the seat limit.
+   */
+  onUpdateList: () => void;
 }
 
 /**
@@ -37,13 +53,20 @@ export interface SeatListProps {
  * the seat and device caps. A null cap is unknown, never 0 or unlimited.
  * Members the server removed whom the signed list still names (W4d) are
  * a separate read-only group, never seated rows.
- * Display only, apart from the per-row Remove the page wires up.
+ * S2 D39 (lane U9): released seats show their cause (owner reads carry
+ * it) and count toward the seat limit; seated rows show their devices in
+ * the open Text group; the removed group gets "Update the list".
+ * Display only, apart from the per-row Remove and "Update the list" the
+ * page wires up.
  */
 export function SeatList(props: SeatListProps) {
   const { t } = useLingui();
   const client = useClient();
 
-  /** Display name and avatar, as the member list shows them. */
+  /**
+   * Display name and avatar, as the member list shows them. `known` is
+   * null when this client can't name the user.
+   */
   function person(userId: string) {
     const c = client();
     const member = c.serverMembers.getByKey({
@@ -51,11 +74,16 @@ export function SeatList(props: SeatListProps) {
       user: userId,
     });
     const user = c.users.get(userId);
+    const known = member?.displayName ?? user?.displayName ?? null;
     return {
-      name: member?.displayName ?? user?.displayName ?? userId,
+      known,
+      name: known ?? userId,
       avatar: member?.animatedAvatarURL ?? user?.animatedAvatarURL,
     };
   }
+
+  /** S2 D39: released seats still cooling, with their cause (owner reads). */
+  const released = createMemo(() => seatReleasedRows(props.seats.cooling));
 
   // Seated people this client has never loaded: fetch each once.
   const requested = new Set<string>();
@@ -63,7 +91,7 @@ export function SeatList(props: SeatListProps) {
     const c = client();
     const ids = [
       ...seatRows(props.seats.seats, props.ownerId).map((r) => r.userId),
-      ...coolingRows(props.seats.cooling).map((r) => r.userId),
+      ...released().map((r) => r.userId),
       ...props.removed,
     ];
     for (const id of ids) {
@@ -76,10 +104,60 @@ export function SeatList(props: SeatListProps) {
   });
 
   const rows = () => seatRows(props.seats.seats, props.ownerId, props.removed);
-  const cooling = () => coolingRows(props.seats.cooling);
   const slotCap = () => seatCount(props.seats.slot_cap);
-  const used = () => seatsUsedOf(props.seats);
+  // S2 D39 cap clamp: the server's count is active + cooling (design 2.3).
+  // Without it: the seated rows plus every released seat still cooling,
+  // never the rows alone (a lower bound; the server still checks).
+  const used = () =>
+    seatCount(props.seats.seats_used) ??
+    seatUsedCount(
+      seatRows(props.seats.seats, props.ownerId).map((r) => r.userId),
+      released().map((r) => r.userId),
+    );
   const device = () => deviceCapLine(props.seats.device_cap);
+
+  /**
+   * S2 D39: a seated user's devices in the open Text group, or null when
+   * the group's members aren't known (no column; never read as 0).
+   */
+  const devicesOf = (userId: string): { count: number } | null => {
+    const counts = props.deviceCounts;
+    if (counts === null) return null;
+    const n = counts.get(userId);
+    return { count: n === undefined ? 0 : n };
+  };
+
+  // ---- S2 D39 local msgids, the seat picker's texts (catalog owed, L9) ---
+
+  /** A user this client can't name (never the id). */
+  const unknownMember = () => t`Unknown member`;
+  const releasedTitle = () => t`Released seats`;
+  const untilLine = (until: string) =>
+    t`Counts toward the seat limit until ${until}`;
+  const noSeatsLine = (count: number) =>
+    t`People on your signed list who no longer have seats: ${count}`;
+  const updateListLabel = () => t`Update the list`;
+  const devicesLine = (count: number) => t`Devices: ${count}`;
+
+  /** Why a released seat was released; null when the read has no cause. */
+  function causeLine(cause: SeatReleaseCause | null): string | null {
+    switch (cause) {
+      case null:
+        return null;
+      case "owner_unseat":
+        return t`Removed from the seat list`;
+      case "server_removal":
+        return t`Removed from the server`;
+      case "access_lost":
+        return t`Lost access to this channel`;
+      case "device_never_joined":
+        return t`No device joined before the seat was released`;
+      default: {
+        const _exhaustive: never = cause;
+        return null;
+      }
+    }
+  }
 
   /** C16: local msgid, same text as the seat picker's (C12). */
   const unknownCapLine = (count: number) =>
@@ -107,10 +185,6 @@ export function SeatList(props: SeatListProps) {
     if (ids.length === 0) return null;
     return leftOffLine(ids.map((id) => person(id).name).join(", "));
   };
-
-  /** C16: local msgid (a released seat, design 7.2 `cooldown_until`). */
-  const coolingUntilLine = (until: string) =>
-    t`Counts as a used seat until ${until}.`;
 
   return (
     <Wrapper>
@@ -162,6 +236,14 @@ export function SeatList(props: SeatListProps) {
                     </RowAlert>
                   </Show>
                 </RowText>
+                {/* S2 D39: the seated user's devices in the group. */}
+                <Show when={devicesOf(row.userId)}>
+                  {(d) => (
+                    <RowDevices data-devices>
+                      {devicesLine(d().count)}
+                    </RowDevices>
+                  )}
+                </Show>
                 <Show when={row.owner}>
                   <Badge>{settingsCopy.ownerBadge()}</Badge>
                 </Show>
@@ -252,25 +334,49 @@ export function SeatList(props: SeatListProps) {
         </Rows>
       </Show>
 
-      <Show when={cooling().length > 0}>
-        <SubHeading>
-          {/* C16: local msgid */}
-          {t`Recently released seats`}
-        </SubHeading>
+      {/* S2 D39: the signed list still names them. "Update the list" signs
+          it without them: removal only (no native dialog, never blocked by
+          the seat limit), hidden with the per-row Remove. */}
+      <Show when={props.removed.length > 0}>
+        <Callout role="status" data-update-list>
+          <span>{noSeatsLine(props.removed.length)}</span>
+          <Show when={!props.hideRemove}>
+            <Button
+              size="sm"
+              variant="tonal"
+              isDisabled={props.disabled}
+              onPress={() => props.onUpdateList()}
+            >
+              {updateListLabel()}
+            </Button>
+          </Show>
+        </Callout>
+      </Show>
+
+      {/* S2 D39: released seats count for 14 days (design 2.3), with why. */}
+      <Show when={released().length > 0}>
+        <SubHeading>{releasedTitle()}</SubHeading>
         <Rows>
-          <For each={cooling()}>
+          <For each={released()}>
             {(row) => {
               const who = () => person(row.userId);
+              const name = () => who().known ?? unknownMember();
               return (
                 <Row data-cooling>
-                  <Avatar src={who().avatar} fallback={who().name} size={32} />
+                  <Avatar src={who().avatar} fallback={name()} size={32} />
                   <RowText>
-                    <RowName>{who().name}</RowName>
+                    <RowName>{name()}</RowName>
+                    <Show when={causeLine(row.cause)}>
+                      {(line) => <RowNote data-cause>{line()}</RowNote>}
+                    </Show>
                     <RowNote>
-                      {row.until === null
-                        ? // C16: local msgid
-                          t`Counts as a used seat for 14 days after release.`
-                        : coolingUntilLine(row.until)}
+                      {(() => {
+                        const until = seatUntilText(row.until);
+                        return until === null
+                          ? // C16: local msgid
+                            t`Counts as a used seat for 14 days after release.`
+                          : untilLine(until);
+                      })()}
                     </RowNote>
                   </RowText>
                 </Row>
@@ -334,16 +440,6 @@ export function seatRows(
   return [...out.filter((r) => r.owner), ...out.filter((r) => !r.owner)];
 }
 
-/** Seats in use: the server's count, else the rows (never a cap). */
-export function seatsUsedOf(r: {
-  seats_used?: unknown;
-  seats?: unknown;
-}): number {
-  return (
-    seatCount(r.seats_used) ?? (Array.isArray(r.seats) ? r.seats.length : 0)
-  );
-}
-
 export type DeviceCapLine =
   | { kind: "unknown" }
   | { kind: "unlimited" }
@@ -363,7 +459,11 @@ export function formatUntil(iso: unknown): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toLocaleString();
 }
 
-/** Released seats still counted (design 7.2 `cooling`). */
+/**
+ * Released seats still counted (design 7.2 `cooling`), for
+ * `serverRemovedSeatIds`. The rendered "Released seats" rows come from the
+ * shared policy's `seatReleasedRows` (S2 D39, with the cause).
+ */
 export function coolingRows(
   cooling: unknown,
 ): { userId: string; until: string | null }[] {
@@ -594,6 +694,28 @@ const RowNote = styled("span", {
   base: {
     fontSize: "0.75rem",
     color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+const RowDevices = styled("span", {
+  base: {
+    flexShrink: 0,
+    fontSize: "0.75rem",
+    color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+const Callout = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: "8px",
+    padding: "10px 12px",
+    borderRadius: "8px",
+    fontSize: "0.85rem",
+    background: "var(--md-sys-color-tertiary-container)",
+    color: "var(--md-sys-color-on-tertiary-container)",
   },
 });
 

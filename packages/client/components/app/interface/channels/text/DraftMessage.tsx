@@ -5,12 +5,17 @@ import type { Channel } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient, useUser } from "@revolt/client";
+import { refusalErrorOf } from "@revolt/client/encryptedOnlyChat";
 import { noticeCopy } from "@revolt/client/protectedCopy";
+import { useError } from "@revolt/i18n";
 import { Markdown } from "@revolt/markdown";
 import { userInformation } from "@revolt/markdown/users";
 import { useState } from "@revolt/state";
 import type { UnsentMessage } from "@revolt/state/stores/Draft";
-import { DM_PAUSED_SEND_ERROR } from "@revolt/state/stores/draftSendError";
+import {
+  DM_PAUSED_SEND_ERROR,
+  FIRST_FILE_NEEDS_TEXT_SEND_ERROR,
+} from "@revolt/state/stores/draftSendError";
 import {
   Avatar,
   MessageContainer,
@@ -38,7 +43,27 @@ export function DraftMessage(props: Props) {
   const user = useUser();
   const state = useState();
   const client = useClient();
+  const errorWords = useError();
   const userInfo = () => userInformation(user(), props.channel.server?.member);
+
+  /**
+   * Why the last send failed, in words. Markers are swapped for translated
+   * text; any other stored reason is shown as it is.
+   * @param stored The entry's `error`
+   */
+  function sendErrorText(stored: string) {
+    if (stored === DM_PAUSED_SEND_ERROR) {
+      return t`Your messages to people who aren't your friends are paused while our team reviews your account. You can still message your friends.`;
+    }
+
+    // Refused for not being encrypted, or files waiting for a text message:
+    // the same words as everywhere else in the app
+    const refusal = refusalErrorOf(stored);
+    if (refusal) return errorWords(refusal);
+    if (stored === FIRST_FILE_NEEDS_TEXT_SEND_ERROR) return errorWords(stored);
+
+    return stored;
+  }
 
   return (
     <MessageContainer
@@ -121,13 +146,10 @@ export function DraftMessage(props: Props) {
       </For>
       <Show when={props.draft.status === "failed" && props.draft.error}>
         {/* Server reasons stay untranslated for the same reason as the upload
-            label above. A paused sender gets a marker instead, which is
-            swapped for translated copy here. */}
-        <SendError>
-          {props.draft.error === DM_PAUSED_SEND_ERROR
-            ? t`Your messages to people who aren't your friends are paused while our team reviews your account. You can still message your friends.`
-            : props.draft.error}
-        </SendError>
+            label above. A paused sender, a send refused for not being
+            encrypted and files waiting for text get a marker instead, which
+            is swapped for translated copy here. */}
+        {(error) => <SendError>{sendErrorText(error())}</SendError>}
       </Show>
       {/* A protected send stores a notice kind, never error text */}
       <Show

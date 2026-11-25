@@ -8,15 +8,18 @@
  * where `g` is the generation, `0..=MAX_TEXT_GENERATION`. The server
  * (`routes/mls/text.rs` `text_group_id`) and native (`mls/text/formats.rs`
  * `text_group_id`) carry their own copies; the design 5.5 vectors pin all
- * three byte for byte. Like native, this copy refuses a channel id that is not
- * a ULID and a generation outside `0..=63`, so no caller can derive a group
- * the server would refuse.
+ * three byte for byte. This copy refuses a channel id that is not a ULID and
+ * a generation outside `0..=63` (the S1 cap). S2 native raises the cap to
+ * 65535 for both derivations and adds a v2 id keyed by the held list's
+ * `group_salt` (design 3.1.1); the webview never derives either (OR-7).
  *
  * `TextIdIndex` is the routing seam's lookup (plan D4): every id of
- * generations 0..63 for every server-protected OR pinned channel, so an
+ * generations 0..63 for every server-protected OR pinned channel, plus every
+ * id reported by native or the server (`addReported`: v2 ids, g > 63), so an
  * inbound MLS envelope whose group id is in the index goes to the text plane
  * and never to the call session. It only grows: protection and pins are
- * one-way, and a stale entry merely keeps a dead id off the call path.
+ * one-way, and a stale entry merely keeps a dead id off the call path. An
+ * indexed id never changes what it maps to.
  *
  * Pure module: WebCrypto (`crypto.subtle`, browser and node) only; no Solid,
  * no SDK. Holds no key material.
@@ -24,6 +27,12 @@
 
 /** The highest text-group generation (design 3.1); `64` is refused. */
 export const MAX_TEXT_GENERATION = 63;
+
+/**
+ * The highest generation `addReported` accepts: native's one cap for both
+ * derivations (`formats.rs` `MAX_TEXT_GROUP_GENERATION`, design 3.1.1).
+ */
+export const MAX_REPORTED_GENERATION = 65535;
 
 /** Domain-separation context (design 0.4; WIRE FORMAT, never rename). */
 export const TEXT_GROUP_ID_CONTEXT = "sloga-text-group-v1";
@@ -37,12 +46,11 @@ export interface TextGroupRef {
 /** ULID charset (design 0.1): Crockford base32, uppercase, 26 chars. */
 const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
-function isValidGeneration(generation: number): boolean {
-  return (
-    Number.isInteger(generation) &&
-    generation >= 0 &&
-    generation <= MAX_TEXT_GENERATION
-  );
+/** Group id, v1 and v2 alike (design 0.1): 64 lowercase hex chars. */
+const GROUP_ID_RE = /^[0-9a-f]{64}$/;
+
+function isValidGeneration(generation: number, max: number): boolean {
+  return Number.isInteger(generation) && generation >= 0 && generation <= max;
 }
 
 function toHex(bytes: ArrayBuffer): string {
@@ -65,7 +73,7 @@ export async function textGroupId(
   if (typeof channelId !== "string" || !ULID_RE.test(channelId)) {
     throw new RangeError("textGroupId: channel id is not a ULID");
   }
-  if (!isValidGeneration(generation)) {
+  if (!isValidGeneration(generation, MAX_TEXT_GENERATION)) {
     throw new RangeError(
       `textGroupId: generation outside 0..=${MAX_TEXT_GENERATION}`,
     );
@@ -78,8 +86,9 @@ export async function textGroupId(
 
 /**
  * Group id -> `{channelId, generation}` for every generation 0..63 of every
- * added channel. `ready` flips once (`markReady`) after the Ready-time seeding
- * has been awaited; before that the router holds envelopes (plan D4 step 2).
+ * added channel and every reported id (`addReported`). `ready` flips once
+ * (`markReady`) after the Ready-time seeding has been awaited; before that
+ * the router holds envelopes (plan D4 step 2).
  * Channels added after ready (a new pin, a channel protected later) are
  * indexed as soon as their `addChannel` resolves; callers AWAIT it before any
  * `_join` / `_group_create` for that channel (PA#11f).
@@ -119,6 +128,38 @@ export class TextIdIndex {
     return work;
   }
 
+  /**
+   * Index one id that native or the server reported for `channelId` at
+   * `generation` (a v2 id, or any id above g 63; OR-7). `has` and `get` see
+   * it exactly like a derived id, at once. Nothing is derived or checked
+   * against a derivation here (no salt in the webview). Throws `RangeError`
+   * on an id that is not 64 lowercase hex, a channel id that is not a ULID,
+   * or a generation that is not an integer in `0..=MAX_REPORTED_GENERATION`.
+   * An id already mapped to another channel or generation throws and keeps
+   * its mapping (never re-routed); the same mapping again is a no-op.
+   */
+  addReported(groupId: string, channelId: string, generation: number): void {
+    if (typeof groupId !== "string" || !GROUP_ID_RE.test(groupId)) {
+      throw new RangeError("TextIdIndex: group id is not 64 lowercase hex");
+    }
+    if (typeof channelId !== "string" || !ULID_RE.test(channelId)) {
+      throw new RangeError("TextIdIndex: channel id is not a ULID");
+    }
+    if (!isValidGeneration(generation, MAX_REPORTED_GENERATION)) {
+      throw new RangeError(
+        `TextIdIndex: generation outside 0..=${MAX_REPORTED_GENERATION}`,
+      );
+    }
+    const prior = this.#ids.get(groupId);
+    if (prior) {
+      if (prior.channelId === channelId && prior.generation === generation) {
+        return;
+      }
+      throw new Error("TextIdIndex: group id already maps elsewhere");
+    }
+    this.#ids.set(groupId, { channelId, generation });
+  }
+
   /** Seeding is complete; the router may stop holding envelopes. */
   markReady(): void {
     this.#ready = true;
@@ -142,7 +183,8 @@ export class TextIdIndex {
         prior &&
         (prior.channelId !== channelId || prior.generation !== generation)
       ) {
-        // A SHA-256 collision; refuse rather than reroute an indexed id.
+        // A SHA-256 collision, or a reported id already claiming this one;
+        // refuse rather than reroute an indexed id.
         throw new Error("TextIdIndex: group id collision");
       }
     }

@@ -11,8 +11,10 @@ import { useLingui } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
 
 import { TrackLoop } from "solid-livekit-components";
+import { EncryptedOnlyBlockedError } from "stoat.js";
 
 import { useClient } from "@revolt/client";
+import { buildPlainWriteInput } from "@revolt/client/encryptedOnlyGuard";
 import { CONFIGURATION } from "@revolt/common";
 import { useError } from "@revolt/i18n";
 import { InRoom, useVoice } from "@revolt/rtc";
@@ -26,6 +28,7 @@ import { JellyfinBrowser } from "./JellyfinBrowser";
 import { JellyfinConnect } from "./JellyfinConnect";
 import { parseYouTubeWatchInput } from "./providers/youtubeWire";
 import { watchOverlayVisible, watchStripVisible } from "./watchPolicy";
+import { watchRefusalReason } from "./watchRefusal";
 
 /**
  * Watch-together overlay (plan §2.1). Copies the MinigameChip placement:
@@ -49,7 +52,6 @@ export function WatchOverlay() {
   const voice = useVoice();
   const client = useClient();
   const { t } = useLingui();
-  const translateError = useError();
   const watch = voice.watch;
 
   // The in-slot "sign in to {server}" form is open (a Jellyfin session named
@@ -352,7 +354,7 @@ export function WatchOverlay() {
             <Notice>{t`The host seems to have dropped — waiting for them to come back…`}</Notice>
           </Show>
           <Show when={watch.error()}>
-            <Notice>{translateError({ type: watch.error() })}</Notice>
+            {(type) => <WatchError type={type()} />}
           </Show>
           <Controls />
           <Show when={showStats()}>
@@ -362,6 +364,31 @@ export function WatchOverlay() {
       </Show>
     </>
   );
+}
+
+/**
+ * A watch error in words. A refusal for not being encrypted arrives without
+ * its side, so the reason comes from the policy for the call's channel;
+ * with none known, the error's own words.
+ */
+function WatchError(props: { type: string }) {
+  const voice = useVoice();
+  const client = useClient();
+  const translateError = useError();
+
+  const text = () => {
+    const channel = voice.channel();
+    const current = client();
+    const reason = watchRefusalReason(
+      props.type,
+      channel && current ? buildPlainWriteInput(current, channel) : undefined,
+    );
+    return reason
+      ? translateError(new EncryptedOnlyBlockedError(reason))
+      : translateError({ type: props.type });
+  };
+
+  return <Notice>{text()}</Notice>;
 }
 
 /** Bare-identifier interpolation so the msgid extracts as `Hosted by {name}`. */
@@ -475,7 +502,6 @@ function Controls() {
 function Picker() {
   const voice = useVoice();
   const { t } = useLingui();
-  const translateError = useError();
   const watch = voice.watch;
   const [raw, setRaw] = createSignal("");
   const [bad, setBad] = createSignal<"no" | "not-youtube" | "bare-list">("no");
@@ -541,7 +567,7 @@ function Picker() {
         <Notice>{t`That's a playlist link without a video. Open the first video of the playlist on YouTube and paste that link — the playlist rides along and advances for everyone.`}</Notice>
       </Show>
       <Show when={watch.error()}>
-        <Notice>{translateError({ type: watch.error() })}</Notice>
+        {(type) => <WatchError type={type()} />}
       </Show>
       <PickerHint>
         {t`Loads from youtube-nocookie.com. The server sees what you watch — also in encrypted calls. Videos with embedding disabled won't play. Headphones recommended: an open mic will carry the movie into the call.`}

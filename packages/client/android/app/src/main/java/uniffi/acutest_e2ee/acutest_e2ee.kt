@@ -980,6 +980,8 @@ internal open class UniffiVTableCallbackInterfaceTextConfirm(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -1154,6 +1156,8 @@ fun uniffi_acutest_e2ee_checksum_method_e2eeengine_status(
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_store_owner(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_admit(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_authority_sign(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_capability(
 ): Short
@@ -1419,6 +1423,8 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_status(`ptr`: Pointer,uniffi_out_er
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_store_owner(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_admit(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_authority_sign(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,`confirm`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_capability(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1848,13 +1854,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_admit() != 58626.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_capability() != 28207.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_authority_sign() != 34284.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_capability() != 37359.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_commit_lost() != 13490.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_commit_won() != 61325.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_commit_won() != 9933.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_decrypt() != 13479.toShort()) {
@@ -1863,7 +1872,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_encrypt() != 53138.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_group_create() != 60025.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_group_create() != 65309.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_join() != 3609.toShort()) {
@@ -1887,16 +1896,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_pin_own_devices() != 63903.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_process() != 30872.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_process() != 8050.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_remove() != 19883.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_remove() != 50494.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_seat_list_sign() != 47294.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_seat_list_sign() != 55646.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_seat_list_verify() != 5734.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_seat_list_verify() != 48248.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_state() != 9077.toShort()) {
@@ -3087,8 +3096,19 @@ public interface E2eeEngineInterface {
     fun `textAdmit`(`argsJson`: kotlin.String): kotlin.String
     
     /**
-     * The text plane's protocol, `{"protocol":1}`. Touches no engine and no
-     * file; the webview's capability probe.
+     * `e2ee_text_authority_sign`: JSON `SignedAuthority`. ALWAYS asks
+     * `confirm` (core's authority dialog: every named device with this
+     * device's verification record, every dropped one). Persists nothing:
+     * the webview passes the result to `text_seat_list_sign` as its
+     * `authority`.
+     */
+    fun `textAuthoritySign`(`argsJson`: kotlin.String, `confirm`: TextConfirm): kotlin.String
+    
+    /**
+     * The text plane's protocol, `{"protocol":N}` with N core's
+     * [`TEXT_PROTOCOL`] (OR-13: the same constant `ShellEngine::text_protocol`
+     * answers). Touches no engine and no file; the webview's capability
+     * probe.
      */
     fun `textCapability`(): kotlin.String
     
@@ -3099,8 +3119,8 @@ public interface E2eeEngineInterface {
     
     /**
      * `e2ee_text_commit_won`: JSON `TextProcessOutcome`. `rejoinIntents`
-     * is required (the stored commit's list, possibly empty). Never
-     * provisions.
+     * and `removedReasons` are required (the stored commit's lists,
+     * possibly empty). Never provisions.
      */
     fun `textCommitWon`(`argsJson`: kotlin.String): kotlin.String
     
@@ -3116,9 +3136,11 @@ public interface E2eeEngineInterface {
     fun `textEncrypt`(`argsJson`: kotlin.String): kotlin.String
     
     /**
-     * `e2ee_text_group_create`: JSON `TextGroupCreated`. Never provisions:
-     * unprovisioned, the engine's shape checks, then `not_enabled` (its
-     * fresh-store answer), as `ShellEngine::text_group_create`.
+     * `e2ee_text_group_create`: JSON `TextGroupCreated`. `recovery` and
+     * `supersedesGeneration` are the S2 recovery create (absent: `false`,
+     * `None`). Never provisions: unprovisioned, the engine's shape checks,
+     * then `not_enabled` (its fresh-store answer), as
+     * `ShellEngine::text_group_create`.
      */
     fun `textGroupCreate`(`argsJson`: kotlin.String): kotlin.String
     
@@ -3169,26 +3191,33 @@ public interface E2eeEngineInterface {
      * `e2ee_text_process`: JSON `TextProcessOutcome`. `envelope` is parsed
      * BEFORE the engine is touched, as `ShellEngine::text_process` does: a
      * malformed one is `malformed_text_payload{reason:"structure"}` and
-     * opens nothing. Never provisions.
+     * opens nothing. `catchUpTip` is the server tip epoch while catching up
+     * (absent when live). Never provisions.
      */
     fun `textProcess`(`argsJson`: kotlin.String): kotlin.String
     
     /**
      * `e2ee_text_remove`: JSON `SubmitMlsCommitPayload`.
-     * `pendingRemovalUsers` is required. Never provisions.
+     * `pendingRemovalUsers` and `pendingDeviceTargets` are required
+     * (possibly empty). Never provisions.
      */
     fun `textRemove`(`argsJson`: kotlin.String): kotlin.String
     
     /**
      * `e2ee_text_seat_list_sign`: JSON `SignedSeatList`. A list that seats
-     * a new user or raises the device cap needs `confirm`; one that does
-     * neither is signed with no dialog. Persists nothing.
+     * a new user, raises the device cap or makes history visible needs
+     * `confirm`; one that does none of these is signed with no dialog. A
+     * recovery list (`recovery: true`) ALWAYS needs `confirm` (core's
+     * recovery dialog). `format`, `authority` and `recovery` are the S2
+     * inputs (absent: `None`, `None`, `false`), checked in core. Persists
+     * nothing.
      */
     fun `textSeatListSign`(`argsJson`: kotlin.String, `confirm`: TextConfirm): kotlin.String
     
     /**
-     * `e2ee_text_seat_list_verify`: JSON `SeatListVerdict`. Never
-     * provisions.
+     * `e2ee_text_seat_list_verify`: JSON `SeatListVerdict`.
+     * `asOfGeneration` is the generation of `asOfGroupId` (absent when not
+     * sent). Never provisions.
      */
     fun `textSeatListVerify`(`argsJson`: kotlin.String): kotlin.String
     
@@ -4885,8 +4914,30 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
-     * The text plane's protocol, `{"protocol":1}`. Touches no engine and no
-     * file; the webview's capability probe.
+     * `e2ee_text_authority_sign`: JSON `SignedAuthority`. ALWAYS asks
+     * `confirm` (core's authority dialog: every named device with this
+     * device's verification record, every dropped one). Persists nothing:
+     * the webview passes the result to `text_seat_list_sign` as its
+     * `authority`.
+     */
+    @Throws(E2eeException::class)override fun `textAuthoritySign`(`argsJson`: kotlin.String, `confirm`: TextConfirm): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_authority_sign(
+        it, FfiConverterString.lower(`argsJson`),FfiConverterTypeTextConfirm.lower(`confirm`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The text plane's protocol, `{"protocol":N}` with N core's
+     * [`TEXT_PROTOCOL`] (OR-13: the same constant `ShellEngine::text_protocol`
+     * answers). Touches no engine and no file; the webview's capability
+     * probe.
      */override fun `textCapability`(): kotlin.String {
             return FfiConverterString.lift(
     callWithPointer {
@@ -4918,8 +4969,8 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
     
     /**
      * `e2ee_text_commit_won`: JSON `TextProcessOutcome`. `rejoinIntents`
-     * is required (the stored commit's list, possibly empty). Never
-     * provisions.
+     * and `removedReasons` are required (the stored commit's lists,
+     * possibly empty). Never provisions.
      */
     @Throws(E2eeException::class)override fun `textCommitWon`(`argsJson`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
@@ -4968,9 +5019,11 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
-     * `e2ee_text_group_create`: JSON `TextGroupCreated`. Never provisions:
-     * unprovisioned, the engine's shape checks, then `not_enabled` (its
-     * fresh-store answer), as `ShellEngine::text_group_create`.
+     * `e2ee_text_group_create`: JSON `TextGroupCreated`. `recovery` and
+     * `supersedesGeneration` are the S2 recovery create (absent: `false`,
+     * `None`). Never provisions: unprovisioned, the engine's shape checks,
+     * then `not_enabled` (its fresh-store answer), as
+     * `ShellEngine::text_group_create`.
      */
     @Throws(E2eeException::class)override fun `textGroupCreate`(`argsJson`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
@@ -5109,7 +5162,8 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
      * `e2ee_text_process`: JSON `TextProcessOutcome`. `envelope` is parsed
      * BEFORE the engine is touched, as `ShellEngine::text_process` does: a
      * malformed one is `malformed_text_payload{reason:"structure"}` and
-     * opens nothing. Never provisions.
+     * opens nothing. `catchUpTip` is the server tip epoch while catching up
+     * (absent when live). Never provisions.
      */
     @Throws(E2eeException::class)override fun `textProcess`(`argsJson`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
@@ -5126,7 +5180,8 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
     
     /**
      * `e2ee_text_remove`: JSON `SubmitMlsCommitPayload`.
-     * `pendingRemovalUsers` is required. Never provisions.
+     * `pendingRemovalUsers` and `pendingDeviceTargets` are required
+     * (possibly empty). Never provisions.
      */
     @Throws(E2eeException::class)override fun `textRemove`(`argsJson`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
@@ -5143,8 +5198,12 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
     
     /**
      * `e2ee_text_seat_list_sign`: JSON `SignedSeatList`. A list that seats
-     * a new user or raises the device cap needs `confirm`; one that does
-     * neither is signed with no dialog. Persists nothing.
+     * a new user, raises the device cap or makes history visible needs
+     * `confirm`; one that does none of these is signed with no dialog. A
+     * recovery list (`recovery: true`) ALWAYS needs `confirm` (core's
+     * recovery dialog). `format`, `authority` and `recovery` are the S2
+     * inputs (absent: `None`, `None`, `false`), checked in core. Persists
+     * nothing.
      */
     @Throws(E2eeException::class)override fun `textSeatListSign`(`argsJson`: kotlin.String, `confirm`: TextConfirm): kotlin.String {
             return FfiConverterString.lift(
@@ -5160,8 +5219,9 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
-     * `e2ee_text_seat_list_verify`: JSON `SeatListVerdict`. Never
-     * provisions.
+     * `e2ee_text_seat_list_verify`: JSON `SeatListVerdict`.
+     * `asOfGeneration` is the generation of `asOfGroupId` (absent when not
+     * sent). Never provisions.
      */
     @Throws(E2eeException::class)override fun `textSeatListVerify`(`argsJson`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
@@ -5695,7 +5755,7 @@ public object FfiConverterTypeKeyProtector: FfiConverter<KeyProtector, Pointer> 
 
 
 /**
- * Kotlin-implemented native dialog for the three protected-text dialog
+ * Kotlin-implemented native dialog for the four protected-text dialog
  * commands.
  *
  * BLOCKING: each method returns only once the user has answered, or the
@@ -5720,7 +5780,7 @@ public interface TextConfirm {
 }
 
 /**
- * Kotlin-implemented native dialog for the three protected-text dialog
+ * Kotlin-implemented native dialog for the four protected-text dialog
  * commands.
  *
  * BLOCKING: each method returns only once the user has answered, or the

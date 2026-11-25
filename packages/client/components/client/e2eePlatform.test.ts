@@ -3,11 +3,21 @@
 // rule and the one shell predicate. The older phase-1 pins stay in
 // `e2eeIosGate.test.ts`.
 //
+// Also the backup refresh rules: which shells refresh the key backup by
+// themselves (Electron, iOS; not Tauri while its backup commands are sync
+// and engine-locked; never Android or the web, never outside the main
+// window), the hourly focus throttle, and how often the Encrypted-only
+// setup polls the backup status (never during a Tauri mint, at most every
+// 15 s on Tauri). Those rows are checked against in-suite mutants of the
+// module too.
+//
 // `E2EE_PLATFORM_MODULE` points the spec at another copy of the module, so
-// a mutated copy can be shown to fail it.
+// a mutated copy can be shown to fail it (`E2EE_ONBOARDING_TSX` and
+// `E2EE_BRIDGE_TS` do the same for the wiring scans at the end).
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 
@@ -218,4 +228,421 @@ test("e2eePlatform.ts stays pure: no imports, no require", () => {
   assert.doesNotMatch(src, /^\s*import[\s{*"']/m);
   assert.doesNotMatch(src, /\bimport\s*\(/);
   assert.doesNotMatch(src, /\brequire\s*\(/);
+});
+
+// ---- Backup refresh: which shells, and how often on focus ------------------
+
+type Module = typeof import("./e2eePlatform.ts");
+type RefreshInput = Parameters<Module["shellRefreshesBackup"]>[0];
+
+const HOUR = 60 * 60 * 1000;
+
+/** [label, input, expected]: every shell and platform the bridge can see. */
+const REFRESH_ROWS: [string, RefreshInput, boolean][] = [
+  // Not Tauri while its backup commands are sync and engine-locked
+  // (sloga-desktop follow-up)
+  [
+    "Tauri main window",
+    { shell: "tauri", capacitorPlatform: "web", mainWindow: true },
+    false,
+  ],
+  [
+    "Electron main window",
+    { shell: "electron", capacitorPlatform: "web", mainWindow: true },
+    true,
+  ],
+  [
+    "iOS",
+    { shell: "capacitor", capacitorPlatform: "ios", mainWindow: true },
+    true,
+  ],
+  [
+    "Android",
+    { shell: "capacitor", capacitorPlatform: "android", mainWindow: true },
+    false,
+  ],
+  [
+    "web",
+    { shell: "capacitor", capacitorPlatform: "web", mainWindow: true },
+    false,
+  ],
+  [
+    "Android under a Tauri shell value",
+    { shell: "tauri", capacitorPlatform: "android", mainWindow: true },
+    false,
+  ],
+  [
+    "Android under an Electron shell value",
+    { shell: "electron", capacitorPlatform: "android", mainWindow: true },
+    false,
+  ],
+  [
+    "Tauri, not the main window",
+    { shell: "tauri", capacitorPlatform: "web", mainWindow: false },
+    false,
+  ],
+  [
+    "Electron, not the main window",
+    { shell: "electron", capacitorPlatform: "web", mainWindow: false },
+    false,
+  ],
+  [
+    "iOS, not the main window",
+    { shell: "capacitor", capacitorPlatform: "ios", mainWindow: false },
+    false,
+  ],
+  [
+    "Tauri, main window flag 1",
+    {
+      shell: "tauri",
+      capacitorPlatform: "web",
+      mainWindow: 1 as unknown as boolean,
+    },
+    false,
+  ],
+  [
+    "Electron, main window flag 1",
+    {
+      shell: "electron",
+      capacitorPlatform: "web",
+      mainWindow: 1 as unknown as boolean,
+    },
+    false,
+  ],
+  [
+    "unknown shell",
+    { shell: "", capacitorPlatform: "web", mainWindow: true },
+    false,
+  ],
+  [
+    "shell spelled Tauri",
+    { shell: "Tauri", capacitorPlatform: "web", mainWindow: true },
+    false,
+  ],
+  [
+    "Capacitor platform IOS",
+    { shell: "capacitor", capacitorPlatform: "IOS", mainWindow: true },
+    false,
+  ],
+  [
+    "Capacitor platform electron",
+    { shell: "capacitor", capacitorPlatform: "electron", mainWindow: true },
+    false,
+  ],
+  [
+    "Capacitor platform empty",
+    { shell: "capacitor", capacitorPlatform: "", mainWindow: true },
+    false,
+  ],
+];
+
+/** [label, lastAt, now, expected] for the focus throttle. */
+const FOCUS_ROWS: [string, number | null, number, boolean][] = [
+  ["first focus on this bridge", null, 5, true],
+  ["right after a check", 1_000, 1_000, false],
+  ["one ms short of an hour", 1_000, 1_000 + HOUR - 1, false],
+  ["exactly an hour", 1_000, 1_000 + HOUR, true],
+  ["over an hour", 1_000, 1_000 + 3 * HOUR, true],
+  ["the clock went backwards", 10 * HOUR, 9 * HOUR, true],
+];
+
+/** Every row `m` gets wrong, labelled. */
+function refreshFailures(m: Module): string[] {
+  const out: string[] = [];
+  for (const [label, input, want] of REFRESH_ROWS) {
+    const got = m.shellRefreshesBackup({ ...input });
+    if (got !== want) out.push(`refresh ${label}: ${got}, want ${want}`);
+  }
+  for (const [label, lastAt, now, want] of FOCUS_ROWS) {
+    const got = m.backupRefreshFocusDue(lastAt, now);
+    if (got !== want) out.push(`focus ${label}: ${got}, want ${want}`);
+  }
+  if (m.BACKUP_REFRESH_FOCUS_MS !== HOUR) {
+    out.push(`focus interval ${m.BACKUP_REFRESH_FOCUS_MS}, want ${HOUR}`);
+  }
+  return out;
+}
+
+test("shellRefreshesBackup: Electron and iOS refresh in the main window", () => {
+  const refreshing = REFRESH_ROWS.filter(([, , want]) => want).map(
+    ([label]) => label,
+  );
+  assert.deepEqual(refreshing, ["Electron main window", "iOS"]);
+  for (const [label, input, want] of REFRESH_ROWS) {
+    if (want) assert.equal(mod.shellRefreshesBackup(input), true, label);
+  }
+});
+
+test("shellRefreshesBackup: Tauri never refreshes while its backup commands are sync", () => {
+  for (const [label, input] of REFRESH_ROWS) {
+    if (input.shell === "tauri") {
+      assert.equal(mod.shellRefreshesBackup(input), false, label);
+    }
+  }
+});
+
+test("shellRefreshesBackup: Android and the web never refresh", () => {
+  for (const [label, input] of REFRESH_ROWS) {
+    if (input.capacitorPlatform === "android" || label === "web") {
+      assert.equal(mod.shellRefreshesBackup(input), false, label);
+    }
+  }
+});
+
+test("shellRefreshesBackup: never outside the main window, and only a literal true counts", () => {
+  for (const [label, input] of REFRESH_ROWS) {
+    if (input.mainWindow !== true) {
+      assert.equal(mod.shellRefreshesBackup(input), false, label);
+    }
+  }
+});
+
+test("shellRefreshesBackup: unknown shells and platforms fail closed", () => {
+  assert.deepEqual(
+    refreshFailures(mod).filter((f) => f.startsWith("refresh ")),
+    [],
+  );
+});
+
+test("backupRefreshFocusDue: the first focus is due, then at most once an hour", () => {
+  assert.equal(mod.BACKUP_REFRESH_FOCUS_MS, HOUR);
+  assert.deepEqual(
+    refreshFailures(mod).filter((f) => !f.startsWith("refresh ")),
+    [],
+  );
+});
+
+/**
+ * The module under test with `swaps` applied (exact, unique snippets),
+ * type-stripped and imported from a data: URL: no file is written.
+ */
+async function moduleCopy(swaps: [string, string][]): Promise<Module> {
+  let src = readFileSync(MODULE_URL, "utf8");
+  for (const [from, to] of swaps) {
+    assert.equal(src.split(from).length, 2, `swap not unique: ${from}`);
+    src = src.replace(from, to);
+  }
+  const js = stripTypeScriptTypes(src);
+  return (await import(
+    `data:text/javascript,${encodeURIComponent(js)}`
+  )) as Module;
+}
+
+/** Mutants of the backup refresh rules, and the row each must fail. */
+const REFRESH_MUTANTS: {
+  label: string;
+  swap: [string, string];
+  kills: RegExp;
+}[] = [
+  {
+    label: "the Android rule dropped",
+    swap: ['  if (input.capacitorPlatform === "android") return false;\n', ""],
+    kills: /^refresh Android under an Electron shell value: true/,
+  },
+  {
+    label: "the main window ignored",
+    swap: ["  if (input.mainWindow !== true) return false;\n", ""],
+    kills: /^refresh Electron, not the main window: true/,
+  },
+  {
+    label: "the main window read truthy",
+    swap: ["input.mainWindow !== true", "!input.mainWindow"],
+    kills: /^refresh Electron, main window flag 1: true/,
+  },
+  {
+    label: "Tauri refreshes again",
+    swap: [
+      'if (input.shell === "electron") return true;',
+      'if (input.shell === "tauri" || input.shell === "electron") return true;',
+    ],
+    kills: /^refresh Tauri main window: true/,
+  },
+  {
+    label: "every Capacitor platform refreshes",
+    swap: [
+      'input.shell === "capacitor" && input.capacitorPlatform === "ios"',
+      'input.shell === "capacitor"',
+    ],
+    kills: /^refresh web: true/,
+  },
+  {
+    label: "Electron left out",
+    swap: ['  if (input.shell === "electron") return true;\n', ""],
+    kills: /^refresh Electron main window: false/,
+  },
+  {
+    label: "no throttle",
+    swap: ["now < lastAt || now - lastAt >= BACKUP_REFRESH_FOCUS_MS", "true"],
+    kills: /^focus right after a check: true/,
+  },
+  {
+    label: "the hour boundary excluded",
+    swap: [
+      "now - lastAt >= BACKUP_REFRESH_FOCUS_MS",
+      "now - lastAt > BACKUP_REFRESH_FOCUS_MS",
+    ],
+    kills: /^focus exactly an hour: false/,
+  },
+  {
+    label: "a backwards clock blocks the check",
+    swap: ["now < lastAt || ", ""],
+    kills: /^focus the clock went backwards: false/,
+  },
+];
+
+test("backup refresh mutation harness: the unmutated module, loaded the same way, passes every row", async () => {
+  assert.deepEqual(refreshFailures(await moduleCopy([])), []);
+});
+
+for (const { label, swap, kills } of REFRESH_MUTANTS) {
+  test(`backup refresh mutation: ${label} fails its row`, async () => {
+    const found = refreshFailures(await moduleCopy([swap]));
+    assert.ok(
+      found.some((f) => kills.test(f)),
+      `${label}: want ${kills}, got ${JSON.stringify(found, null, 2)}`,
+    );
+  });
+}
+
+// ---- Encrypted-only setup: how often the recovery step polls --------------
+
+type PollInput = Parameters<Module["recoveryPollMs"]>[0];
+
+/** [label, input, expected ms or null]. */
+const POLL_ROWS: [string, PollInput, number | null][] = [
+  ["not blocking, idle", { blocksMainThread: false, minting: false }, 3000],
+  ["not blocking, minting", { blocksMainThread: false, minting: true }, 3000],
+  ["blocking, idle", { blocksMainThread: true, minting: false }, 15_000],
+  ["blocking, minting", { blocksMainThread: true, minting: true }, null],
+  [
+    "blocking flag 0",
+    { blocksMainThread: 0 as unknown as boolean, minting: false },
+    15_000,
+  ],
+  [
+    "blocking, minting flag undefined",
+    { blocksMainThread: true, minting: undefined as unknown as boolean },
+    null,
+  ],
+];
+
+/** Every poll row `m` gets wrong, labelled. */
+function pollFailures(m: Module): string[] {
+  const out: string[] = [];
+  for (const [label, input, want] of POLL_ROWS) {
+    const got = m.recoveryPollMs({ ...input });
+    if (got !== want) out.push(`poll ${label}: ${got}, want ${want}`);
+  }
+  if (m.RECOVERY_POLL_MS !== 3000) {
+    out.push(`poll interval ${m.RECOVERY_POLL_MS}, want 3000`);
+  }
+  if (m.RECOVERY_POLL_BLOCKING_MS !== 15_000) {
+    out.push(
+      `poll blocking interval ${m.RECOVERY_POLL_BLOCKING_MS}, want 15000`,
+    );
+  }
+  return out;
+}
+
+test("recoveryPollMs: Tauri never polls during a mint and then at most every 15 s; elsewhere every 3 s", () => {
+  assert.deepEqual(pollFailures(mod), []);
+});
+
+/** Mutants of the poll rule, and the row each must fail. */
+const POLL_MUTANTS: { label: string; swap: [string, string]; kills: RegExp }[] =
+  [
+    {
+      label: "Tauri polls during a mint",
+      swap: [
+        "input.minting === false ? RECOVERY_POLL_BLOCKING_MS : null",
+        "RECOVERY_POLL_BLOCKING_MS",
+      ],
+      kills: /^poll blocking, minting: 15000/,
+    },
+    {
+      label: "Tauri polls every 3 s",
+      swap: [
+        "export const RECOVERY_POLL_BLOCKING_MS = 15_000;",
+        "export const RECOVERY_POLL_BLOCKING_MS = 3000;",
+      ],
+      kills: /^poll blocking, idle: 3000/,
+    },
+    {
+      label: "the mint pause applied everywhere",
+      swap: [
+        "if (input.blocksMainThread === false) return RECOVERY_POLL_MS;",
+        "if (input.blocksMainThread === false)\n    return input.minting ? null : RECOVERY_POLL_MS;",
+      ],
+      kills: /^poll not blocking, minting: null/,
+    },
+    {
+      label: "the blocking flag read falsy",
+      swap: ["input.blocksMainThread === false", "!input.blocksMainThread"],
+      kills: /^poll blocking flag 0: 3000/,
+    },
+    {
+      label: "the minting flag read falsy",
+      swap: ["input.minting === false", "!input.minting"],
+      kills: /^poll blocking, minting flag undefined: 15000/,
+    },
+  ];
+
+test("recovery poll mutation harness: the unmutated module, loaded the same way, passes every row", async () => {
+  assert.deepEqual(pollFailures(await moduleCopy([])), []);
+});
+
+for (const { label, swap, kills } of POLL_MUTANTS) {
+  test(`recovery poll mutation: ${label} fails its row`, async () => {
+    const found = pollFailures(await moduleCopy([swap]));
+    assert.ok(
+      found.some((f) => kills.test(f)),
+      `${label}: want ${kills}, got ${JSON.stringify(found, null, 2)}`,
+    );
+  });
+}
+
+// The wiring, read as text (the modal needs solid-js and the bridge needs a
+// browser, so neither loads here). `E2EE_ONBOARDING_TSX` and
+// `E2EE_BRIDGE_TS` point the scan at other copies, for its controls.
+const ONBOARDING_TSX = process.env.E2EE_ONBOARDING_TSX
+  ? pathToFileURL(process.env.E2EE_ONBOARDING_TSX)
+  : new URL("../modal/modals/EncryptedOnlyOnboarding.tsx", import.meta.url);
+const BRIDGE_TS = process.env.E2EE_BRIDGE_TS
+  ? pathToFileURL(process.env.E2EE_BRIDGE_TS)
+  : new URL("./e2ee.ts", import.meta.url);
+
+const squashed = (url: URL) => readFileSync(url, "utf8").replace(/\s+/g, "");
+const occurrences = (src: string, needle: string) =>
+  src.split(needle).length - 1;
+
+test("EncryptedOnlyOnboarding: the recovery poll takes its interval from recoveryPollMs and pauses during a mint", () => {
+  const src = squashed(ONBOARDING_TSX);
+  assert.ok(
+    src.includes(
+      "constevery=recoveryPollMs({blocksMainThread:e2ee?.backupCommandsBlockMainThread??true,minting:minting(),});if(every===null)return;",
+    ),
+    "the poll effect does not ask recoveryPollMs with the bridge flag and minting()",
+  );
+  assert.equal(occurrences(src, "},every);"), 1, "setInterval(..., every)");
+  assert.equal(
+    occurrences(src, "RECOVERY_POLL_MS"),
+    0,
+    "a fixed poll interval",
+  );
+  assert.ok(
+    src.includes(
+      "setMinting(true);try{if(before.exists)awaite2ee.rotateRecoveryCode();elseawaite2ee.createRecoveryCode();}finally{setMinting(false);}",
+    ),
+    "the create and rotate calls are not bracketed by setMinting(true) / finally setMinting(false)",
+  );
+  assert.equal(occurrences(src, ".createRecoveryCode("), 1);
+  assert.equal(occurrences(src, ".rotateRecoveryCode("), 1);
+});
+
+test("E2EEBridge: backupCommandsBlockMainThread is true exactly on the Tauri transport", () => {
+  assert.ok(
+    squashed(BRIDGE_TS).includes(
+      "getbackupCommandsBlockMainThread():boolean{returnthis.#transportinstanceofTauriTransport;}",
+    ),
+  );
 });

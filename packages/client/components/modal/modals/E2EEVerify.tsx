@@ -1,4 +1,4 @@
-import { For, Show, createResource, createSignal } from "solid-js";
+import { For, Show, createMemo, createResource, createSignal } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
@@ -7,10 +7,15 @@ import type { SafetyNumber } from "@revolt/client";
 import { useClient, useE2EE } from "@revolt/client";
 import { nativeE2EEAvailable } from "@revolt/client/e2ee";
 import { resolveDmConversation } from "@revolt/client/e2eeSelfDm";
+import { buildPlainWriteInput } from "@revolt/client/encryptedOnlyGuard";
+import { latchedForClient } from "@revolt/client/encryptedOnlyLatch";
+import { decidePlainWrite } from "@revolt/client/encryptedOnlyPolicy";
 import { Column, Dialog, DialogProps, Text } from "@revolt/ui";
 
 import { useModals } from "..";
 import { Modals } from "../types";
+
+import { offersPlaintextExit } from "./encryptedOnlyModals";
 
 import {
   IdentityConfirmNotice,
@@ -53,6 +58,25 @@ export function E2EEVerifyModal(
   const [notice, setNotice] = createSignal<IdentityConfirmNotice | null>(null);
 
   const peer = () => client().users.get(props.peerUserId);
+
+  // Encrypted-only chats: no "turn off encryption" under the latch, or
+  // where an unencrypted send to this peer would be refused anyway. The
+  // bridge refuses it too.
+  const offerTurnOff = createMemo(() => {
+    const found = resolveDmConversation(
+      props.peerUserId,
+      client().user?.id,
+      client().channels.values(),
+    );
+    const plain =
+      found.kind === "existing"
+        ? decidePlainWrite({
+            ...buildPlainWriteInput(client(), found.channel),
+            encrypted: false,
+          })
+        : null;
+    return offersPlaintextExit(latchedForClient(client().user?.id), plain);
+  });
 
   const [state, { refetch }] = createResource(
     () => props.peerUserId,
@@ -132,6 +156,7 @@ export function E2EEVerifyModal(
       client().channels.values(),
     );
     if (found.kind !== "existing") return;
+    if (!offerTurnOff()) return;
     const channel = found.channel;
     setBusy(true);
     try {
@@ -276,7 +301,7 @@ export function E2EEVerifyModal(
         {/* FE-10: the DM-only downgrade button is hidden in call context —
             it no-ops without a DM channel and is dangerously adjacent in
             meaning to the whole-call downgrade. */}
-        <Show when={props.context !== "call"}>
+        <Show when={props.context !== "call" && offerTurnOff()}>
           <button
             disabled={busy()}
             onClick={() => void turnOff()}

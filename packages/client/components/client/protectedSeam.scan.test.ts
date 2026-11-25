@@ -47,6 +47,7 @@ import {
   type StructuralInput,
   storeOwnerAllows,
   structuralState,
+  TEXT_PROTOCOL,
 } from "./protectedPlatform.ts";
 import {
   isProtectedSendError,
@@ -88,16 +89,39 @@ const SRC = readFileSync(FILE, "utf8");
  * and `isMissingCommandError`). The merged region is exactly the union of
  * that and the S7 additions above, nothing else.
  *
- * Re-pinned when iOS call E2EE phase 2 (feat/ios-call-e2ee) merged main
- * 68653961 (S7 landed), 2026-11-11. Phase 2 Wave 3 edits the region on
- * purpose: `CapacitorTransport.keyPushAvailable` answers for iOS (plan D6)
- * and `#rethrow` maps a call-plane `protector_locked` to a typed error (D10).
- * The merged region is byte-identical to `git merge-file` of (phase 2
- * ca01edb3, base fabe3ab7, main 68653961): main's value above (88e76b2a...)
- * plus those phase 2 lines, nothing else.
+ * Re-pinned for protected channels S2 (lane L0T, W4-0; was 88e76b2a...):
+ * the region gains exactly the `textAuthoritySign` plugin entry, its
+ * `CapacitorTransport.invoke` dialog route (the S5 pattern above) and one
+ * comment line beside each (S2 value 2817d5fc...).
+ *
+ * iOS call E2EE phase 2 (feat/ios-call-e2ee) edits the region on purpose
+ * too: `CapacitorTransport.keyPushAvailable` answers for iOS (plan D6) and
+ * `#rethrow` maps a call-plane `protector_locked` to a typed error (D10)
+ * (main be9c013c value 8814ad34...).
+ *
+ * Re-pinned on the S2 re-merge over main be9c013c (2026-11-21): the merged
+ * region is byte-identical to `git merge-file` of (S2 43d293c3, base
+ * 68653961, main be9c013c), i.e. the union of the two changes above and
+ * nothing else.
+ *
+ * Re-pinned for the desktop backup refresh, which edits the region on
+ * purpose: `NativeTransport.refreshesBackup` and one
+ * `readonly refreshesBackup = shellRefreshesBackup({...})` member in each of
+ * TauriTransport, ElectronTransport and CapacitorTransport. Against the
+ * 099e8c89 region (8814ad34...) it only ADDS those lines.
+ *
+ * Re-pinned when Tauri was taken out of the backup refresh (M3 final audit
+ * B: its backup commands are sync and block the main thread): only the
+ * `NativeTransport.refreshesBackup` doc comment changed, to say so.
+ * (main 6b7ad149 value dd95a025...).
+ *
+ * Re-pinned on the S2 re-merge over main 6b7ad149 (2026-11-23): the merged
+ * region is byte-identical to `git merge-file` of (S2 merge 2876a0db, base
+ * fb158977, main 6b7ad149), i.e. the S2 value above (c38661cf...) plus the
+ * backup refresh lines, nothing else.
  */
 const TRANSPORT_REGION_SHA256 =
-  "8814ad345ac6bc10acc5584fb880a67507bd7ef49e725d4e1bcd4031bfdbb816";
+  "7d8490df43e7fcec5481be1fe0ac1dfe3b7fc47f9715ed71ed735e8c17913835";
 
 /**
  * S7 D9 / PA-7: the text commands Android signs only after a tap on a native
@@ -109,6 +133,8 @@ const CAPACITOR_DIALOG_ROUTES: Readonly<Record<string, string>> = {
   e2ee_text_seat_list_sign: "textSeatListSign",
   e2ee_text_owner_confirm_change: "textOwnerConfirmChange",
   e2ee_text_owner_handover_sign: "textOwnerHandoverSign",
+  // S2: the channel authority (lane L0T).
+  e2ee_text_authority_sign: "textAuthoritySign",
 };
 
 /**
@@ -523,8 +549,11 @@ test("S5 (S7 D9): #protectedStructural is structuralState over the bridge's fact
   ).map((transport) => ({
     transport,
     platform: transport === "capacitor" ? "android" : "",
-    electronProtocol: 1,
-    androidProbe: { state: "ok", value: { protocol: 1, listenerBridge: true } },
+    electronProtocol: TEXT_PROTOCOL,
+    androidProbe: {
+      state: "ok",
+      value: { protocol: TEXT_PROTOCOL, listenerBridge: true },
+    },
     popout: false,
     overlay: false,
     flag: "on",
@@ -644,11 +673,63 @@ test("S8: the manager is built only once status.device_id is known (and capable)
     ensure,
     /if \(!key \|\| !userId \|\| !deviceId\) return;[\s\S]*new ProtectedTextManager\(/,
   );
-  assert.match(ensure, /owner: \{ protect, setSeats \}/);
+  // S2 F3: the owner flows also read / discard the stored seat publish;
+  // F5: and hand the owner key over (S2-D42); FX-R: and publish the
+  // recovery list as a stored publish.
+  assert.match(
+    ensure,
+    /owner: \{\s*protect,\s*setSeats,\s*signOwnerDevices,\s*moveOwnerKey,\s*pendingSeats,\s*cancelPendingSeats,\s*recoverOwnership,\s*\}/,
+  );
   assert.match(
     ensure,
     /messages: \{ encryptAndSend, decryptRow, markerForError \}/,
   );
+});
+
+test("S2 F3: pendingSeats / cancelPendingSeats are bridge pass-throughs to the current manager, inside the block", () => {
+  const block = seamBlock();
+  const pending = stripComments(
+    member(block, /\n {2}pendingSeats\(channelId: string\)/),
+  );
+  assert.match(pending, /void this\.protectedChannels\.get\(channelId\);/);
+  assert.match(
+    pending,
+    /return this\.#ptManager\?\.pendingSeats\(channelId\) \?\? null;/,
+  );
+  const cancel = stripComments(
+    member(block, /\n {2}async cancelPendingSeats\(channelId: string\)/),
+  );
+  assert.match(
+    cancel,
+    /^\{\s*const manager = await this\.#protectedManagerFor\(channelId\);\s*return manager\.cancelPendingSeats\(channelId\);\s*\}$/,
+  );
+});
+
+test("S2 retryNow: a bridge pass-through to the current manager, inside the block, never the open set", () => {
+  const block = seamBlock();
+  const body = stripComments(
+    member(block, /\n {2}retryNow\(channelId: string\): void /),
+  );
+  assert.match(body, /^\{\s*this\.#ptManager\?\.retryNow\(channelId\);\s*\}$/);
+  // a retry never joins the open lifecycle (no 60 s loop) nor builds a
+  // manager
+  assert.doesNotMatch(body, /#ptOpen|protectedOpen|#protectedEnsureManager/);
+  assert.equal(count(SRC, "\n  retryNow(channelId: string): void {"), 1);
+});
+
+test("S2 F5: moveOwnerKey is a bridge pass-through to the current manager, inside the block, with the channel and the target as given", () => {
+  const block = seamBlock();
+  const body = stripComments(
+    member(
+      block,
+      /\n {2}async moveOwnerKey\(channelId: string, toDeviceId: string\)/,
+    ),
+  );
+  assert.match(
+    body,
+    /^\{\s*const manager = await this\.#protectedManagerFor\(channelId\);\s*return manager\.moveOwnerKey\(channelId, toDeviceId\);\s*\}$/,
+  );
+  assert.equal(count(SRC, "\n  async moveOwnerKey("), 1);
 });
 
 test("S8: port.sleep rejects on the manager's lifetime; dispose aborts it", () => {
@@ -672,6 +753,27 @@ test("S8: port.sleep rejects on the manager's lifetime; dispose aborts it", () =
   assert.match(
     member(SRC, /\n {2}#noteDevicePresence\(/),
     /this\.#protectedDispose\(\);/,
+  );
+});
+
+test("F-R8: the port hands the manager's own-listing request (force, want) to the bridge's OwnListingCache, which a dispose clears", () => {
+  const port = stripComments(member(SRC, /\n {2}#protectedPort\(/));
+  assert.match(
+    port,
+    /ownDeviceListing: \(request\) => this\.#protectedOwnListing\(request\),/,
+  );
+  // Its return type holds a brace, so the method is matched whole here.
+  assert.match(
+    stripComments(SRC),
+    /\n {2}#protectedOwnListing\(\s*request\?: OwnListingRequest,\s*\): Promise<\{ hash: string; listing: unknown\[\] \}> \{\s*return this\.#ptOwnListing\.get\(async \(\) => \{[\s\S]*?\n {4}\}, request\);\n {2}\}\n/,
+  );
+  assert.match(
+    stripComments(SRC),
+    /readonly #ptOwnListing = new OwnListingCache\(\s*\(\) => Date\.now\(\),\s*\(\) => this\.#ptLife,\s*\);/,
+  );
+  assert.match(
+    member(SRC, /\n {2}#protectedDispose\(\): void /),
+    /this\.#ptOwnListing\.clear\(\);/,
   );
 });
 
