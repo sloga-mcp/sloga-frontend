@@ -92,15 +92,21 @@ const MISSING_COMMAND_TEXT =
 
 /**
  * A bridge rejection that means "this shell has no such command" (an
- * S2-era shell asked for an S4 history command, R-W4-33). The same rule as
- * `isMissingCommandError` in `e2ee.ts`, repeated here because this module
- * imports no bridge runtime (the spec pins the cases): a TypeError; a string or a `message` that says so; `code: "UNIMPLEMENTED"`;
- * the typed `invalid_argument` with `field: "command"`. Any other typed
- * native error is NOT one, whatever its text. A flow failure that wraps a
- * native error is read through its `error`.
+ * S2-era shell asked for an S4 history command, R-W4-33). The answers the
+ * three bridges give, as `isMissingCommandError` in `e2ee.ts` reads them
+ * (repeated here because this module imports no bridge runtime; the spec
+ * pins the cases): a string or a `message` that says so (Tauri's "Command
+ * ... not found", an Electron native module's "... is not a function");
+ * Capacitor's `code: "UNIMPLEMENTED"`; Electron's typed `invalid_argument`
+ * with `field: "command"`. Any other typed native error is NOT one,
+ * whatever its text. A flow failure that wraps a native error is read
+ * through its `error`.
+ *
+ * Unlike `e2ee.ts`, being a TypeError is not enough: the answer latches
+ * history off for the session, and a TypeError is also what a failed fetch
+ * or a bug in the invoke path throws. One counts only by its message.
  */
 export function isMissingCommandError(error: unknown): boolean {
-  if (error instanceof TypeError) return true;
   if (typeof error === "string") return MISSING_COMMAND_TEXT.test(error);
   if (typeof error !== "object" || error === null) return false;
   const shape = error as {

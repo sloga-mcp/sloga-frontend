@@ -25,6 +25,7 @@ import {
   BACKUP_REFRESH_EPOCHS,
   HISTORY_LINK_PAGE,
   HISTORY_LINK_PAGE_ONE,
+  HISTORY_UPDATE_TRIES,
   PROTECTED_HISTORY_EPOCH_KEY_PREFIX,
   ProtectedTextManager,
 } from "./protectedText.ts";
@@ -1872,23 +1873,146 @@ test("floor marker (R-W4-32): 1 ms after the newest loaded row at or below the f
   shallow(env, 10, 9);
   const m = await ready(env);
   // Loaded: a row above the floor (epoch 12), one AT it (epoch 8, readable
-  // after the walk) and two below it. The newest at or below it is E8.
+  // after the walk) and two below it. R-W4-39: the readable row counts for
+  // nothing; the newest row native REFUSED at or below the floor is E7.
   const E12 = at(12_000);
   const E8 = at(8_000);
   const E7 = at(7_000);
   const E6 = at(6_000);
   m.decryptHistory(CH, [row(E12, 12), row(E8, 8), row(E7, 7), row(E6, 6)]);
   await env.advance(0);
-  assert.deepEqual(floors(env), [[G0, 8, "missing"]]);
+  assert.equal(env.msgViews.get(E8)?.status, "ok");
+  assert.deepEqual(floors(env), [[G0, 8, "missing"]], "raised once");
   const marker = env.markers.find((x) => x.kind === "history_floor");
   assert.ok(marker && marker.kind === "history_floor");
-  assert.equal(marker.atMs, T0 + 8_001);
-  assert.equal(marker.atMs, (ulidTimeMs(E8) ?? Number.NaN) + 1);
+  assert.equal(marker.atMs, T0 + 7_001);
+  assert.equal(marker.atMs, (ulidTimeMs(E7) ?? Number.NaN) + 1);
   // Not the wall clock (the base bug: it sorted under the newest message),
-  // and below the newer row above the floor.
+  // and below the readable rows.
   assert.notEqual(marker.atMs, env.clock);
   assert.ok(marker.atMs < (ulidTimeMs(E12) ?? 0));
-  assert.ok(marker.atMs > (ulidTimeMs(E7) ?? Number.POSITIVE_INFINITY));
+  assert.ok(marker.atMs < (ulidTimeMs(E8) ?? 0));
+  assert.ok(marker.atMs > (ulidTimeMs(E6) ?? Number.POSITIVE_INFINITY));
+  m.dispose();
+});
+
+test("floor marker (R-W4-39): a row native refuses AT the floor epoch counts, by the epoch native named", async () => {
+  const env = new Env();
+  // No link stored at all: the walk stops at the holder it starts from.
+  shallow(env, 9, 10);
+  const m = await ready(env);
+  m.decryptHistory(CH, [row(at(7_000), 7)]);
+  await env.advance(0);
+  assert.deepEqual(floors(env), [[G0, 10, "missing"]]);
+  assert.deepEqual(floorAts(env), [T0 + 7_001]);
+  // Native does not hold the floor epoch's key (any more): its refusal
+  // names epoch 10, the floor itself.
+  env.held.delete(`${G0}:10`);
+  m.onMessage(row(at(7_600), 10), false);
+  await env.advance(0);
+  assert.equal(env.msgViews.get(at(7_600))?.status, "marker");
+  assert.deepEqual(floorAts(env), [T0 + 7_001, T0 + 7_601]);
+  m.dispose();
+});
+
+test("floor marker (R-W4-39): placed by native's refusal, never by the row's own group and epoch", async () => {
+  const env = new Env();
+  shallow(env, 10, 9);
+  const m = await ready(env);
+  m.decryptHistory(CH, [row(at(12_000), 12), row(at(7_000), 7)]);
+  await env.advance(0);
+  assert.deepEqual(floorAts(env), [T0 + 7_001]);
+  // Rows that CLAIM a group or an epoch below the floor and a later id
+  // (still older than every readable row, so only this rule keeps them
+  // out), but that native does not refuse for a missing key: a refusal of
+  // another kind, and a row native decrypts whatever its wire epoch says.
+  const inner = env.handlers.e2ee_text_decrypt;
+  assert.ok(inner);
+  env.handlers.e2ee_text_decrypt = (a) => {
+    if (a.messageId === at(8_000)) {
+      throw { type: "unknown_sender", user_id: PEER, device_id: "x", epoch: 2 };
+    }
+    if (a.messageId === at(8_100)) {
+      throw { type: "internal", message: "no" };
+    }
+    if (a.messageId === at(8_200)) {
+      return inner({
+        ...a,
+        encrypted: { ...a.encrypted, group_id: G0, epoch: 12 },
+      });
+    }
+    return inner(a);
+  };
+  const unknownGroup = "f".repeat(64);
+  m.decryptHistory(CH, [
+    row(at(8_000), 2),
+    row(at(8_100), 1, unknownGroup),
+    row(at(8_200), 3),
+  ]);
+  await env.advance(0);
+  assert.equal(env.msgViews.get(at(8_200))?.status, "ok");
+  assert.equal(env.msgViews.get(at(8_000))?.status, "marker");
+  assert.equal(env.msgViews.get(at(8_100))?.status, "marker");
+  assert.deepEqual(floorAts(env), [T0 + 7_001], "the wire places nothing");
+  m.dispose();
+});
+
+test("floor marker (R-W4-39): never above the oldest row native decrypted; a made-up row with a late id cannot pin it under the newest messages", async () => {
+  const env = new Env();
+  shallow(env, 10, 9);
+  const m = await ready(env);
+  const OK12 = at(12_000);
+  m.decryptHistory(CH, [row(OK12, 12), row(at(7_000), 7)]);
+  await env.advance(0);
+  assert.deepEqual(floorAts(env), [T0 + 7_001]);
+  // The server makes up rows native really refuses for a missing key (an
+  // unknown group, an epoch below the floor), dated after every message.
+  const unknownGroup = "f".repeat(64);
+  const inner = env.handlers.e2ee_text_decrypt;
+  assert.ok(inner);
+  env.handlers.e2ee_text_decrypt = (a) => {
+    if (a.encrypted.group_id === unknownGroup) {
+      throw { type: "mls_group_not_found", group_id: unknownGroup };
+    }
+    return inner(a);
+  };
+  m.decryptHistory(CH, [
+    row(at(90_000), 1, unknownGroup),
+    row(at(91_000), 2),
+    row(at(12_000 + 1), 3),
+  ]);
+  m.onMessage(row(at(95_000), 1), false);
+  await env.advance(0);
+  assert.equal(env.msgViews.get(at(91_000))?.status, "marker");
+  assert.deepEqual(floorAts(env), [T0 + 7_001], "not moved above OK12");
+  for (const atMs of floorAts(env)) {
+    assert.ok(atMs <= (ulidTimeMs(OK12) ?? 0));
+  }
+  // Below the oldest readable row a refused row still moves it, and an
+  // unknown group counts there too.
+  m.onMessage(row(at(9_000), 1, unknownGroup), false);
+  await env.advance(0);
+  assert.deepEqual(floorAts(env), [T0 + 7_001, T0 + 9_001]);
+  // An older readable row arrives under the raised marker: the marker is
+  // placed again, below it.
+  m.onMessage(row(at(8_500), 11), false);
+  await env.advance(0);
+  assert.equal(env.msgViews.get(at(8_500))?.status, "ok");
+  assert.deepEqual(floorAts(env), [T0 + 7_001, T0 + 9_001, T0 + 7_001]);
+  m.dispose();
+});
+
+test("floor marker (R-W4-39): with no row native refused below the oldest readable row, nothing is raised", async () => {
+  const env = new Env();
+  shallow(env, 10, 9);
+  const m = await ready(env);
+  m.walkHistory(CH);
+  await env.advance(0);
+  assert.equal(env.state().history_floor?.epoch, 8);
+  m.decryptHistory(CH, [row(at(5_000), 12), row(at(6_000), 7)]);
+  await env.advance(0);
+  assert.equal(env.msgViews.get(at(6_000))?.status, "marker");
+  assert.deepEqual(floors(env), []);
   m.dispose();
 });
 
@@ -1928,9 +2052,14 @@ test("floor marker (R-W4-32): not raised while no row at or below the floor is l
   await env.advance(0);
   assert.equal(floorAts(env).length, 2);
   // A single newer row (not a page) moves it too.
-  m.onMessage(row(at(7_800), 8), false);
+  m.onMessage(row(at(7_800), 7), false);
   await env.advance(0);
   assert.deepEqual(floorAts(env), [T0 + 5_001, T0 + 7_501, T0 + 7_801]);
+  // R-W4-39: a newer row of the floor epoch that native decrypts does not.
+  m.onMessage(row(at(7_900), 8), false);
+  await env.advance(0);
+  assert.equal(env.msgViews.get(at(7_900))?.status, "ok");
+  assert.equal(floorAts(env).length, 3);
   m.dispose();
 });
 
@@ -2235,6 +2364,47 @@ test("older shell (R-W4-33): a missing import command latches history off; befor
     assert.equal(env.logged("error", /history command missing/).length, 1);
     m.dispose();
   }
+});
+
+test("older shell (RA4): a TypeError that names no missing command is a retry, never the latch", async () => {
+  for (const answer of [
+    new TypeError("Failed to fetch"),
+    new TypeError("Cannot read properties of undefined (reading 'invoke')"),
+  ]) {
+    const label = answer.message;
+    const env = new Env();
+    shallow(env);
+    env.oldest.set(G0, 10);
+    env.importFail = answer;
+    const m = await ready(env);
+    m.decryptHistory(CH, [row("R7", 7)]);
+    await env.advance(0);
+    assert.equal(imports(env).length, 1, label);
+    // Not final: the row waits, and the walk may run again.
+    assert.deepEqual(env.msgViews.get("R7"), { status: "pending" }, label);
+    assert.equal(env.views.get(CH)?.historyWalk, "retry_later", label);
+    assert.equal(env.logged("error", /history command missing/).length, 0);
+    env.importFail = null;
+    m.walkHistory(CH);
+    await env.advance(0);
+    assert.equal(env.msgViews.get("R7")?.status, "ok", label);
+    m.dispose();
+  }
+  // The link build: logged, and the next duty builds again.
+  const env = new Env();
+  shallow(env);
+  env.oldest.set(G0, 10);
+  env.handlers.e2ee_text_history_link_build = () => {
+    throw new TypeError("Failed to fetch");
+  };
+  const m = await ready(env);
+  m.onEnvelope(envelope("E21", 21));
+  await env.advance(30_000);
+  m.onEnvelope(envelope("E22", 22));
+  await env.advance(30_000);
+  assert.equal(builds(env), 2, "the second duty still builds");
+  assert.equal(env.logged("error", /history command missing/).length, 0);
+  m.dispose();
 });
 
 test("older shell (R-W4-33): a row an earlier walk left pending is settled by the latch, and a transient failure is no latch", async () => {
@@ -2671,11 +2841,15 @@ test("owner calls: without the bridge's flows the history calls are refused", as
   m.dispose();
 });
 
-/** An owner device (the signer of the held list) whose list says `hidden`. */
+/**
+ * An owner device (the signer of the held list) whose list says `hidden`.
+ * With the `breaker`: an Update loop fails the test instead of hanging it.
+ */
 function ownerHidden(env: Env) {
   env.wonLink = null;
   env.ownerDevice();
   env.state().history_setting = "hidden";
+  breaker(env);
 }
 
 /** The owner flow's effect: native now holds a list with the asked line. */
@@ -2792,9 +2966,10 @@ test("own Update (B6): a change that landed just before a restart is followed up
   third.dispose();
 });
 
-test("own Update (B6): never loops: one attempt per state change, none after it landed", async () => {
-  // The Update fails every time: ONE attempt, however often the state is
-  // read, until the state changes.
+test("own Update (R-W4-41): never loops: at most 3 attempts per state, one per later state read, none after it landed", async () => {
+  assert.equal(HISTORY_UPDATE_TRIES, 3);
+  // The Update fails every time: one attempt per state read, three in
+  // all, however often the state is read after that.
   {
     const env = new Env();
     ownerHidden(env);
@@ -2804,12 +2979,21 @@ test("own Update (B6): never loops: one attempt per state change, none after it 
     breaker(env);
     const m = await ready(env);
     env.state().history_setting = "visible";
-    for (let i = 0; i < 5; i++) {
+    await m.refresh(CH, "manual");
+    await env.advance(0);
+    assert.equal(updates(env), 1, "the first attempt");
+    // No timer retries it: only a later state read does.
+    await env.advance(3_600_000);
+    assert.equal(updates(env), 1, "no retry without a state read");
+    await m.refresh(CH, "manual");
+    await env.advance(0);
+    assert.equal(updates(env), 2, "retried on the next state read");
+    for (let i = 0; i < 6; i++) {
       await m.refresh(CH, "manual");
       await env.advance(0);
     }
     await env.advance(3_600_000);
-    assert.equal(updates(env), 1, "one attempt for this state");
+    assert.equal(updates(env), 3, "three attempts for this state, no more");
     // Another member's commit moves the epoch: the new epoch began under
     // the new line, nothing is owed any more.
     env.state().epoch = 4;
@@ -2817,14 +3001,42 @@ test("own Update (B6): never loops: one attempt per state change, none after it 
       await m.refresh(CH, "manual");
       await env.advance(0);
     }
-    assert.equal(updates(env), 1);
-    // The line changes back within this epoch: one more attempt, not more.
+    assert.equal(updates(env), 3);
+    // The line changes back within this epoch: another state, its own
+    // three attempts, not more.
     env.state().history_setting = "hidden";
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 6; i++) {
       await m.refresh(CH, "manual");
       await env.advance(0);
     }
-    assert.equal(updates(env), 2);
+    assert.equal(updates(env), 6);
+    m.dispose();
+  }
+  // A retry that lands ends it.
+  {
+    const env = new Env();
+    ownerHidden(env);
+    const inner = env.handlers.e2ee_text_update;
+    assert.ok(inner);
+    let fail = true;
+    env.handlers.e2ee_text_update = (a) => {
+      if (fail) throw { type: "internal", message: "no" };
+      return inner(a);
+    };
+    breaker(env);
+    const m = await ready(env);
+    env.state().history_setting = "visible";
+    await m.refresh(CH, "manual");
+    await env.advance(0);
+    assert.equal(updates(env), 1);
+    assert.equal(env.calls("e2ee_text_commit_won").length, 0);
+    fail = false;
+    for (let i = 0; i < 4; i++) {
+      await m.refresh(CH, "manual");
+      await env.advance(0);
+    }
+    assert.equal(updates(env), 2, "the retry");
+    assert.equal(env.calls("e2ee_text_commit_won").length, 1, "landed");
     m.dispose();
   }
   // The Update lands: its own state reads start no second one.
@@ -2899,6 +3111,178 @@ test("own Update (B6): only the device that signed the list, only an owner devic
     await env.advance(3_600_000);
     assert.equal(updates(env), 0);
   }
+});
+
+test("own Update (R-W4-41): an epoch first read while the flag is off is on record under the line it began with", async () => {
+  const env = new Env();
+  ownerHidden(env);
+  const m = await ready(env);
+  // The flag reads off (a failed fetch) while another member's commit
+  // moves the epoch; the list still says hidden.
+  env.flag = false;
+  env.state().epoch = 4;
+  await m.refresh(CH, "manual");
+  await env.advance(0);
+  // The list changes within that epoch, then the flag is back.
+  env.state().history_setting = "visible";
+  await m.refresh(CH, "manual");
+  await env.advance(0);
+  assert.equal(updates(env), 0, "flag off: no write");
+  env.flag = true;
+  await m.refresh(CH, "manual");
+  await env.advance(0);
+  assert.equal(updates(env), 1, "epoch 4 began under hidden: owed");
+  assert.equal(env.calls("e2ee_text_commit_won").length, 1);
+  m.dispose();
+});
+
+test("own Update (R-W4-41): the stored line is rewritten for a new group, and nothing is stored while the flag is off", async () => {
+  const env = new Env();
+  ownerHidden(env);
+  const key = `${PROTECTED_HISTORY_EPOCH_KEY_PREFIX}${SELF}:${CH}`;
+  const m = await ready(env);
+  assert.deepEqual(JSON.parse(env.storeMap.get(key) ?? "null"), {
+    g: G0,
+    s: "hidden",
+  });
+  // The channel moves to its successor group under the same line.
+  const s = env.state();
+  s.group_id = G1;
+  s.generation = 1;
+  s.epoch = 0;
+  env.group = groupBody({ group_id: G1, generation: 1, current_epoch: 0 });
+  env.seats = seatsBody({
+    as_of_group_id: G1,
+    as_of_epoch: 0,
+    list: {
+      version: 1,
+      body: "sloga-seat-list-v1\n...",
+      signature: "SIG",
+      signer_user_id: SELF,
+      signer_device_id: DEV,
+      handovers: [],
+    },
+  });
+  await m.refresh(CH, "manual");
+  await env.advance(0);
+  assert.equal(env.state().group_id, G1, "still the successor");
+  assert.deepEqual(JSON.parse(env.storeMap.get(key) ?? "null"), {
+    g: G1,
+    s: "hidden",
+  });
+  assert.equal(updates(env), 0);
+  m.dispose();
+  // Flag off from the start: the line is kept in memory only.
+  const off = new Env();
+  ownerHidden(off);
+  off.flag = false;
+  const m2 = await ready(off);
+  await m2.refresh(CH, "manual");
+  await off.advance(0);
+  assert.deepEqual(off.storeKeys(PROTECTED_HISTORY_EPOCH_KEY_PREFIX), []);
+  m2.dispose();
+});
+
+test("own Update (RB4): not started, and not counted, behind another Update in flight", async () => {
+  const env = new Env();
+  ownerHidden(env);
+  // The server holds the commit POST of the first Update until released.
+  const post = deferred();
+  let hold = true;
+  const held: string[] = [];
+  const api = env.api.bind(env);
+  env.api = async (method: string, path: string, body?: unknown) => {
+    const waits = hold && method === "POST" && /\/commits$/.test(path);
+    if (waits) {
+      hold = false;
+      held.push(path);
+    }
+    const answer = await api(method, path, body);
+    if (waits) await post.promise;
+    return answer;
+  };
+  const m = await ready(env);
+  // An Update native requires is in flight (the join path commits it) ...
+  env.state().update_required = true;
+  const joined = m.ensureJoined(CH);
+  joined.catch(() => undefined);
+  await flush();
+  assert.equal(updates(env), 1, "the required Update is in flight");
+  assert.equal(held.length, 1, "its commit POST is held");
+  // ... when the list changes. State reads behind it start nothing.
+  env.state().history_setting = "visible";
+  const reads = env.calls("e2ee_text_state").length;
+  for (let i = 0; i < 3; i++) {
+    void m.refresh(CH, "manual");
+    await flush();
+  }
+  assert.ok(env.calls("e2ee_text_state").length > reads, "the state was read");
+  assert.equal(updates(env), 1, "nothing started behind it");
+  // The Update lands: its epoch began under the new line, nothing is owed.
+  post.resolve();
+  await joined.catch(() => undefined);
+  await env.advance(0);
+  await m.refresh(CH, "manual");
+  await env.advance(0);
+  assert.equal(env.calls("e2ee_text_commit_won").length, 1);
+  assert.equal(env.state().epoch, 4);
+  assert.equal(updates(env), 1, "no second Update");
+  assert.deepEqual(
+    env.logs
+      .filter((l) => /history setting changed: own update/.test(l.msg))
+      .map((l) => l.ids.attempt),
+    [],
+    "the reads behind the other Update counted for nothing",
+  );
+  m.dispose();
+});
+
+test("stored history line (RA5): forgetChannel deletes one channel's, forgetHistoryLines every line of this user and no other key", async () => {
+  const env = new Env();
+  ownerHidden(env);
+  const mine = `${PROTECTED_HISTORY_EPOCH_KEY_PREFIX}${SELF}:`;
+  const key = `${mine}${CH}`;
+  // Lines an earlier session left: channels this manager does not hold,
+  // another user's, and a key of another kind.
+  const other = `${PROTECTED_HISTORY_EPOCH_KEY_PREFIX}UOTHER:${CH}`;
+  const unrelated = `protected-send:${SELF}:${CH}:k`;
+  env.storeMap.set(`${mine}GONE1`, JSON.stringify({ g: G0, s: "hidden" }));
+  env.storeMap.set(`${mine}GONE2`, JSON.stringify({ g: G0, s: "visible" }));
+  env.storeMap.set(other, JSON.stringify({ g: G0, s: "hidden" }));
+  env.storeMap.set(unrelated, "x");
+  const m = await ready(env);
+  assert.ok(env.storeMap.has(key), "this session's line");
+  // One channel, held or not.
+  m.forgetChannel("GONE1");
+  assert.equal(env.storeMap.has(`${mine}GONE1`), false);
+  assert.ok(env.storeMap.has(key) && env.storeMap.has(`${mine}GONE2`));
+  m.forgetChannel(CH);
+  assert.equal(env.storeMap.has(key), false);
+  // A channel that is still there gets its line back on the next read.
+  await m.refresh(CH, "manual");
+  await env.advance(0);
+  assert.ok(env.storeMap.has(key));
+  // Sign-out: every line of this user, nothing else, and none after it.
+  m.forgetHistoryLines();
+  assert.deepEqual(env.storeKeys(mine), []);
+  assert.ok(env.storeMap.has(other), "another user's line");
+  assert.equal(env.storeMap.get(unrelated), "x");
+  env.state().epoch = 4;
+  await m.refresh(CH, "manual");
+  await env.advance(0);
+  assert.deepEqual(env.storeKeys(mine), [], "nothing stored after sign-out");
+  m.dispose();
+  m.forgetHistoryLines();
+  assert.deepEqual(env.storeKeys(mine), []);
+  // A port without the key scan: the lines of the channels held.
+  const bare = new Env();
+  ownerHidden(bare);
+  const m2 = await ready(bare);
+  Object.defineProperty(bare, "storeKeys", { value: undefined });
+  assert.ok(bare.storeMap.has(key));
+  m2.forgetHistoryLines();
+  assert.equal(bare.storeMap.has(key), false);
+  m2.dispose();
 });
 
 test("backup refresh: asked once every 20 new epochs, a duplicate does not count", async () => {

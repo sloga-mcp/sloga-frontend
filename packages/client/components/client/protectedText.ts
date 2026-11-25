@@ -278,7 +278,8 @@ export const PROTECTED_RECOVERY_REFUSED_KEY_PREFIX =
  * under: `{ g: group id, s: "visible" | "hidden" }`. It outlives a restart,
  * so a setting change that landed just before one is still followed by
  * this device's Update. Ids and the setting only; written when either
- * changes.
+ * changes. Deleted by `forgetChannel` (one channel) and by
+ * `forgetHistoryLines` (every channel of this user, for a sign-out).
  */
 export const PROTECTED_HISTORY_EPOCH_KEY_PREFIX = "protected-history-epoch:";
 
@@ -408,6 +409,16 @@ const WALKED_MAX = 20_000;
 
 /** S4 (A4): groups of one channel whose `oldest_held` is remembered. */
 const OLDEST_HELD_MAX = 16;
+
+/**
+ * S4 (R-W4-41): own Updates one session starts for one
+ * `group:epoch:setting` of a channel: the first and two retries, each on a
+ * later state read.
+ */
+export const HISTORY_UPDATE_TRIES = 3;
+
+/** S4 (R-W4-41): states of one channel whose own Updates are counted. */
+const HISTORY_UPDATE_STATES_MAX = 64;
 
 /**
  * S4 (design 9.2 "S4"): the owner flow's client reasons that L1s
@@ -1088,8 +1099,23 @@ interface ChannelRec {
     epoch: number;
     setting: string | null;
   } | null;
-  /** S4 (B6): the state (`group:epoch:setting`) an own Update was tried for. */
-  historyUpdateTried: string | null;
+  /**
+   * S4 (B6): `group:setting` of the line this session knows to be in the
+   * store for this channel; null while none is, or it is not known.
+   */
+  historyLineKept: string | null;
+  /**
+   * S4 (R-W4-41): own Updates started this session, by the state they were
+   * for (`group:epoch:setting`); never more than `HISTORY_UPDATE_TRIES`.
+   */
+  historyUpdateTries: Map<string, number>;
+  /** S4 (R-W4-41): an own Update of `#historyUpdateOwed` is running. */
+  historyUpdateBusy: boolean;
+  /**
+   * S4 (R-W4-39): the ULID time of the oldest row of this channel native
+   * decrypted this session; the floor marker is never raised above it.
+   */
+  oldestOkMs: number | null;
   /** S4: the history policy last reported through `onHistoryPolicy`. */
   policySent: string | null;
   /** S4: the row policy inputs the cached plain / checking views rest on. */
@@ -1215,6 +1241,18 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   readonly #predecessors = new Map<string, Set<string>>();
   /** S4: rows seen (probes, re-runs, the floor marker), newest last. */
   readonly #rows = new Map<string, ProtectedMessageRow>();
+  /**
+   * S4 (R-W4-39): by message id, the group and epoch NATIVE named when it
+   * refused that row's decrypt for a key it does not hold (`unknown_epoch`;
+   * `mls_group_not_found` names no epoch). Only these rows place the floor
+   * marker. Dropped when the row decrypts or is forgotten.
+   */
+  readonly #floorRefused = new Map<
+    string,
+    { groupId: string; epoch: number | null }
+  >();
+  /** RA5: `forgetHistoryLines` ran; no history line is stored after it. */
+  #historyLinesOff = false;
   /** S4: rows a walk left `pending`; re-run when a walk result arrives. */
   readonly #walkPending = new Map<
     string,
@@ -1249,9 +1287,16 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           // A4: registered before the flow's own handlers, so a refusal's
           // `oldest_held` is on record when the flow asks for the walk.
           // The flow gets `run` itself: nothing about its answer changes.
-          const { channelId } = args as TextCommandArgs["e2ee_text_decrypt"];
-          void run.then(undefined, (err: unknown) =>
-            this.#noteOldestHeld(channelId, err),
+          // R-W4-39: the same goes for what the floor marker is placed by,
+          // native's answer for this row and never the row's own claim.
+          const { channelId, messageId } =
+            args as TextCommandArgs["e2ee_text_decrypt"];
+          void run.then(
+            () => this.#noteDecrypted(channelId, messageId),
+            (err: unknown) => {
+              this.#noteOldestHeld(channelId, err);
+              this.#noteRefused(messageId, err);
+            },
           );
         }
         return run;
@@ -1345,11 +1390,62 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       rec.historyCtl.abort();
       // B6: no own Update is owed or remembered past this manager.
       rec.historyEpoch = null;
-      rec.historyUpdateTried = null;
+      rec.historyUpdateTries.clear();
     }
     this.#firstSightQueue.length = 0;
     this.#walkPending.clear();
     this.#rows.clear();
+    this.#floorRefused.clear();
+  }
+
+  /**
+   * RA5: the channel is gone for this user (deleted, left): its stored
+   * history line (`PROTECTED_HISTORY_EPOCH_KEY_PREFIX`) is deleted, whether
+   * or not this manager holds the channel. A channel that is still there
+   * gets its line back from the next state read that may store one.
+   */
+  forgetChannel(channelId: string): void {
+    const rec = this.#channels.get(channelId);
+    if (rec) {
+      rec.historyEpoch = null;
+      rec.historyLineKept = null;
+    }
+    this.#dropHistoryLines([this.#historyEpochKeyOf(channelId)]);
+  }
+
+  /**
+   * RA5: sign-out. Every stored history line of THIS user is deleted (the
+   * port's key scan; without one, the lines of the channels held), and
+   * this manager stores none after it. Call it before `dispose`; safe at
+   * any time, also after it. Another user's lines are not touched.
+   */
+  forgetHistoryLines(): void {
+    this.#historyLinesOff = true;
+    const keys = new Set<string>();
+    for (const rec of this.#channels.values()) {
+      rec.historyEpoch = null;
+      rec.historyLineKept = null;
+      keys.add(this.#historyEpochKeyOf(rec.id));
+    }
+    const mine = `${PROTECTED_HISTORY_EPOCH_KEY_PREFIX}${this.#port.selfUserId}:`;
+    try {
+      for (const key of this.#port.storeKeys?.(mine) ?? []) {
+        if (str(key) && key.startsWith(mine)) keys.add(key);
+      }
+    } catch {
+      this.#log("warn", "history lines not listed", {});
+    }
+    this.#dropHistoryLines([...keys]);
+  }
+
+  #dropHistoryLines(keys: readonly string[]): void {
+    for (const key of keys) {
+      try {
+        this.#port.store.delete(key);
+      } catch {
+        this.#log("warn", "history line not deleted", {});
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -2163,24 +2259,26 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   decryptHistory(channelId: string, rows: ProtectedMessageRow[]): void {
     // S4: the rows of one call share one walk request per missing epoch.
     const batch = newWalkBatch();
-    // R-W4-32: the page is on record first, so the floor marker is placed
-    // (or moved) once for the whole page.
+    // The page is on record first: a walk one of its rows starts finds
+    // the others as probes.
     if (!this.#disposed) {
       for (const row of rows) {
         if (row.channelId !== channelId || this.#forgotten.has(row.id)) {
           continue;
         }
-        this.#noteRow(row, false);
+        this.#noteRow(row);
       }
-      const rec = this.#channels.get(channelId);
-      if (rec) this.#placeFloor(rec);
     }
     this.#background(
       (async () => {
         for (const row of rows) {
           if (row.channelId !== channelId) continue;
-          await this.#decryptOne(row, false, false, batch);
+          await this.#decryptOne(row, false, false, batch, false);
         }
+        // R-W4-32 / R-W4-39: the floor marker is placed (or moved) once
+        // for the whole page, after native answered for each of its rows.
+        const rec = this.#channels.get(channelId);
+        if (rec && !this.#disposed) this.#placeFloor(rec);
       })(),
     );
   }
@@ -2189,12 +2287,15 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    * `own`: the delivered row of this device's own send (X#4). Its native
    * decrypt runs with `live: false`; a successful result also answers the
    * live echo of that id, so the echo costs no second decrypt.
+   * `place: false` when the caller places the floor marker itself, once
+   * for many rows.
    */
   async #decryptOne(
     row: ProtectedMessageRow,
     live: boolean,
     own = false,
     batch: WalkBatch | null = null,
+    place = true,
   ): Promise<void> {
     if (this.#disposed) return;
     if (this.#forgotten.has(row.id)) return;
@@ -2236,6 +2337,11 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     }
     if (this.#disposed) return;
     if (this.#forgotten.has(row.id)) return;
+    // R-W4-39: native has answered for the row; it may place the marker.
+    if (place) {
+      const rec = this.#channels.get(row.channelId);
+      if (rec && rec.floorMarker !== null) this.#placeFloor(rec, row);
+    }
     // A late history result never overwrites a live one.
     if (!live && this.#viewLive.has(row.id)) return;
     if (live || (own && view.status === "ok")) this.#viewLive.add(row.id);
@@ -2264,6 +2370,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       this.#views.delete(id);
       this.#viewLive.delete(id);
       this.#rows.delete(id);
+      this.#floorRefused.delete(id);
       this.#walkPending.delete(id);
       this.#forgotten.add(id);
     }
@@ -6052,7 +6159,10 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         oldestHeld: new Map(),
         walkRetry: null,
         historyEpoch: null,
-        historyUpdateTried: null,
+        historyLineKept: null,
+        historyUpdateTries: new Map(),
+        historyUpdateBusy: false,
+        oldestOkMs: null,
         policySent: null,
         rowInputs: null,
         duties: new Set(),
@@ -7111,6 +7221,60 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   }
 
   /**
+   * R-W4-39: native refused the decrypt of `messageId` for a key it does
+   * not hold. The group and epoch on record are the ones NATIVE named
+   * (`unknown_epoch`; `mls_group_not_found` names a group only), never the
+   * row's own `encrypted`. Any other answer, and a row sent after this
+   * device's removal (`removed_self`), leaves no record. Never throws.
+   */
+  #noteRefused(messageId: unknown, err: unknown): void {
+    try {
+      if (!str(messageId) || messageId === "") return;
+      this.#floorRefused.delete(messageId);
+      const e = nativeErrorOf(err) as Record<string, unknown> | null;
+      if (e === null || !str(e.group_id) || e.group_id === "") return;
+      let epoch: number | null = null;
+      if (e.type === "unknown_epoch") {
+        if (e.removed_self === true || !int(e.epoch)) return;
+        epoch = e.epoch;
+      } else if (e.type !== "mls_group_not_found") {
+        return;
+      }
+      this.#floorRefused.set(messageId, { groupId: e.group_id, epoch });
+      if (this.#floorRefused.size > VIEW_CACHE_MAX) {
+        const first = this.#floorRefused.keys().next().value;
+        if (first !== undefined) this.#floorRefused.delete(first);
+      }
+    } catch {
+      // a refusal this cannot read places no marker
+    }
+  }
+
+  /**
+   * R-W4-39: native decrypted `messageId`. It is no floor row any more,
+   * and the floor marker may not stand above the oldest such row: one
+   * raised above it is placed again, lower, when a row is there to place
+   * it by. Never throws.
+   */
+  #noteDecrypted(channelId: unknown, messageId: unknown): void {
+    try {
+      if (!str(channelId) || !str(messageId)) return;
+      this.#floorRefused.delete(messageId);
+      const rec = this.#channels.get(channelId);
+      const at = ulidTimeMs(messageId);
+      if (!rec || at === null) return;
+      if (rec.oldestOkMs !== null && rec.oldestOkMs <= at) return;
+      rec.oldestOkMs = at;
+      const raised = rec.floorMarker?.atMs ?? null;
+      if (raised !== null && raised > at && !this.#disposed) {
+        this.#placeFloor(rec);
+      }
+    } catch {
+      // nothing is placed by an answer this cannot read
+    }
+  }
+
+  /**
    * Where the walk for a missing epoch starts: the lowest held epoch above
    * it. A miss below the floor native reports (the bottom of the run an
    * earlier walk ended in), or in a group that is neither the floor's nor
@@ -7480,12 +7644,15 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     this.#placeFloor(rec);
   }
 
-  /** A row's keys lie at or below the floor `m` of `rec` (R-W4-32). */
+  /**
+   * The keys native refused a row for lie at or below the floor `m` of
+   * `rec` (R-W4-32). `epoch` null: native named the group only.
+   */
   #atOrBelowFloor(
     rec: ChannelRec,
     m: { groupId: string; epoch: number },
     groupId: string,
-    epoch: number,
+    epoch: number | null,
   ): boolean {
     if (groupId === m.groupId) return int(epoch) && epoch <= m.epoch;
     // Another group: the held one and the ones a walk passed on its way
@@ -7499,25 +7666,44 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    * place it: `atMs` is the ULID time of the newest loaded row at or below
    * the floor epoch, plus 1 ms, so the marker sorts directly after that
    * row. While no such row is loaded the marker is not raised; it is when
-   * one arrives (`#noteRow`, `decryptHistory`), and it is raised again,
+   * one arrives (`#decryptOne`, `decryptHistory`), and it is raised again,
    * later, when a newer such row is loaded (the list places the latest
    * floor marker only). Never the wall clock: that would sort it under the
    * newest message. `only`: look at this one row instead of every row.
+   *
+   * R-W4-39: a row counts only by what NATIVE answered for it: its decrypt
+   * was refused for a key native does not hold, and the group and epoch
+   * native named lie at or below the floor (`#floorRefused`). The row's
+   * own `encrypted` is the server's claim and places nothing: one made-up
+   * row with a late id would pin the marker under the newest messages. An
+   * epoch a walk brought since is no floor row either. And the marker
+   * never stands above the oldest row native decrypted (`oldestOkMs`): a
+   * row at or after it is not counted, and a marker raised above it
+   * earlier is placed again, lower.
    */
   #placeFloor(rec: ChannelRec, only?: ProtectedMessageRow): void {
     const m = rec.floorMarker;
     if (m === null) return;
+    const cap = rec.oldestOkMs;
     let newest: number | null = null;
     for (const row of only ? [only] : this.#rows.values()) {
-      const e = row.encrypted;
-      if (row.channelId !== rec.id || e === null) continue;
-      if (!this.#atOrBelowFloor(rec, m, e.group_id, e.epoch)) continue;
+      if (row.channelId !== rec.id) continue;
+      const refused = this.#floorRefused.get(row.id);
+      if (refused === undefined) continue;
+      if (this.#walked.has(`${refused.groupId}:${refused.epoch}`)) continue;
+      if (!this.#atOrBelowFloor(rec, m, refused.groupId, refused.epoch)) {
+        continue;
+      }
       const at = ulidTimeMs(row.id);
-      if (at !== null && (newest === null || at > newest)) newest = at;
+      if (at === null || (cap !== null && at >= cap)) continue;
+      if (newest === null || at > newest) newest = at;
     }
     if (newest === null) return;
     const atMs = newest + 1;
-    if (m.atMs !== null && atMs <= m.atMs) return;
+    // Moved up by a newer row; moved down only from above the cap.
+    const tooHigh = m.atMs !== null && cap !== null && m.atMs > cap;
+    if (m.atMs !== null && atMs <= m.atMs && !tooHigh) return;
+    if (atMs === m.atMs) return;
     m.atMs = atMs;
     this.#marker(rec, {
       kind: "history_floor",
@@ -7664,7 +7850,11 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   }
 
   #historyEpochKey(rec: ChannelRec): string {
-    return `${PROTECTED_HISTORY_EPOCH_KEY_PREFIX}${this.#port.selfUserId}:${rec.id}`;
+    return this.#historyEpochKeyOf(rec.id);
+  }
+
+  #historyEpochKeyOf(channelId: string): string {
+    return `${PROTECTED_HISTORY_EPOCH_KEY_PREFIX}${this.#port.selfUserId}:${channelId}`;
   }
 
   /** The stored line of `groupId` (B6), null when none or unreadable. */
@@ -7691,17 +7881,25 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    *
    * Only on a device of the owner user, only for a list THIS device
    * signed (one committer, not one per owner device), and only while the
-   * history flag is on (an Update is a write, R-W4-31). Never a loop: one
-   * attempt per `group:epoch:setting`; the Update it commits moves the
-   * epoch, and the new epoch is on record under the new line. A failed
-   * Update is tried again only after the state changed or in a later
-   * session. Called inside the channel's lane, so the Update runs in the
-   * background.
+   * history flag is on (an Update is a write, R-W4-31).
+   *
+   * R-W4-41. The line an epoch began under goes on record (in memory)
+   * BEFORE those gates: a read while the flag reads off, or before the
+   * owner pin is there, would otherwise leave the epoch to be first seen
+   * under the new line, and the Update would be skipped. The stored copy
+   * is a write and stays behind the flag and the owner gate; it is written
+   * whenever the store does not hold this group and line (a new group
+   * too). An Update that failed is started again on a later state read, at
+   * most `HISTORY_UPDATE_TRIES` times per `group:epoch:setting` in a
+   * session, and never while another Update of the channel is in flight
+   * (that one would swallow it). Never a loop: an Update's own state reads
+   * start none, the Update it commits moves the epoch, and the new epoch
+   * is on record under the new line. Called inside the channel's lane, so
+   * the Update runs in the background.
    */
   #historyUpdateOwed(rec: ChannelRec): void {
     const n = rec.native;
-    if (n === null || !this.#historyOn() || !this.#ownerDevice(rec)) return;
-    if (n.group_id === null || !int(n.epoch) || n.seat_list === null) return;
+    if (n === null || n.group_id === null || !int(n.epoch)) return;
     const groupId = n.group_id;
     const setting =
       n.history_setting === "visible" || n.history_setting === "hidden"
@@ -7713,15 +7911,16 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       // session cannot tell, so it takes the line an earlier one stored.
       const first = seen === null;
       const stored = first ? this.#storedHistoryLine(rec, groupId) : null;
-      const began = stored ?? setting;
-      const write = first ? stored !== began : seen?.setting !== began;
-      seen = { groupId, epoch: n.epoch, setting: began };
+      if (stored !== null) rec.historyLineKept = `${groupId}:${stored}`;
+      seen = { groupId, epoch: n.epoch, setting: stored ?? setting };
       rec.historyEpoch = seen;
-      if (began !== null && write) this.#storeHistoryLine(rec, groupId, began);
     } else if (seen.setting === null && setting !== null) {
       seen.setting = setting;
-      this.#storeHistoryLine(rec, groupId, setting);
     }
+    if (!this.#historyOn() || !this.#ownerDevice(rec)) return;
+    const began = seen.setting;
+    if (began !== null) this.#keepHistoryLine(rec, groupId, began);
+    if (n.seat_list === null) return;
     if (setting === null || seen.setting === null) return;
     if (seen.setting === setting) return;
     const list = n.seat_list;
@@ -7732,40 +7931,56 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       return;
     }
     if (!holdsCurrentGroup(n)) return;
+    // Not counted and not started behind another Update or its own.
+    if (rec.historyUpdateBusy || rec.updating !== null) return;
     const key = `${groupId}:${n.epoch}:${setting}`;
-    if (rec.historyUpdateTried === key) return;
-    rec.historyUpdateTried = key;
-    this.#log("info", "history setting changed: own update", {
-      channelId: rec.id,
-    });
-    this.#background(this.#commitUpdate(rec, true));
+    const tried = rec.historyUpdateTries.get(key) ?? 0;
+    if (tried >= HISTORY_UPDATE_TRIES) return;
+    rec.historyUpdateTries.delete(key);
+    rec.historyUpdateTries.set(key, tried + 1);
+    if (rec.historyUpdateTries.size > HISTORY_UPDATE_STATES_MAX) {
+      const first = rec.historyUpdateTries.keys().next().value;
+      if (first !== undefined) rec.historyUpdateTries.delete(first);
+    }
+    this.#log(
+      tried + 1 < HISTORY_UPDATE_TRIES ? "info" : "warn",
+      "history setting changed: own update",
+      { channelId: rec.id, attempt: tried + 1 },
+    );
+    rec.historyUpdateBusy = true;
+    this.#background(
+      this.#commitUpdate(rec, true).finally(() => {
+        rec.historyUpdateBusy = false;
+      }),
+    );
   }
 
-  #storeHistoryLine(rec: ChannelRec, groupId: string, line: string): void {
+  /** Store the line of `groupId` unless the store is known to hold it. */
+  #keepHistoryLine(rec: ChannelRec, groupId: string, line: string): void {
+    const kept = `${groupId}:${line}`;
+    if (rec.historyLineKept === kept || this.#historyLinesOff) return;
     const ok = this.#port.store.set(
       this.#historyEpochKey(rec),
       JSON.stringify({ g: groupId, s: line }),
     );
-    if (!ok) {
+    if (ok) {
+      rec.historyLineKept = kept;
+    } else {
       this.#log("warn", "history line not stored", { channelId: rec.id });
     }
   }
 
   /**
    * Remember a row (probes, pending re-runs, re-decided views, the floor
-   * marker's place). `place: false` when the caller places the floor
-   * marker itself, once for many rows.
+   * marker's place once native answered for it).
    */
-  #noteRow(row: ProtectedMessageRow, place = true): void {
+  #noteRow(row: ProtectedMessageRow): void {
     this.#rows.delete(row.id);
     this.#rows.set(row.id, row);
     if (this.#rows.size > VIEW_CACHE_MAX) {
       const oldest = this.#rows.keys().next().value;
       if (oldest !== undefined) this.#rows.delete(oldest);
     }
-    if (!place) return;
-    const rec = this.#channels.get(row.channelId);
-    if (rec && rec.floorMarker !== null) this.#placeFloor(rec, row);
   }
 
   /**

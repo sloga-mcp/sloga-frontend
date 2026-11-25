@@ -1447,6 +1447,7 @@ test("runWalk: ports that always ask for more cannot loop forever", async () => 
 /** Rejections an S2-era shell gives for a command it does not have. */
 const MISSING_COMMAND: unknown[] = [
   new TypeError("window.__TAURI__.invoke is not a function"),
+  new TypeError("native.e2eeTextHistoryImport is not a function"),
   "Command e2ee_text_history_import not found",
   "not implemented",
   "UNIMPLEMENTED",
@@ -1465,6 +1466,10 @@ const NOT_MISSING_COMMAND: unknown[] = [
   "",
   "ipc closed",
   new Error("ipc closed"),
+  // A TypeError that names no missing command (RA4)
+  new TypeError("Failed to fetch"),
+  new TypeError("Cannot read properties of undefined (reading 'invoke')"),
+  new TypeError(""),
   {},
   { message: 404 },
   { type: "invalid_argument", field: "steps" },
@@ -1512,8 +1517,13 @@ test("runWalk: a missing import command ends unsupported, not a retry, after one
   const result = await runWalk(w.ports, { groupId: G, holderEpoch: 20 });
   assert.deepEqual(result.end, { kind: "unsupported" });
   assert.equal(w.calls.length, 1);
-  // Any other failure of the bridge call stays a retry.
-  for (const thrown of [new Error("ipc closed"), { type: "internal" }]) {
+  // Any other failure of the bridge call stays a retry, a TypeError that
+  // names no missing command included (RA4).
+  for (const thrown of [
+    new Error("ipc closed"),
+    { type: "internal" },
+    new TypeError("Failed to fetch"),
+  ]) {
     const other = world({ links: chain(20, 1), throws: [thrown] });
     assert.deepEqual(
       (await runWalk(other.ports, { groupId: G, holderEpoch: 20 })).end,
