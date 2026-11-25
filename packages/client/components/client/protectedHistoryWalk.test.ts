@@ -18,6 +18,7 @@ import {
   WALK_MAX_BRIDGE_TARGETS,
   WALK_MAX_HOLDERS,
   WALK_MAX_LINK_ROWS,
+  WALK_MAX_PINS,
   WALK_MAX_PROBES,
   WALK_MAX_START_BUMPS,
   commitForNative,
@@ -1066,7 +1067,7 @@ test("runWalk: an identity pin retry re-sends identical steps once", async () =>
   assert.notEqual(snapshots[1], snapshots[0]);
 });
 
-test("runWalk: a second pin request, or a pin that fails, ends retry_later pin", async () => {
+test("runWalk: the same device asked twice, or a pin that fails, ends retry_later pin", async () => {
   const pinError = {
     source: "native",
     error: { type: "identity_pin_required", user_id: "U9", device_id: "D9" },
@@ -1097,6 +1098,185 @@ test("runWalk: a second pin request, or a pin that fails, ends retry_later pin",
   const d = await runWalk(nameless.ports, { groupId: G, holderEpoch: 20 });
   assert.deepEqual(d.end, { kind: "retry_later", reason: "pin" });
   assert.equal(nameless.pins.length, 0);
+});
+
+/** Native's ask for device `n`: one unpinned device per error. */
+function pinAsk(n: number): Record<string, unknown> {
+  return {
+    type: "identity_pin_required",
+    user_id: `U${n}`,
+    device_id: `D${n}`,
+  };
+}
+
+/**
+ * From import call `from` on, native answers each ask of `asks` in order
+ * before it takes the call. Every call is on record with a snapshot.
+ */
+function askPins(
+  w: ReturnType<typeof world>,
+  from: number,
+  asks: unknown[],
+): string[] {
+  const real = w.ports.importSteps;
+  const left = [...asks];
+  const snapshots: string[] = [];
+  let n = 0;
+  w.ports.importSteps = async (groupId, session, steps) => {
+    n += 1;
+    snapshots.push(JSON.stringify({ groupId, session, steps }));
+    if (n >= from && left.length > 0) {
+      w.calls.push({ groupId, session, steps });
+      throw left.shift();
+    }
+    return real(groupId, session, steps);
+  };
+  return snapshots;
+}
+
+test("runWalk (FT2): two unpinned devices in one call are each pinned and the call completes", async () => {
+  // In the FIRST call (no session yet) and in a later one (a session is
+  // open: native starts no fresh session there, so a walk that gave up
+  // would meet both asks again on every retry).
+  for (const from of [1, 2]) {
+    const w = world({
+      links: chain(20, 1),
+      pageSize: 3,
+      anchor: { groupId: G, epoch: 15 },
+    });
+    const snapshots = askPins(w, from, [pinAsk(1), pinAsk(2)]);
+    const result = await runWalk(w.ports, { groupId: G, holderEpoch: 20 });
+    assert.deepEqual(result.end, { kind: "anchored" }, `from ${from}`);
+    assert.deepEqual(
+      w.pins,
+      [
+        { userId: "U1", deviceId: "D1" },
+        { userId: "U2", deviceId: "D2" },
+      ],
+      `from ${from}: each device once, in the order asked`,
+    );
+    // The asked call went out three times: the very same steps and session
+    const at = from - 1;
+    for (const again of [at + 1, at + 2]) {
+      assert.equal(w.calls[again]?.steps, w.calls[at]?.steps);
+      assert.equal(w.calls[again]?.session, w.calls[at]?.session);
+      assert.equal(snapshots[again], snapshots[at]);
+    }
+    assert.equal(w.calls[at]?.session, from === 1 ? null : "s1");
+    assert.equal(w.calls.length, 4, `from ${from}`);
+    assert.deepEqual(
+      w.logs.filter((l) => /pin/.test(l.msg)),
+      [],
+      `from ${from}: nothing about pins is logged on the way`,
+    );
+  }
+});
+
+test("runWalk (FT2): 16 devices in one call are all pinned; 17 stops at the cap, retry_later pin", async () => {
+  assert.equal(WALK_MAX_PINS, 16);
+  const asks = (count: number) =>
+    Array.from({ length: count }, (_, i) => pinAsk(i + 1));
+
+  const full = world({
+    links: chain(20, 1),
+    anchor: { groupId: G, epoch: 15 },
+  });
+  askPins(full, 1, asks(16));
+  const a = await runWalk(full.ports, { groupId: G, holderEpoch: 20 });
+  assert.deepEqual(a.end, { kind: "anchored" });
+  assert.equal(full.pins.length, 16);
+  assert.equal(full.calls.length, 17);
+
+  const over = world({
+    links: chain(20, 1),
+    anchor: { groupId: G, epoch: 15 },
+  });
+  askPins(over, 1, asks(17));
+  const b = await runWalk(over.ports, { groupId: G, holderEpoch: 20 });
+  assert.deepEqual(b.end, { kind: "retry_later", reason: "pin" });
+  // The seventeenth device is never handed to the pin step and the call is
+  // not sent an eighteenth time
+  assert.equal(over.pins.length, 16);
+  assert.equal(
+    over.pins.some((p) => p.userId === "U17"),
+    false,
+  );
+  assert.equal(over.calls.length, 17);
+  assert.deepEqual(b.imported, []);
+  assert.deepEqual(over.logs.at(-1), {
+    level: "warn",
+    msg: "history walk: identity pin cap reached",
+    ids: { group_id: G, epoch: 1 },
+  });
+  // Every send carried the same steps object
+  for (const call of over.calls) assert.equal(call.steps, over.calls[0]?.steps);
+});
+
+test("runWalk (FT2): the same device asked twice in one call ends retry_later pin, also after another device", async () => {
+  const w = world({ links: chain(20, 1), anchor: { groupId: G, epoch: 15 } });
+  askPins(w, 1, [pinAsk(1), pinAsk(2), pinAsk(1), pinAsk(3)]);
+  const result = await runWalk(w.ports, { groupId: G, holderEpoch: 20 });
+  assert.deepEqual(result.end, { kind: "retry_later", reason: "pin" });
+  assert.deepEqual(w.pins, [
+    { userId: "U1", deviceId: "D1" },
+    { userId: "U2", deviceId: "D2" },
+  ]);
+  assert.equal(w.calls.length, 3, "not sent again after the repeat");
+  assert.equal(
+    w.logs.at(-1)?.msg,
+    "history walk: same identity pin asked twice",
+  );
+  // The same device id under another user is another device
+  const other = world({
+    links: chain(20, 1),
+    anchor: { groupId: G, epoch: 15 },
+  });
+  askPins(other, 1, [
+    { type: "identity_pin_required", user_id: "U1", device_id: "D1" },
+    { type: "identity_pin_required", user_id: "U2", device_id: "D1" },
+    { type: "identity_pin_required", user_id: "U1", device_id: "D2" },
+  ]);
+  const b = await runWalk(other.ports, { groupId: G, holderEpoch: 20 });
+  assert.deepEqual(b.end, { kind: "anchored" });
+  assert.equal(other.pins.length, 3);
+});
+
+test("runWalk (FT2): a device the pin step cannot pin: an answered step goes on to the next device, a failed one ends the walk", async () => {
+  // A deleted or unlisted device: the pin step still answers (the listing
+  // reached native, it holds no such device). The call is sent again and
+  // the next device is asked and pinned: one such device does not hold up
+  // the others.
+  const unlisted = world({
+    links: chain(20, 1),
+    anchor: { groupId: G, epoch: 15 },
+  });
+  askPins(unlisted, 1, [pinAsk(1), pinAsk(2), pinAsk(3)]);
+  const a = await runWalk(unlisted.ports, { groupId: G, holderEpoch: 20 });
+  assert.deepEqual(a.end, { kind: "anchored" });
+  assert.equal(unlisted.pins.length, 3);
+
+  // A pin step that fails (the listing could not be fetched) ends the walk
+  // as it did for one device, whichever device of the call it is: the call
+  // is not sent again, and no later device is tried.
+  for (const failAt of [1, 2, 3]) {
+    const w = world({ links: chain(20, 1), anchor: { groupId: G, epoch: 15 } });
+    askPins(w, 1, [pinAsk(1), pinAsk(2), pinAsk(3)]);
+    const pin = w.ports.pin;
+    let n = 0;
+    w.ports.pin = async (userId, deviceId) => {
+      n += 1;
+      const answer = await pin(userId, deviceId);
+      if (n !== failAt) return answer;
+      if (failAt === 2) throw new Error("listing fetch failed");
+      return false;
+    };
+    const result = await runWalk(w.ports, { groupId: G, holderEpoch: 20 });
+    const label = `fails at ${failAt}`;
+    assert.deepEqual(result.end, { kind: "retry_later", reason: "pin" }, label);
+    assert.equal(w.pins.length, failAt, label);
+    assert.equal(w.calls.length, failAt, label);
+    assert.equal(w.logs.at(-1)?.msg, "history walk: identity pin failed");
+  }
 });
 
 test("runWalk: a refused start holder is stepped up, at most three times", async () => {
@@ -1444,18 +1624,68 @@ test("runWalk: ports that always ask for more cannot loop forever", async () => 
 // Older shells (R-W4-33)
 // ---------------------------------------------------------------------------
 
-/** Rejections an S2-era shell gives for a command it does not have. */
-const MISSING_COMMAND: unknown[] = [
-  new TypeError("window.__TAURI__.invoke is not a function"),
-  new TypeError("native.e2eeTextHistoryImport is not a function"),
-  "Command e2ee_text_history_import not found",
+/**
+ * Rejections an S2-era shell gives for a history command it does not have,
+ * by bridge. Tauri 2.11 `webview/mod.rs` and `ipc/authority.rs`; Electron
+ * `src/e2ee.js` ERR_INVALID; Capacitor `E2eePlugin.kt` / `E2eePlugin.swift`
+ * `call()` (an unknown `__cmd`), and Capacitor's own exception for a plugin
+ * method that is not there.
+ */
+const MISSING_BY_BRIDGE: Record<string, unknown[]> = {
+  tauri: [
+    "Command e2ee_text_history_import not found",
+    "Command e2ee_text_history_link_build not found",
+    "Command e2ee_text_history_import not allowed by ACL",
+    "Command e2ee_text_history_link_build not allowed by ACL",
+    "e2ee_text_history_import not allowed. Command not found",
+    "e2ee_text_history_link_build not allowed. Command not found",
+  ],
+  electron: [
+    { type: "invalid_argument", field: "command" },
+    { source: "native", error: { type: "invalid_argument", field: "command" } },
+  ],
+  capacitor: [
+    { type: "invalid_argument", field: "name" },
+    { source: "native", error: { type: "invalid_argument", field: "name" } },
+    { code: "UNIMPLEMENTED" },
+    Object.assign(new Error('"E2ee.call()" is not implemented on android'), {
+      code: "UNIMPLEMENTED",
+    }),
+  ],
+  // An untyped text that names the command, however it is spelled
+  named: [
+    new TypeError("native.e2eeTextHistoryImport is not a function"),
+    new TypeError("e2ee.textHistoryLinkBuild is not a function"),
+    new Error("command e2ee_text_history_import not found"),
+    { message: "e2ee_text_history_link_build is not implemented" },
+  ],
+};
+
+const MISSING_COMMAND: unknown[] = Object.values(MISSING_BY_BRIDGE).flat();
+
+/**
+ * FT8: an untyped "not found" (and the like) that names no history command.
+ * None says the shell lacks the command, so none may latch history off.
+ */
+const UNRELATED_NOT_FOUND: unknown[] = [
+  "not found",
+  "group not found",
+  "404 Not Found",
+  "channel 01HZX not found",
+  "Command e2ee_text_decrypt not found",
+  "Command e2ee_text_history not found",
   "not implemented",
   "UNIMPLEMENTED",
-  new Error("command e2ee_text_history_import not found"),
+  new Error("not found"),
+  new Error("session not found"),
+  new Error("Command e2ee_text_state not allowed by ACL"),
   { message: "Unimplemented method" },
-  { code: "UNIMPLEMENTED" },
-  { type: "invalid_argument", field: "command" },
-  { source: "native", error: { type: "invalid_argument", field: "command" } },
+  { message: "store row not found" },
+  new TypeError("window.__TAURI__.invoke is not a function"),
+  new TypeError("this.plugin.call is not a function"),
+  // Names the command but does not say it is missing
+  "e2ee_text_history_import failed",
+  new Error("e2ee_text_history_import: ipc closed"),
 ];
 
 /** Everything else, typed native errors with a telling text included. */
@@ -1481,6 +1711,14 @@ const NOT_MISSING_COMMAND: unknown[] = [
   { source: "transport" },
   { source: "native", error: { type: "unknown_epoch" } },
   { source: "native", error: { type: "internal", message: "not found" } },
+  // Typed, and naming the command: still a real answer of native
+  {
+    type: "internal",
+    message: "Command e2ee_text_history_import not found",
+  },
+  { type: "invalid_argument", field: "__cmd" },
+  { type: "invalid_argument", field: "args" },
+  ...UNRELATED_NOT_FOUND,
 ];
 
 test("isMissingCommandError: the missing-command answers, and nothing typed otherwise", () => {
@@ -1489,6 +1727,41 @@ test("isMissingCommandError: the missing-command answers, and nothing typed othe
   }
   for (const e of NOT_MISSING_COMMAND) {
     assert.equal(isMissingCommandError(e), false, JSON.stringify(e) ?? `${e}`);
+  }
+});
+
+test("isMissingCommandError (FT8): each bridge's own answer for a missing history command counts", () => {
+  for (const [bridge, answers] of Object.entries(MISSING_BY_BRIDGE)) {
+    assert.ok(answers.length > 0, bridge);
+    for (const e of answers) {
+      const label = `${bridge}: ${JSON.stringify(e) ?? ""} ${String(e)}`;
+      assert.equal(isMissingCommandError(e), true, label);
+    }
+  }
+});
+
+test("isMissingCommandError (FT8): an unrelated not found names no history command and does not count", () => {
+  for (const e of UNRELATED_NOT_FOUND) {
+    const label = `${JSON.stringify(e) ?? ""} ${String(e)}`;
+    assert.equal(isMissingCommandError(e), false, label);
+  }
+});
+
+test("runWalk (FT8): an unrelated not found from the bridge is a retry, never unsupported", async () => {
+  for (const thrown of UNRELATED_NOT_FOUND) {
+    const label = `${JSON.stringify(thrown) ?? ""} ${String(thrown)}`;
+    const w = world({ links: chain(20, 1), throws: [thrown] });
+    const result = await runWalk(w.ports, { groupId: G, holderEpoch: 20 });
+    assert.deepEqual(
+      result.end,
+      { kind: "retry_later", reason: "transport" },
+      label,
+    );
+    assert.equal(
+      w.logs.some((l) => l.msg === "history walk: import command missing"),
+      false,
+      label,
+    );
   }
 });
 
@@ -1517,6 +1790,15 @@ test("runWalk: a missing import command ends unsupported, not a retry, after one
   const result = await runWalk(w.ports, { groupId: G, holderEpoch: 20 });
   assert.deepEqual(result.end, { kind: "unsupported" });
   assert.equal(w.calls.length, 1);
+  // Any other `invalid_argument` stays what it was: a refused call.
+  const refused = world({
+    links: chain(20, 1),
+    throws: [{ type: "invalid_argument", field: "__cmd" }],
+  });
+  assert.deepEqual(
+    (await runWalk(refused.ports, { groupId: G, holderEpoch: 20 })).end,
+    { kind: "retry_later", reason: "argument" },
+  );
   // Any other failure of the bridge call stays a retry, a TypeError that
   // names no missing command included (RA4).
   for (const thrown of [

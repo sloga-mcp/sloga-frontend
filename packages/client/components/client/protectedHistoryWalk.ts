@@ -18,6 +18,10 @@
  * - A step's probes come from distinct authors, none of whom wrote a
  *   candidate sent in the step ABOVE (those carried this step's keys).
  * - Links are sent exactly as the server gave them, never rebuilt.
+ * - A call native answers with `identity_pin_required` is sent again with
+ *   the SAME steps and session after the pin step ran for that device: at
+ *   most 16 devices per call, never one device twice, and a pin step that
+ *   fails ends the walk `retry_later`.
  *
  * Pure: no Solid / SDK / lingui runtime imports, every effect goes through
  * the injected `WalkPorts`, loadable by `node --test`. Logs carry ids and
@@ -60,6 +64,14 @@ export const WALK_MAX_HOLDERS = 2000;
 /** Predecessor positions tried after a bridge whose candidates disagree. */
 export const WALK_MAX_BRIDGE_TARGETS = 5;
 
+/**
+ * Identity pins one import call may run. Native asks for ONE unpinned
+ * device per error (`identity_pin_required`), so a call whose links name
+ * several is re-sent once per device. A seventeenth ask ends the walk
+ * `retry_later` / `pin`.
+ */
+export const WALK_MAX_PINS = 16;
+
 // ---------------------------------------------------------------------------
 // Small readers
 // ---------------------------------------------------------------------------
@@ -88,26 +100,50 @@ function nativeErrorOf(e: unknown): Record<string, unknown> | null {
 }
 
 const MISSING_COMMAND_TEXT =
-  /not found|not implemented|unimplemented|is not a function/i;
+  /not found|not allowed|not implemented|unimplemented|is not a function/i;
+
+/** The S4 history commands, as a text names them once `_` and `-` are cut. */
+const HISTORY_COMMAND_NAMES: readonly string[] = [
+  "texthistoryimport",
+  "texthistorylinkbuild",
+];
+
+/**
+ * An untyped rejection text counts only when it says "missing" AND names a
+ * history command (`e2ee_text_history_import`, `textHistoryLinkBuild`, ...).
+ * "group not found" or "404 not found" says nothing about the shell.
+ */
+function namesMissingHistoryCommand(text: string): boolean {
+  if (!MISSING_COMMAND_TEXT.test(text)) return false;
+  const flat = text.toLowerCase().replace(/[_-]/g, "");
+  return HISTORY_COMMAND_NAMES.some((name) => flat.includes(name));
+}
 
 /**
  * A bridge rejection that means "this shell has no such command" (an
- * S2-era shell asked for an S4 history command, R-W4-33). The answers the
- * three bridges give, as `isMissingCommandError` in `e2ee.ts` reads them
- * (repeated here because this module imports no bridge runtime; the spec
- * pins the cases): a string or a `message` that says so (Tauri's "Command
- * ... not found", an Electron native module's "... is not a function");
- * Capacitor's `code: "UNIMPLEMENTED"`; Electron's typed `invalid_argument`
- * with `field: "command"`. Any other typed native error is NOT one,
- * whatever its text. A flow failure that wraps a native error is read
- * through its `error`.
+ * S2-era shell asked for an S4 history command, R-W4-33). Only the two
+ * history commands are asked through this. The answers the three bridges
+ * give (this module imports no bridge runtime; the spec pins the cases):
+ * - Tauri rejects with a string that names the command: "Command <name>
+ *   not found", or from its ACL "Command <name> not allowed by ACL"
+ *   (release) / "<name> not allowed. Command not found" (debug).
+ * - Electron's command table answers the typed `invalid_argument` with
+ *   `field: "command"`.
+ * - Capacitor (Android, iOS): the generic `call()` answers an unknown
+ *   `__cmd` with the typed `invalid_argument`, `field: "name"` (neither
+ *   history command has a `name` argument); a plugin method that is not
+ *   there is `code: "UNIMPLEMENTED"`.
+ * An untyped string or `message` counts only when it names the history
+ * command (`namesMissingHistoryCommand`). Any other typed native error is
+ * NOT one, whatever its text. A flow failure that wraps a native error is
+ * read through its `error`.
  *
  * Unlike `e2ee.ts`, being a TypeError is not enough: the answer latches
  * history off for the session, and a TypeError is also what a failed fetch
  * or a bug in the invoke path throws. One counts only by its message.
  */
 export function isMissingCommandError(error: unknown): boolean {
-  if (typeof error === "string") return MISSING_COMMAND_TEXT.test(error);
+  if (typeof error === "string") return namesMissingHistoryCommand(error);
   if (typeof error !== "object" || error === null) return false;
   const shape = error as {
     type?: unknown;
@@ -120,12 +156,14 @@ export function isMissingCommandError(error: unknown): boolean {
   if (shape.source === "native" && isRecord(shape.error)) {
     return isMissingCommandError(shape.error);
   }
-  if (shape.type === "invalid_argument") return shape.field === "command";
+  if (shape.type === "invalid_argument") {
+    return shape.field === "command" || shape.field === "name";
+  }
   if (typeof shape.type === "string") return false;
   if (shape.code === "UNIMPLEMENTED") return true;
   return (
     typeof shape.message === "string" &&
-    MISSING_COMMAND_TEXT.test(shape.message)
+    namesMissingHistoryCommand(shape.message)
   );
 }
 
@@ -721,9 +759,12 @@ async function walkFrom(
     }
     if (last === null) return RETRY("argument");
 
-    // --- send it; one pin retry with the SAME steps ------------------------
+    // --- send it; one pin retry per device asked, with the SAME steps ------
     let answer: unknown;
-    let pinned = false;
+    // The devices native asked a pin for in this call. It asks for each
+    // once per session (after that it takes the device unverified), so a
+    // repeat means it no longer holds that session: the walk ends.
+    const asked = new Set<string>();
     let retarget = false;
     for (;;) {
       try {
@@ -742,15 +783,22 @@ async function walkFrom(
           return { kind: "unsupported" };
         }
         if (err?.type === "identity_pin_required") {
-          if (pinned) {
-            log("warn", "history walk: a second identity pin is needed", ids);
-            return RETRY("pin");
-          }
-          pinned = true;
+          const userId = err.user_id;
+          const deviceId = err.device_id;
           let ok = false;
-          if (isId(err.user_id) && isId(err.device_id)) {
+          if (isId(userId) && isId(deviceId)) {
+            const device = JSON.stringify([userId, deviceId]);
+            if (asked.has(device)) {
+              log("warn", "history walk: same identity pin asked twice", ids);
+              return RETRY("pin");
+            }
+            if (asked.size >= WALK_MAX_PINS) {
+              log("warn", "history walk: identity pin cap reached", ids);
+              return RETRY("pin");
+            }
+            asked.add(device);
             try {
-              ok = (await ports.pin(err.user_id, err.device_id)) === true;
+              ok = (await ports.pin(userId, deviceId)) === true;
             } catch {
               ok = false;
             }
@@ -870,7 +918,9 @@ async function walkFrom(
  * - `stopped`: native stopped at `floor` for `stop`. A stop value this build
  *   does not know is passed on as it came; render it as a stop.
  * - `retry_later`: nothing final. `unanchored` (session caps), `transport`
- *   (a fetch or the bridge failed), `pin` (an identity pin is still owed),
+ *   (a fetch or the bridge failed), `pin` (an identity pin is still owed:
+ *   the pin step failed, native asked for the same device twice, or one
+ *   call asked for more than `WALK_MAX_PINS` devices),
  *   `argument` (native refused the call; also a session it no longer holds).
  *   Run the walk again on the next backward paging that needs it.
  * - `unsupported`: the shell has no import command (R-W4-33). Do not run a

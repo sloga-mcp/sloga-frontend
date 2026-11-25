@@ -2322,8 +2322,10 @@ test("walkHistory (C4): after a walk that ended retry_later it starts again from
 test("older shell (R-W4-33): a missing import command latches history off; before-join rows get their marker, not the hourglass", async () => {
   const answers: unknown[] = [
     "Command e2ee_text_history_import not found",
-    new TypeError("window.__TAURI__.invoke is not a function"),
+    "Command e2ee_text_history_import not allowed by ACL",
+    new TypeError("native.e2eeTextHistoryImport is not a function"),
     { type: "invalid_argument", field: "command" },
+    { type: "invalid_argument", field: "name" },
     { code: "UNIMPLEMENTED" },
   ];
   for (const answer of answers) {
@@ -2396,6 +2398,50 @@ test("older shell (RA4): a TypeError that names no missing command is a retry, n
   env.oldest.set(G0, 10);
   env.handlers.e2ee_text_history_link_build = () => {
     throw new TypeError("Failed to fetch");
+  };
+  const m = await ready(env);
+  m.onEnvelope(envelope("E21", 21));
+  await env.advance(30_000);
+  m.onEnvelope(envelope("E22", 22));
+  await env.advance(30_000);
+  assert.equal(builds(env), 2, "the second duty still builds");
+  assert.equal(env.logged("error", /history command missing/).length, 0);
+  m.dispose();
+});
+
+test("older shell (FT8): a not found that names no history command is a retry, never the latch", async () => {
+  for (const answer of [
+    "group not found",
+    "Command e2ee_text_decrypt not found",
+    new Error("session not found"),
+    { message: "Unimplemented method" },
+    new TypeError("window.__TAURI__.invoke is not a function"),
+  ]) {
+    const label = JSON.stringify(answer) ?? String(answer);
+    const env = new Env();
+    shallow(env);
+    env.oldest.set(G0, 10);
+    env.importFail = answer;
+    const m = await ready(env);
+    m.decryptHistory(CH, [row("R7", 7)]);
+    await env.advance(0);
+    assert.equal(imports(env).length, 1, label);
+    // Not final: the row waits, and the walk may run again.
+    assert.deepEqual(env.msgViews.get("R7"), { status: "pending" }, label);
+    assert.equal(env.views.get(CH)?.historyWalk, "retry_later", label);
+    assert.equal(env.logged("error", /history command missing/).length, 0);
+    env.importFail = null;
+    m.walkHistory(CH);
+    await env.advance(0);
+    assert.equal(env.msgViews.get("R7")?.status, "ok", label);
+    m.dispose();
+  }
+  // The link build: logged, and the next duty builds again.
+  const env = new Env();
+  shallow(env);
+  env.oldest.set(G0, 10);
+  env.handlers.e2ee_text_history_link_build = () => {
+    throw "group not found";
   };
   const m = await ready(env);
   m.onEnvelope(envelope("E21", 21));
