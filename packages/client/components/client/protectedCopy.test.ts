@@ -709,8 +709,7 @@ const ROW_NOTES = {
 } as const;
 
 const DIVIDER_KEPT = "Messages above weren't protected";
-const DIVIDER_WIPED =
-  "Earlier unprotected messages were removed from this channel.";
+const DIVIDER_WIPED = "Earlier messages removed from this channel";
 
 const BACKUP_TEXT = {
   oldest:
@@ -757,6 +756,8 @@ const SETTINGS_S4: Record<string, string> = {
     "Messages already in #general stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted.",
   protectOrder:
     "The channel is protected first, with only you in it. The members you pick are added right after.",
+  protectClosesOpen:
+    "Open polls are closed and scheduled messages are canceled when the channel is protected.",
   membersPending:
     "This channel is now protected, with only you in it. The members you picked weren't added yet. You can add them below.",
   wipeNotDone:
@@ -772,7 +773,7 @@ const SETTINGS_S4: Record<string, string> = {
     "Earlier messages and their files will be deleted from Sloga's servers. This can't be undone. Copies on people's devices, forwards, crossposts and reports may remain.",
   historyToggle: "New members can read earlier messages",
   historyVisibleDescription:
-    "People who join later can read messages sent while this is on, and so can a new device of anyone in the channel. Anyone in the channel can still share what they read.",
+    "People who join later, and new devices of anyone in the channel, can read messages sent from shortly after this is turned on. Anyone in the channel can still share what they read.",
   historyHiddenDescription:
     "New members only see messages sent after they join.",
   historyRemovalNote:
@@ -782,6 +783,7 @@ const SETTINGS_S4: Record<string, string> = {
   wipeDone: "Earlier messages deleted from Sloga's servers: 7",
   historyRetryLater:
     "Earlier history couldn't be loaded right now. Try again later.",
+  historyCheckFailed: "Couldn't check this channel's history settings.",
 };
 
 const SETTINGS_ERRORS = {
@@ -858,6 +860,7 @@ function settingsNow(): Record<string, string> {
     typeTogglesHidden: settingsCopy.typeTogglesHidden(),
     protectWithHistory: settingsCopy.protectWithHistory("general"),
     protectOrder: settingsCopy.protectOrder(),
+    protectClosesOpen: settingsCopy.protectClosesOpen(),
     membersPending: settingsCopy.membersPending(),
     wipeNotDone: settingsCopy.wipeNotDone(),
     membersUnconfirmed: settingsCopy.membersUnconfirmed(),
@@ -873,6 +876,7 @@ function settingsNow(): Record<string, string> {
     wipeRequested: settingsCopy.wipeRequested(),
     wipeDone: settingsCopy.wipeDone(7),
     historyRetryLater: settingsCopy.historyRetryLater(),
+    historyCheckFailed: settingsCopy.historyCheckFailed(),
   };
 }
 
@@ -1031,6 +1035,40 @@ test("S4 divider: kept says the messages above weren't protected, wiped that the
   assert.notEqual(dividerCopy("kept"), dividerCopy("wiped"));
   // R-W4-36: the signed line proves the request, not a finished deletion.
   assert.doesNotMatch(dividerCopy("wiped"), /deleted/i);
+});
+
+test("FX3O FF4: both divider labels are short enough for one line, and the wiped one still says removed from this channel", () => {
+  // One 11 px line in a row about 290 px wide on a 320 px phone.
+  for (const kind of ["kept", "wiped"] as const) {
+    assert.ok(dividerCopy(kind).length <= 42, kind);
+    assert.doesNotMatch(dividerCopy(kind), /\.$/, kind);
+  }
+  assert.match(dividerCopy("wiped"), /removed from this channel$/);
+});
+
+test("FX3O FO2: the history-on description says sharing starts shortly after it is turned on, never from the moment it is on", () => {
+  const text = settingsCopy.historyVisibleDescription();
+  assert.match(text, /sent from shortly after this is turned on\./);
+  assert.doesNotMatch(text, /while this is on/);
+  // The rest of the claim is unchanged: joiners, new devices, sharing.
+  assert.match(text, /^People who join later, and new devices of anyone/);
+  assert.match(text, /Anyone in the channel can still share what they read\.$/);
+});
+
+test("FX3O FO3: the protect form says open polls are closed and scheduled messages are canceled, and nothing else", () => {
+  assert.equal(
+    settingsCopy.protectClosesOpen(),
+    "Open polls are closed and scheduled messages are canceled when the channel is protected.",
+  );
+  // US spelling, and no claim about the messages themselves.
+  assert.doesNotMatch(settingsCopy.protectClosesOpen(), /cancelled|deleted/);
+});
+
+test("FX3O FF6: the line after an unanswered check is its own text, neither the checking line nor the retry line", () => {
+  const text = settingsCopy.historyCheckFailed();
+  assert.equal(text, "Couldn't check this channel's history settings.");
+  assert.notEqual(text, rowStateCopy("checking"));
+  assert.notEqual(text, settingsCopy.historyRetryLater());
 });
 
 test("S4 settings: the S1 strings are unchanged and the page has exactly these keys", () => {
@@ -1482,7 +1520,9 @@ test("S4 copy: every string is its own, plain ASCII, and carries no placeholder,
   // kept variant of the hidden description, four unnamed audit sentences.
   // Its second round: three more settings lines and two restore lines in,
   // "Restoring replaces your old device." out.
-  assert.equal(Object.keys(all).length, 53);
+  // Final audit round: the polls line of the protect form and the line
+  // after an unanswered check.
+  assert.equal(Object.keys(all).length, 55);
 
   const seen = new Map<string, string>();
   // The strings that were there before S4 count too.

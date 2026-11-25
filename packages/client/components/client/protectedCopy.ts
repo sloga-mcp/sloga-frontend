@@ -591,14 +591,16 @@ export function rowStateCopy(kind: RowStateKind): string {
  * The permanent divider at the history boundary: under the newest earlier
  * message while they are kept, at the top of the channel after a wipe. The
  * wiped line says "removed from this channel": the signed list proves the
- * owner's request, not that a server finished deleting (R-W4-36).
+ * owner's request, not that a server finished deleting (R-W4-36). Both are
+ * short: the divider is one 11 px line that ends in an ellipsis when the
+ * row is narrower than its label.
  */
 export function dividerCopy(preHistory: PreHistorySetting): string {
   switch (preHistory) {
     case "kept":
       return t`Messages above weren't protected`;
     case "wiped":
-      return t`Earlier unprotected messages were removed from this channel.`;
+      return t`Earlier messages removed from this channel`;
     default: {
       const _exhaustive: never = preHistory;
       return verifyChannelFailedCopy();
@@ -976,6 +978,13 @@ export const settingsCopy = {
    */
   protectOrder: (): string =>
     t`The channel is protected first, with only you in it. The members you pick are added right after.`,
+  /**
+   * On the same form: what protecting does to what the channel carries
+   * over. The server closes open polls and cancels pending scheduled
+   * messages right after the protect.
+   */
+  protectClosesOpen: (): string =>
+    t`Open polls are closed and scheduled messages are canceled when the channel is protected.`,
   /** After a protect whose member step did not go through. */
   membersPending: protectedMembersPendingCopy,
   /** After a protect that could not do the wipe that was ticked. */
@@ -993,9 +1002,13 @@ export const settingsCopy = {
     t`Earlier messages and their files will be deleted from Sloga's servers. This can't be undone. Copies on people's devices, forwards, crossposts and reports may remain.`,
   /** History visibility toggle label. */
   historyToggle: (): string => t`New members can read earlier messages`,
-  /** Under the toggle while history is visible. */
+  /**
+   * Under the toggle while history is visible. "Shortly after": sharing
+   * starts with the first key change after the setting is turned on, not
+   * with the message that was being sent at that moment.
+   */
   historyVisibleDescription: (): string =>
-    t`People who join later can read messages sent while this is on, and so can a new device of anyone in the channel. Anyone in the channel can still share what they read.`,
+    t`People who join later, and new devices of anyone in the channel, can read messages sent from shortly after this is turned on. Anyone in the channel can still share what they read.`,
   /**
    * Under the toggle while history is hidden. `earlierKept`: native holds
    * a boundary with the earlier messages kept, and those stay readable to
@@ -1026,6 +1039,12 @@ export const settingsCopy = {
   /** The view's `historyWalk` is `retry_later`. */
   historyRetryLater: (): string =>
     t`Earlier history couldn't be loaded right now. Try again later.`,
+  /**
+   * In place of the history section: the page asked for the channel's
+   * state and none had loaded when the checking line ended.
+   */
+  historyCheckFailed: (): string =>
+    t`Couldn't check this channel's history settings.`,
 };
 
 // ---------------------------------------------------------------------------

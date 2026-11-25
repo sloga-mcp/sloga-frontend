@@ -310,6 +310,12 @@ interface Ctx {
    * successor step before a PUT and the re-send budget of one call.
    */
   recovery?: RecoveryPlan;
+  /**
+   * R-W4-42: the boundary genesis a read-back found on the server while
+   * its finish (verify, group create) has not gone through. Written by
+   * `finishLanded` only, read by `protect` only.
+   */
+  landedUnfinished?: ServerList;
 }
 
 /**
@@ -1350,11 +1356,18 @@ async function journalReadBack(
   }
 }
 
-/** The landed read-back list: verify it (the self-pin), then generation 0. */
+/**
+ * The landed read-back list: verify it (the self-pin), then generation 0.
+ * The channel is protected from here on, whatever this does (R-W4-42): the
+ * list stays on `ctx.landedUnfinished` until the finish went through, so
+ * `protect` can tell a rejection from here apart from a protect that
+ * failed. The rejection itself is unchanged for every other flow.
+ */
 async function finishLanded(
   ctx: Ctx,
   rb: Extract<JournalReadBack, { kind: "landed" }>,
 ): Promise<void> {
+  ctx.landedUnfinished = rb.list;
   await finishGenesis(
     ctx,
     rb.list,
@@ -1362,6 +1375,7 @@ async function finishLanded(
     rb.snap.asOfGroupId,
     rb.snap.asOfGeneration,
   );
+  ctx.landedUnfinished = undefined;
 }
 
 function protectRefused(ctx: Ctx, reason: string): TextFlowFailure {
@@ -1676,6 +1690,13 @@ function failureTag(e: unknown): { source: string; tag: string | null } {
  * confirmation for the channel in memory for 60 s, so a second call inside
  * that window, on a channel that is still unprotected, can sign and send
  * `wipe_history` without a dialog of its own.
+ *
+ * R-W4-42: once a read-back shows the boundary genesis on the server, a
+ * rejection of what follows (the verify with its pin, the group create) is
+ * not a failed protect either. The member step is skipped, the cause is
+ * logged by its tag, and the call rejects `protected_members_unconfirmed`,
+ * or `wipe_not_done_members_unconfirmed` when a wipe was asked for and the
+ * landed list does not say `wiped`.
  */
 export async function protect(
   ops: GroupOps,
@@ -1700,7 +1721,11 @@ export async function protect(
   // B7: the list that landed is one an earlier call signed, without the
   // wipe this call asked for.
   let wipeMissed = false;
+  // R-W4-42: this call's context, and the landed list whose finish failed.
+  const flow: { ctx: Ctx | null } = { ctx: null };
+  const unfinished: { list: ServerList | null } = { list: null };
   await run(ops, port, channelId, async (ctx) => {
+    flow.ctx = ctx;
     const boundaryEntry = readHistoryEntry(ctx)?.op === "protect";
     const resumed = await resumeStored(ctx, null);
     if (resumed?.op === "protect") {
@@ -1758,7 +1783,28 @@ export async function protect(
     }
     persist(ctx, { v: 1, op: "protect", signed });
     await publishProtect(ctx, signed);
+  }).catch((e: unknown) => {
+    const list = flow.ctx?.landedUnfinished;
+    if (list === undefined) throw e;
+    // The read-back showed this device's genesis on the server: the channel
+    // is protected, and only the steps after that failed.
+    unfinished.list = list;
+    port.log("error", "[protected] protected, the landed list not finished", {
+      channelId,
+      ...failureTag(e),
+    });
   });
+  if (unfinished.list !== null) {
+    // No member step: it needs the list verified and the group created.
+    // Who is seated is not known here, so the reason is the one that
+    // claims less. A ticked wipe counts as done only when the landed list
+    // itself says `wiped`.
+    throw clientFailure(
+      wipe && !signedWiped(unfinished.list)
+        ? "wipe_not_done_members_unconfirmed"
+        : "protected_members_unconfirmed",
+    );
+  }
   let membersPending = false;
   let seated: SeatedNow = "unknown";
   if (ownerOnly && unique.length > 1) {

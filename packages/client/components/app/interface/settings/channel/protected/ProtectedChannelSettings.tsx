@@ -72,6 +72,7 @@ import {
 import {
   type HistoryVerifyAsks,
   type ProtectOutcomeKind,
+  historyCheckFailedShown,
   historyCheckWaitMs,
   historyCheckingShown,
   historyFailureKind,
@@ -860,7 +861,9 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
    * never the open's loop), once per channel for as long as it is mounted
    * (`historyVerifyStep`), and shows the checking line until its own timer
    * ends it, `HISTORY_CHECK_LINE_MS` after the ask. Never with the flag
-   * off, and never for a channel native has loaded.
+   * off, and never for a channel native has loaded. When the timer ends
+   * and native still has not loaded the channel, a line says the check did
+   * not finish; it offers no history control.
    */
   const [verifyAsks, setVerifyAsks] = createSignal<HistoryVerifyAsks>(
     new Map(),
@@ -905,6 +908,8 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
   });
   const historyChecking = () =>
     historyCheckingShown(verifyAsks(), verifyInput(checkNow()));
+  const historyCheckFailed = () =>
+    historyCheckFailedShown(verifyAsks(), verifyInput(checkNow()));
 
   /** The line for a protect that left something out, or null. */
   const protectOutcomeLine = (): string | null => {
@@ -1120,6 +1125,9 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
                     <Show when={withHistory()}>
                       <Info data-protect-order>
                         {settingsCopy.protectOrder()}
+                      </Info>
+                      <Info data-protect-closes-open>
+                        {settingsCopy.protectClosesOpen()}
                       </Info>
                       <Checkbox
                         checked={draft().wipeTicked}
@@ -1342,11 +1350,14 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
                     <Show when={m().removalNote}>
                       <Info>{settingsCopy.historyRemovalNote()}</Info>
                     </Show>
+                    {/* The wipe is irreversible: its button has the look of
+                        the other destructive ones (remove seat, delete
+                        account). */}
                     <Show when={m().wipe.offered}>
                       <Info>{settingsCopy.wipeDescription()}</Info>
                       <Actions>
                         <Button
-                          variant="tonal"
+                          variant="_error"
                           isDisabled={m().wipe.disabled}
                           onPress={() => void runWipe()}
                         >
@@ -1371,6 +1382,13 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
                   bridge to refresh. */}
               <Show when={historyChecking()}>
                 <Info data-history-checking>{rowStateCopy("checking")}</Info>
+              </Show>
+              {/* The check's time is up and native still holds no state
+                  for the channel: say so. No history control here. */}
+              <Show when={historyCheckFailed()}>
+                <Info role="status" data-history-check-failed>
+                  {settingsCopy.historyCheckFailed()}
+                </Info>
               </Show>
             </Section>
           </Match>

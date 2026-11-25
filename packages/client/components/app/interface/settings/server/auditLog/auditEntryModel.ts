@@ -130,6 +130,27 @@ export const AUDIT_FILTER_ACTIONS: readonly AuditLogAction[] = ACTIONS.filter(
     : [action],
 );
 
+/** The filter's list without the two protected channel actions. */
+const FILTER_ACTIONS_NO_HISTORY: readonly AuditLogAction[] =
+  AUDIT_FILTER_ACTIONS.filter((action) => !CHANNEL_GROUP_TAIL.includes(action));
+
+/**
+ * The actions the action filter offers (R-W4-44). The two protected channel
+ * actions are offered only while the server advertises the history setting
+ * (`historySetting` exactly true, the flag the channel settings page reads);
+ * with the flag off, absent or unreadable the filter is the list it was
+ * before them. This is the filter only: an entry of either kind that exists
+ * still renders, whatever the flag says. The same array is returned for the
+ * same answer.
+ */
+export function auditFilterActions(
+  historySetting: unknown,
+): readonly AuditLogAction[] {
+  return historySetting === true
+    ? AUDIT_FILTER_ACTIONS
+    : FILTER_ACTIONS_NO_HISTORY;
+}
+
 /** Target kind per action. A `Record` over the union, so a missing or extra
  * action is a type error. */
 const TARGET_KIND: Record<AuditLogAction, AuditTargetKind> = {

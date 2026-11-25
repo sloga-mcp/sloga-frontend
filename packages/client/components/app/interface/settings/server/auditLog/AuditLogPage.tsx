@@ -23,6 +23,7 @@ import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
 import { auditActionLabel } from "@revolt/client/protectedCopy";
+import { protectedUiOf } from "@revolt/client/useProtectedChannel";
 import { useError } from "@revolt/i18n";
 import { userInformation } from "@revolt/markdown/users";
 import { useModals } from "@revolt/modal";
@@ -37,7 +38,7 @@ import {
 import { MenuItem } from "@revolt/ui/components/design/Menu";
 
 import { type AuditUser, AuditEntryRow } from "./AuditEntryRow";
-import { AUDIT_FILTER_ACTIONS, KNOWN_AUDIT_ACTIONS } from "./auditEntryModel";
+import { KNOWN_AUDIT_ACTIONS, auditFilterActions } from "./auditEntryModel";
 
 /** Entries per page */
 const PAGE_SIZE = 50;
@@ -286,6 +287,23 @@ export function AuditLogPage(props: { server: Server }) {
 
   const filtered = () => !!action() || !!actorFilter();
 
+  /**
+   * The server advertises the history setting (the flag the channel
+   * settings page reads). False without a bridge, when the flag was not
+   * fetched or when the read throws.
+   */
+  const historyFlag = () => {
+    try {
+      const ui = protectedUiOf(client()?.e2ee);
+      return ui?.protectedFlag().historySetting === true;
+    } catch {
+      return false;
+    }
+  };
+  // The filter offers the two protected channel actions only with that
+  // flag on. Entries of those kinds render whatever it says.
+  const filterActions = createMemo(() => auditFilterActions(historyFlag()));
+
   return (
     <Column gap="lg">
       <Filters>
@@ -302,7 +320,7 @@ export function AuditLogPage(props: { server: Server }) {
             <MenuItem value={ALL}>
               <Trans>All actions</Trans>
             </MenuItem>
-            <For each={AUDIT_FILTER_ACTIONS}>
+            <For each={filterActions()}>
               {(value) => (
                 <MenuItem value={value}>{actionLabel(value)}</MenuItem>
               )}

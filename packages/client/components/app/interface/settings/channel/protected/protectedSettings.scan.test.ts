@@ -1717,7 +1717,7 @@ describe("protected channel settings (C11)", () => {
     // under the line that states the order of the two steps (R-W4-35).
     assert.match(
       PAGE_BODY,
-      /<Match when=\{confirming\(\)\}>[\s\S]*?<Show when=\{withHistory\(\)\}>\s*<Info data-protect-order>\s*\{settingsCopy\.protectOrder\(\)\}\s*<\/Info>\s*<Checkbox\s+checked=\{draft\(\)\.wipeTicked\}\s+onChange=\{\(event\) =>\s*setDraft\(\s*protectDraftStep\(draft\(\), \{\s*type: "tick",\s*checked: event\.currentTarget\.checked,\s*\}\),\s*\)\s*\}\s*>\s*\{settingsCopy\.deleteEarlierOption\(\)\}\s*<\/Checkbox>/,
+      /<Match when=\{confirming\(\)\}>[\s\S]*?<Show when=\{withHistory\(\)\}>\s*<Info data-protect-order>\s*\{settingsCopy\.protectOrder\(\)\}\s*<\/Info>\s*<Info data-protect-closes-open>\s*\{settingsCopy\.protectClosesOpen\(\)\}\s*<\/Info>\s*<Checkbox\s+checked=\{draft\(\)\.wipeTicked\}\s+onChange=\{\(event\) =>\s*setDraft\(\s*protectDraftStep\(draft\(\), \{\s*type: "tick",\s*checked: event\.currentTarget\.checked,\s*\}\),\s*\)\s*\}\s*>\s*\{settingsCopy\.deleteEarlierOption\(\)\}\s*<\/Checkbox>/,
     );
     // B12: "the messages stay" shows only while the box is not ticked; a
     // tick shows what the wipe does in its place.
@@ -1727,6 +1727,11 @@ describe("protected channel settings (C11)", () => {
     );
     assert.equal(
       (PAGE_BODY.match(/settingsCopy\.protectOrder\(\)/g) ?? []).length,
+      1,
+    );
+    // Final audit FO3: what protecting closes is said on the form, once.
+    assert.equal(
+      (PAGE_BODY.match(/settingsCopy\.protectClosesOpen\(\)/g) ?? []).length,
       1,
     );
     assert.equal(
@@ -1811,7 +1816,7 @@ describe("protected channel settings (C11)", () => {
     assert.equal((PAGE_BODY.match(/\brunWipe\(/g) ?? []).length, 2);
     assert.match(
       PAGE_BODY,
-      /<Show when=\{m\(\)\.wipe\.offered\}>\s*<Info>\{settingsCopy\.wipeDescription\(\)\}<\/Info>\s*<Actions>\s*<Button\s+variant="tonal"\s+isDisabled=\{m\(\)\.wipe\.disabled\}\s+onPress=\{\(\) => void runWipe\(\)\}\s*>\s*\{settingsCopy\.wipeButton\(\)\}/,
+      /<Show when=\{m\(\)\.wipe\.offered\}>\s*<Info>\{settingsCopy\.wipeDescription\(\)\}<\/Info>\s*<Actions>\s*<Button\s+variant="_error"\s+isDisabled=\{m\(\)\.wipe\.disabled\}\s+onPress=\{\(\) => void runWipe\(\)\}\s*>\s*\{settingsCopy\.wipeButton\(\)\}/,
     );
     // Our own call counts as busy (S7), which is what disables both.
     assert.match(PAGE_BODY, /\| "history" \| "wipe" \| null/);
@@ -1870,6 +1875,7 @@ describe("protected channel settings (C11)", () => {
     assert.ok(at !== -1, "helper import missing");
     const imp = PAGE.slice(PAGE.lastIndexOf("import {", at), at);
     for (const name of [
+      "historyCheckFailedShown",
       "historyCheckWaitMs",
       "historyCheckingShown",
       "historyFailureKind",
@@ -1996,6 +2002,51 @@ describe("protected channel settings (C11)", () => {
     assert.equal((PAGE_BODY.match(/setTimeout\(/g) ?? []).length, 1);
     assert.equal((PAGE_BODY.match(/clearTimeout\(/g) ?? []).length, 1);
     assert.equal((PAGE_BODY.match(/\bsetCheckNow\(/g) ?? []).length, 2);
-    assert.equal((PAGE_BODY.match(/\bcheckNow\(\)/g) ?? []).length, 1);
+    // (the checking line and the line after it: the same clock)
+    assert.equal((PAGE_BODY.match(/\bcheckNow\(\)/g) ?? []).length, 2);
+  });
+
+  test("S37 FX3O FF6: when the check's timer ends without a result the page says so, from the pure rule, and that line carries no control", () => {
+    assert.match(
+      PAGE_BODY,
+      /const historyCheckFailed = \(\) =>\s*historyCheckFailedShown\(verifyAsks\(\), verifyInput\(checkNow\(\)\)\);/,
+    );
+    assert.equal(
+      (PAGE_BODY.match(/\bhistoryCheckFailedShown\(/g) ?? []).length,
+      1,
+    );
+    // Straight after the checking line, with settingsCopy's text.
+    const block = PAGE_BODY.match(
+      /<Show when=\{historyChecking\(\)\}>[\s\S]*?<\/Show>\s*(?:\{\}\s*)?(<Show when=\{historyCheckFailed\(\)\}>[\s\S]*?<\/Show>)/,
+    );
+    assert.ok(block, "the couldn't-check line is missing");
+    assert.match(
+      block[1],
+      /^<Show when=\{historyCheckFailed\(\)\}>\s*<Info role="status" data-history-check-failed>\s*\{settingsCopy\.historyCheckFailed\(\)\}\s*<\/Info>\s*<\/Show>$/,
+    );
+    assert.equal(
+      (PAGE_BODY.match(/settingsCopy\.historyCheckFailed\(\)/g) ?? []).length,
+      1,
+    );
+    assert.equal(
+      (PAGE_BODY.match(/when=\{historyCheckFailed\(\)\}/g) ?? []).length,
+      1,
+      "shown from one place",
+    );
+    // It sits outside the history section, whose controls need a model.
+    const section = PAGE_BODY.indexOf("<Show when={historyOwner()}>");
+    const sectionEnd = PAGE_BODY.indexOf("</Confirm>", section);
+    const line = PAGE_BODY.indexOf("<Show when={historyCheckFailed()}>");
+    assert.ok(section !== -1 && sectionEnd > section && line > sectionEnd);
+  });
+
+  test("S38 FX3O FF7: the wipe button is the only destructive button of the page, with Button's own variant", () => {
+    assert.equal((PAGE_BODY.match(/variant="_error"/g) ?? []).length, 1);
+    assert.match(
+      PAGE_BODY,
+      /<Button\s+variant="_error"\s+isDisabled=\{m\(\)\.wipe\.disabled\}\s+onPress=\{\(\) => void runWipe\(\)\}\s*>\s*\{settingsCopy\.wipeButton\(\)\}\s*<\/Button>/,
+    );
+    // Never a styled() wrapper around the component.
+    assert.doesNotMatch(PAGE, /styled\(\s*Button\b/);
   });
 });

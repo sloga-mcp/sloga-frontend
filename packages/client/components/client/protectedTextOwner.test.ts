@@ -3837,6 +3837,181 @@ test("S4 protect B7: a ticked wipe that was not performed rejects wipe_not_done 
   await protect(kept.ops, kept.port, CH, [], 5, KEPT);
 });
 
+/** R-W4-42: a history harness whose verify always rejects. */
+const verifyFails = (server: ReturnType<typeof historyServer>) =>
+  harness({
+    routes: server.routes,
+    invoke: {
+      ...historyNative(),
+      [VERIFY]: () => {
+        throw { type: "seat_list_invalid", channel_id: CH, reason: "test" };
+      },
+    },
+    formatsV2: true,
+    historySetting: true,
+  });
+
+test("S4 protect R-W4-42 unticked: once the read-back shows the genesis landed, a failed verify or group create rejects protected_members_unconfirmed and no member step runs", async () => {
+  const unconfirmed = {
+    source: "client",
+    reason: "protected_members_unconfirmed",
+  };
+  // A fresh protect: the genesis lands, then its verify rejects.
+  const server = historyServer();
+  const h = verifyFails(server);
+  await assert.rejects(protect(h.ops, h.port, CH, [BOB], 5, KEPT), unconfirmed);
+  assert.equal(server.state.list?.body, boundaryGenesis(MSG1).body);
+  assert.equal(h.trace[h.trace.length - 1], VERIFY);
+  assert.equal(count(h, SIGN), 1, "only the genesis was signed");
+  assert.equal(count(h, SEATS_PUT), 0);
+  assert.equal(createdGroups(h), 0);
+  assert.equal(h.store.size, 0);
+  // The cause is logged as an error, by its tag only.
+  const at = h.logs.findIndex(([, msg]) => /not finished/.test(msg));
+  assert.deepEqual(h.logs[at], [
+    "error",
+    "[protected] protected, the landed list not finished",
+  ]);
+  assert.deepEqual(h.logData[at], {
+    channelId: CH,
+    source: "native",
+    tag: "seat_list_invalid",
+  });
+
+  // The verify passes and the group create rejects.
+  _resetOwnerFlowsForTest();
+  const g = historyHarness(historyServer());
+  const noGroup: GroupOps = {
+    ...g.ops,
+    async createGroup() {
+      throw { type: "mls_error" };
+    },
+  };
+  await assert.rejects(
+    protect(noGroup, g.port, CH, [BOB], 5, KEPT),
+    unconfirmed,
+  );
+  assert.equal(count(g, VERIFY), 1);
+  assert.equal(count(g, SEATS_PUT), 0);
+
+  // A lost answer: the read-back after the re-send wait finds it landed.
+  _resetOwnerFlowsForTest();
+  const lost = verifyFails(
+    historyServer({ protectPuts: [{ land: res(500) }] }),
+  );
+  await assert.rejects(
+    protect(lost.ops, lost.port, CH, [BOB], 5, KEPT),
+    unconfirmed,
+  );
+  assert.equal(count(lost, PROTECT_PUT), 1);
+
+  // A stored genesis from an earlier call that had landed, with no opts.
+  _resetOwnerFlowsForTest();
+  const g1 = boundaryGenesis(MSG1);
+  const resumed = verifyFails(historyServer({ list: g1 }));
+  resumed.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({ v: 2, op: "protect", geneses: [g1], wipe: false }),
+  );
+  await assert.rejects(
+    protect(resumed.ops, resumed.port, CH, [BOB], 5),
+    unconfirmed,
+  );
+  assert.equal(count(resumed, SIGN), 0);
+  assert.equal(resumed.store.size, 0);
+
+  // Not landed: the rejection stays what it was. The server refuses the
+  // PUT and holds no list: a failed protect.
+  _resetOwnerFlowsForTest();
+  const foreign = historyServer({
+    protectPuts: [res(409, { type: "AlreadyProtected" })],
+  });
+  const f = verifyFails(foreign);
+  await assert.rejects(protect(f.ops, f.port, CH, [BOB], 5, KEPT), {
+    source: "client",
+    reason: "protect_failed",
+  });
+  assert.equal(count(f, VERIFY), 0);
+  // And the S2 flow (no opts, no boundary) keeps its own rejection.
+  _resetOwnerFlowsForTest();
+  const s2 = genesis();
+  const plain = harness({
+    routes: protectRoutes(s2, [res(200)]),
+    invoke: {
+      [SIGN]: () => s2,
+      [VERIFY]: () => {
+        throw { type: "seat_list_invalid", channel_id: CH, reason: "test" };
+      },
+    },
+    formatsV2: true,
+    historySetting: true,
+  });
+  await assert.rejects(protect(plain.ops, plain.port, CH, [BOB], 5), {
+    source: "native",
+    error: { type: "seat_list_invalid", channel_id: CH, reason: "test" },
+  });
+  // Another flow that finds the stored genesis landed keeps its rejection.
+  _resetOwnerFlowsForTest();
+  const other = verifyFails(historyServer({ list: g1 }));
+  other.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({ v: 2, op: "protect", geneses: [g1], wipe: false }),
+  );
+  await assert.rejects(setSeats(other.ops, other.port, CH, [ME, BOB], 5), {
+    source: "native",
+    error: { type: "seat_list_invalid", channel_id: CH, reason: "test" },
+  });
+});
+
+test("S4 protect R-W4-42 ticked: a landed genesis whose finish fails rejects protected_members_unconfirmed when it says wiped, and wipe_not_done_members_unconfirmed when it does not", async () => {
+  // This call's wiped genesis landed: the wipe is on the list.
+  const server = historyServer();
+  const h = verifyFails(server);
+  await assert.rejects(protect(h.ops, h.port, CH, [BOB], 5, WIPED), {
+    source: "client",
+    reason: "protected_members_unconfirmed",
+  });
+  assert.equal(lineOf(server.state.list!.body, "pre_history"), "wiped");
+  assert.deepEqual(
+    puts(h).map((p) => (p.body as { wipe_history?: unknown }).wipe_history),
+    [true],
+  );
+  assert.equal(count(h, SEATS_PUT), 0);
+  assert.equal(h.store.size, 0);
+
+  // A stored KEPT genesis that had landed, and this call ticked the wipe:
+  // the wipe is not on the list, and the caller hears both.
+  _resetOwnerFlowsForTest();
+  const g1 = boundaryGenesis(MSG1);
+  const keptServer = historyServer({ list: g1 });
+  const resumed = verifyFails(keptServer);
+  resumed.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({ v: 2, op: "protect", geneses: [g1], wipe: false }),
+  );
+  await assert.rejects(
+    protect(resumed.ops, resumed.port, CH, [BOB], 5, WIPED),
+    { source: "client", reason: "wipe_not_done_members_unconfirmed" },
+  );
+  assert.equal(lineOf(keptServer.state.list!.body, "pre_history"), "kept");
+  assert.equal(count(resumed, SIGN), 0);
+  assert.equal(puts(resumed).length + posts(resumed).length, 0);
+  const at = resumed.logs.findIndex(([, msg]) => /not finished/.test(msg));
+  assert.deepEqual(resumed.logData[at], {
+    channelId: CH,
+    source: "native",
+    tag: "seat_list_invalid",
+  });
+
+  // The same with nobody picked: still not an ordinary failure.
+  _resetOwnerFlowsForTest();
+  const alone = verifyFails(historyServer());
+  await assert.rejects(protect(alone.ops, alone.port, CH, [], 5, WIPED), {
+    source: "client",
+    reason: "protected_members_unconfirmed",
+  });
+});
+
 test("S4 sign errors: a boundary ahead of the clock is clock_behind; an S4 argument native calls invalid is logged as an error and passed on", async () => {
   const future = historyHarness(historyServer(), {
     sign: () => {

@@ -15,6 +15,7 @@ import {
   type HistoryVerifyInput,
   type ProtectDraft,
   HISTORY_CHECK_LINE_MS,
+  historyCheckFailedShown,
   historyCheckWaitMs,
   historyCheckingShown,
   historyFailureKind,
@@ -816,4 +817,90 @@ test("FXO RB6: the wait for the page's timer is what is left of HISTORY_CHECK_LI
       true,
     );
   }
+});
+
+test("FX3O FF6: historyCheckFailedShown is true only for an asked channel native still has not loaded once HISTORY_CHECK_LINE_MS have passed", () => {
+  const asks = historyVerifyStep(NO_ASKS, UNVERIFIED).asks;
+  const at = (now: unknown) =>
+    historyCheckFailedShown(asks, { ...UNVERIFIED, now });
+  // While the checking line shows: not yet.
+  assert.equal(at(1_000), false);
+  assert.equal(at(1_000 + HISTORY_CHECK_LINE_MS - 1), false);
+  // From the moment the page's timer ends, and for good.
+  assert.equal(at(1_000 + HISTORY_CHECK_LINE_MS), true);
+  assert.equal(at(1_000 + 10 * HISTORY_CHECK_LINE_MS), true);
+  // Not asked for: no line.
+  assert.equal(
+    historyCheckFailedShown(NO_ASKS, { ...UNVERIFIED, now: 9e9 }),
+    false,
+  );
+  assert.equal(
+    historyCheckFailedShown(asks, {
+      ...UNVERIFIED,
+      channelId: CH_B,
+      now: 9e9,
+    }),
+    false,
+  );
+  // A clock that went back, or is unreadable: no line.
+  assert.equal(at(999), false);
+  for (const now of [undefined, null, "9000000", Number.NaN, Infinity]) {
+    assert.equal(at(now), false, String(now));
+  }
+});
+
+test("FX3O FF6: the couldn't-check line never shows with the checking line, with a result, with the flag off or to anyone but the owner", () => {
+  const asks = historyVerifyStep(NO_ASKS, UNVERIFIED).asks;
+  const late = 1_000 + HISTORY_CHECK_LINE_MS;
+  // At every time exactly one of the two lines shows, or neither.
+  for (const waited of [0, 1, 19_999, 20_000, 20_001, 9e6]) {
+    const input = { ...UNVERIFIED, now: 1_000 + waited };
+    const checking = historyCheckingShown(asks, input);
+    const failed = historyCheckFailedShown(asks, input);
+    assert.equal(checking && failed, false, String(waited));
+    assert.equal(checking || failed, true, String(waited));
+    assert.equal(failed, waited >= HISTORY_CHECK_LINE_MS, String(waited));
+  }
+  // A result came (native loaded the channel, verified or not), or the
+  // section shows: the line is gone, also long after the timer.
+  const gone: Partial<HistoryVerifyInput>[] = [
+    { nativeLoaded: true },
+    { nativeLoaded: undefined },
+    { nativeLoaded: null },
+    { nativeLoaded: "false" },
+    { modelKind: "owner" },
+    { modelKind: undefined },
+    { flag: false },
+    { flag: undefined },
+    { flag: "true" },
+    { isOwner: false },
+    { isOwner: undefined },
+    { canAct: false },
+    { channelId: "" },
+    { channelId: 5 },
+  ];
+  for (const over of gone) {
+    assert.equal(
+      historyCheckFailedShown(asks, { ...UNVERIFIED, now: late, ...over }),
+      false,
+      JSON.stringify(over),
+    );
+  }
+  // The line offers no history control: the model the controls come from
+  // is `none` for the same state.
+  const model = historySectionModel({
+    isOwner: true,
+    flag: true,
+    canAct: true,
+    native: null,
+    serverWipe: undefined,
+    busy: false,
+    storedChange: false,
+  });
+  assert.equal(model.kind, "none");
+  assert.equal(wipeClickAllowed(model), false);
+  assert.deepEqual(historyToggleClick(model, true), {
+    shown: false,
+    request: null,
+  });
 });

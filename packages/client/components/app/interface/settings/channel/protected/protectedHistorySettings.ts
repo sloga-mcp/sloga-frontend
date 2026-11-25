@@ -401,6 +401,28 @@ export function historyCheckingShown(
 }
 
 /**
+ * Whether the "couldn't check" line shows in place of the history section
+ * (final audit FF6): this page asked for the channel, the checking line's
+ * `HISTORY_CHECK_LINE_MS` are over, and native's state for it is still not
+ * loaded. Never together with the checking line, never with a model (the
+ * section and its controls show then, not this), and gone as soon as
+ * native's state loads. It offers nothing: the history controls need the
+ * verified state this line says is missing.
+ */
+export function historyCheckFailedShown(
+  asks: HistoryVerifyAsks,
+  i: HistoryVerifyInput,
+): boolean {
+  const id = verifyChannel(i);
+  if (id === null || i.modelKind !== "none") return false;
+  if (i.nativeLoaded !== false) return false;
+  const at = asks.get(id);
+  if (at === undefined) return false;
+  if (typeof i.now !== "number" || !Number.isFinite(i.now)) return false;
+  return i.now - at >= HISTORY_CHECK_LINE_MS;
+}
+
+/**
  * How long from `now` until the checking line of `channelId` ends, for the
  * page's one timer: `HISTORY_CHECK_LINE_MS` after the ask, whatever else
  * redraws the page in between (RB6). Null when there is nothing to wait

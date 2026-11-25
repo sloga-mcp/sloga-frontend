@@ -7589,6 +7589,10 @@ msgid "The channel is protected first, with only you in it. The members you pick
 msgstr "The channel is protected first, with only you in it. The members you pick are added right after."
 
 #: components/client/protectedCopy.ts
+msgid "Open polls are closed and scheduled messages are canceled when the channel is protected."
+msgstr "Open polls are closed and scheduled messages are canceled when the channel is protected."
+
+#: components/client/protectedCopy.ts
 msgid "Also delete the earlier messages"
 msgstr "Also delete the earlier messages"
 
@@ -7601,8 +7605,8 @@ msgid "New members can read earlier messages"
 msgstr "New members can read earlier messages"
 
 #: components/client/protectedCopy.ts
-msgid "People who join later can read messages sent while this is on, and so can a new device of anyone in the channel. Anyone in the channel can still share what they read."
-msgstr "People who join later can read messages sent while this is on, and so can a new device of anyone in the channel. Anyone in the channel can still share what they read."
+msgid "People who join later, and new devices of anyone in the channel, can read messages sent from shortly after this is turned on. Anyone in the channel can still share what they read."
+msgstr "People who join later, and new devices of anyone in the channel, can read messages sent from shortly after this is turned on. Anyone in the channel can still share what they read."
 
 #: components/client/protectedCopy.ts
 msgid "New members only see protected messages sent after they join. Messages from before this channel was protected stay readable to everyone in it."
@@ -7635,6 +7639,10 @@ msgstr "Earlier messages were deleted from Sloga's servers."
 #: components/client/protectedCopy.ts
 msgid "Earlier history couldn't be loaded right now. Try again later."
 msgstr "Earlier history couldn't be loaded right now. Try again later."
+
+#: components/client/protectedCopy.ts
+msgid "Couldn't check this channel's history settings."
+msgstr "Couldn't check this channel's history settings."
 
 #: components/client/protectedCopy.ts
 msgid "Move ownership key to another device"
@@ -10640,8 +10648,8 @@ msgid "Messages above weren't protected"
 msgstr "Messages above weren't protected"
 
 #: components/client/protectedCopy.ts
-msgid "Earlier unprotected messages were removed from this channel."
-msgstr "Earlier unprotected messages were removed from this channel."
+msgid "Earlier messages removed from this channel"
+msgstr "Earlier messages removed from this channel"
 
 #: components/modal/modals/AddFriendToGroup.tsx
 msgid "No other group chats to add them to."

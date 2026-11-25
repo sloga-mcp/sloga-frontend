@@ -23,6 +23,7 @@ import {
   type AuditTargetKind,
   AUDIT_FILTER_ACTIONS,
   KNOWN_AUDIT_ACTIONS,
+  auditFilterActions,
   auditValueText,
   describeAuditEntry,
   protectedAuditCopyArgs,
@@ -746,7 +747,64 @@ test("U6: the filter labels the protected actions through auditActionLabel", () 
   // The select lists the filter order and labels every item
   assert.match(
     page,
-    /<For each=\{AUDIT_FILTER_ACTIONS\}>\s*\{\(value\) => \(\s*<MenuItem value=\{value\}>\{actionLabel\(value\)\}<\/MenuItem>/,
+    /<For each=\{filterActions\(\)\}>\s*\{\(value\) => \(\s*<MenuItem value=\{value\}>\{actionLabel\(value\)\}<\/MenuItem>/,
+  );
+});
+
+test("FX3O FF1: the action filter offers the two protected actions only when the history flag is exactly true", () => {
+  const S4 = ["channel_protect", "channel_history_wipe"];
+  // Flag on: the full list, the two after the channel actions.
+  assert.equal(auditFilterActions(true), AUDIT_FILTER_ACTIONS);
+  // Flag off, absent, or anything that is not literally true: neither.
+  for (const off of [false, undefined, null, "true", 1, {}, []]) {
+    const list = auditFilterActions(off);
+    for (const action of S4) {
+      assert.equal(list.includes(action as AuditLogAction), false, action);
+    }
+    assert.deepEqual(
+      [...list],
+      AUDIT_FILTER_ACTIONS.filter((action) => !S4.includes(action)),
+      "every other action stays, in the same order",
+    );
+    assert.equal(list.length, 23);
+    assert.equal(list, auditFilterActions(false), "one array per answer");
+  }
+  // The filter is all the flag touches: both kinds stay known actions and
+  // an entry of either kind is described as before.
+  for (const action of S4) {
+    assert.ok(KNOWN_AUDIT_ACTIONS.includes(action as AuditLogAction), action);
+  }
+  for (const action of S4) {
+    const described = describeAuditEntry(
+      entry({ action: action as AuditLogAction }),
+    );
+    assert.equal(described.kind, action);
+    assert.equal(described.unknown, false);
+  }
+});
+
+test("FX3O FF1: the page builds the filter from auditFilterActions over the history flag, and nothing else on it reads the flag", () => {
+  const page = code(PAGE_SRC);
+  assert.match(
+    page,
+    /const historyFlag = \(\) => \{\s*try \{\s*const ui = protectedUiOf\(client\(\)\?\.e2ee\);\s*return ui\?\.protectedFlag\(\)\.historySetting === true;\s*\} catch \{\s*return false;\s*\}\s*\};/,
+  );
+  assert.match(
+    page,
+    /const filterActions = createMemo\(\(\) => auditFilterActions\(historyFlag\(\)\)\);/,
+  );
+  assert.equal((page.match(/\bhistoryFlag\(\)/g) ?? []).length, 1);
+  assert.equal((page.match(/\bfilterActions\(\)/g) ?? []).length, 1);
+  // The unconditional list is not used by the page any more.
+  assert.doesNotMatch(page, /\bAUDIT_FILTER_ACTIONS\b/);
+  // Picking a value and labelling it still know every action.
+  assert.match(
+    page,
+    /setAction\(KNOWN_AUDIT_ACTIONS\.find\(\(known\) => known === value\)\);/,
+  );
+  assert.match(
+    page,
+    /case "channel_protect":\s*case "channel_history_wipe":\s*return auditActionLabel\(value\);/,
   );
 });
 
