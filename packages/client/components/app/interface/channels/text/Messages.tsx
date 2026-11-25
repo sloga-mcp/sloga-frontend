@@ -75,6 +75,7 @@ import {
   splitUntrusted,
 } from "./e2eeTranscriptTrust";
 import { offersEncryptGroup } from "./encryptedOnlyInvite";
+import { restorableForList } from "./messageCacheLive";
 
 /**
  * Initial fetch limit
@@ -497,16 +498,20 @@ function newestFirst<T extends { id: string }>(lists: readonly T[][]): T[] {
  * fetched, and no such reload was spent since the list last got a row by
  * another route: a server that keeps answering with rows that are deleted
  * again gets one request, not a loop, and a channel that is really empty
- * has no row whose delete could ask again.
- * @param i Row counts around the delete, fetch state, reloads spent
+ * has no row whose delete could ask again. Never on an ordinary channel or
+ * DM: there an emptied list stays as it is.
+ * @param i Kind of list, row counts around the delete, fetch state, reloads
+ * spent
  * @returns Whether to call `caseInitialLoad`
  */
 function reloadAfterEmptied(i: {
+  protectedOrPinned: boolean;
   before: number;
   after: number;
   fetching: boolean;
   reloads: number;
 }): boolean {
+  if (i.protectedOrPinned !== true) return false;
   if (!(i.before > 0) || i.after !== 0) return false;
   if (i.fetching !== false) return false;
   return i.reloads === 0;
@@ -994,12 +999,14 @@ export function Messages(props: Props) {
   }
 
   /**
-   * After a delete: load the channel again when the delete emptied the list
-   * (`reloadAfterEmptied`), e.g. a wipe that removed every loaded row.
+   * After a delete: on a protected or pinned list, load the channel again
+   * when the delete emptied the list (`reloadAfterEmptied`), e.g. a wipe
+   * that removed every loaded row.
    * @param before Rows listed before the delete
    */
   function reloadIfEmptied(before: number) {
     const wanted = reloadAfterEmptied({
+      protectedOrPinned: protectedOrPinned(),
       before,
       after: messages().length,
       fetching: fetching() !== undefined,
@@ -1039,9 +1046,13 @@ export function Messages(props: Props) {
 
       // In an encrypted (or not yet known) conversation, a cached list that
       // holds a row this device did not decrypt is refused and refetched.
-      // Its marker is emitted once, after the merge below.
+      // Its marker is emitted once, after the merge below. A protected or
+      // pinned list never restores an entry with no rows.
       const restored = restorableForTrust(
-        cache!.unmanage(props.channel) ?? undefined,
+        restorableForList(
+          cache!.unmanage(props.channel) ?? undefined,
+          protectedOrPinned(),
+        ),
         currentTrust(),
         isTrustedMessage,
       );

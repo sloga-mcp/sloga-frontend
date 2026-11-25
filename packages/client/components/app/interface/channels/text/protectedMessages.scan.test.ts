@@ -592,6 +592,7 @@ const newestFirst =
 const reloadAfterEmptied =
   fn<
     (i: {
+      protectedOrPinned: boolean;
       before: number;
       after: number;
       fetching: boolean;
@@ -1753,10 +1754,31 @@ describe("FXU rows of another channel", () => {
     }
   });
 
-  it("FX2U: an empty cached list is refetched, and an empty page marks the start", () => {
-    // RC1: the cache hands an entry back only through restorableEntry
-    // (messageCacheLive.test.ts: no rows = not restorable) ...
+  it("FX3U: a cached list is restored only through the cache guard and the list's own step, and an empty page marks the start", () => {
+    // RC1 as narrowed by R-W4-43: the cache hands an entry back only through
+    // restorableEntry (messageCacheLive.test.ts: no rows = restorable only
+    // with `atStart`), which reads the position the list stored ...
     const cacheSource = readFileSync(join(here, "MessageCache.tsx"), "utf8");
+    assert.match(
+      cacheSource,
+      /type ChannelState = \{\s*messages: Message\[\];\s*atStart: boolean;/,
+    );
+    assert.match(
+      source,
+      /cache!\.manage\(channel, \{\s*messages: messages\(\),\s*atStart: atStart\(\),/,
+    );
+    // ... and the list drops an empty entry on a protected or pinned channel
+    // before anything else reads it (restorableForList, same spec file)
+    assert.match(
+      source,
+      /import \{ restorableForList \} from "\.\/messageCacheLive";/,
+    );
+    assert.equal(count(source, "cache!.unmanage("), 1);
+    assert.equal(count(source, "restorableForList("), 1);
+    assert.match(
+      bodyOf(/async function caseInitialLoad\(/),
+      /const restored = restorableForTrust\(\s*restorableForList\(\s*cache!\.unmanage\(props\.channel\) \?\? undefined,\s*protectedOrPinned\(\),\s*\),\s*currentTrust\(\),\s*isTrustedMessage,\s*\);\s*const existingState = restored\.entry;/,
+    );
     assert.match(
       cacheSource,
       /unmanage\(channel\) \{\s*if \(cache\[channel\.id\]\) \{\s*const state = cache\[channel\.id\];\s*delete cache\[channel\.id\];/,
@@ -1990,7 +2012,61 @@ describe("FXU history walk retry on load", () => {
 });
 
 describe("FXU emptied list", () => {
-  const idle = { before: 3, after: 0, fetching: false, reloads: 0 };
+  // A protected or pinned list: the only kind that reloads (R-W4-43)
+  const idle = {
+    protectedOrPinned: true,
+    before: 3,
+    after: 0,
+    fetching: false,
+    reloads: 0,
+  };
+  const guarded = (i: {
+    before: number;
+    after: number;
+    fetching: boolean;
+    reloads: number;
+  }) => reloadAfterEmptied({ protectedOrPinned: true, ...i });
+
+  it("FX3U: an ordinary channel: deleting the last listed row does not reload", () => {
+    const ordinary = { ...idle, protectedOrPinned: false };
+    assert.equal(reloadAfterEmptied(ordinary), false);
+    // Whatever the counts, the fetch state and the budget say
+    for (const before of [1, 2, 3, 150]) {
+      for (const reloads of [0, 1]) {
+        assert.equal(
+          reloadAfterEmptied({ ...ordinary, before, reloads }),
+          false,
+        );
+      }
+    }
+    // Only a literal true is a protected or pinned list
+    for (const value of [undefined, null, 1, "true"]) {
+      assert.equal(
+        reloadAfterEmptied({ ...idle, protectedOrPinned: value as never }),
+        false,
+      );
+    }
+    // The same delete on a protected or pinned list does reload
+    assert.equal(reloadAfterEmptied(idle), true);
+
+    // The list passes what the SDK says about its own channel, read at the
+    // delete, and the helper has no other way to a load
+    const helper = bodyOf(/function reloadIfEmptied\(before: number\)/);
+    assert.match(
+      helper,
+      /reloadAfterEmptied\(\{\s*protectedOrPinned: protectedOrPinned\(\),/,
+    );
+    assert.equal(count(helper, "caseInitialLoad("), 1);
+    assert.match(
+      bodyOf(/function protectedOrPinned\(\): boolean/),
+      /^\{\s*return client\(\)\.isProtectedChannel\(props\.channel\.id\);\s*\}$/,
+    );
+    // The gate is the first thing the rule reads
+    assert.match(
+      bodyOf(/function reloadAfterEmptied\(i: \{/),
+      /^\{\s*if \(i\.protectedOrPinned !== true\) return false;/,
+    );
+  });
 
   it("FXU: a delete that empties the list asks for a fresh load", () => {
     assert.equal(reloadAfterEmptied(idle), true);
@@ -2019,9 +2095,7 @@ describe("FXU emptied list", () => {
     for (let round = 0; round < 1_000; round++) {
       const before = listed;
       listed = 0;
-      if (
-        reloadAfterEmptied({ before, after: listed, fetching: false, reloads })
-      ) {
+      if (guarded({ before, after: listed, fetching: false, reloads })) {
         reloads++;
         requests++;
         listed = 3;
@@ -2037,9 +2111,7 @@ describe("FXU emptied list", () => {
     for (let round = 0; round < 1_000; round++) {
       const before = listed;
       listed = 0;
-      if (
-        reloadAfterEmptied({ before, after: listed, fetching: false, reloads })
-      ) {
+      if (guarded({ before, after: listed, fetching: false, reloads })) {
         reloads++;
         requests++;
       }
@@ -2047,7 +2119,7 @@ describe("FXU emptied list", () => {
     assert.equal(requests, 1);
     // Even with the budget back, an empty list asks for nothing
     assert.equal(
-      reloadAfterEmptied({ before: 0, after: 0, fetching: false, reloads: 0 }),
+      guarded({ before: 0, after: 0, fetching: false, reloads: 0 }),
       false,
     );
     assert.equal(reloadAfterEmptied({ ...idle, reloads: 1 }), false);
@@ -2058,7 +2130,7 @@ describe("FXU emptied list", () => {
     const helper = bodyOf(/function reloadIfEmptied\(before: number\)/);
     assert.match(
       helper,
-      /const wanted = reloadAfterEmptied\(\{\s*before,\s*after: messages\(\)\.length,\s*fetching: fetching\(\) !== undefined,\s*reloads: emptiedReloads,\s*\}\);/,
+      /const wanted = reloadAfterEmptied\(\{\s*protectedOrPinned: protectedOrPinned\(\),\s*before,\s*after: messages\(\)\.length,\s*fetching: fetching\(\) !== undefined,\s*reloads: emptiedReloads,\s*\}\);/,
     );
     assert.match(
       helper,
