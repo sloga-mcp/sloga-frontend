@@ -18,12 +18,19 @@
 //      history flag never reaches the seam, and a failed flag fetch never
 //      disposes (an answered `enabled: false` does, off Tauri, through the
 //      platform apply); the backup and UI pass-throughs keep their shape.
+//   F. FT4: the REAL `#protectedDispose` / `disposeProtected` and the
+//      stored-history members, lifted from `e2ee.ts` with their types
+//      stripped: a sign-out with no manager deletes this user's history
+//      lines by key prefix (the manager's own prefix, pinned against the
+//      real `forgetHistoryLines`); with a manager only the manager clears;
+//      any other dispose deletes nothing.
 //
 // `E2EE_SEAM_TS` swaps in another e2ee.ts for the controls.
 //
 // Run: node --conditions=browser --test components/client/e2eeProtectedHistorySeam.test.ts
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -32,7 +39,12 @@ import ts from "typescript";
 
 import { ProtectedHistoryState } from "../../../stoat.js/src/lib/protectedHistory.ts";
 
+import { errorName } from "./e2eeSendSettle.ts";
 import { type FlagState, reduceFlag } from "./protectedPlatform.ts";
+import {
+  PROTECTED_HISTORY_EPOCH_KEY_PREFIX,
+  ProtectedTextManager,
+} from "./protectedText.ts";
 
 import {
   type HistoryPolicy,
@@ -1248,6 +1260,313 @@ test("e2ee.ts (RA5): a sign-out dispose forgets the stored history lines on the 
   assert.deepEqual(
     teardown.body.statements.slice(0, 2).map((s) => code(s)),
     ["this.#ptSignedOut=true;", "this.#protectedDispose();"],
+  );
+});
+
+// ---- F. FT4: the sign-out without a manager ------------------------------------
+
+/** A `localStorage` stand-in that counts every touch and can throw. */
+class FakeStorage {
+  readonly map = new Map<string, string>();
+  touches = 0;
+  failWith: unknown = null;
+  /** Throw only from `removeItem` (a half-done scan). */
+  failRemove = false;
+  constructor(keys: readonly string[]) {
+    for (const key of keys) this.map.set(key, "v");
+  }
+  #touch(): void {
+    this.touches++;
+    if (this.failWith !== null && !this.failRemove) throw this.failWith;
+  }
+  get length(): number {
+    this.#touch();
+    return this.map.size;
+  }
+  key(i: number): string | null {
+    this.#touch();
+    return [...this.map.keys()][i] ?? null;
+  }
+  getItem(key: string): string | null {
+    this.#touch();
+    return this.map.get(key) ?? null;
+  }
+  setItem(key: string, value: string): void {
+    this.#touch();
+    this.map.set(key, value);
+  }
+  removeItem(key: string): void {
+    this.#touch();
+    if (this.failRemove) throw this.failWith;
+    this.map.delete(key);
+  }
+  keys(): string[] {
+    return [...this.map.keys()].sort();
+  }
+}
+
+type DisposeRig = {
+  setManager(m: unknown): void;
+  /** `disposeProtected`: the sign-out hook and `E2EEBridge.dispose()`. */
+  signOut(): void;
+  /** `#protectedDispose` alone: a wipe, a flag change, a device change. */
+  drop(): void;
+  prefix(userId: string): string;
+  reveals: number;
+  cleared: number;
+};
+
+/**
+ * The REAL `#protectedDispose`, `disposeProtected`,
+ * `#protectedForgetStoredHistory` and `#protectedHistoryLinePrefix`, lifted
+ * from the scanned source with their types stripped, over a fake
+ * `localStorage`. The rest of the bridge is plain fields.
+ */
+function disposeRig(
+  storage: FakeStorage,
+  user: { id: string } | undefined,
+  errors: unknown[][] = [],
+): DisposeRig {
+  const members = [
+    "#protectedDispose",
+    "disposeProtected",
+    "#protectedForgetStoredHistory",
+    "#protectedHistoryLinePrefix",
+  ].map((name) => bridgeMember(name).getText(SF));
+  const src = `class DisposeRig {
+  #ptManager = null;
+  #ptManagerKey = null;
+  #ptForwarded = new Set();
+  #ptStripped = new Set();
+  #ptLife = null;
+  #ptOwnListing = { clear() {} };
+  #ptServerKeyPackages = 0;
+  #ptPending = new Map();
+  #ptSignedOut = false;
+  #storeOwnerRetryTimer = null;
+  reveals = 0;
+  cleared = 0;
+  #client = {
+    user: USER,
+    clearAllPreProtectReveals: () => { this.reveals++; },
+  };
+  protectedChannels = { clear: () => { this.cleared++; } };
+  protectedViews = { clear() {} };
+  protectedTimelineMarkers = { clear() {} };
+  protectedToast = { clear() {} };
+  setManager(m) { this.#ptManager = m; this.#ptManagerKey = "U:D"; }
+  signOut() { this.disposeProtected(); }
+  drop() { this.#protectedDispose(); }
+  prefix(userId) { return this.#protectedHistoryLinePrefix(userId); }
+  ${members.join("\n  ")}
+}`;
+  const Cls = new Function(
+    "USER",
+    "globalThis",
+    "PROTECTED_HISTORY_EPOCH_KEY_PREFIX",
+    "errorName",
+    "console",
+    "clearTimeout",
+    `${stripTypeScriptTypes(src)}\nreturn DisposeRig;`,
+  )(
+    user,
+    { localStorage: storage },
+    PROTECTED_HISTORY_EPOCH_KEY_PREFIX,
+    errorName,
+    { error: (...a: unknown[]) => errors.push(a), warn: () => {} },
+    () => {},
+  );
+  return new Cls() as DisposeRig;
+}
+
+/** A manager stand-in recording what the dispose asked of it. */
+function managerStub(): { calls: string[]; manager: unknown } {
+  const calls: string[] = [];
+  return {
+    calls,
+    manager: {
+      forgetHistoryLines: () => calls.push("forgetHistoryLines"),
+      dispose: () => calls.push("dispose"),
+    },
+  };
+}
+
+const EP = PROTECTED_HISTORY_EPOCH_KEY_PREFIX;
+// U1's lines, then keys that must stay: another user's lines (two whose id
+// starts with "U1"), U1's keys of other kinds, and keys with no user at all.
+const U1_LINES = [`${EP}U1:C1`, `${EP}U1:C2`, `${EP}U1:`];
+const KEEP = [
+  `${EP}U2:C1`,
+  `${EP}U10:C1`,
+  `${EP}U1X:C1`,
+  `${EP}u1:C1`,
+  `protected-send:U1:C1:k`,
+  `protected-welcome-refusal-pace:U1:C1`,
+  `protected-recovery-refused:U1:C1`,
+  `x${EP}U1:C1`,
+  "protected-history-epoch",
+  "unrelated",
+];
+
+test("FT4: the bridge's prefix is the manager's own, read off the real forgetHistoryLines", () => {
+  const rig = disposeRig(new FakeStorage([]), { id: "U1" });
+  for (const userId of ["U1", "01J0000000000000000000000A", "a:b"]) {
+    const asked: string[] = [];
+    const port = {
+      selfUserId: userId,
+      storeKeys: (prefix: string) => {
+        asked.push(prefix);
+        return [];
+      },
+      store: { get: () => null, set: () => true, delete: () => {} },
+      log: () => {},
+    };
+    const manager = new ProtectedTextManager(
+      port as unknown as ConstructorParameters<typeof ProtectedTextManager>[0],
+      {} as ConstructorParameters<typeof ProtectedTextManager>[1],
+      {} as ConstructorParameters<typeof ProtectedTextManager>[2],
+    );
+    manager.forgetHistoryLines();
+    assert.deepEqual(asked, [rig.prefix(userId)], userId);
+  }
+  assert.equal(rig.prefix("U1"), "protected-history-epoch:U1:");
+});
+
+test("FT4: the bridge deletes exactly the keys the manager deletes for the same user", () => {
+  const all = [...U1_LINES, ...KEEP];
+  // The manager over its port's key scan and delete (as `#protectedPort`).
+  const viaManager = new FakeStorage(all);
+  const port = {
+    selfUserId: "U1",
+    storeKeys: (prefix: string) =>
+      viaManager.keys().filter((key) => key.startsWith(prefix)),
+    store: {
+      get: () => null,
+      set: () => true,
+      delete: (key: string) => viaManager.removeItem(key),
+    },
+    log: () => {},
+  };
+  new ProtectedTextManager(
+    port as unknown as ConstructorParameters<typeof ProtectedTextManager>[0],
+    {} as ConstructorParameters<typeof ProtectedTextManager>[1],
+    {} as ConstructorParameters<typeof ProtectedTextManager>[2],
+  ).forgetHistoryLines();
+  const viaBridge = new FakeStorage(all);
+  disposeRig(viaBridge, { id: "U1" }).signOut();
+  assert.deepEqual(viaBridge.keys(), viaManager.keys());
+  assert.deepEqual(viaBridge.keys(), [...KEEP].sort());
+});
+
+test("FT4: a sign-out with no manager deletes this user's lines and nothing else", () => {
+  const storage = new FakeStorage([...U1_LINES, ...KEEP]);
+  const errors: unknown[][] = [];
+  const rig = disposeRig(storage, { id: "U1" }, errors);
+  rig.signOut();
+  assert.deepEqual(storage.keys(), [...KEEP].sort());
+  assert.deepEqual(errors, []);
+  // The rest of the teardown ran as before.
+  assert.equal(rig.reveals, 1);
+  assert.equal(rig.cleared, 1);
+  // Idempotent: a second hook finds nothing more to delete.
+  rig.signOut();
+  assert.deepEqual(storage.keys(), [...KEEP].sort());
+});
+
+test("FT4: a manager dropped by a wipe or a flag change, then a sign-out: the bridge deletes", () => {
+  const storage = new FakeStorage([...U1_LINES, ...KEEP]);
+  const rig = disposeRig(storage, { id: "U1" });
+  const m = managerStub();
+  rig.setManager(m.manager);
+  rig.drop();
+  assert.deepEqual(m.calls, ["dispose"], "a plain dispose never forgets");
+  assert.equal(storage.touches, 0, "and touches no storage");
+  rig.signOut();
+  assert.deepEqual(m.calls, ["dispose"], "the dropped manager is not asked");
+  assert.deepEqual(storage.keys(), [...KEEP].sort());
+});
+
+test("FT4: a sign-out with a manager goes through forgetHistoryLines once, the bridge does not scan", () => {
+  const storage = new FakeStorage([...U1_LINES, ...KEEP]);
+  const rig = disposeRig(storage, { id: "U1" });
+  const m = managerStub();
+  rig.setManager(m.manager);
+  rig.signOut();
+  assert.deepEqual(m.calls, ["forgetHistoryLines", "dispose"]);
+  assert.equal(storage.touches, 0, "no second path on this dispose");
+  assert.deepEqual(storage.keys(), [...U1_LINES, ...KEEP].sort());
+  // The sign-out hook and then E2EEBridge.dispose(): the manager is gone by
+  // the second call, which scans by prefix; the manager is not asked again.
+  rig.signOut();
+  assert.deepEqual(m.calls, ["forgetHistoryLines", "dispose"]);
+  assert.deepEqual(storage.keys(), [...KEEP].sort());
+});
+
+test("FT4: a dispose that is not a sign-out deletes nothing, with or without a manager", () => {
+  const storage = new FakeStorage([...U1_LINES, ...KEEP]);
+  const rig = disposeRig(storage, { id: "U1" });
+  rig.drop();
+  const m = managerStub();
+  rig.setManager(m.manager);
+  rig.drop();
+  rig.drop();
+  assert.deepEqual(m.calls, ["dispose"]);
+  assert.equal(storage.touches, 0);
+  assert.deepEqual(storage.keys(), [...U1_LINES, ...KEEP].sort());
+  assert.equal(rig.reveals, 3);
+});
+
+test("FT4: no signed-in user: nothing is touched", () => {
+  for (const user of [undefined, { id: "" }]) {
+    const storage = new FakeStorage([...U1_LINES, ...KEEP]);
+    disposeRig(storage, user).signOut();
+    assert.equal(storage.touches, 0, JSON.stringify(user));
+    assert.deepEqual(storage.keys(), [...U1_LINES, ...KEEP].sort());
+  }
+});
+
+test("FT4: unreadable storage: one log line with the error name only, the teardown goes on", () => {
+  // The message names a key and a user: neither may reach the log.
+  const failure = new Error("secret U1 protected-history-epoch:U1:C1");
+  failure.name = "SecurityError";
+  for (const failRemove of [false, true]) {
+    const storage = new FakeStorage([...U1_LINES, ...KEEP]);
+    storage.failWith = failure;
+    storage.failRemove = failRemove;
+    const errors: unknown[][] = [];
+    const rig = disposeRig(storage, { id: "U1" }, errors);
+    assert.doesNotThrow(() => rig.signOut());
+    assert.deepEqual(errors, [
+      ["[protected] stored history clear failed", "SecurityError"],
+    ]);
+    assert.equal(rig.reveals, 1, "reveals still cleared");
+    assert.equal(rig.cleared, 1, "views still dropped");
+  }
+});
+
+test("e2ee.ts (FT4): the stored-history delete has one call site, in the dispose, under !manager and the sign-out latch", () => {
+  const calls = callsOf("#protectedForgetStoredHistory");
+  assert.equal(calls.length, 1);
+  assert.equal(memberOf(calls[0]), "#protectedDispose");
+  const dispose = bridgeMember("#protectedDispose");
+  assert.ok(ts.isMethodDeclaration(dispose) && dispose.body);
+  const statements = dispose.body.statements.map((s) => code(s));
+  const at = statements.indexOf(
+    "if(!manager&&this.#ptSignedOut)this.#protectedForgetStoredHistory();",
+  );
+  assert.ok(at >= 0, "guarded, a top-level statement of the dispose");
+  const forget = statements.findIndex((s) =>
+    s.includes("manager.forgetHistoryLines()"),
+  );
+  assert.equal(at, forget + 1, "straight after the manager's path");
+  // The prefix is built in one place, from the manager's exported constant.
+  const prefixes = callsOf("#protectedHistoryLinePrefix");
+  assert.equal(prefixes.length, 1);
+  assert.equal(memberOf(prefixes[0]), "#protectedForgetStoredHistory");
+  assert.equal(
+    code(bridgeMember("#protectedHistoryLinePrefix")),
+    "#protectedHistoryLinePrefix(userId:string):string{" +
+      "return`${PROTECTED_HISTORY_EPOCH_KEY_PREFIX}${userId}:`;}",
   );
 });
 

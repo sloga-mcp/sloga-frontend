@@ -203,6 +203,7 @@ import { toProtectedSendError } from "./protectedSendError";
 import {
   type ProtectedTextHistoryDeps,
   type ProtectedTextManagerExtraCallbacks,
+  PROTECTED_HISTORY_EPOCH_KEY_PREFIX,
   ProtectedTextManager,
 } from "./protectedText";
 import { TextIdIndex } from "./protectedTextIds";
@@ -10551,6 +10552,9 @@ export class E2EEBridge implements E2EEAdapter {
         console.error("[protected] history clear failed", errorName(error));
       }
     }
+    // FT4: a sign-out with no manager to ask (never built, or dropped by a
+    // wipe or a flag change) deletes the lines by this user's key prefix.
+    if (!manager && this.#ptSignedOut) this.#protectedForgetStoredHistory();
     if (manager) {
       try {
         manager.dispose();
@@ -10569,6 +10573,39 @@ export class E2EEBridge implements E2EEAdapter {
     this.protectedViews.clear();
     this.protectedTimelineMarkers.clear();
     this.protectedToast.clear();
+  }
+
+  /**
+   * The key prefix of one user's stored history lines: the prefix the
+   * manager's `forgetHistoryLines` scans (`<prefix><userId>:<channelId>`).
+   */
+  #protectedHistoryLinePrefix(userId: string): string {
+    return `${PROTECTED_HISTORY_EPOCH_KEY_PREFIX}${userId}:`;
+  }
+
+  /**
+   * FT4: the sign-out path when no manager is there. Every stored history
+   * line of this user is deleted by key prefix; another user's lines and
+   * every other key stay. Logs the error name only.
+   */
+  #protectedForgetStoredHistory(): void {
+    const userId = this.#client.user?.id;
+    if (!userId) return;
+    try {
+      const prefix = this.#protectedHistoryLinePrefix(userId);
+      const storage = globalThis.localStorage;
+      const keys: string[] = [];
+      for (let i = 0; i < storage.length; i++) {
+        const key = storage.key(i);
+        if (key !== null && key.startsWith(prefix)) keys.push(key);
+      }
+      for (const key of keys) storage.removeItem(key);
+    } catch (error) {
+      console.error(
+        "[protected] stored history clear failed",
+        errorName(error),
+      );
+    }
   }
 
   /**
