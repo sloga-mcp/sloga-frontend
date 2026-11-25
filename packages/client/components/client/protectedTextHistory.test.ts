@@ -2323,7 +2323,7 @@ test("older shell (R-W4-33): a missing import command latches history off; befor
   const answers: unknown[] = [
     "Command e2ee_text_history_import not found",
     "Command e2ee_text_history_import not allowed by ACL",
-    new TypeError("native.e2eeTextHistoryImport is not a function"),
+    "e2ee_text_history_import not allowed. Command not found",
     { type: "invalid_argument", field: "command" },
     { type: "invalid_argument", field: "name" },
     { code: "UNIMPLEMENTED" },
@@ -2466,7 +2466,7 @@ test("older shell (R-W4-33): a row an earlier walk left pending is settled by th
   assert.equal(env.views.get(CH)?.historyWalk, "retry_later");
   assert.equal(env.logged("error", /history command missing/).length, 0);
   // Then the shell answers "no such command" to the next page's walk.
-  env.importFail = "command e2ee_text_history_import not found";
+  env.importFail = "Command e2ee_text_history_import not found";
   m.decryptHistory(CH, [row("R6", 6)]);
   await env.advance(0);
   assert.equal(imports(env).length, 2);
@@ -2486,7 +2486,7 @@ test("older shell (R-W4-33): a missing link build command latches history off to
   shallow(env);
   env.oldest.set(G0, 10);
   env.handlers.e2ee_text_history_link_build = () => {
-    throw "command e2ee_text_history_link_build not found";
+    throw "Command e2ee_text_history_link_build not found";
   };
   const m = await ready(env);
   m.onEnvelope(envelope("E21", 21));

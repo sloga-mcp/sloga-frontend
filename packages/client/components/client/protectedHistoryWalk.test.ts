@@ -1652,16 +1652,68 @@ const MISSING_BY_BRIDGE: Record<string, unknown[]> = {
       code: "UNIMPLEMENTED",
     }),
   ],
-  // An untyped text that names the command, however it is spelled
-  named: [
-    new TypeError("native.e2eeTextHistoryImport is not a function"),
-    new TypeError("e2ee.textHistoryLinkBuild is not a function"),
-    new Error("command e2ee_text_history_import not found"),
-    { message: "e2ee_text_history_link_build is not implemented" },
+  // Tauri's text, whole, carried as a `message`
+  tauri_message: [
+    new Error("Command e2ee_text_history_import not found"),
+    { message: "e2ee_text_history_link_build not allowed. Command not found" },
   ],
 };
 
 const MISSING_COMMAND: unknown[] = Object.values(MISSING_BY_BRIDGE).flat();
+
+/** The Tauri texts of `MISSING_BY_BRIDGE.tauri`, each command and shape. */
+const TAURI_MISSING_TEXTS = MISSING_BY_BRIDGE.tauri as string[];
+
+/**
+ * D1: Tauri's argument error names the command and quotes the value it
+ * refused, which the server wrote (a link row's `prev_epoch`). The first
+ * two are the reviewer's probe, verbatim.
+ */
+const TAURI_ARGUMENT_ERRORS: string[] = [
+  'invalid args `steps` for command `e2ee_text_history_import`: invalid type: string "not found", expected i64 at line 1 column 300',
+  'invalid args `candidates` for command `e2ee_text_history_link_build`: invalid type: string "not allowed", expected i64 at line 1 column 90',
+  'invalid args `steps` for command `e2ee_text_history_import`: invalid type: string "Command e2ee_text_history_import not found", expected i64 at line 1 column 44',
+  'invalid args `steps` for command `e2ee_text_history_import`: invalid type: string "is not a function", expected i64 at line 1 column 9',
+];
+
+/**
+ * D1: what an argument error, or a text that only looks like a missing
+ * command, gives on each bridge. None says the shell lacks the command.
+ */
+const ARGUMENT_ERRORS_AND_LOOKALIKES: unknown[] = [
+  ...TAURI_ARGUMENT_ERRORS,
+  ...TAURI_ARGUMENT_ERRORS.map((text) => new Error(text)),
+  ...TAURI_ARGUMENT_ERRORS.map((message) => ({ message })),
+  // Electron: the napi `parse` answers a malformed argument typed, `args`
+  { type: "invalid_argument", field: "args" },
+  { source: "native", error: { type: "invalid_argument", field: "args" } },
+  // Electron: a throw in the main process reaches the page wrapped by
+  // `ipcRenderer.invoke`, never as Tauri's whole text
+  new Error(
+    "Error invoking remote method 'e2ee': Error: Command e2ee_text_history_import not found",
+  ),
+  // A Tauri text with anything before or after it
+  ...TAURI_MISSING_TEXTS.flatMap((text) => [
+    `${text}\n`,
+    ` ${text}`,
+    `${text} `,
+    `${text}.`,
+    `x${text}`,
+    `${text} at line 1 column 3`,
+    text.toLowerCase(),
+    text.toUpperCase(),
+  ]),
+  "Command `e2ee_text_history_import` not found",
+  "Command e2ee_text_history_importx not found",
+  "Command e2ee-text-history-import not found",
+  "Command e2eeTextHistoryImport not found",
+  "e2ee_text_history_import not allowed. Permissions associated with this command: default",
+  // No bridge answers a missing history command with these
+  new TypeError("native.e2eeTextHistoryImport is not a function"),
+  new TypeError("e2ee.textHistoryLinkBuild is not a function"),
+  new Error("command e2ee_text_history_import not found"),
+  { message: "e2ee_text_history_link_build is not implemented" },
+];
 
 /**
  * FT8: an untyped "not found" (and the like) that names no history command.
@@ -1719,6 +1771,7 @@ const NOT_MISSING_COMMAND: unknown[] = [
   { type: "invalid_argument", field: "__cmd" },
   { type: "invalid_argument", field: "args" },
   ...UNRELATED_NOT_FOUND,
+  ...ARGUMENT_ERRORS_AND_LOOKALIKES,
 ];
 
 test("isMissingCommandError: the missing-command answers, and nothing typed otherwise", () => {
@@ -1763,6 +1816,88 @@ test("runWalk (FT8): an unrelated not found from the bridge is a retry, never un
       label,
     );
   }
+});
+
+test("isMissingCommandError (D1): an argument error or a lookalike text naming a history command does not count", () => {
+  assert.equal(TAURI_MISSING_TEXTS.length, 6);
+  for (const e of ARGUMENT_ERRORS_AND_LOOKALIKES) {
+    const label = `${JSON.stringify(e) ?? ""} ${String(e)}`;
+    assert.equal(isMissingCommandError(e), false, label);
+  }
+  // The reviewer's probe, verbatim: it names the command and says not found
+  const probe = TAURI_ARGUMENT_ERRORS[0];
+  assert.ok(probe.includes("e2ee_text_history_import"));
+  assert.ok(probe.includes("not found"));
+  assert.equal(isMissingCommandError(probe), false);
+});
+
+test("runWalk (D1): an argument error that quotes not found is a retry, never unsupported", async () => {
+  for (const thrown of ARGUMENT_ERRORS_AND_LOOKALIKES) {
+    const label = `${JSON.stringify(thrown) ?? ""} ${String(thrown)}`;
+    const w = world({ links: chain(20, 1), throws: [thrown] });
+    const result = await runWalk(w.ports, { groupId: G, holderEpoch: 20 });
+    assert.equal(result.end.kind, "retry_later", label);
+    assert.equal(w.calls.length, 1, label);
+    assert.equal(
+      w.logs.some((l) => l.msg === "history walk: import command missing"),
+      false,
+      label,
+    );
+  }
+  // The probe text is a transport retry, like any untyped failure
+  const w = world({ links: chain(20, 1), throws: [TAURI_ARGUMENT_ERRORS[0]] });
+  assert.deepEqual(
+    (await runWalk(w.ports, { groupId: G, holderEpoch: 20 })).end,
+    { kind: "retry_later", reason: "transport" },
+  );
+});
+
+test("runWalk (D1): a link row whose prev_epoch is not an epoch is never sent; the rest of the page is", async () => {
+  const good = link(G, 5, "W1");
+  const bad = (prevEpoch: unknown, writer: string) =>
+    ({ ...link(G, 5, writer), prev_epoch: prevEpoch }) as unknown;
+  const { prev_epoch: _absent, ...noPrev } = link(G, 5, "W9");
+  void _absent;
+  const page = [
+    bad("not found", "W2"),
+    good,
+    bad("4", "W3"),
+    bad(4.5, "W4"),
+    bad(-1, "W5"),
+    bad(2 ** 53, "W6"),
+    bad(null, "W7"),
+    noPrev,
+  ];
+  const pages: unknown[] = [page, "end"];
+  const w = world({ anchor: { groupId: G, epoch: 5 } });
+  w.ports.links = async () => (pages.shift() ?? "end") as never;
+  const result = await runWalk(w.ports, { groupId: G, holderEpoch: 5 });
+  assert.deepEqual(result.end, { kind: "anchored" });
+  assert.equal(w.calls.length, 1);
+  assert.deepEqual(w.calls[0]?.steps[0]?.candidates, [good]);
+  assert.equal(w.calls[0]?.steps[0]?.candidates[0], good);
+  assert.deepEqual(w.logs, [
+    {
+      level: "error",
+      msg: "history walk: malformed link rows dropped",
+      ids: { group_id: G, before: 6, dropped: 7 },
+    },
+  ]);
+  // A holder whose only row is malformed goes out with no candidate, and
+  // native answers `missing` for it: no argument error, no latch
+  const only = world();
+  const onlyPages: unknown[] = [[link(G, 6, "W1"), bad("not found", "W2")]];
+  only.ports.links = async () => (onlyPages.shift() ?? "end") as never;
+  const ended = await runWalk(only.ports, { groupId: G, holderEpoch: 6 });
+  assert.deepEqual(ended.end, {
+    kind: "stopped",
+    stop: "missing",
+    floor: { group_id: G, epoch: 5 },
+  });
+  assert.deepEqual(
+    only.calls.flatMap((c) => c.steps.map((s) => s.candidates.length)),
+    [1, 0],
+  );
 });
 
 test("runWalk: a missing import command ends unsupported, not a retry, after one call", async () => {

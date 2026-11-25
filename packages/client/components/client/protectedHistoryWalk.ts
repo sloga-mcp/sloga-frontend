@@ -99,51 +99,55 @@ function nativeErrorOf(e: unknown): Record<string, unknown> | null {
   return typeof e.type === "string" ? e : null;
 }
 
-const MISSING_COMMAND_TEXT =
-  /not found|not allowed|not implemented|unimplemented|is not a function/i;
-
-/** The S4 history commands, as a text names them once `_` and `-` are cut. */
-const HISTORY_COMMAND_NAMES: readonly string[] = [
-  "texthistoryimport",
-  "texthistorylinkbuild",
+/** The only two commands asked through `isMissingCommandError`. */
+const HISTORY_COMMANDS: readonly string[] = [
+  "e2ee_text_history_import",
+  "e2ee_text_history_link_build",
 ];
 
 /**
- * An untyped rejection text counts only when it says "missing" AND names a
- * history command (`e2ee_text_history_import`, `textHistoryLinkBuild`, ...).
- * "group not found" or "404 not found" says nothing about the shell.
+ * Tauri 2.11's own rejection texts for a command the shell does not have,
+ * each the WHOLE string: `webview/mod.rs` "Command <name> not found" (no
+ * handler) and "Command <name> not allowed by ACL" (release ACL),
+ * `ipc/authority.rs` "<name> not allowed. Command not found" (debug ACL).
+ * Compared whole, never searched: Tauri's argument error names the command
+ * too and quotes the value it refused, which the server wrote
+ * (``invalid args `steps` for command `e2ee_text_history_import`: invalid
+ * type: string "not found", expected i64 ...``, FT8 / D1).
  */
-function namesMissingHistoryCommand(text: string): boolean {
-  if (!MISSING_COMMAND_TEXT.test(text)) return false;
-  const flat = text.toLowerCase().replace(/[_-]/g, "");
-  return HISTORY_COMMAND_NAMES.some((name) => flat.includes(name));
-}
+const TAURI_MISSING_COMMAND_TEXTS: ReadonlySet<string> = new Set(
+  HISTORY_COMMANDS.flatMap((name) => [
+    `Command ${name} not found`,
+    `Command ${name} not allowed by ACL`,
+    `${name} not allowed. Command not found`,
+  ]),
+);
 
 /**
  * A bridge rejection that means "this shell has no such command" (an
  * S2-era shell asked for an S4 history command, R-W4-33). Only the two
  * history commands are asked through this. The answers the three bridges
  * give (this module imports no bridge runtime; the spec pins the cases):
- * - Tauri rejects with a string that names the command: "Command <name>
- *   not found", or from its ACL "Command <name> not allowed by ACL"
- *   (release) / "<name> not allowed. Command not found" (debug).
+ * - Tauri rejects with one of `TAURI_MISSING_COMMAND_TEXTS`, exactly.
  * - Electron's command table answers the typed `invalid_argument` with
- *   `field: "command"`.
+ *   `field: "command"`. Its argument errors are typed `field: "args"` (the
+ *   napi `parse`), never a text.
  * - Capacitor (Android, iOS): the generic `call()` answers an unknown
  *   `__cmd` with the typed `invalid_argument`, `field: "name"` (neither
- *   history command has a `name` argument); a plugin method that is not
- *   there is `code: "UNIMPLEMENTED"`.
- * An untyped string or `message` counts only when it names the history
- * command (`namesMissingHistoryCommand`). Any other typed native error is
- * NOT one, whatever its text. A flow failure that wraps a native error is
- * read through its `error`.
+ *   history command has a `name` argument; the Android argument error is
+ *   `field: "args"`); a plugin method that is not there is
+ *   `code: "UNIMPLEMENTED"`.
+ * An untyped string or `message` counts only when it IS one of the Tauri
+ * texts. Any other typed native error is NOT one, whatever its text. A flow
+ * failure that wraps a native error is read through its `error`.
  *
  * Unlike `e2ee.ts`, being a TypeError is not enough: the answer latches
  * history off for the session, and a TypeError is also what a failed fetch
- * or a bug in the invoke path throws. One counts only by its message.
+ * or a bug in the invoke path throws. No bridge answers a missing history
+ * command with "... is not a function" or "... not implemented" text.
  */
 export function isMissingCommandError(error: unknown): boolean {
-  if (typeof error === "string") return namesMissingHistoryCommand(error);
+  if (typeof error === "string") return TAURI_MISSING_COMMAND_TEXTS.has(error);
   if (typeof error !== "object" || error === null) return false;
   const shape = error as {
     type?: unknown;
@@ -163,7 +167,7 @@ export function isMissingCommandError(error: unknown): boolean {
   if (shape.code === "UNIMPLEMENTED") return true;
   return (
     typeof shape.message === "string" &&
-    namesMissingHistoryCommand(shape.message)
+    TAURI_MISSING_COMMAND_TEXTS.has(shape.message)
   );
 }
 
@@ -639,6 +643,7 @@ async function walkFrom(
       if (!Array.isArray(page)) return false;
       let lowest = top;
       let dropped = 0;
+      let malformed = 0;
       for (const entry of page) {
         // A row of another group or outside the asked range is never sent
         if (
@@ -648,6 +653,14 @@ async function walkFrom(
           entry.epoch >= top
         ) {
           dropped += 1;
+          continue;
+        }
+        // Nor a row whose `prev_epoch` is not an epoch: native's argument
+        // parser refuses the WHOLE call over it (D1). The page still reached
+        // this holder; it goes out without the row.
+        if (!isEpoch(entry.prev_epoch)) {
+          malformed += 1;
+          if (entry.epoch < lowest) lowest = entry.epoch;
           continue;
         }
         const bucket = buffer.byEpoch.get(entry.epoch);
@@ -665,6 +678,13 @@ async function walkFrom(
           group_id: buffer.groupId,
           before: top,
           dropped,
+        });
+      }
+      if (malformed > 0) {
+        log("error", "history walk: malformed link rows dropped", {
+          group_id: buffer.groupId,
+          before: top,
+          dropped: malformed,
         });
       }
       if (lowest === top) {
