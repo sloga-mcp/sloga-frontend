@@ -43,6 +43,7 @@ import { ChannelPageProps } from "../ChannelPage";
 import { Channel } from "stoat.js";
 import { MessageComposition } from "./Composition";
 import { MemberSidebar } from "./MemberSidebar";
+import { ProtBanner } from "./ProtBanner";
 import { TextSearchSidebar } from "./TextSearchSidebar";
 import { ThreadsListSidebar } from "./ThreadsListSidebar";
 
@@ -354,6 +355,9 @@ export function TextChannel(props: ChannelPageProps) {
           </div>
         </Show>
         <main class={main()}>
+          <Show when={client().isProtectedChannel(props.channel.id)}>
+            <ProtBanner channel={props.channel} />
+          </Show>
           <Show
             when={canConnect()}
             fallback={

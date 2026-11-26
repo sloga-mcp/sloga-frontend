@@ -23,6 +23,7 @@ import ForumSettings from "./channel/ForumSettings";
 import ChannelOverview from "./channel/Overview";
 import { ChannelPermissionsEditor } from "./channel/permissions/ChannelPermissionsEditor";
 import { ChannelPermissionsOverview } from "./channel/permissions/ChannelPermissionsOverview";
+import { ProtTankSettings } from "./channel/protected/ProtTankSettings";
 import {
   ProtectedChannelSettings,
   protectedSettingsVisibleFor,
@@ -30,6 +31,7 @@ import {
 import { ViewWebhook } from "./channel/webhooks/ViewWebhook";
 import { WebhooksList } from "./channel/webhooks/WebhooksList";
 import { BackCard } from "./user/_AccountCard";
+import { parseProtFeature } from "./user/protWallet";
 
 /** Channel types that have a Permissions page (see `render`). */
 const PERMISSION_PAGE_TYPES: Channel["type"][] = [
@@ -57,6 +59,32 @@ function protectedTabShown(
   );
 }
 // protected-tab:end
+
+// prot-tank-tab:begin
+/**
+ * Whether the "Protected channel funding" tab and page exist for `channel`
+ * (S5b, contracts 16.3 L6h): only while the server advertises Prot, for a
+ * protected channel or one whose tank this client holds
+ * (`client.protTanks`, from a tank read or a `ProtTankUpdate`). Every
+ * viewer of the page sees the tank; the page gates the owner's controls
+ * and every spending control itself.
+ */
+function protTankTabShown(
+  channel: Channel,
+  client: Client | undefined,
+): boolean {
+  if (!client) return false;
+  // The upstream stoat-api config type has no `prot`
+  const advert = (
+    client.configuration?.features as { prot?: unknown } | undefined
+  )?.prot;
+  if (!parseProtFeature(advert).enabled) return false;
+  return (
+    client.isProtectedChannel(channel.id) === true ||
+    client.protTanks.has(channel.id)
+  );
+}
+// prot-tank-tab:end
 
 const Config: SettingsConfiguration<Channel> = {
   /**
@@ -139,6 +167,12 @@ const Config: SettingsConfiguration<Channel> = {
         return protectedTabShown(channel, client()) ? (
           <ProtectedChannelSettings channel={channel} />
         ) : null;
+      case "prot_tank":
+        // Shown while Prot is advertised (S5b); the page gates the owner's
+        // controls and spending itself.
+        return protTankTabShown(channel, client()) ? (
+          <ProtTankSettings channel={channel} />
+        ) : null;
       default:
         return null;
     }
@@ -203,6 +237,16 @@ const Config: SettingsConfiguration<Channel> = {
               id: "protected",
               icon: <Symbol size={20}>verified_user</Symbol>,
               title: settingsCopy.title(),
+            },
+            {
+              // S5b Prot tank, next to the protected settings. A getter, so
+              // the row tracks the configuration and the tank store.
+              id: "prot_tank",
+              icon: <Symbol size={20}>toll</Symbol>,
+              title: <Trans>Protected channel funding</Trans>,
+              get hidden() {
+                return !protTankTabShown(channel, client());
+              },
             },
           ],
         },
