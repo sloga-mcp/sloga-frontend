@@ -31,7 +31,7 @@
  *                      `.native`, `.call`, `.out` or `.dedicated("m")`, one
  *                      per line; `dedicatedMethods` is one `"m",` per line
  *   G6-table-duplicate a name listed twice (any route)
- *   G6-count           generic 39 / native 2 / call 22 / dedicated 8 / out 33,
+ *   G6-count           generic 39 / native 2 / call 22 / dedicated 8 / out 35,
  *                      each equal to its static <route>Count (all five must
  *                      exist); so outCount also equals the number of `.out`
  *                      lines
@@ -453,7 +453,7 @@ const DEDICATED_METHODS = [
   "attachmentUpload",
   "attachmentFetch",
 ];
-const COUNTS = { generic: 39, native: 2, call: 22, dedicated: 8, out: 33 };
+const COUNTS = { generic: 39, native: 2, call: 22, dedicated: 8, out: 35 };
 /** Every route of the table, in the order the counts are reported. */
 const ROUTES = ["generic", "native", "call", "dedicated", "out"];
 

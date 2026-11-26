@@ -674,7 +674,7 @@ class E2eePlugin : Plugin() {
                     resolveJson(call, owner?.let { org.json.JSONObject.quote(it) } ?: "null")
                 }
                 // ---- Protected channels: the text plane (S7 D3/D4) ----
-                // The 17 commands with no dialog. Each passes the whole call
+                // The 19 commands with no dialog. Each passes the whole call
                 // object as one JSON string (the core parses it into the
                 // command's argument struct; `__cmd` rides along) and resolves
                 // the core's JSON. Every arm goes through [resolveText], which
@@ -699,6 +699,16 @@ class E2eePlugin : Plugin() {
                 "e2ee_text_state" -> resolveText(call) { engine.textState(it) }
                 "e2ee_text_mark_left" -> resolveText(call) { engine.textMarkLeft(it) }
                 "e2ee_text_pin_own_devices" -> resolveText(call) { engine.textPinOwnDevices(it) }
+                // History (S4): build the link this device may publish for an
+                // epoch, and import one batch of walk steps. Neither shows a
+                // dialog and neither writes to the server. The core decodes
+                // the whole argument object and refuses a missing or
+                // malformed key with `invalid_argument`; nothing is read,
+                // defaulted or logged here. An import can take a while (up to
+                // 200 link rows, a key derivation per epoch); it runs on
+                // [executor] like every arm.
+                "e2ee_text_history_link_build" -> resolveText(call) { engine.textHistoryLinkBuild(it) }
+                "e2ee_text_history_import" -> resolveText(call) { engine.textHistoryImport(it) }
                 // NOT here by design:
                 // e2ee_text_seat_list_sign, e2ee_text_owner_confirm_change,
                 // e2ee_text_owner_handover_sign and e2ee_text_authority_sign

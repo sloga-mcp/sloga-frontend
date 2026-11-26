@@ -21,7 +21,12 @@
  *  E6 each of them is the text (so the msgid) `protectedCopy.ts` gives the
  *     protected UI for the same error;
  *  E7 each of those msgids is an active entry of the en catalog, msgstr =
- *     msgid (a msgid missing from the catalog renders as its hash).
+ *     msgid (a msgid missing from the catalog renders as its hash);
+ *  E9 S4 `ProtectHistoryMoved` and `HistoryLinkExists` (S4 W4-5 lane L9)
+ *     resolve to non-empty, distinct copy, each in the en catalog;
+ *  E10 no type in `PROTECTED_SERVER_ERROR_TYPES` lacks copy here, apart from
+ *     the two this chain leaves generic on purpose (a set comparison);
+ *  E11 the S2 strings of the protected block are unchanged.
  *
  * `errors.ts` imports the lingui Solid macro, `@lingui/core` and stoat.js,
  * which only load inside the build. A module hook swaps them for stand-ins:
@@ -47,6 +52,8 @@ const ERRORS_URL = process.env.PROTECTED_ERRORS_FILE
   : new URL("./errors.ts", import.meta.url).href;
 const ERROR_DETAIL_URL = new URL("./errorDetail.ts", import.meta.url).href;
 const COPY_URL = new URL("../client/protectedCopy.ts", import.meta.url).href;
+const SHIELD_URL = new URL("../client/protectedShield.ts", import.meta.url)
+  .href;
 const DRAFT_SEND_ERROR_URL = new URL(
   "../state/stores/draftSendError.ts",
   import.meta.url,
@@ -106,8 +113,14 @@ registerHooks({
 });
 
 const { useError }: typeof import("./errors.ts") = await import(ERRORS_URL);
-const { errorUiCopy, noticeCopy }: typeof import("../client/protectedCopy.ts") =
-  await import(COPY_URL);
+const {
+  clientReasonCopy,
+  errorUiCopy,
+  noticeCopy,
+}: typeof import("../client/protectedCopy.ts") = await import(COPY_URL);
+const {
+  PROTECTED_SERVER_ERROR_TYPES,
+}: typeof import("../client/protectedShield.ts") = await import(SHIELD_URL);
 
 const translate = useError();
 
@@ -314,5 +327,136 @@ test("E8 SeatListNamesRemovedUsers: a refused save, the protected UI's refusal m
   ]) {
     const entry = `\nmsgid "${msgid}"\nmsgstr "${msgid}"\n`;
     assert.equal(en.split(entry).length - 1, 1, msgid);
+  }
+});
+
+// S4 W4-5 (lane L9): the two S4 server types, the list comparison and the
+// S2 pins.
+const HISTORY_MOVED =
+  "This channel is too busy to protect right now. Try again in a quiet moment.";
+const LINK_EXISTS = "This was already done.";
+
+test("E9 S4 ProtectHistoryMoved and HistoryLinkExists get their own copy", () => {
+  for (const body of [
+    { type: "ProtectHistoryMoved" },
+    '{"type":"ProtectHistoryMoved"}',
+    {
+      type: "ProtectHistoryMoved",
+      boundary: "01BOUNDARY000000000000000",
+      max: 3,
+    },
+  ]) {
+    assert.equal(translate(body), HISTORY_MOVED, JSON.stringify(body));
+  }
+  for (const body of [
+    { type: "HistoryLinkExists" },
+    '{"type":"HistoryLinkExists"}',
+    { type: "HistoryLinkExists", feature: "protected_channels" },
+  ]) {
+    assert.equal(translate(body), LINK_EXISTS, JSON.stringify(body));
+  }
+  const moved = translate({ type: "ProtectHistoryMoved" });
+  const exists = translate({ type: "HistoryLinkExists" });
+  assert.ok(moved.trim().length > 0);
+  assert.ok(exists.trim().length > 0);
+  assert.notEqual(moved, exists);
+  assert.notEqual(moved, generic("ProtectHistoryMoved"));
+  assert.notEqual(exists, generic("HistoryLinkExists"));
+  // The busy line is the msgid the protected UI shows once its retries ran out.
+  assert.equal(moved, clientReasonCopy("protect_busy"));
+  const en = readFileSync(
+    new URL("./catalogs/en/messages.po", import.meta.url),
+    "utf8",
+  );
+  for (const msgid of [HISTORY_MOVED, LINK_EXISTS]) {
+    const entry = `\nmsgid "${msgid}"\nmsgstr "${msgid}"\n`;
+    assert.equal(en.split(entry).length - 1, 1, msgid);
+  }
+});
+
+/**
+ * The listed types this chain leaves on the generic copy, on purpose:
+ * `InSlowmode` (OR-21, E4) and `MlsCallFull` (a call refusal, shown by the
+ * call UI; no S4 change). Any other listed type must have copy.
+ */
+const GENERIC_ON_PURPOSE = ["InSlowmode", "MlsCallFull"];
+
+/** A well-formed body for the types whose copy depends on a field. */
+const WELL_FORMED: Record<string, object> = {
+  ProtectedClientOutdated: { type: "ProtectedClientOutdated", min: 2 },
+  FeatureDisabled: { type: "FeatureDisabled", feature: "protected_channels" },
+};
+
+test("E10 every type in PROTECTED_SERVER_ERROR_TYPES has copy, apart from the two generic ones", () => {
+  assert.ok(PROTECTED_SERVER_ERROR_TYPES.length >= 15);
+  const lacking: string[] = [];
+  const texts = new Map<string, string>();
+  for (const type of PROTECTED_SERVER_ERROR_TYPES) {
+    const text = translate(WELL_FORMED[type] ?? { type });
+    assert.equal(typeof text, "string", type);
+    if (text.trim().length === 0 || text === generic(type)) lacking.push(type);
+    else texts.set(type, text);
+  }
+  assert.deepEqual([...lacking].sort(), [...GENERIC_ON_PURPOSE].sort());
+  // No copy names the wire type, and no two types share one line.
+  for (const [type, text] of texts) {
+    assert.ok(!text.includes(type), type);
+  }
+  assert.equal(new Set(texts.values()).size, texts.size);
+  // The well-formed table names listed types only.
+  const listed = PROTECTED_SERVER_ERROR_TYPES as readonly string[];
+  for (const type of [...Object.keys(WELL_FORMED), ...GENERIC_ON_PURPOSE]) {
+    assert.ok(listed.includes(type), type);
+  }
+});
+
+test("E11 the S2 strings of the protected block are unchanged", () => {
+  const pins: [unknown, string][] = [
+    [{ type: "ProtectedChannelResecuring" }, RESECURING],
+    [
+      { type: "ProtectedChannelResecuring", reason: "owner_device_lost" },
+      OWNER_DEVICE_LOST,
+    ],
+    [
+      { type: "NotSeated" },
+      "You don't have a seat in this protected channel. Ask the owner for a seat.",
+    ],
+    [
+      { type: "SeatCapReached" },
+      "All seats are in use. Released seats count for 14 days.",
+    ],
+    [
+      { type: "SeatCapReached", max: 25 },
+      "All 25 seats are in use. Released seats count for 14 days.",
+    ],
+    [{ type: "DeviceCapReached", max: 3 }, DEVICE_CAP],
+    [{ type: "DeviceCapReached" }, DEVICE_CAP_NO_MAX],
+    [{ type: "ChannelProtected" }, "Not available in protected channels."],
+    [
+      { type: "ProtectedFieldRefused" },
+      "This message couldn't be sent securely.",
+    ],
+    [{ type: "SeatListNamesRemovedUsers" }, REMOVED_REFUSED],
+    [{ type: "RemovalReasonRequired" }, REASON_REQUIRED],
+    [{ type: "ProtectedClientOutdated", min: 2 }, OUTDATED],
+    [
+      { type: "FeatureDisabled", feature: "protected_channels" },
+      "Protected channels are unavailable right now.",
+    ],
+    [
+      { type: "FeatureDisabled", feature: "e2ee" },
+      "Encrypted messaging is unavailable right now.",
+    ],
+    [
+      { type: "FeatureDisabled", feature: "history_setting" },
+      "This feature is currently disabled.",
+    ],
+    [{ type: "FeatureDisabled" }, "This feature is currently disabled."],
+    [{ type: "DuplicateNonce" }, "This has already been sent."],
+    [{ type: "InSlowmode" }, generic("InSlowmode")],
+    [{ type: "MlsCallFull", max: 100 }, generic("MlsCallFull")],
+  ];
+  for (const [body, text] of pins) {
+    assert.equal(translate(body), text, JSON.stringify(body));
   }
 });

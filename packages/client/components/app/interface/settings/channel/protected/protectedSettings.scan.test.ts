@@ -47,6 +47,15 @@
 //      reason refusals before the notice, "Discard this change", the
 //      unseat reason re-sending the stored change, the shared policy and
 //      the seat picker's msgids.
+//  S28-S33 S4 (lane U5; design 9.5, 4.9 "S4"): a channel with messages is
+//      offered only with the history setting on; the protect call carries
+//      opts only then and a wipe only from the form's own tick; the history
+//      setting and the wipe each have one call site; the rules themselves
+//      are `protectedHistorySettings.ts` (own spec beside this one).
+//  S34-S35 W4 fix round: a protect that went through with the members or
+//      the ticked wipe left out is a status line, never the error, and the
+//      picker is not told it failed; the page asks the bridge for a verify
+//      through the pure once-per-channel rule and nowhere else.
 //
 // Point `PROTECTED_SETTINGS_FILE`, `PROTECTED_SEAT_LIST_FILE` or
 // `PROTECTED_CHANNEL_SETTINGS_FILE` at another copy (a known-bad control)
@@ -56,7 +65,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, it } from "node:test";
+import { describe, it, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -118,7 +127,7 @@ interface PageRules {
   protectAvailability(
     i: Record<string, unknown>,
   ):
-    | { ok: true; slotCap: number; deviceCap: number }
+    | { ok: true; slotCap: number; deviceCap: number; withHistory?: true }
     | { ok: false; block: string };
   parseSeatsBody(b: unknown): unknown;
   seatsOver<T>(snap: T, fresh: { basis: unknown; body: T } | null): T;
@@ -1565,5 +1574,479 @@ describe("protected channel settings (C11)", () => {
     for (const text of shared) {
       assert.ok(used.includes(text), `not used here: ${text}`);
     }
+  });
+
+  // ---- S4 (lane U5) ------------------------------------------------------
+
+  const WITH_MESSAGES = { ...READY, hasMessages: true };
+
+  test("S28 S4 an empty channel is offered as before, without withHistory (C-U5a)", async () => {
+    const r = await pageRules;
+    for (const historySetting of [undefined, false, true]) {
+      assert.deepEqual(
+        r.protectAvailability({ ...READY, historySetting }),
+        { ok: true, slotCap: 10, deviceCap: 5 },
+        `historySetting ${String(historySetting)}`,
+      );
+      assert.equal(r.protectReadWanted({ ...READY, historySetting }), true);
+    }
+  });
+
+  test("S29 S4 a channel with messages stays blocked while the history setting is off (C-U5a)", async () => {
+    const r = await pageRules;
+    // Not fetched, fetch failed, an older server: anything but a literal true.
+    for (const historySetting of [undefined, false, null, "true", 1, {}]) {
+      assert.deepEqual(
+        r.protectAvailability({ ...WITH_MESSAGES, historySetting }),
+        { ok: false, block: "has_messages" },
+        `historySetting ${String(historySetting)}`,
+      );
+      // No seats read either: nothing could come of it.
+      assert.equal(
+        r.protectReadWanted({ ...WITH_MESSAGES, historySetting }),
+        false,
+      );
+    }
+    // The block's text is the one from before S4.
+    assert.match(
+      PAGE_BODY,
+      /case "has_messages":\s*return t`Only a channel without messages can be protected\.`;/,
+    );
+  });
+
+  test("S30 S4 a channel with messages is offered with withHistory once the history setting is on (C-U5a)", async () => {
+    const r = await pageRules;
+    const on = { ...WITH_MESSAGES, historySetting: true };
+    assert.deepEqual(r.protectAvailability(on), {
+      ok: true,
+      slotCap: 10,
+      deviceCap: 5,
+      withHistory: true,
+    });
+    assert.equal(r.protectReadWanted(on), true);
+    // Every other gate still applies, in the same order.
+    const block = (over: Record<string, unknown>) => {
+      const a = r.protectAvailability({ ...on, ...over });
+      return a.ok ? "OFFERED" : a.block;
+    };
+    assert.equal(block({ flagEnabled: false }), "flag_off");
+    assert.equal(block({ capable: false }), "not_available");
+    assert.equal(block({ selfPrivileged: true }), "staff_owner");
+    assert.equal(block({ seats: null }), "loading");
+    assert.equal(block({ seats: "failed" }), "load_failed");
+    assert.equal(
+      block({ seats: { slot_cap: null, entitlement_device_cap: null } }),
+      "no_entitlement",
+    );
+    assert.equal(
+      block({
+        seats: { slot_cap: 10, entitlement_device_cap: null },
+        defaultDeviceCap: null,
+      }),
+      "no_device_cap",
+    );
+    assert.equal(r.protectReadWanted({ ...on, flagEnabled: false }), false);
+    assert.equal(r.protectReadWanted({ ...on, selfPrivileged: true }), false);
+    // The page feeds both rules the bridge's flag, read as a literal true.
+    assert.match(
+      PAGE_BODY,
+      /const historyFlag = \(\) =>\s*readUi\(\(api\) => api\.protectedFlag\(\)\.historySetting === true, false\);/,
+    );
+    assert.equal(
+      (PAGE_BODY.match(/historySetting: historyFlag\(\),/g) ?? []).length,
+      2,
+      "the seats read and the availability",
+    );
+    assert.match(
+      PAGE_BODY,
+      /const withHistory = \(\) => \{\s*const a = availability\(\);\s*return a\.ok && a\.withHistory === true;/,
+    );
+  });
+
+  test("S31 S4 the protect call carries opts only with history, and a wipe only from the form's tick (C-U5b)", () => {
+    const fn = pageFn("runProtect");
+    assert.match(
+      fn,
+      /const opts = protectOpts\(\{\s*withHistory: a\.withHistory === true,\s*wipeArmed: draft\(\)\.wipeArmed,\s*\}\);/,
+    );
+    // Without history the call is the one from before S4 (S9 pins it too).
+    assert.match(
+      fn,
+      /if \(opts === undefined\) \{\s*await api\.protect\(\s*props\.channel\.id,\s*ownerFirst\(userIds, owner\),\s*a\.deviceCap,\s*\);\s*\} else \{\s*await api\.protect\(\s*props\.channel\.id,\s*ownerFirst\(userIds, owner\),\s*a\.deviceCap,\s*opts,\s*\);\s*\}/,
+    );
+    assert.equal((PAGE_BODY.match(/\.protect\(/g) ?? []).length, 2);
+    // The page never writes the opts itself.
+    assert.doesNotMatch(PAGE_BODY, /\bwipe:/, "a wipe literal in the page");
+    assert.doesNotMatch(PAGE_BODY, /withHistory: true/);
+    assert.equal((PAGE_BODY.match(/\bprotectOpts\(/g) ?? []).length, 1);
+    // (the key and the value of that one call)
+    assert.equal((PAGE_BODY.match(/\bwipeArmed\b/g) ?? []).length, 2);
+    // A rejection may come after the first list landed: read again. Only
+    // a rejection that is not "protected, with something left out" is an
+    // error and goes back to the picker (S34).
+    assert.match(
+      fn,
+      /\} catch \(err\) \{\s*outcome = protectOutcomeKind\(err\);\s*if \(opts !== undefined \|\| outcome !== null\) rereadAfterHistory\(\);\s*if \(outcome === null\) \{\s*setError\(errorText\(err\)\);\s*throw err;\s*\}\s*\} finally \{/,
+    );
+    assert.match(
+      pageFn("rereadAfterHistory"),
+      /rereadSeats\(\);\s*readUi\(\(api\) => api\.retryNow\(id\), undefined\);/,
+    );
+    // The tick: a signal that starts from the pure default, is never
+    // stored, and is written only through the pure steps.
+    assert.match(
+      PAGE_BODY,
+      /const \[draft, setDraft\] = createSignal\(newProtectDraft\(\)\);/,
+    );
+    const writes = [...PAGE_BODY.matchAll(/setDraft\(\s*([\w.]+)/g)].map(
+      (m) => m[1],
+    );
+    assert.deepEqual(writes, [
+      "newProtectDraft",
+      "protectDraftStep",
+      "protectDraftStep",
+      "protectDraftStep",
+      "newProtectDraft",
+      "next",
+      "protectDraftStep",
+    ]);
+    assert.equal((PAGE_BODY.match(/type: "tick"/g) ?? []).length, 1);
+    // (the checkbox, and the line under it that follows the tick)
+    assert.equal((PAGE_BODY.match(/\bwipeTicked\b/g) ?? []).length, 2);
+    // The one checkbox: inside the form, only for a channel with history,
+    // under the line that states the order of the two steps (R-W4-35).
+    assert.match(
+      PAGE_BODY,
+      /<Match when=\{confirming\(\)\}>[\s\S]*?<Show when=\{withHistory\(\)\}>\s*<Info data-protect-order>\s*\{settingsCopy\.protectOrder\(\)\}\s*<\/Info>\s*<Info data-protect-closes-open>\s*\{settingsCopy\.protectClosesOpen\(\)\}\s*<\/Info>\s*<Checkbox\s+checked=\{draft\(\)\.wipeTicked\}\s+onChange=\{\(event\) =>\s*setDraft\(\s*protectDraftStep\(draft\(\), \{\s*type: "tick",\s*checked: event\.currentTarget\.checked,\s*\}\),\s*\)\s*\}\s*>\s*\{settingsCopy\.deleteEarlierOption\(\)\}\s*<\/Checkbox>/,
+    );
+    // B12: "the messages stay" shows only while the box is not ticked; a
+    // tick shows what the wipe does in its place.
+    assert.match(
+      PAGE_BODY,
+      /<\/Checkbox>\s*<Show\s+when=\{draft\(\)\.wipeTicked\}\s+fallback=\{\s*<Info data-protect-history>\s*\{settingsCopy\.protectWithHistory\(\s*props\.channel\.name,\s*\)\}\s*<\/Info>\s*\}\s*>\s*<Info>\{settingsCopy\.wipeDescription\(\)\}<\/Info>\s*<\/Show>\s*<\/Show>\s*<Actions>/,
+    );
+    assert.equal(
+      (PAGE_BODY.match(/settingsCopy\.protectOrder\(\)/g) ?? []).length,
+      1,
+    );
+    // Final audit FO3: what protecting closes is said on the form, once.
+    assert.equal(
+      (PAGE_BODY.match(/settingsCopy\.protectClosesOpen\(\)/g) ?? []).length,
+      1,
+    );
+    assert.equal(
+      (PAGE_BODY.match(/settingsCopy\.deleteEarlierOption\(\)/g) ?? []).length,
+      1,
+    );
+    // The form opens through one function, unticked.
+    assert.match(
+      pageFn("openProtectForm"),
+      /setDraft\(protectDraftStep\(draft\(\), \{ type: "open" \}\)\);\s*setConfirming\(true\);/,
+    );
+    assert.equal((PAGE_BODY.match(/setConfirming\(true\)/g) ?? []).length, 1);
+    assert.match(PAGE_BODY, /onPress=\{openProtectForm\}/);
+    // The tick goes with the picker only when the picker opens.
+    assert.match(
+      pageFn("openProtectPicker"),
+      /const next = protectDraftStep\(draft\(\), \{ type: "continue" \}\);\s*setDraft\(newProtectDraft\(\)\);\s*setConfirming\(false\);\s*if \(!a\.ok \|\| busy\(\) \|\| !eligible\(\)\) return;\s*setDraft\(next\);/,
+    );
+  });
+
+  test("S32 S4 history section: one setHistoryVisible and one wipeHistory, each from its own control (C-U5c)", () => {
+    // What is offered comes from the pure model, fed native's verified
+    // values; the server's object gives the wipe progress and nothing else.
+    assert.match(
+      PAGE_BODY,
+      /historySectionModel\(\{\s*isOwner: eligible\(\),\s*flag: historyFlag\(\),\s*canAct: canAct\(\),\s*native: historyNative\(\),\s*serverWipe: props\.channel\.protectedHistory\?\.wipe,\s*busy: busy\(\),\s*storedChange: stored\(\) !== null,\s*\}\)/,
+    );
+    assert.equal((PAGE_BODY.match(/protectedHistory\b/g) ?? []).length, 1);
+    assert.match(
+      PAGE_BODY,
+      /const n = nativeHistoryInput\(v\.native, \{ seatListError: v\.seatListError \}\);\s*if \(n === null\) return null;\s*return \{\s*verified: n\.verified,\s*historySetting: v\.native\?\.history_setting,\s*boundary: n\.boundary,\s*preHistory: n\.preHistory,\s*\};/,
+    );
+    assert.equal((PAGE_BODY.match(/history_setting\b/g) ?? []).length, 1);
+    // Every history control sits inside the model's owner arm.
+    const section = PAGE_BODY.indexOf("<Show when={historyOwner()}>");
+    assert.ok(section !== -1, "history section missing");
+    for (const name of [
+      "settingsCopy.historyToggle()",
+      "settingsCopy.historyVisibleDescription()",
+      "settingsCopy.historyHiddenDescription(",
+      "settingsCopy.historyRemovalNote()",
+      "settingsCopy.wipeButton()",
+      "onChange={onHistoryToggle}",
+      "runWipe()}",
+    ]) {
+      const at = PAGE_BODY.indexOf(name);
+      assert.ok(at > section, `${name} outside the history section`);
+      assert.equal(PAGE_BODY.indexOf(name, at + 1), -1, `${name} twice`);
+    }
+    // The toggle: native's value, disabled from the model, never optimistic.
+    assert.match(
+      PAGE_BODY,
+      /<Checkbox\s+checked=\{m\(\)\.toggle\.checked\}\s+disabled=\{m\(\)\.toggle\.disabled\}\s+onChange=\{onHistoryToggle\}\s*>\s*\{settingsCopy\.historyToggle\(\)\}/,
+    );
+    assert.match(
+      pageFn("onHistoryToggle"),
+      /const click = historyToggleClick\(\s*historyModel\(\),\s*event\.currentTarget\.checked,\s*\);\s*event\.currentTarget\.checked = click\.shown;\s*if \(click\.request === null\) return;\s*void runSetHistory\(click\.request\);/,
+    );
+    const setHistory = pageFn("runSetHistory");
+    assert.match(
+      setHistory,
+      /if \(!api \|\| busy\(\)\) return;\s*setPending\("history"\);/,
+    );
+    assert.match(
+      setHistory,
+      /await api\.setHistoryVisible\(props\.channel\.id, visible\);/,
+    );
+    assert.equal((PAGE_BODY.match(/\.setHistoryVisible\(/g) ?? []).length, 1);
+    assert.equal((PAGE_BODY.match(/\brunSetHistory\(/g) ?? []).length, 2);
+    // The wipe: only the wipe button calls it; one request per click.
+    const wipe = pageFn("runWipe");
+    assert.match(
+      wipe,
+      /if \(!api \|\| busy\(\) \|\| !wipeClickAllowed\(historyModel\(\)\)\) return;\s*setPending\("wipe"\);/,
+    );
+    assert.ok(
+      wipe.indexOf('setPending("wipe");') < wipe.indexOf("await "),
+      "pending is set before anything is awaited",
+    );
+    assert.match(wipe, /await api\.wipeHistory\(props\.channel\.id\);/);
+    assert.equal((PAGE_BODY.match(/\.wipeHistory\(/g) ?? []).length, 1);
+    assert.equal((PAGE_BODY.match(/\brunWipe\(/g) ?? []).length, 2);
+    assert.match(
+      PAGE_BODY,
+      /<Show when=\{m\(\)\.wipe\.offered\}>\s*<Info>\{settingsCopy\.wipeDescription\(\)\}<\/Info>\s*<Actions>\s*<Button\s+variant="_error"\s+isDisabled=\{m\(\)\.wipe\.disabled\}\s+onPress=\{\(\) => void runWipe\(\)\}\s*>\s*\{settingsCopy\.wipeButton\(\)\}/,
+    );
+    // Our own call counts as busy (S7), which is what disables both.
+    assert.match(PAGE_BODY, /\| "history" \| "wipe" \| null/);
+    // A rejection shows its text and the view is read again, never assumed.
+    for (const body of [setHistory, wipe]) {
+      assert.match(
+        body,
+        /\} catch \(err\) \{\s*setHistoryError\(errorText\(err\)\);\s*rereadAfterHistory\(\);\s*\} finally \{\s*setPending\(null\);/,
+      );
+    }
+    // B3: the hidden description is told whether the earlier messages are
+    // kept, from the model (native's values), never from the server.
+    assert.match(
+      PAGE_BODY,
+      /\{m\(\)\.toggle\.checked\s*\? settingsCopy\.historyVisibleDescription\(\)\s*: settingsCopy\.historyHiddenDescription\(\s*m\(\)\.earlierKept,\s*\)\}/,
+    );
+    // The three history failures get their own line; all else as before.
+    assert.match(
+      pageFn("errorText"),
+      /const history = historyFailureKind\(err\);\s*if \(history !== null\) return settingsCopy\.historyError\(history\);/,
+    );
+  });
+
+  test("S33 S4 history copy is settingsCopy's; nothing stored, no dialog of the page's own (C-U5d)", () => {
+    for (const name of [
+      "settingsCopy.protectWithHistory(props.channel.name)",
+      "settingsCopy.deleteEarlierOption()",
+      "settingsCopy.wipeDescription()",
+      "settingsCopy.historyToggle()",
+      "settingsCopy.historyVisibleDescription()",
+      "settingsCopy.historyHiddenDescription(",
+      "settingsCopy.historyRemovalNote()",
+      "settingsCopy.wipeButton()",
+      "settingsCopy.wipeRequested()",
+      "settingsCopy.wipeDone(p.count)",
+      "settingsCopy.historyError(history)",
+    ]) {
+      assert.ok(PAGE_BODY.includes(name), `page: ${name} not used`);
+    }
+    // The server's count is the only number of the section that is shown.
+    assert.equal((PAGE_BODY.match(/\.count\b/g) ?? []).length, 1);
+    // Nothing about the form or the section is kept anywhere.
+    assert.doesNotMatch(
+      PAGE,
+      /localStorage|sessionStorage|@revolt\/state|indexedDB/,
+    );
+    // No dialog of the page's own: the two seat pickers stay the only
+    // modals (the wipe and hidden to visible are confirmed by native).
+    assert.equal((PAGE_BODY.match(/openModal\(/g) ?? []).length, 2);
+    assert.doesNotMatch(
+      PAGE_BODY,
+      /(?<![.\w])confirm\(|\bwindow\.|(?<![.\w])alert\(/,
+    );
+    // The rules are the helper's, by file path, never redefined here.
+    const at = PAGE.indexOf('} from "./protectedHistorySettings";');
+    assert.ok(at !== -1, "helper import missing");
+    const imp = PAGE.slice(PAGE.lastIndexOf("import {", at), at);
+    for (const name of [
+      "historyCheckFailedShown",
+      "historyCheckWaitMs",
+      "historyCheckingShown",
+      "historyFailureKind",
+      "historySectionModel",
+      "historyToggleClick",
+      "historyVerifyStep",
+      "newProtectDraft",
+      "protectDraftStep",
+      "protectOpts",
+      "protectOutcomeKind",
+      "wipeClickAllowed",
+    ]) {
+      assert.match(imp, new RegExp(`\\b${name},`), name);
+      assert.doesNotMatch(PAGE, new RegExp(`function ${name}\\(`), name);
+    }
+    assert.ok(
+      PAGE.includes('from "@revolt/ui/components/design/Checkbox";'),
+      "page: Checkbox by file path",
+    );
+  });
+
+  test("S34 W4 fix: protected with the members or the ticked wipe left out is a status line of its own, never the protect's error (R-W4-35, B7)", () => {
+    const fn = pageFn("runProtect");
+    // The outcome is decided by the pure rule, from the rejection alone.
+    assert.equal((PAGE_BODY.match(/\bprotectOutcomeKind\(/g) ?? []).length, 1);
+    assert.match(
+      fn,
+      /let outcome: ProtectOutcomeKind \| null = null;\s*try \{/,
+    );
+    // Its one error write sits behind "this was not an outcome", and so
+    // does the rejection the picker would show.
+    assert.equal((fn.match(/setError\(errorText\(err\)\)/g) ?? []).length, 1);
+    assert.equal((fn.match(/throw err;/g) ?? []).length, 1);
+    assert.match(
+      fn,
+      /if \(outcome === null\) \{\s*setError\(errorText\(err\)\);\s*throw err;\s*\}/,
+    );
+    // Protected either way: the tick is used up, the outcome is kept, the
+    // seats are read again.
+    assert.match(
+      fn,
+      /\} finally \{\s*setPending\(null\);\s*\}\s*setDraft\(protectDraftStep\(draft\(\), \{ type: "done" \}\)\);\s*setProtectOutcome\(outcome\);\s*rereadSeats\(\);\s*$/,
+    );
+    // The line: one settingsCopy string per outcome (RB2, RB3: five of
+    // them), as a status, outside the error notice.
+    assert.match(
+      PAGE_BODY,
+      /case "members_pending":\s*return settingsCopy\.membersPending\(\);\s*case "members_unconfirmed":\s*return settingsCopy\.membersUnconfirmed\(\);\s*case "wipe_not_done":\s*return settingsCopy\.wipeNotDone\(\);\s*case "wipe_not_done_members_pending":\s*return settingsCopy\.wipeNotDoneMembersPending\(\);\s*case "wipe_not_done_members_unconfirmed":\s*return settingsCopy\.wipeNotDoneMembersUnconfirmed\(\);\s*default: \{\s*const _exhaustive: never = outcome;/,
+    );
+    for (const name of [
+      "settingsCopy.membersPending()",
+      "settingsCopy.membersUnconfirmed()",
+      "settingsCopy.wipeNotDone()",
+      "settingsCopy.wipeNotDoneMembersPending()",
+      "settingsCopy.wipeNotDoneMembersUnconfirmed()",
+    ]) {
+      assert.equal(PAGE_BODY.split(name).length, 2, name);
+    }
+    assert.match(
+      PAGE_BODY,
+      /<Show when=\{protectOutcomeLine\(\)\}>\s*\{\(line\) => \(\s*<Callout role="status" data-protect-outcome>\s*\{line\(\)\}\s*<\/Callout>\s*\)\}\s*<\/Show>/,
+    );
+    assert.equal(
+      (PAGE_BODY.match(/protectOutcomeLine\(\)/g) ?? []).length,
+      1,
+      "rendered once, and never fed to the error",
+    );
+    assert.doesNotMatch(PAGE_BODY, /setError\([^;]*[oO]utcome/);
+    // It goes away with the channel and with the next owner action.
+    assert.equal(
+      (PAGE_BODY.match(/setProtectOutcome\(null\);/g) ?? []).length,
+      5,
+      "channel switch, protect, seats, history toggle, wipe",
+    );
+    for (const name of ["runSetSeats", "runSetHistory", "runWipe"]) {
+      assert.match(pageFn(name), /setProtectOutcome\(null\);/, name);
+    }
+  });
+
+  test("S35 W4 fix: the page source asks the bridge for a verify through the once-per-channel rule only, and ends the checking line with one timer of its own that is cleared on unmount and on every run of the effect (C6, RB6)", () => {
+    // Three retryNow call sites in all: Finish now, the re-read after a
+    // rejected history call, and this one.
+    assert.equal((PAGE_BODY.match(/\.retryNow\(/g) ?? []).length, 3);
+    // RB6: the ask is stamped with the real time, never the page's 30 s
+    // tick. Each run of the effect (a channel change included) clears the
+    // timer, and sets one for what the pure rule says is left.
+    assert.match(
+      PAGE_BODY,
+      /createEffect\(\(\) => \{\s*const at = Date\.now\(\);\s*const input = verifyInput\(at\);\s*const step = historyVerifyStep\(untrack\(verifyAsks\), input\);\s*clearCheckTimer\(\);\s*setCheckNow\(at\);\s*const wait = historyCheckWaitMs\(step\.asks, input\.channelId, at\);\s*if \(wait !== null\) \{\s*checkTimer = setTimeout\(\(\) => \{\s*checkTimer = undefined;\s*setCheckNow\(Math\.max\(Date\.now\(\), at \+ wait\)\);\s*\}, wait\);\s*\}\s*if \(!step\.ask\) return;\s*setVerifyAsks\(step\.asks\);\s*readUi\(\(api\) => api\.retryNow\(input\.channelId\), undefined\);\s*\}\);/,
+    );
+    assert.match(
+      PAGE_BODY,
+      /const clearCheckTimer = \(\) => \{\s*if \(checkTimer === undefined\) return;\s*clearTimeout\(checkTimer\);\s*checkTimer = undefined;\s*\};\s*onCleanup\(clearCheckTimer\);/,
+    );
+    assert.doesNotMatch(PAGE_BODY, /untrack\(now\)/);
+    assert.equal((PAGE_BODY.match(/\bhistoryVerifyStep\(/g) ?? []).length, 1);
+    // What was asked is kept for as long as the page is mounted: written
+    // from the rule's answer only, never cleared.
+    assert.match(
+      PAGE_BODY,
+      /const \[verifyAsks, setVerifyAsks\] = createSignal<HistoryVerifyAsks>\(\s*new Map\(\),?\s*\);/,
+    );
+    assert.equal((PAGE_BODY.match(/\bsetVerifyAsks\(/g) ?? []).length, 1);
+    // The rule is fed the flag (never asks with it off), the page's owner
+    // check, the model and whether native's state is loaded.
+    assert.match(
+      PAGE_BODY,
+      /const verifyInput = \(at: number\) => \(\{\s*channelId: props\.channel\.id,\s*isOwner: eligible\(\),\s*flag: historyFlag\(\),\s*canAct: canAct\(\),\s*modelKind: historyModel\(\)\.kind,\s*nativeLoaded: historyNative\(\) !== null,\s*now: at,\s*\}\);/,
+    );
+    // The line: the existing "Checking" copy, from the pure rule.
+    assert.match(
+      PAGE_BODY,
+      /const historyChecking = \(\) =>\s*historyCheckingShown\(verifyAsks\(\), verifyInput\(checkNow\(\)\)\);/,
+    );
+    assert.match(
+      PAGE_BODY,
+      /<Show when=\{historyChecking\(\)\}>\s*<Info data-history-checking>\{rowStateCopy\("checking"\)\}<\/Info>\s*<\/Show>/,
+    );
+    assert.equal((PAGE_BODY.match(/rowStateCopy\(/g) ?? []).length, 1);
+    // One timer of its own, and one place that moves the line's clock
+    // besides the effect: the page's one interval stays the removal
+    // recheck and no longer times this line.
+    assert.equal((PAGE_BODY.match(/setInterval\(/g) ?? []).length, 1);
+    assert.equal((PAGE_BODY.match(/setTimeout\(/g) ?? []).length, 1);
+    assert.equal((PAGE_BODY.match(/clearTimeout\(/g) ?? []).length, 1);
+    assert.equal((PAGE_BODY.match(/\bsetCheckNow\(/g) ?? []).length, 2);
+    // (the checking line and the line after it: the same clock)
+    assert.equal((PAGE_BODY.match(/\bcheckNow\(\)/g) ?? []).length, 2);
+  });
+
+  test("S37 FX3O FF6: when the check's timer ends without a result the page says so, from the pure rule, and that line carries no control", () => {
+    assert.match(
+      PAGE_BODY,
+      /const historyCheckFailed = \(\) =>\s*historyCheckFailedShown\(verifyAsks\(\), verifyInput\(checkNow\(\)\)\);/,
+    );
+    assert.equal(
+      (PAGE_BODY.match(/\bhistoryCheckFailedShown\(/g) ?? []).length,
+      1,
+    );
+    // Straight after the checking line, with settingsCopy's text.
+    const block = PAGE_BODY.match(
+      /<Show when=\{historyChecking\(\)\}>[\s\S]*?<\/Show>\s*(?:\{\}\s*)?(<Show when=\{historyCheckFailed\(\)\}>[\s\S]*?<\/Show>)/,
+    );
+    assert.ok(block, "the couldn't-check line is missing");
+    assert.match(
+      block[1],
+      /^<Show when=\{historyCheckFailed\(\)\}>\s*<Info role="status" data-history-check-failed>\s*\{settingsCopy\.historyCheckFailed\(\)\}\s*<\/Info>\s*<\/Show>$/,
+    );
+    assert.equal(
+      (PAGE_BODY.match(/settingsCopy\.historyCheckFailed\(\)/g) ?? []).length,
+      1,
+    );
+    assert.equal(
+      (PAGE_BODY.match(/when=\{historyCheckFailed\(\)\}/g) ?? []).length,
+      1,
+      "shown from one place",
+    );
+    // It sits outside the history section, whose controls need a model.
+    const section = PAGE_BODY.indexOf("<Show when={historyOwner()}>");
+    const sectionEnd = PAGE_BODY.indexOf("</Confirm>", section);
+    const line = PAGE_BODY.indexOf("<Show when={historyCheckFailed()}>");
+    assert.ok(section !== -1 && sectionEnd > section && line > sectionEnd);
+  });
+
+  test("S38 FX3O FF7: the wipe button is the only destructive button of the page, with Button's own variant", () => {
+    assert.equal((PAGE_BODY.match(/variant="_error"/g) ?? []).length, 1);
+    assert.match(
+      PAGE_BODY,
+      /<Button\s+variant="_error"\s+isDisabled=\{m\(\)\.wipe\.disabled\}\s+onPress=\{\(\) => void runWipe\(\)\}\s*>\s*\{settingsCopy\.wipeButton\(\)\}\s*<\/Button>/,
+    );
+    // Never a styled() wrapper around the component.
+    assert.doesNotMatch(PAGE, /styled\(\s*Button\b/);
   });
 });

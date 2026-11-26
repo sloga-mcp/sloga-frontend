@@ -36,8 +36,10 @@ import type {
   ProtectedShieldState,
 } from "./protectedShield";
 import type {
+  HistoryStop,
   OwnerNoticeKind,
   OwnerPinStatus,
+  PreHistorySetting,
   ProtectedMarkerKind,
   ProtectedToastKind,
   TimelineMarker,
@@ -65,6 +67,19 @@ function verifyChannelFailedCopy(): string {
 /** Marker `error`, also the marker fallback. */
 function verifyMessageFailedCopy(): string {
   return t`Something went wrong verifying this message.`;
+}
+
+/**
+ * Marker `sent_before_join`, also the history floor of a walk that stopped
+ * `missing` or `genesis` (S4, design 9.2).
+ */
+function sentBeforeJoinCopy(): string {
+  return t`Sent before this device joined.`;
+}
+
+/** `messageCopy.senderNotVerified`, also row note `sender_unverified`. */
+function senderNotVerifiedCopy(): string {
+  return t`The sender's device isn't verified on this device yet.`;
 }
 
 /** Label `unverified`, also the label fallback. */
@@ -415,7 +430,10 @@ export function ownerNoticeCopy(n: OwnerNoticeDisplay): string {
 export function markerCopy(kind: ProtectedMarkerKind): string {
   switch (kind) {
     case "sent_before_join":
-      return t`Sent before this device joined.`;
+      return sentBeforeJoinCopy();
+    // S4: native's own record that this device was removed (gray).
+    case "removed_self":
+      return t`Sent after you were removed.`;
     case "unknown_key":
       return t`Sent with a key this device never had.`;
     case "decrypt_failed":
@@ -446,13 +464,55 @@ export function markerCopy(kind: ProtectedMarkerKind): string {
 // Timeline markers (plan D22; `TimelineMarker` from A1)
 // ---------------------------------------------------------------------------
 
-/** A local timeline line; `name` is the member's display name. */
-export function timelineCopy(m: TimelineMarker, name: string): string {
+/**
+ * The line at the history floor, by why the walk stopped (S4; design 9.2,
+ * R-W4-16). `hidden` is the gray marker, `missing` and `genesis` read as the
+ * S1 marker, the rest are the loud notices. `anchor_mismatch` is a refused
+ * candidate like `invalid` (a `HistoryLinkInvalid` reason), so it reads that
+ * line: only `unanchored` is tried again, and only it says so. A stop this
+ * build doesn't know reads the catch-all, never a quiet marker.
+ */
+function historyFloorCopy(stop: HistoryStop): string {
+  switch (stop) {
+    case "hidden":
+      return t`History from before you joined isn't shared here.`;
+    case "missing":
+    case "genesis":
+      return sentBeforeJoinCopy();
+    case "invalid":
+    case "anchor_mismatch":
+      return t`Earlier history couldn't be verified and wasn't loaded.`;
+    case "conflict":
+      return t`Two different versions of this channel's earlier history were offered, so earlier history wasn't loaded.`;
+    case "unanchored":
+      return t`Earlier history couldn't be confirmed yet. Sloga will try again later.`;
+    default: {
+      const _exhaustive: never = stop;
+      return verifyChannelFailedCopy();
+    }
+  }
+}
+
+/**
+ * A local timeline line; `name` is the member's display name (a history
+ * floor names no one and ignores it). `opts.historyVisible`: the channel's
+ * verified history setting is `visible`, so a new device reads earlier
+ * messages too (S4, design 9.5); anything but `true` keeps the S1 line.
+ */
+export function timelineCopy(
+  m: TimelineMarker,
+  name: string,
+  opts: { historyVisible?: boolean } = {},
+): string {
   switch (m.kind) {
     case "new_device":
-      return t`${name} added a new device.`;
+      return opts.historyVisible === true
+        ? t`${name} added a new device. It can read this channel's history.`
+        : t`${name} added a new device.`;
     case "forced_removal":
       return t`${name} was removed by the server and can't rejoin until the owner re-seats them.`;
+    case "history_floor":
+      return historyFloorCopy(m.stop);
     default: {
       const _exhaustive: never = m;
       return verifyChannelFailedCopy();
@@ -473,8 +533,83 @@ export function toastCopy(kind: ProtectedToastKind): string {
     // notice it was (`ownerNoticeCopy`).
     case "owner_notice":
       return t`Another of your devices changed a protected channel. Open the channel to see what changed.`;
+    // S4, owner-user devices only. Neither says which channel or whose
+    // link: a toast carries its kind and nothing else.
+    case "history_mismatch":
+      return t`History keys shared for a protected channel don't match. New members may not be able to read some earlier messages.`;
+    case "history_too_large":
+      return t`Some earlier history in a protected channel can't be shared with new members: too many people joined or left at once.`;
     default: {
       const _exhaustive: never = kind;
+      return verifyChannelFailedCopy();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Row notes, row states and the boundary divider (S4, design 9.3 / 9.5)
+// ---------------------------------------------------------------------------
+
+/** A note under a decrypted row (`rowNotes` in `protectedShield.ts`). */
+export type RowNoteKind =
+  | "sender_unverified"
+  | "sender_unverified_history"
+  | "timing_unverified"
+  | "below_boundary";
+
+/** Note text. None of them is green: each says what could not be checked. */
+export function rowNoteCopy(kind: RowNoteKind): string {
+  switch (kind) {
+    case "sender_unverified":
+      return senderNotVerifiedCopy();
+    case "sender_unverified_history":
+      return t`Sender couldn't be verified (history).`;
+    case "timing_unverified":
+      return t`Timing of this message can't be verified.`;
+    case "below_boundary":
+      return t`Listed among the earlier, unprotected messages.`;
+    default: {
+      const _exhaustive: never = kind;
+      return verifyMessageFailedCopy();
+    }
+  }
+}
+
+/** A row that has no body to show yet. */
+export type RowStateKind = "checking";
+
+/**
+ * `checking`: a row without `encrypted` while the channel's history state
+ * isn't loaded or verified (design 9.5 arm 2). The catalog's existing
+ * msgid, as "Decrypting" beside it is written (R-W4-27).
+ */
+export function rowStateCopy(kind: RowStateKind): string {
+  switch (kind) {
+    case "checking":
+      return t`Checking…`;
+    default: {
+      const _exhaustive: never = kind;
+      return verifyMessageFailedCopy();
+    }
+  }
+}
+
+/**
+ * The permanent divider at the history boundary: under the newest earlier
+ * message while they are kept, at the top of the channel after a wipe. The
+ * wiped line says "removed from this channel": the signed list proves the
+ * owner's request, not that a server finished deleting (R-W4-36). Both are
+ * short: the divider is one 11 px line that ends in an ellipsis when the
+ * row is narrower than its label.
+ */
+export function dividerCopy(preHistory: PreHistorySetting): string {
+  switch (preHistory) {
+    case "kept":
+      return t`Messages above weren't protected`;
+    case "wiped":
+      return t`Earlier messages removed from this channel`;
+    default: {
+      const _exhaustive: never = preHistory;
       return verifyChannelFailedCopy();
     }
   }
@@ -526,6 +661,16 @@ export const CLIENT_REASONS_WITH_COPY = [
   "handover_target_not_own",
   "not_signing_device",
   "authority_held",
+  // S4 `protect` of a channel with messages: the boundary moved five times.
+  "protect_busy",
+  // S4 `protect` that went through with something left out (R-W4-35, B7).
+  "protected_members_pending",
+  "wipe_not_done",
+  // Second fix round (RB2, RB3): the member step rejected over a seat list
+  // that is not the owner alone, and the two left out at once.
+  "protected_members_unconfirmed",
+  "wipe_not_done_members_pending",
+  "wipe_not_done_members_unconfirmed",
 ] as const;
 
 export type ClientReasonWithCopy = (typeof CLIENT_REASONS_WITH_COPY)[number];
@@ -552,6 +697,20 @@ export function clientReasonCopy(reason: ClientReasonWithCopy): string {
     // A served authority names the owner devices; a handover can't qualify.
     case "authority_held":
       return t`This channel names its owner devices. Update that list to move ownership instead.`;
+    // The settings page's inline error, word for word (design 9.5).
+    case "protect_busy":
+      return historyErrorCopy("protect_busy");
+    // The settings page's own lines, word for word.
+    case "protected_members_pending":
+      return protectedMembersPendingCopy();
+    case "wipe_not_done":
+      return protectedWipeNotDoneCopy();
+    case "protected_members_unconfirmed":
+      return protectedMembersUnconfirmedCopy();
+    case "wipe_not_done_members_pending":
+      return protectedWipeNotDoneMembersPendingCopy();
+    case "wipe_not_done_members_unconfirmed":
+      return protectedWipeNotDoneMembersUnconfirmedCopy();
     default: {
       const _exhaustive: never = reason;
       return verifyChannelFailedCopy();
@@ -695,6 +854,79 @@ export const panelCopy = {
 // Owner settings page (lane C11, product choice 4)
 // ---------------------------------------------------------------------------
 
+/** An owner action on the settings page that failed with a cause (S4). */
+export type HistorySettingsError =
+  | "protect_busy"
+  | "wipe_refused"
+  | "clock_behind";
+
+/** Inline error under the protect form or the wipe action. */
+function historyErrorCopy(kind: HistorySettingsError): string {
+  switch (kind) {
+    // Five `ProtectHistoryMoved` in a row (design 4.9 "S4").
+    case "protect_busy":
+      return t`This channel is too busy to protect right now. Try again in a quiet moment.`;
+    // The wipe route refused; the cause is never shown.
+    case "wipe_refused":
+      return t`Earlier messages couldn't be deleted right now.`;
+    // Native `seat_list_invalid` with reason `future_boundary`: the newest
+    // message id is ahead of this device's clock. Either side can be the
+    // one that is off, so the line blames neither (R-W4-36).
+    case "clock_behind":
+      return t`The newest message's time is ahead of this device's clock. Check the date and time settings, or try again in a few minutes.`;
+    default: {
+      const _exhaustive: never = kind;
+      return verifyChannelFailedCopy();
+    }
+  }
+}
+
+/**
+ * `protect` rejected `protected_members_pending` (R-W4-35): the channel is
+ * protected, the picked members are not on the list. Not an error of the
+ * protect itself.
+ */
+function protectedMembersPendingCopy(): string {
+  return t`This channel is now protected, with only you in it. The members you picked weren't added yet. You can add them below.`;
+}
+
+/**
+ * `protect` rejected `wipe_not_done` (audit B7): the channel is protected
+ * and the earlier messages are still there. It says nothing about the
+ * members or about how to delete them now: neither is known here.
+ */
+function protectedWipeNotDoneCopy(): string {
+  return t`This channel is now protected, but the earlier messages were not deleted.`;
+}
+
+/**
+ * `protect` rejected `protected_members_unconfirmed` (re-review RB2): the
+ * channel is protected and the member step rejected, but the seat list
+ * read afterwards names more than the owner, or could not be read. The
+ * line claims neither "only you" nor "added": the seat list below shows
+ * what is there.
+ */
+function protectedMembersUnconfirmedCopy(): string {
+  return t`This channel is now protected. Adding the members you picked didn't finish. Check the seats below.`;
+}
+
+/**
+ * `protect` rejected `wipe_not_done_members_pending` (re-review RB3): both
+ * of the above at once, with the owner alone on the list.
+ */
+function protectedWipeNotDoneMembersPendingCopy(): string {
+  return t`This channel is now protected, with only you in it. The earlier messages were not deleted, and the members you picked weren't added yet. You can add them below.`;
+}
+
+/**
+ * `protect` rejected `wipe_not_done_members_unconfirmed` (RB2 + RB3): the
+ * wipe was not done and the member step rejected with a seat list that
+ * names more than the owner, or that could not be read.
+ */
+function protectedWipeNotDoneMembersUnconfirmedCopy(): string {
+  return t`This channel is now protected, but the earlier messages were not deleted. Adding the members you picked didn't finish. Check the seats below.`;
+}
+
 export const settingsCopy = {
   /** Settings tab label and page title. */
   title: protectedChannelCopy,
@@ -737,6 +969,89 @@ export const settingsCopy = {
   /** Overview (C13): why the voice and announcement toggles are hidden. */
   typeTogglesHidden: (): string =>
     t`Voice and announcement settings aren't available for protected channels.`,
+  // S4 history (design 9.5). The wipe and the hidden-to-visible
+  // confirmations are native dialogs with native text; nothing here
+  // confirms either.
+  /** Above the protect button of a channel that already has messages. */
+  protectWithHistory: (channelName: string | null): string => {
+    const channel = displayName(channelName);
+    return channel === null
+      ? t`Messages already in this channel stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted.`
+      : t`Messages already in #${channel} stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted.`;
+  },
+  /**
+   * On the protect form of a channel that already has messages: the order
+   * of the two steps (R-W4-35).
+   */
+  protectOrder: (): string =>
+    t`The channel is protected first, with only you in it. The members you pick are added right after.`,
+  /**
+   * On the same form: what protecting does to what the channel carries
+   * over. The server closes open polls and cancels pending scheduled
+   * messages right after the protect.
+   */
+  protectClosesOpen: (): string =>
+    t`Open polls are closed and scheduled messages are canceled when the channel is protected.`,
+  /** After a protect whose member step did not go through. */
+  membersPending: protectedMembersPendingCopy,
+  /** After a protect that could not do the wipe that was ticked. */
+  wipeNotDone: protectedWipeNotDoneCopy,
+  /** The member step rejected, and the seat list is not the owner alone. */
+  membersUnconfirmed: protectedMembersUnconfirmedCopy,
+  /** No wipe and no members, with the owner alone on the list. */
+  wipeNotDoneMembersPending: protectedWipeNotDoneMembersPendingCopy,
+  /** No wipe, and the member step rejected with more than the owner seated. */
+  wipeNotDoneMembersUnconfirmed: protectedWipeNotDoneMembersUnconfirmedCopy,
+  /** Checkbox on the protect form (off by default). */
+  deleteEarlierOption: (): string => t`Also delete the earlier messages`,
+  /** What a wipe does, under the checkbox and the wipe action. */
+  wipeDescription: (): string =>
+    t`Earlier messages and their files will be deleted from Sloga's servers. This can't be undone. Copies on people's devices, forwards, crossposts and reports may remain.`,
+  /** History visibility toggle label. */
+  historyToggle: (): string => t`New members can read earlier messages`,
+  /**
+   * Under the toggle while history is visible. "Shortly after": sharing
+   * starts with the first key change after the setting is turned on, not
+   * with the message that was being sent at that moment.
+   */
+  historyVisibleDescription: (): string =>
+    t`People who join later, and new devices of anyone in the channel, can read messages sent from shortly after this is turned on. Anyone in the channel can still share what they read.`,
+  /**
+   * Under the toggle while history is hidden. `earlierKept`: native holds
+   * a boundary with the earlier messages kept, and those stay readable to
+   * everyone in the channel whatever this setting says (R-W4-36).
+   */
+  historyHiddenDescription: (earlierKept: boolean): string =>
+    earlierKept === true
+      ? t`New members only see protected messages sent after they join. Messages from before this channel was protected stay readable to everyone in it.`
+      : t`New members only see messages sent after they join.`,
+  /** Shown to the owner before the toggle is turned on (plan O-5). */
+  historyRemovalNote: (): string =>
+    t`Removing someone doesn't take back what they already read. It stays on their devices.`,
+  /** Wipe action on an already protected channel. */
+  wipeButton: (): string => t`Delete the earlier unprotected messages`,
+  /** The server's wipe state is `requested`. */
+  wipeRequested: (): string =>
+    t`The earlier messages are being deleted from Sloga's servers.`,
+  /**
+   * The server's wipe state is `done`. `count` is the server's number,
+   * shown only when it is a whole number of 0 or more.
+   */
+  wipeDone: (count: number | null): string =>
+    typeof count === "number" && Number.isSafeInteger(count) && count >= 0
+      ? t`Earlier messages deleted from Sloga's servers: ${count}`
+      : t`Earlier messages were deleted from Sloga's servers.`,
+  /** Inline error for a failed protect or wipe. */
+  historyError: historyErrorCopy,
+  /** The view's `historyWalk` is `retry_later`. */
+  historyRetryLater: (): string =>
+    t`Earlier history couldn't be loaded right now. Try again later.`,
+  /**
+   * In place of the history section: the page asked for the channel's
+   * state and none had loaded when the checking line ended.
+   */
+  historyCheckFailed: (): string =>
+    t`Couldn't check this channel's history settings.`,
 };
 
 // ---------------------------------------------------------------------------
@@ -857,8 +1172,7 @@ export const messageCopy = {
   /** Informational: the view's `tsSkew` (design 9.2 `ts_skew`). */
   tsSkew: (): string => t`Sent time doesn't match.`,
   /** The view's `senderVerified` is false. */
-  senderNotVerified: (): string =>
-    t`The sender's device isn't verified on this device yet.`,
+  senderNotVerified: senderNotVerifiedCopy,
   /**
    * S2 (OR-20): an `ok` view with `filesUnsupported > 0`. No count and no
    * file names (S3 renders files); shown only when the count is above 0.
@@ -877,3 +1191,135 @@ export const notificationCopy = {
   /** D25: a notification body for a protected row (never its text). */
   body: (): string => t`New message`,
 };
+
+// ---------------------------------------------------------------------------
+// Key backup: the protected channel section (S4, design 8.5 / 9.5; R-W4-12)
+// ---------------------------------------------------------------------------
+
+/**
+ * What a backup or a restore left out of the protected channel history.
+ * `oldest` / `all`: the bundle's `text_truncated`.
+ * `restore_oldest` / `restore_all`: a restore report's `text_truncated`
+ * (what the restored backup had left out). Worded about the restore, so
+ * neither repeats a bundle line shown on the same page.
+ * `skipped_partial` / `skipped_all`: the report's `text_skipped`, with and
+ * without `text_truncated` beside it.
+ */
+export type BackupTextKind =
+  | "oldest"
+  | "all"
+  | "restore_oldest"
+  | "restore_all"
+  | "skipped_partial"
+  | "skipped_all";
+
+/** A neutral line for the backup page; it never counts anything. */
+export function backupTextCopy(kind: BackupTextKind): string {
+  switch (kind) {
+    case "oldest":
+      return t`The oldest history from your protected channels didn't fit in this backup.`;
+    case "all":
+      return t`History from your protected channels didn't fit in this backup.`;
+    case "restore_oldest":
+      return t`The oldest history from your protected channels wasn't in the backup, so it couldn't be restored.`;
+    case "restore_all":
+      return t`History from your protected channels wasn't in the backup, so it couldn't be restored.`;
+    case "skipped_partial":
+      return t`Some history from your protected channels couldn't be restored.`;
+    case "skipped_all":
+      return t`None of the history from your protected channels could be restored.`;
+    default: {
+      const _exhaustive: never = kind;
+      return verifyChannelFailedCopy();
+    }
+  }
+}
+
+/**
+ * The general backup line of design 9.5. The design's second line
+ * ("Restoring replaces your old device.") is not here: a restore adds a
+ * device and the others keep working, and nothing rendered it.
+ */
+export const backupNoteCopy = {
+  /** The protected channel section shares the backup's size limit. */
+  textBudget: (): string =>
+    t`History from protected channels uses up to 2 MB of your backup, so fewer direct messages may fit.`,
+};
+
+// ---------------------------------------------------------------------------
+// Audit log (S4): `channel_protect`, `channel_history_wipe`
+// ---------------------------------------------------------------------------
+
+/** The S4 audit actions with copy here. */
+export type AuditCopyAction = "channel_protect" | "channel_history_wipe";
+
+/**
+ * Display values for an audit row. `actor` and `channel` are display names
+ * the caller resolved, never ids. `channel` is null when the caller cannot
+ * name the channel (it was deleted, say): the sentence then keeps the fact
+ * and names no channel. `wiped`: the protect entry's `changes.wiped` (only
+ * `true` counts). `count`: the wipe job entry's number; the request entry
+ * has none.
+ */
+export interface AuditCopyDetail {
+  actor: string;
+  channel: string | null;
+  wiped?: boolean;
+  count?: number | null;
+}
+
+/** Action filter label. */
+export function auditActionLabel(action: AuditCopyAction): string {
+  switch (action) {
+    case "channel_protect":
+      return t`Protect channel`;
+    case "channel_history_wipe":
+      return t`Delete earlier messages`;
+    default: {
+      const _exhaustive: never = action;
+      return String(action);
+    }
+  }
+}
+
+/**
+ * One sentence for an audit row. The boundary is never shown. A wipe entry
+ * with a count is the job's own entry, so it names no one; without a usable
+ * count it is the request. Without a channel name the same four sentences
+ * say "a channel".
+ */
+export function auditCopy(
+  action: AuditCopyAction,
+  detail: AuditCopyDetail,
+): string {
+  const actor = detail.actor;
+  const channel = displayName(detail.channel) === null ? null : detail.channel;
+  switch (action) {
+    case "channel_protect":
+      if (channel === null) {
+        return detail.wiped === true
+          ? t`${actor} protected a channel and chose to delete its earlier messages`
+          : t`${actor} protected a channel`;
+      }
+      return detail.wiped === true
+        ? t`${actor} protected the channel ${channel} and chose to delete its earlier messages`
+        : t`${actor} protected the channel ${channel}`;
+    case "channel_history_wipe": {
+      const count = detail.count;
+      const counted =
+        typeof count === "number" && Number.isSafeInteger(count) && count >= 0;
+      if (channel === null) {
+        return counted
+          ? t`The earlier messages in a channel were deleted (${count})`
+          : t`${actor} started deleting the earlier messages in a channel`;
+      }
+      return counted
+        ? t`The earlier messages in ${channel} were deleted (${count})`
+        : t`${actor} started deleting the earlier messages in ${channel}`;
+    }
+    default: {
+      const _exhaustive: never = action;
+      return t`${actor} performed an action`;
+    }
+  }
+}

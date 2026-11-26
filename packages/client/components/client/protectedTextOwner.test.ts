@@ -22,8 +22,10 @@ import {
   protect,
   publishStoreKey,
   recoverOwnership,
+  setHistory,
   setSeats,
   signOwnerDevices,
+  wipeHistory,
 } from "./protectedTextOwner.ts";
 import type {
   GroupOps,
@@ -47,6 +49,8 @@ const _ownerFlows: OwnerFlows = {
   pendingSeats,
   cancelPendingSeats,
   recoverOwnership,
+  setHistory,
+  wipeHistory,
 };
 void _ownerFlows;
 
@@ -141,6 +145,12 @@ interface Harness {
   storeAtPut: (string | null)[];
   /** Every request (`METHOD path`) and native command, in order. */
   trace: string[];
+  /** Every `port.log` call. */
+  logs: [string, string][];
+  /** The data of each `port.log` call, in the same order. */
+  logData: unknown[];
+  /** How many times the store was written. */
+  storeWrites: number;
 }
 
 function harness(opts: {
@@ -151,6 +161,8 @@ function harness(opts: {
   sleepRejectsAfter?: number;
   /** The root advert's `formats_v2` as the port reports it (default off). */
   formatsV2?: boolean;
+  /** S4: the root advert's `history_setting` (default off). */
+  historySetting?: boolean;
 }): Harness {
   const h = {
     calls: [] as Call[],
@@ -160,10 +172,14 @@ function harness(opts: {
     opsLog: [] as unknown[][],
     storeAtPut: [] as (string | null)[],
     trace: [] as string[],
+    logs: [] as [string, string][],
+    logData: [] as unknown[],
+    storeWrites: 0,
   };
   const key = publishStoreKey(ME, CH);
-  const port: ProtectedTextPort = {
+  const port: ProtectedTextPort & { historySetting(): boolean } = {
     formatsV2: () => opts.formatsV2 === true,
+    historySetting: () => opts.historySetting === true,
     async invoke(cmd, args) {
       h.invokes.push({ cmd, args: args as Record<string, unknown> });
       h.trace.push(cmd);
@@ -185,7 +201,9 @@ function harness(opts: {
           : { method, path, body, headers };
       h.calls.push(c);
       h.trace.push(`${method} ${path}`);
-      if (method === "PUT") h.storeAtPut.push(h.store.get(key) ?? null);
+      if (method === "PUT" || method === "POST") {
+        h.storeAtPut.push(h.store.get(key) ?? null);
+      }
       const route = opts.routes[`${method} ${path}`];
       let r: Reply | undefined;
       if (typeof route === "function") r = route(c);
@@ -206,7 +224,10 @@ function harness(opts: {
         throw new Error("aborted");
       }
     },
-    log() {},
+    log(level, msg, data) {
+      h.logs.push([level, msg]);
+      h.logData.push(data);
+    },
     selfUserId: ME,
     selfDeviceId: MY_DEV,
     channelInfo: (id) =>
@@ -225,6 +246,7 @@ function harness(opts: {
       get: (k) => h.store.get(k) ?? null,
       set: (k, v) => {
         if (opts.storeSetFails) return false;
+        h.storeWrites++;
         h.store.set(k, v);
         return true;
       },
@@ -2762,4 +2784,1909 @@ test("FXO M1 safety: a recovery list that may be on the server (a PUT without an
   assert.equal(resumed.seen.signs, 0, "unsent: no fresh signature");
   assert.deepEqual(putBodies(h3), [recV3.body], "unsent: SAME bytes");
   assert.equal(h3.store.size, 0, "unsent: resolved");
+});
+
+// ---------------------------------------------------------------------------
+// S4 (W4 L2o): protect with history, the history setting, the wipe
+// (design 4.9 "S4"; R-W4-9 / 10 / 11). Fake ports only; the server answers
+// are the shapes of backend 2efca34c.
+// ---------------------------------------------------------------------------
+
+const MSG1 = "01JA0000000000000000000001";
+const MSG2 = "01JA0000000000000000000002";
+const MSG3 = "01JA0000000000000000000003";
+const MSG4 = "01JA0000000000000000000004";
+const MSG5 = "01JA0000000000000000000005";
+const MSG6 = "01JA0000000000000000000006";
+const MSG_PATH = `GET /channels/${CH}/messages?limit=1&sort=Latest`;
+const PROTECT_PUT = `PUT /channels/${CH}/protect`;
+const SEATS_GET = `GET /channels/${CH}/seats`;
+const SEATS_PUT = `PUT /channels/${CH}/seats`;
+const CHANNEL_GET = `GET /channels/${CH}`;
+const WIPE_POST = `POST /channels/${CH}/history_wipe`;
+const SIGN = "e2ee_text_seat_list_sign";
+const VERIFY = "e2ee_text_seat_list_verify";
+const MOVED = res(409, { type: "ProtectHistoryMoved" });
+
+/** A v2 list body with native's line order (formats.rs at b688f121). */
+const v2Body = (
+  o: {
+    version?: number;
+    seats?: string[];
+    history?: string;
+    boundary?: string;
+    pre?: string;
+  } = {},
+) =>
+  [
+    "sloga-seat-list-v2",
+    "v:2",
+    `channel_id:${CH}`,
+    `version:${o.version ?? 1}`,
+    "device_cap:5",
+    "issued_at:1700000000000",
+    `signer_user_id:${ME}`,
+    `signer_device_id:${MY_DEV}`,
+    `seats:${(o.seats ?? [ME]).join(",")}`,
+    "authority:",
+    `history:${o.history ?? "hidden"}`,
+    `history_boundary:${o.boundary ?? ""}`,
+    `pre_history:${o.pre ?? "kept"}`,
+    "group_salt:00",
+  ].join("\n");
+
+const lineOf = (body: string, key: string) =>
+  body
+    .split("\n")
+    .find((l) => l.startsWith(`${key}:`))
+    ?.slice(key.length + 1);
+
+/** What native would sign for these arguments (a later list keeps the held lines). */
+function signedFor(a: Record<string, unknown>): SignedSeatList {
+  const held = a.serverList as { version: number; body: string } | null;
+  const version = held === null ? 1 : held.version + 1;
+  const keep = (key: string) =>
+    held === null ? undefined : lineOf(held.body, key);
+  const history = (a.history as string | null) ?? keep("history");
+  const boundary =
+    (a.historyBoundary as string | null) ?? keep("history_boundary");
+  const pre = (a.preHistory as string | null) ?? keep("pre_history");
+  return genesis({
+    version,
+    body: v2Body({
+      version,
+      seats: a.seats as string[],
+      history,
+      boundary,
+      pre,
+    }),
+    signature: `SIG-${version}-${boundary ?? ""}-${history ?? ""}-${pre ?? ""}`,
+  });
+}
+
+/** Native fakes: `sign` may answer first (undefined = the default list). */
+const historyNative = (
+  sign?: (a: Record<string, unknown>, n: number) => unknown,
+) => {
+  let n = 0;
+  return {
+    [SIGN]: (a: Record<string, unknown>) => {
+      const own = sign?.(a, n++);
+      return own === undefined ? signedFor(a) : own;
+    },
+    [VERIFY]: (a: Record<string, unknown>) => {
+      const body = (a.list as { body: string }).body;
+      return verdict(
+        (lineOf(body, "seats") ?? ME).split(","),
+        Number(lineOf(body, "version") ?? 1),
+      );
+    },
+    e2ee_text_state: () => nativeState([{ user_id: ME, device_id: MY_DEV }]),
+  };
+};
+
+/** `{ land: r }`: the request's list becomes the server's, then `r` is answered. */
+type Landing = Reply | { land: Reply };
+const LAND: Landing = { land: res(200) };
+
+/**
+ * A server that holds one list. The last entry of each queue repeats.
+ * `newest`: the answers of the newest-message read (null = no message).
+ */
+function historyServer(
+  o: {
+    list?: SignedSeatList | null;
+    newest?: (string | null)[];
+    protectPuts?: Landing[];
+    seatPuts?: Landing[];
+    wipePosts?: Landing[];
+  } = {},
+) {
+  const s = { list: o.list ?? null };
+  const take = <T>(q: T[]): T => (q.length > 1 ? q.shift()! : q[0]);
+  const newest = [...(o.newest ?? [MSG1])];
+  const protectPuts = [...(o.protectPuts ?? [LAND])];
+  const seatPuts = [...(o.seatPuts ?? [LAND])];
+  const wipePosts = [...(o.wipePosts ?? [LAND])];
+  const hold = (sent: unknown, version: number) => {
+    const l = sent as { body: string; signature: string };
+    s.list = genesis({ version, body: l.body, signature: l.signature });
+  };
+  const answer = (r: Landing, land: () => void): Reply => {
+    if (typeof r === "object" && "land" in r) {
+      land();
+      return r.land;
+    }
+    return r;
+  };
+  const routes: Record<string, (c: Call) => Reply> = {
+    [MSG_PATH]: () => {
+      const id = take(newest);
+      return res(200, id === null ? [] : [{ _id: id, channel: CH }]);
+    },
+    [CHANNEL_GET]: () => res(200, { _id: CH, protected: s.list !== null }),
+    [SEATS_GET]: () =>
+      res(200, seatsBody(s.list === null ? null : listOf(s.list))),
+    [PROTECT_PUT]: (c) =>
+      answer(take(protectPuts), () =>
+        hold((c.body as { seat_list: unknown }).seat_list, 1),
+      ),
+    [SEATS_PUT]: (c) =>
+      answer(take(seatPuts), () => hold(c.body, (s.list?.version ?? 0) + 1)),
+    [WIPE_POST]: (c) =>
+      answer(take(wipePosts), () => hold(c.body, (s.list?.version ?? 0) + 1)),
+  };
+  return { routes, state: s };
+}
+
+const historyHarness = (
+  server: ReturnType<typeof historyServer>,
+  over: {
+    sign?: (a: Record<string, unknown>, n: number) => unknown;
+    sleepRejectsAfter?: number;
+    historySetting?: boolean;
+    formatsV2?: boolean;
+  } = {},
+) =>
+  harness({
+    routes: server.routes,
+    invoke: historyNative(over.sign),
+    sleepRejectsAfter: over.sleepRejectsAfter,
+    formatsV2: over.formatsV2 ?? true,
+    historySetting: over.historySetting ?? true,
+  });
+
+/** The server's list now, read where an earlier assert narrowed it. */
+const historyServerList = (
+  server: ReturnType<typeof historyServer>,
+): SignedSeatList | null => server.state.list;
+
+const KEPT = { withHistory: true, wipe: false };
+const WIPED = { withHistory: true, wipe: true };
+const posts = (h: Harness) => h.calls.filter((c) => c.method === "POST");
+const count = (h: Harness, entry: string) =>
+  h.trace.filter((t) => t === entry).length;
+const wireOf = (s: SignedSeatList) => ({
+  body: s.body,
+  signature: s.signature,
+  signer_device_id: s.signer_device_id,
+});
+/** The genesis `signedFor` answers for a boundary. */
+const boundaryGenesis = (boundary: string, pre = "kept") =>
+  signedFor({
+    serverList: null,
+    seats: [ME],
+    history: null,
+    historyBoundary: boundary,
+    preHistory: pre,
+  });
+const storedNow = (h: Harness) => {
+  const raw = h.store.get(publishStoreKey(ME, CH));
+  return raw === undefined ? null : JSON.parse(raw);
+};
+const createdGroups = (h: Harness) =>
+  h.opsLog.filter((o) => o[0] === "createGroup").length;
+const verifiedBody = (h: Harness, i = 0) =>
+  (cmds(h, VERIFY)[i].args.list as { body: string }).body;
+
+test("S4 protect: without opts or with withHistory false the S2 requests, sign arguments and stored entry are unchanged", async () => {
+  for (const opts of [undefined, { withHistory: false, wipe: false }]) {
+    _resetOwnerFlowsForTest();
+    const g = genesis();
+    const h = harness({
+      routes: protectRoutes(g, [res(200)]),
+      invoke: { [SIGN]: () => g, [VERIFY]: () => verdict([ME, BOB]) },
+      formatsV2: true,
+      historySetting: true,
+    });
+    if (opts === undefined) await protect(h.ops, h.port, CH, [BOB], 5);
+    else await protect(h.ops, h.port, CH, [BOB], 5, opts);
+    assert.deepEqual(h.trace, [
+      SEATS_GET,
+      SIGN,
+      PROTECT_PUT,
+      CHANNEL_GET,
+      SEATS_GET,
+      VERIFY,
+    ]);
+    const [a] = signArgs(h);
+    assert.deepEqual(a, {
+      channelId: CH,
+      userId: ME,
+      seats: [ME, BOB],
+      deviceCap: 5,
+      serverList: null,
+      format: 2,
+      authority: null,
+      recovery: false,
+      history: null,
+      historyBoundary: null,
+      preHistory: null,
+      wipeCount: null,
+      channelName: "secret",
+      displayNames: [
+        { user_id: ME, name: ME },
+        { user_id: BOB, name: BOB },
+      ],
+    });
+    assert.deepEqual(Object.keys(a), [
+      "channelId",
+      "userId",
+      "seats",
+      "deviceCap",
+      "serverList",
+      "format",
+      "authority",
+      "recovery",
+      "history",
+      "historyBoundary",
+      "preHistory",
+      "wipeCount",
+      "channelName",
+      "displayNames",
+    ]);
+    assert.deepEqual(puts(h)[0].body, { seat_list: wireOf(g) });
+    assert.deepEqual(JSON.parse(h.storeAtPut[0]!), {
+      v: 1,
+      op: "protect",
+      signed: g,
+    });
+  }
+});
+
+test("S4 sign sites: setSeats, signOwnerDevices and moveOwnerKey always send the four history arguments as null", async () => {
+  const none = {
+    history: null,
+    historyBoundary: null,
+    preHistory: null,
+    wipeCount: null,
+  };
+  const pick = (a: Record<string, unknown>) => ({
+    history: a.history,
+    historyBoundary: a.historyBoundary,
+    preHistory: a.preHistory,
+    wipeCount: a.wipeCount,
+  });
+  const seats = harness({
+    routes: listRoutes(heldV1, nextV2, [res(200)]),
+    invoke: seatNative(nextV2),
+    historySetting: true,
+  });
+  await setSeats(seats.ops, seats.port, CH, [ME, BOB], 5);
+  assert.deepEqual(pick(signArgs(seats)[0]), none, "setSeats");
+
+  _resetOwnerFlowsForTest();
+  const devices = harness({
+    routes: listRoutes(heldV2, nextV2NewAuth, [res(200)]),
+    invoke: seatNative(nextV2NewAuth),
+    historySetting: true,
+  });
+  await signOwnerDevices(devices.ops, devices.port, CH, [MY_DEV]);
+  assert.deepEqual(pick(signArgs(devices)[0]), none, "signOwnerDevices");
+
+  _resetOwnerFlowsForTest();
+  const move = moveHarness();
+  await moveOwnerKey(move.ops, move.port, CH, OTHER_DEV);
+  assert.deepEqual(pick(signArgs(move)[0]), none, "moveOwnerKey");
+});
+
+test("S4 protect with history: an owner-only v2 genesis over the newest message, stored before the PUT, lands first try, then the members through setSeats", async () => {
+  const server = historyServer();
+  const h = historyHarness(server);
+  await protect(h.ops, h.port, CH, [BOB], 5, KEPT);
+
+  const g = boundaryGenesis(MSG1);
+  assert.deepEqual(h.trace.slice(0, 7), [
+    SEATS_GET,
+    MSG_PATH,
+    SIGN,
+    PROTECT_PUT,
+    CHANNEL_GET,
+    SEATS_GET,
+    VERIFY,
+  ]);
+  const [first, second] = signArgs(h);
+  assert.deepEqual(first, {
+    channelId: CH,
+    userId: ME,
+    seats: [ME],
+    deviceCap: 5,
+    serverList: null,
+    format: 2,
+    authority: null,
+    recovery: false,
+    history: null,
+    historyBoundary: MSG1,
+    preHistory: "kept",
+    wipeCount: null,
+    channelName: "secret",
+    displayNames: [{ user_id: ME, name: ME }],
+  });
+  assert.deepEqual(JSON.parse(h.storeAtPut[0]!), {
+    v: 2,
+    op: "protect",
+    geneses: [g],
+    wipe: false,
+  });
+  assert.deepEqual(puts(h)[0].body, { seat_list: wireOf(g) });
+  const [verify] = cmds(h, VERIFY);
+  assert.deepEqual(verify.args.list, {
+    body: g.body,
+    signature: g.signature,
+    signer_user_id: ME,
+    signer_device_id: MY_DEV,
+  });
+  assert.deepEqual(
+    h.opsLog.filter((o) => o[0] === "createGroup"),
+    [["createGroup", CH, null]],
+  );
+
+  // The picked member: the ordinary seat flow over the landed genesis.
+  assert.deepEqual(h.trace.slice(7), [
+    SEATS_GET,
+    VERIFY,
+    SIGN,
+    SEATS_PUT,
+    SEATS_GET,
+    VERIFY,
+    "e2ee_text_state",
+  ]);
+  assert.deepEqual(second.seats, [ME, BOB]);
+  assert.deepEqual(second.serverList, { version: 1, body: g.body });
+  assert.deepEqual(
+    [second.history, second.historyBoundary, second.preHistory],
+    [null, null, null],
+    "the member list says nothing about history",
+  );
+  assert.equal(server.state.list?.version, 2);
+  assert.equal(h.store.size, 0);
+});
+
+test("S4 protect with history: no picked member means no second list", async () => {
+  const h = historyHarness(historyServer());
+  await protect(h.ops, h.port, CH, [ME], 5, KEPT);
+  assert.equal(count(h, SIGN), 1);
+  assert.equal(count(h, SEATS_PUT), 0);
+});
+
+test("S4 protect with history: ProtectHistoryMoved twice, then it lands: three stored geneses with rising boundaries, the landed one verified", async () => {
+  const server = historyServer({
+    newest: [MSG1, MSG2, MSG3],
+    protectPuts: [MOVED, MOVED, LAND],
+  });
+  const h = historyHarness(server);
+  await protect(h.ops, h.port, CH, [], 5, KEPT);
+
+  assert.deepEqual(h.trace, [
+    SEATS_GET,
+    MSG_PATH,
+    SIGN,
+    PROTECT_PUT,
+    MSG_PATH,
+    SIGN,
+    PROTECT_PUT,
+    MSG_PATH,
+    SIGN,
+    PROTECT_PUT,
+    CHANNEL_GET,
+    SEATS_GET,
+    VERIFY,
+  ]);
+  const all = [MSG1, MSG2, MSG3].map((b) => boundaryGenesis(b));
+  assert.deepEqual(
+    signArgs(h).map((a) => a.historyBoundary),
+    [MSG1, MSG2, MSG3],
+  );
+  h.storeAtPut.forEach((raw, i) => {
+    assert.deepEqual(
+      JSON.parse(raw!),
+      { v: 2, op: "protect", geneses: all.slice(0, i + 1), wipe: false },
+      `the entry at PUT ${i + 1} holds every genesis signed so far`,
+    );
+  });
+  assert.deepEqual(
+    puts(h).map((p) => p.body),
+    all.map((g) => ({ seat_list: wireOf(g) })),
+  );
+  assert.equal(verifiedBody(h), all[2].body);
+  assert.equal(h.sleeps.length, 0, "a moved boundary is not a backoff");
+  assert.equal(h.store.size, 0);
+});
+
+test("S4 protect with history: five ProtectHistoryMoved in a row is protect_busy after a read-back, with five geneses and no sixth", async () => {
+  const server = historyServer({
+    newest: [MSG1, MSG2, MSG3, MSG4, MSG5, MSG6],
+    protectPuts: [MOVED],
+  });
+  const h = historyHarness(server);
+  await assert.rejects(protect(h.ops, h.port, CH, [BOB], 5, KEPT), {
+    source: "client",
+    reason: "protect_busy",
+  });
+  assert.equal(count(h, SIGN), 5);
+  assert.equal(count(h, PROTECT_PUT), 5);
+  assert.equal(count(h, MSG_PATH), 5, "no sixth boundary is read");
+  assert.deepEqual(
+    h.trace.slice(-3),
+    [PROTECT_PUT, CHANNEL_GET, SEATS_GET],
+    "read back before the entry is dropped",
+  );
+  assert.equal(JSON.parse(h.storeAtPut[4]!).geneses.length, 5);
+  assert.equal(count(h, VERIFY), 0);
+  assert.equal(count(h, SEATS_PUT), 0, "no member list without a genesis");
+  assert.equal(h.store.size, 0);
+});
+
+test("S4 protect with history: a boundary that did not move up stops at once, and an earlier genesis found on the server is finished instead", async () => {
+  const stuck = historyHarness(
+    historyServer({ newest: [MSG1, MSG1], protectPuts: [MOVED] }),
+  );
+  await assert.rejects(protect(stuck.ops, stuck.port, CH, [], 5, KEPT), {
+    source: "client",
+    reason: "protect_busy",
+  });
+  assert.equal(count(stuck, SIGN), 1, "the same boundary is never re-signed");
+  assert.equal(stuck.store.size, 0);
+
+  // The first genesis landed although the server answered "moved".
+  _resetOwnerFlowsForTest();
+  const server = historyServer({
+    newest: [MSG1, MSG1],
+    protectPuts: [{ land: MOVED }],
+  });
+  const h = historyHarness(server);
+  await protect(h.ops, h.port, CH, [], 5, KEPT);
+  assert.equal(verifiedBody(h), boundaryGenesis(MSG1).body);
+  assert.equal(createdGroups(h), 1);
+  assert.equal(h.store.size, 0);
+});
+
+test("S4 protect with history: a lost answer reads back; the second genesis is there, so it has landed and nothing is signed or sent again", async () => {
+  const server = historyServer({
+    newest: [MSG1, MSG2],
+    protectPuts: [MOVED, { land: "transport" }],
+  });
+  const h = historyHarness(server);
+  await protect(h.ops, h.port, CH, [], 5, KEPT);
+  assert.deepEqual(h.trace, [
+    SEATS_GET,
+    MSG_PATH,
+    SIGN,
+    PROTECT_PUT,
+    MSG_PATH,
+    SIGN,
+    PROTECT_PUT,
+    CHANNEL_GET,
+    SEATS_GET,
+    VERIFY,
+  ]);
+  assert.equal(verifiedBody(h), boundaryGenesis(MSG2).body);
+  assert.deepEqual(h.sleeps, [250]);
+  assert.equal(h.store.size, 0);
+});
+
+test("S4 protect with history: a lost answer or a 5xx that did not land re-sends the SAME bytes, a 429 without a read-back", async () => {
+  const server = historyServer({
+    protectPuts: ["transport", res(503), res(429, null, 700), LAND],
+  });
+  const h = historyHarness(server);
+  await protect(h.ops, h.port, CH, [], 5, KEPT);
+  const p = puts(h);
+  assert.equal(p.length, 4);
+  assert.ok(
+    p.every((c) => JSON.stringify(c.body) === JSON.stringify(p[0].body)),
+  );
+  assert.equal(count(h, SIGN), 1, "never re-signed");
+  assert.equal(count(h, MSG_PATH), 1, "the boundary is not read again");
+  assert.deepEqual(h.trace.slice(3, 12), [
+    PROTECT_PUT,
+    CHANNEL_GET,
+    SEATS_GET,
+    PROTECT_PUT,
+    CHANNEL_GET,
+    SEATS_GET,
+    PROTECT_PUT,
+    PROTECT_PUT,
+    CHANNEL_GET,
+  ]);
+  assert.deepEqual(h.sleeps, [250, 500, 700]);
+});
+
+test("S4 protect with history: a declined dialog writes no entry and sends no request that changes anything", async () => {
+  const h = historyHarness(historyServer(), {
+    sign: () => {
+      throw { type: "declined" };
+    },
+  });
+  await assert.rejects(protect(h.ops, h.port, CH, [BOB], 5, WIPED), {
+    source: "native",
+    error: { type: "declined" },
+  });
+  assert.deepEqual(h.trace, [SEATS_GET, MSG_PATH, SIGN]);
+  assert.equal(h.storeWrites, 0, "nothing was ever stored");
+  assert.equal(h.store.size, 0);
+});
+
+test("S4 protect with history: a restart mid-protect resumes from the stored entry without signing", async () => {
+  const g1 = boundaryGenesis(MSG1);
+  const g2 = boundaryGenesis(MSG2);
+  const entry = JSON.stringify({
+    v: 2,
+    op: "protect",
+    geneses: [g1, g2],
+    wipe: false,
+  });
+
+  // The EARLIER genesis is what the server holds: landed, verified.
+  const landed = historyHarness(historyServer({ list: g1 }));
+  landed.store.set(publishStoreKey(ME, CH), entry);
+  await protect(landed.ops, landed.port, CH, [], 5);
+  assert.deepEqual(landed.trace, [CHANNEL_GET, SEATS_GET, VERIFY]);
+  assert.equal(verifiedBody(landed), g1.body);
+  assert.equal(createdGroups(landed), 1);
+  assert.equal(landed.store.size, 0);
+
+  // Nothing landed: the newest genesis is re-sent with the SAME bytes.
+  _resetOwnerFlowsForTest();
+  const resent = historyHarness(historyServer());
+  resent.store.set(publishStoreKey(ME, CH), entry);
+  await protect(resent.ops, resent.port, CH, [], 5);
+  assert.deepEqual(resent.trace, [
+    CHANNEL_GET,
+    SEATS_GET,
+    PROTECT_PUT,
+    CHANNEL_GET,
+    SEATS_GET,
+    VERIFY,
+  ]);
+  assert.deepEqual(puts(resent)[0].body, { seat_list: wireOf(g2) });
+  assert.equal(count(resent, SIGN), 0);
+  assert.equal(resent.store.size, 0);
+
+  // A list that is none of the stored geneses: refused, the entry dropped.
+  _resetOwnerFlowsForTest();
+  const foreign = historyHarness(
+    historyServer({ list: boundaryGenesis(MSG3) }),
+  );
+  foreign.store.set(publishStoreKey(ME, CH), entry);
+  await assert.rejects(protect(foreign.ops, foreign.port, CH, [], 5), {
+    source: "client",
+    reason: "protect_failed",
+  });
+  assert.equal(count(foreign, VERIFY), 0);
+  assert.equal(foreign.store.size, 0);
+});
+
+test("S4 protect with history: a resumed owner-only genesis still gets the picked members", async () => {
+  const g1 = boundaryGenesis(MSG1);
+  const h = historyHarness(historyServer({ list: g1 }));
+  h.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({ v: 2, op: "protect", geneses: [g1], wipe: false }),
+  );
+  await protect(h.ops, h.port, CH, [BOB], 5);
+  assert.equal(count(h, SIGN), 1, "only the member list is signed");
+  assert.deepEqual(signArgs(h)[0].seats, [ME, BOB]);
+  assert.equal(count(h, SEATS_PUT), 1);
+});
+
+test("S4 wipe: wipe_history rides only on a genesis signed wiped for a caller that asked for the wipe", async () => {
+  const kept = historyHarness(historyServer());
+  await protect(kept.ops, kept.port, CH, [], 5, KEPT);
+  assert.equal(signArgs(kept)[0].preHistory, "kept");
+  assert.deepEqual(Object.keys(puts(kept)[0].body as object), ["seat_list"]);
+
+  _resetOwnerFlowsForTest();
+  const wiped = historyHarness(
+    historyServer({ newest: [MSG1, MSG2], protectPuts: [MOVED, LAND] }),
+  );
+  await protect(wiped.ops, wiped.port, CH, [], 5, WIPED);
+  assert.deepEqual(
+    signArgs(wiped).map((a) => [a.preHistory, a.wipeCount]),
+    [
+      ["wiped", null],
+      ["wiped", null],
+    ],
+  );
+  assert.deepEqual(
+    puts(wiped).map((p) => p.body),
+    [MSG1, MSG2].map((b) => ({
+      seat_list: wireOf(boundaryGenesis(b, "wiped")),
+      wipe_history: true,
+    })),
+  );
+  assert.equal(JSON.parse(wiped.storeAtPut[0]!).wipe, true);
+
+  // Native answers a list that is not the one asked for: never published.
+  for (const [opts, answered] of [
+    [WIPED, "kept"],
+    [KEPT, "wiped"],
+  ] as const) {
+    _resetOwnerFlowsForTest();
+    const h = historyHarness(historyServer(), {
+      sign: () => boundaryGenesis(MSG1, answered),
+    });
+    await assert.rejects(protect(h.ops, h.port, CH, [], 5, opts), {
+      source: "client",
+      reason: "protect_failed",
+    });
+    assert.equal(count(h, PROTECT_PUT), 0, `${answered} answered`);
+    assert.equal(h.storeWrites, 0);
+  }
+});
+
+test("S4 wipe: a stored protect signed with a wipe is never re-sent by a later call, and an S2 entry is replayed without wipe_history", async () => {
+  const w1 = boundaryGenesis(MSG1, "wiped");
+  const entry = JSON.stringify({
+    v: 2,
+    op: "protect",
+    geneses: [w1],
+    wipe: true,
+  });
+  // Another flow: the entry is read back, dropped, and nothing is sent.
+  const other = historyHarness(historyServer());
+  other.store.set(publishStoreKey(ME, CH), entry);
+  await assert.rejects(setSeats(other.ops, other.port, CH, [ME], 5), {
+    source: "client",
+    reason: "not_protected",
+  });
+  assert.equal(count(other, PROTECT_PUT), 0);
+  assert.equal(other.store.size, 0);
+
+  // The same protect again: a fresh genesis behind a fresh dialog.
+  _resetOwnerFlowsForTest();
+  const again = historyHarness(historyServer({ newest: [MSG2] }));
+  again.store.set(publishStoreKey(ME, CH), entry);
+  await protect(again.ops, again.port, CH, [], 5, WIPED);
+  assert.equal(count(again, SIGN), 1);
+  assert.deepEqual(
+    puts(again).map((p) => p.body),
+    [
+      {
+        seat_list: wireOf(boundaryGenesis(MSG2, "wiped")),
+        wipe_history: true,
+      },
+    ],
+    "the stored bytes never went out",
+  );
+
+  // It landed before the restart: finished like any landed genesis.
+  _resetOwnerFlowsForTest();
+  const landed = historyHarness(historyServer({ list: w1 }));
+  landed.store.set(publishStoreKey(ME, CH), entry);
+  await protect(landed.ops, landed.port, CH, [], 5);
+  assert.deepEqual(landed.trace, [CHANNEL_GET, SEATS_GET, VERIFY]);
+
+  // A journal that says "no wipe" over bytes signed wiped is not trusted.
+  _resetOwnerFlowsForTest();
+  const lying = historyHarness(historyServer());
+  lying.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({ v: 2, op: "protect", geneses: [w1], wipe: false }),
+  );
+  await assert.rejects(setSeats(lying.ops, lying.port, CH, [ME], 5), {
+    reason: "not_protected",
+  });
+  assert.equal(count(lying, PROTECT_PUT), 0);
+
+  // The S2 entry: the same bytes, the S2 body, whatever this call asks.
+  // The wipe this call asked for was not done, and the caller is told
+  // (audit B7).
+  _resetOwnerFlowsForTest();
+  const g = genesis();
+  const v1 = harness({
+    routes: protectRoutes(g, [res(200)]),
+    invoke: { [VERIFY]: () => verdict([ME]) },
+    formatsV2: true,
+    historySetting: true,
+  });
+  v1.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({ v: 1, op: "protect", signed: g }),
+  );
+  await assert.rejects(protect(v1.ops, v1.port, CH, [], 5, WIPED), {
+    source: "client",
+    reason: "wipe_not_done",
+  });
+  assert.deepEqual(puts(v1)[0].body, { seat_list: wireOf(g) });
+  assert.equal(count(v1, SIGN), 0);
+});
+
+test("S4 protect with history: a channel without messages is protected the S2 way, with no boundary and no wipe", async () => {
+  const server = historyServer({ newest: [null] });
+  const h = historyHarness(server);
+  await protect(h.ops, h.port, CH, [BOB], 5, WIPED);
+  assert.deepEqual(h.trace, [
+    SEATS_GET,
+    MSG_PATH,
+    SIGN,
+    PROTECT_PUT,
+    CHANNEL_GET,
+    SEATS_GET,
+    VERIFY,
+  ]);
+  const [a] = signArgs(h);
+  assert.deepEqual(a.seats, [ME, BOB], "every picked member, as in S2");
+  assert.deepEqual(
+    [a.history, a.historyBoundary, a.preHistory, a.wipeCount],
+    [null, null, null, null],
+  );
+  assert.deepEqual(Object.keys(puts(h)[0].body as object), ["seat_list"]);
+  assert.equal(JSON.parse(h.storeAtPut[0]!).v, 1);
+  assert.ok(
+    h.logs.some(([level, msg]) => level === "info" && /no message/.test(msg)),
+    "the fallback is logged",
+  );
+});
+
+test("S4 protect with history R-W4-35: when seating the members fails, a declined dialog included, the channel stays protected with the owner alone and the flow rejects protected_members_pending", async () => {
+  const pending = { source: "client", reason: "protected_members_pending" };
+  // The growth dialog of the member list is declined.
+  const server = historyServer();
+  const h = historyHarness(server, {
+    sign: (_a, n) => {
+      if (n === 1) throw { type: "declined" };
+      return undefined;
+    },
+  });
+  await assert.rejects(protect(h.ops, h.port, CH, [BOB], 5, KEPT), pending);
+  assert.equal(server.state.list?.body, boundaryGenesis(MSG1).body);
+  assert.equal(createdGroups(h), 1);
+  assert.equal(count(h, SEATS_PUT), 0);
+  assert.equal(h.store.size, 0, "nothing left to resume, nothing rolled back");
+  // RB2: "the owner alone" is read from the server after the failed step,
+  // with one request.
+  assert.deepEqual(h.trace.slice(h.trace.lastIndexOf(SIGN)), [SIGN, SEATS_GET]);
+  // The cause is logged by its tag only.
+  const at = h.logs.findIndex(([, msg]) => /members not added/.test(msg));
+  assert.deepEqual(h.logs[at], [
+    "warn",
+    "[protected] protected, members not added",
+  ]);
+  assert.deepEqual(h.logData[at], {
+    channelId: CH,
+    source: "native",
+    tag: "declined",
+  });
+
+  // The server refuses the member list.
+  _resetOwnerFlowsForTest();
+  const refusing = historyServer({
+    seatPuts: [res(403, { type: "MissingPermission" })],
+  });
+  const r = historyHarness(refusing);
+  await assert.rejects(protect(r.ops, r.port, CH, [BOB], 5, KEPT), pending);
+  assert.equal(refusing.state.list?.body, boundaryGenesis(MSG1).body);
+  assert.equal(count(r, SEATS_PUT), 1);
+
+  // A resumed owner-only genesis whose member step fails: the same.
+  _resetOwnerFlowsForTest();
+  const g1 = boundaryGenesis(MSG1);
+  const resumed = historyHarness(historyServer({ list: g1 }), {
+    sign: () => {
+      throw { type: "declined" };
+    },
+  });
+  resumed.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({ v: 2, op: "protect", geneses: [g1], wipe: false }),
+  );
+  await assert.rejects(
+    protect(resumed.ops, resumed.port, CH, [BOB], 5),
+    pending,
+  );
+
+  // A protect that did NOT land keeps its own failure: the genesis dialog
+  // declined is still native's `declined`, never "members pending".
+  _resetOwnerFlowsForTest();
+  const never = historyHarness(historyServer(), {
+    sign: () => {
+      throw { type: "declined" };
+    },
+  });
+  await assert.rejects(protect(never.ops, never.port, CH, [BOB], 5, KEPT), {
+    source: "native",
+    error: { type: "declined" },
+  });
+  // And with no member picked there is no member step to fail.
+  _resetOwnerFlowsForTest();
+  const alone = historyHarness(historyServer());
+  await protect(alone.ops, alone.port, CH, [], 5, KEPT);
+});
+
+test("S4 protect RB2: a member step that rejects after its list landed, or whose seats cannot be read afterwards, rejects protected_members_unconfirmed and never says the owner is alone", async () => {
+  const unconfirmed = {
+    source: "client",
+    reason: "protected_members_unconfirmed",
+  };
+  // The member list lands, then its read-back does not verify: the step
+  // rejects with the members on the server's list.
+  const landedServer = historyServer();
+  const landed = harness({
+    routes: landedServer.routes,
+    invoke: {
+      ...historyNative(),
+      [VERIFY]: (a: Record<string, unknown>) => {
+        const body = (a.list as { body: string }).body;
+        const seats = (lineOf(body, "seats") ?? ME).split(",");
+        if (seats.length > 1) {
+          throw { type: "seat_list_invalid", channel_id: CH, reason: "test" };
+        }
+        return verdict(seats, Number(lineOf(body, "version") ?? 1));
+      },
+    },
+    formatsV2: true,
+    historySetting: true,
+  });
+  await assert.rejects(
+    protect(landed.ops, landed.port, CH, [BOB], 5, KEPT),
+    unconfirmed,
+  );
+  assert.equal(count(landed, SEATS_PUT), 1);
+  assert.equal(
+    lineOf(landedServer.state.list!.body, "seats"),
+    `${ME},${BOB}`,
+    "the member list is on the server",
+  );
+  assert.equal(landed.trace[landed.trace.length - 1], SEATS_GET);
+  assert.ok(
+    landed.logs.some(([, msg]) => /members not added/.test(msg)),
+    "the failed step is still logged",
+  );
+
+  // The member list is refused and the seats cannot be read afterwards:
+  // one request, no retry, and nothing is claimed about who is seated.
+  _resetOwnerFlowsForTest();
+  const refusing = historyServer({
+    seatPuts: [res(403, { type: "MissingPermission" })],
+  });
+  let down = false;
+  const blind = harness({
+    routes: {
+      ...refusing.routes,
+      [SEATS_PUT]: (c: Call) => {
+        down = true;
+        return refusing.routes[SEATS_PUT](c);
+      },
+      [SEATS_GET]: (c: Call) =>
+        down ? "transport" : refusing.routes[SEATS_GET](c),
+    },
+    invoke: historyNative(),
+    formatsV2: true,
+    historySetting: true,
+  });
+  await assert.rejects(
+    protect(blind.ops, blind.port, CH, [BOB], 5, KEPT),
+    unconfirmed,
+  );
+  assert.deepEqual(
+    blind.trace.slice(blind.trace.lastIndexOf(SEATS_PUT)),
+    [SEATS_PUT, SEATS_GET],
+    "one read, not retried",
+  );
+  assert.equal(blind.sleeps.length, 0);
+  assert.equal(refusing.state.list?.body, boundaryGenesis(MSG1).body);
+
+  // An answer that is not a seats snapshot reads the same way.
+  _resetOwnerFlowsForTest();
+  const odd = historyServer({
+    seatPuts: [res(403, { type: "MissingPermission" })],
+  });
+  let refused = false;
+  const unreadable = harness({
+    routes: {
+      ...odd.routes,
+      [SEATS_PUT]: (c: Call) => {
+        refused = true;
+        return odd.routes[SEATS_PUT](c);
+      },
+      [SEATS_GET]: (c: Call) =>
+        refused ? res(200, { list: "?" }) : odd.routes[SEATS_GET](c),
+    },
+    invoke: historyNative(),
+    formatsV2: true,
+    historySetting: true,
+  });
+  await assert.rejects(
+    protect(unreadable.ops, unreadable.port, CH, [BOB], 5, KEPT),
+    unconfirmed,
+  );
+});
+
+test("S4 protect B7: a ticked wipe that was not performed rejects wipe_not_done after the member step; when that step failed too the rejection names both (RB3)", async () => {
+  const missed = { source: "client", reason: "wipe_not_done" };
+  const g1 = boundaryGenesis(MSG1);
+  const keptEntry = JSON.stringify({
+    v: 2,
+    op: "protect",
+    geneses: [g1],
+    wipe: false,
+  });
+
+  // A stored KEPT genesis that had landed: finished, and the wipe this call
+  // ticked is reported as not done. Nothing is signed, no body asks a wipe.
+  const landed = historyHarness(historyServer({ list: g1 }));
+  landed.store.set(publishStoreKey(ME, CH), keptEntry);
+  await assert.rejects(
+    protect(landed.ops, landed.port, CH, [], 5, WIPED),
+    missed,
+  );
+  assert.equal(count(landed, SIGN), 0);
+  assert.equal(puts(landed).length + posts(landed).length, 0);
+  assert.equal(landed.store.size, 0);
+
+  // A stored KEPT genesis not landed yet: the SAME bytes go out again, with
+  // no wipe_history, and the call still says the wipe was not done.
+  _resetOwnerFlowsForTest();
+  const server = historyServer();
+  const resent = historyHarness(server);
+  resent.store.set(publishStoreKey(ME, CH), keptEntry);
+  await assert.rejects(
+    protect(resent.ops, resent.port, CH, [], 5, WIPED),
+    missed,
+  );
+  assert.deepEqual(
+    puts(resent).map((p) => p.body),
+    [{ seat_list: wireOf(g1) }],
+  );
+  assert.equal(lineOf(server.state.list!.body, "pre_history"), "kept");
+
+  // No stored entry, this device's kept genesis already on the server.
+  _resetOwnerFlowsForTest();
+  const found = historyHarness(historyServer({ list: g1 }));
+  await assert.rejects(
+    protect(found.ops, found.port, CH, [], 5, WIPED),
+    missed,
+  );
+  assert.equal(count(found, SIGN), 0);
+  assert.equal(puts(found).length + posts(found).length, 0);
+
+  // With a member picked: the member step runs first, then the report.
+  _resetOwnerFlowsForTest();
+  const seated = historyServer({ list: g1 });
+  const withMember = historyHarness(seated);
+  withMember.store.set(publishStoreKey(ME, CH), keptEntry);
+  await assert.rejects(
+    protect(withMember.ops, withMember.port, CH, [BOB], 5, WIPED),
+    missed,
+  );
+  assert.equal(count(withMember, SEATS_PUT), 1);
+  assert.equal(lineOf(seated.state.list!.body, "seats"), `${ME},${BOB}`);
+  assert.equal(lineOf(seated.state.list!.body, "pre_history"), "kept");
+
+  // The member step fails too (RB3): the caller hears both, with the owner
+  // alone on the list, and the log says the members are pending as well.
+  _resetOwnerFlowsForTest();
+  const both = historyHarness(historyServer({ list: g1 }), {
+    sign: () => {
+      throw { type: "declined" };
+    },
+  });
+  both.store.set(publishStoreKey(ME, CH), keptEntry);
+  await assert.rejects(protect(both.ops, both.port, CH, [BOB], 5, WIPED), {
+    source: "client",
+    reason: "wipe_not_done_members_pending",
+  });
+  const at = both.logs.findIndex(([, msg]) => /wipe asked for/.test(msg));
+  assert.deepEqual(both.logData[at], { channelId: CH, membersPending: true });
+
+  // Both, with the member list on the server (RB2 + RB3): the member list
+  // landed and its read-back did not verify.
+  _resetOwnerFlowsForTest();
+  const bothServer = historyServer({ list: g1 });
+  const bothLanded = harness({
+    routes: bothServer.routes,
+    invoke: {
+      ...historyNative(),
+      [VERIFY]: (a: Record<string, unknown>) => {
+        const body = (a.list as { body: string }).body;
+        const seats = (lineOf(body, "seats") ?? ME).split(",");
+        if (seats.length > 1) {
+          throw { type: "seat_list_invalid", channel_id: CH, reason: "test" };
+        }
+        return verdict(seats, Number(lineOf(body, "version") ?? 1));
+      },
+    },
+    formatsV2: true,
+    historySetting: true,
+  });
+  bothLanded.store.set(publishStoreKey(ME, CH), keptEntry);
+  await assert.rejects(
+    protect(bothLanded.ops, bothLanded.port, CH, [BOB], 5, WIPED),
+    { source: "client", reason: "wipe_not_done_members_unconfirmed" },
+  );
+  assert.equal(lineOf(bothServer.state.list!.body, "seats"), `${ME},${BOB}`);
+  assert.equal(lineOf(bothServer.state.list!.body, "pre_history"), "kept");
+
+  // A genesis signed wiped that landed IS the wipe: no report.
+  _resetOwnerFlowsForTest();
+  const w1 = boundaryGenesis(MSG1, "wiped");
+  const done = historyHarness(historyServer({ list: w1 }));
+  done.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({ v: 2, op: "protect", geneses: [w1], wipe: true }),
+  );
+  await protect(done.ops, done.port, CH, [], 5, WIPED);
+  // So is a fresh wiped protect, and a kept one that asked for no wipe.
+  _resetOwnerFlowsForTest();
+  const fresh = historyHarness(historyServer());
+  await protect(fresh.ops, fresh.port, CH, [], 5, WIPED);
+  _resetOwnerFlowsForTest();
+  const kept = historyHarness(historyServer({ list: g1 }));
+  kept.store.set(publishStoreKey(ME, CH), keptEntry);
+  await protect(kept.ops, kept.port, CH, [], 5, KEPT);
+});
+
+/** R-W4-42: a history harness whose verify always rejects. */
+const verifyFails = (server: ReturnType<typeof historyServer>) =>
+  harness({
+    routes: server.routes,
+    invoke: {
+      ...historyNative(),
+      [VERIFY]: () => {
+        throw { type: "seat_list_invalid", channel_id: CH, reason: "test" };
+      },
+    },
+    formatsV2: true,
+    historySetting: true,
+  });
+
+test("S4 protect R-W4-42 unticked: once the read-back shows the genesis landed, a failed verify or group create rejects protected_members_unconfirmed and no member step runs", async () => {
+  const unconfirmed = {
+    source: "client",
+    reason: "protected_members_unconfirmed",
+  };
+  // A fresh protect: the genesis lands, then its verify rejects.
+  const server = historyServer();
+  const h = verifyFails(server);
+  await assert.rejects(protect(h.ops, h.port, CH, [BOB], 5, KEPT), unconfirmed);
+  assert.equal(server.state.list?.body, boundaryGenesis(MSG1).body);
+  assert.equal(h.trace[h.trace.length - 1], VERIFY);
+  assert.equal(count(h, SIGN), 1, "only the genesis was signed");
+  assert.equal(count(h, SEATS_PUT), 0);
+  assert.equal(createdGroups(h), 0);
+  assert.equal(h.store.size, 0);
+  // The cause is logged as an error, by its tag only.
+  const at = h.logs.findIndex(([, msg]) => /not finished/.test(msg));
+  assert.deepEqual(h.logs[at], [
+    "error",
+    "[protected] protected, the landed list not finished",
+  ]);
+  assert.deepEqual(h.logData[at], {
+    channelId: CH,
+    source: "native",
+    tag: "seat_list_invalid",
+  });
+
+  // The verify passes and the group create rejects.
+  _resetOwnerFlowsForTest();
+  const g = historyHarness(historyServer());
+  const noGroup: GroupOps = {
+    ...g.ops,
+    async createGroup() {
+      throw { type: "mls_error" };
+    },
+  };
+  await assert.rejects(
+    protect(noGroup, g.port, CH, [BOB], 5, KEPT),
+    unconfirmed,
+  );
+  assert.equal(count(g, VERIFY), 1);
+  assert.equal(count(g, SEATS_PUT), 0);
+
+  // A lost answer: the read-back after the re-send wait finds it landed.
+  _resetOwnerFlowsForTest();
+  const lost = verifyFails(
+    historyServer({ protectPuts: [{ land: res(500) }] }),
+  );
+  await assert.rejects(
+    protect(lost.ops, lost.port, CH, [BOB], 5, KEPT),
+    unconfirmed,
+  );
+  assert.equal(count(lost, PROTECT_PUT), 1);
+
+  // A stored genesis from an earlier call that had landed, with no opts.
+  _resetOwnerFlowsForTest();
+  const g1 = boundaryGenesis(MSG1);
+  const resumed = verifyFails(historyServer({ list: g1 }));
+  resumed.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({ v: 2, op: "protect", geneses: [g1], wipe: false }),
+  );
+  await assert.rejects(
+    protect(resumed.ops, resumed.port, CH, [BOB], 5),
+    unconfirmed,
+  );
+  assert.equal(count(resumed, SIGN), 0);
+  assert.equal(resumed.store.size, 0);
+
+  // Not landed: the rejection stays what it was. The server refuses the
+  // PUT and holds no list: a failed protect.
+  _resetOwnerFlowsForTest();
+  const foreign = historyServer({
+    protectPuts: [res(409, { type: "AlreadyProtected" })],
+  });
+  const f = verifyFails(foreign);
+  await assert.rejects(protect(f.ops, f.port, CH, [BOB], 5, KEPT), {
+    source: "client",
+    reason: "protect_failed",
+  });
+  assert.equal(count(f, VERIFY), 0);
+  // And the S2 flow (no opts, no boundary) keeps its own rejection.
+  _resetOwnerFlowsForTest();
+  const s2 = genesis();
+  const plain = harness({
+    routes: protectRoutes(s2, [res(200)]),
+    invoke: {
+      [SIGN]: () => s2,
+      [VERIFY]: () => {
+        throw { type: "seat_list_invalid", channel_id: CH, reason: "test" };
+      },
+    },
+    formatsV2: true,
+    historySetting: true,
+  });
+  await assert.rejects(protect(plain.ops, plain.port, CH, [BOB], 5), {
+    source: "native",
+    error: { type: "seat_list_invalid", channel_id: CH, reason: "test" },
+  });
+  // Another flow that finds the stored genesis landed keeps its rejection.
+  _resetOwnerFlowsForTest();
+  const other = verifyFails(historyServer({ list: g1 }));
+  other.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({ v: 2, op: "protect", geneses: [g1], wipe: false }),
+  );
+  await assert.rejects(setSeats(other.ops, other.port, CH, [ME, BOB], 5), {
+    source: "native",
+    error: { type: "seat_list_invalid", channel_id: CH, reason: "test" },
+  });
+});
+
+test("S4 protect R-W4-42 ticked: a landed genesis whose finish fails rejects protected_members_unconfirmed when it says wiped, and wipe_not_done_members_unconfirmed when it does not", async () => {
+  // This call's wiped genesis landed: the wipe is on the list.
+  const server = historyServer();
+  const h = verifyFails(server);
+  await assert.rejects(protect(h.ops, h.port, CH, [BOB], 5, WIPED), {
+    source: "client",
+    reason: "protected_members_unconfirmed",
+  });
+  assert.equal(lineOf(server.state.list!.body, "pre_history"), "wiped");
+  assert.deepEqual(
+    puts(h).map((p) => (p.body as { wipe_history?: unknown }).wipe_history),
+    [true],
+  );
+  assert.equal(count(h, SEATS_PUT), 0);
+  assert.equal(h.store.size, 0);
+
+  // A stored KEPT genesis that had landed, and this call ticked the wipe:
+  // the wipe is not on the list, and the caller hears both.
+  _resetOwnerFlowsForTest();
+  const g1 = boundaryGenesis(MSG1);
+  const keptServer = historyServer({ list: g1 });
+  const resumed = verifyFails(keptServer);
+  resumed.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({ v: 2, op: "protect", geneses: [g1], wipe: false }),
+  );
+  await assert.rejects(
+    protect(resumed.ops, resumed.port, CH, [BOB], 5, WIPED),
+    { source: "client", reason: "wipe_not_done_members_unconfirmed" },
+  );
+  assert.equal(lineOf(keptServer.state.list!.body, "pre_history"), "kept");
+  assert.equal(count(resumed, SIGN), 0);
+  assert.equal(puts(resumed).length + posts(resumed).length, 0);
+  const at = resumed.logs.findIndex(([, msg]) => /not finished/.test(msg));
+  assert.deepEqual(resumed.logData[at], {
+    channelId: CH,
+    source: "native",
+    tag: "seat_list_invalid",
+  });
+
+  // The same with nobody picked: still not an ordinary failure.
+  _resetOwnerFlowsForTest();
+  const alone = verifyFails(historyServer());
+  await assert.rejects(protect(alone.ops, alone.port, CH, [], 5, WIPED), {
+    source: "client",
+    reason: "protected_members_unconfirmed",
+  });
+});
+
+test("S4 sign errors: a boundary ahead of the clock is clock_behind; an S4 argument native calls invalid is logged as an error and passed on", async () => {
+  const future = historyHarness(historyServer(), {
+    sign: () => {
+      throw {
+        type: "seat_list_invalid",
+        channel_id: CH,
+        reason: "future_boundary",
+      };
+    },
+  });
+  await assert.rejects(protect(future.ops, future.port, CH, [], 5, KEPT), {
+    source: "client",
+    reason: "clock_behind",
+  });
+  assert.equal(count(future, PROTECT_PUT), 0);
+
+  for (const field of ["history", "history_boundary", "pre_history", "seats"]) {
+    _resetOwnerFlowsForTest();
+    const h = historyHarness(historyServer(), {
+      sign: () => {
+        throw { type: "invalid_argument", field };
+      },
+    });
+    await assert.rejects(protect(h.ops, h.port, CH, [], 5, KEPT), {
+      source: "native",
+      error: { type: "invalid_argument", field },
+    });
+    assert.ok(
+      h.logs.some(([level]) => level === "error"),
+      `${field} is logged loudly`,
+    );
+    assert.equal(h.store.size, 0);
+  }
+});
+
+test("S4 protect: opts that are not two booleans, or a wipe without history, are refused before any request", async () => {
+  const h = historyHarness(historyServer());
+  for (const opts of [
+    { withHistory: false, wipe: true },
+    { withHistory: true },
+    { wipe: true },
+    { withHistory: "yes", wipe: false },
+    null,
+  ]) {
+    await assert.rejects(
+      protect(h.ops, h.port, CH, [], 5, opts as never),
+      { source: "client", reason: "invalid_argument" },
+      JSON.stringify(opts),
+    );
+  }
+  assert.equal(h.trace.length, 0);
+});
+
+const heldHistory = (o: { history?: string; pre?: string } = {}) =>
+  genesis({
+    version: 2,
+    body: v2Body({ version: 2, seats: [ME, BOB], boundary: MSG1, ...o }),
+    signature: "HELD2",
+  });
+
+/** The wipe list `signedFor` answers over `held`. */
+const wipeListOver = (held: SignedSeatList) =>
+  signedFor({
+    serverList: { version: held.version, body: held.body },
+    seats: [ME, BOB],
+    history: null,
+    historyBoundary: null,
+    preHistory: "wiped",
+  });
+
+test("S4 setHistory: both directions sign the next list with the history line changed and publish it as a seat list", async () => {
+  for (const [visible, from, to] of [
+    [true, "hidden", "visible"],
+    [false, "visible", "hidden"],
+  ] as const) {
+    _resetOwnerFlowsForTest();
+    const held = heldHistory({ history: from });
+    const server = historyServer({ list: held });
+    const h = historyHarness(server);
+    await setHistory(h.ops, h.port, CH, visible);
+
+    assert.deepEqual(h.trace, [
+      SEATS_GET,
+      VERIFY,
+      SIGN,
+      SEATS_PUT,
+      SEATS_GET,
+      VERIFY,
+      "e2ee_text_state",
+    ]);
+    const [a] = signArgs(h);
+    assert.deepEqual(a, {
+      channelId: CH,
+      userId: ME,
+      seats: [ME, BOB],
+      deviceCap: 5,
+      serverList: { version: 2, body: held.body },
+      format: null,
+      authority: null,
+      recovery: false,
+      history: to,
+      historyBoundary: null,
+      preHistory: null,
+      wipeCount: null,
+      channelName: "secret",
+      displayNames: [
+        { user_id: ME, name: ME },
+        { user_id: BOB, name: BOB },
+      ],
+    });
+    const next = signedFor(a);
+    assert.deepEqual(puts(h)[0].body, wireOf(next));
+    assert.deepEqual(JSON.parse(h.storeAtPut[0]!), {
+      v: 1,
+      op: "seats",
+      signed: next,
+      history: to,
+      answer: "sent",
+    });
+    assert.equal(lineOf(server.state.list!.body, "history"), to);
+    assert.equal(h.store.size, 0);
+  }
+});
+
+test("S4 setHistory: a declined dialog changes nothing; an answer without the asked history line is never published; a retry resumes the stored bytes", async () => {
+  const declined = historyHarness(historyServer({ list: heldHistory() }), {
+    sign: () => {
+      throw { type: "declined" };
+    },
+  });
+  await assert.rejects(setHistory(declined.ops, declined.port, CH, true), {
+    source: "native",
+    error: { type: "declined" },
+  });
+  assert.equal(count(declined, SEATS_PUT), 0);
+  assert.equal(declined.storeWrites, 0);
+
+  _resetOwnerFlowsForTest();
+  const wrong = historyHarness(historyServer({ list: heldHistory() }), {
+    sign: (a) => signedFor({ ...a, history: "hidden" }),
+  });
+  await assert.rejects(setHistory(wrong.ops, wrong.port, CH, true), {
+    source: "client",
+    reason: "publish_refused",
+  });
+  assert.equal(count(wrong, SEATS_PUT), 0);
+  assert.equal(wrong.storeWrites, 0);
+
+  // Aborted after a 503: the entry stays, the retry signs nothing.
+  _resetOwnerFlowsForTest();
+  const server = historyServer({
+    list: heldHistory(),
+    seatPuts: [res(503), LAND],
+  });
+  const h = historyHarness(server, { sleepRejectsAfter: 0 });
+  await assert.rejects(setHistory(h.ops, h.port, CH, true), {
+    reason: "aborted",
+  });
+  assert.equal(storedNow(h).history, "visible");
+  await setHistory(h.ops, h.port, CH, true);
+  assert.equal(count(h, SIGN), 1, "one dialog in all");
+  assert.deepEqual(puts(h)[1].body, puts(h)[0].body, "SAME bytes");
+  assert.equal(lineOf(server.state.list!.body, "history"), "visible");
+  assert.equal(h.store.size, 0);
+});
+
+test("S4 setHistory: a stored history publish never carries another flow's removal reason", async () => {
+  const server = historyServer({
+    list: heldHistory(),
+    seatPuts: [res(503), LAND],
+  });
+  const h = historyHarness(server, { sleepRejectsAfter: 0 });
+  await assert.rejects(setHistory(h.ops, h.port, CH, true), {
+    reason: "aborted",
+  });
+  await setSeats(h.ops, h.port, CH, [ME], 5, "left the team").catch(() => {});
+  const [first, resent] = puts(h);
+  assert.deepEqual(resent.body, first.body, "the stored history list");
+  assert.equal(resent.headers, undefined, "and it goes out bare");
+});
+
+test("S4 wipeHistory R-W4-34: the wipe list is stored before the POST and re-sent byte for byte inside the call; a later call never POSTs the stored list, it drops it and signs afresh behind the dialog", async () => {
+  const held = heldHistory();
+  const server = historyServer({
+    list: held,
+    wipePosts: [res(503), "transport", LAND],
+  });
+  // The second dialog signs bytes that differ from the stored ones.
+  const h = historyHarness(server, {
+    sleepRejectsAfter: 1,
+    sign: (a, n) =>
+      n === 0 ? undefined : { ...signedFor(a), signature: `FRESH-${n}` },
+  });
+  await assert.rejects(wipeHistory(h.ops, h.port, CH), { reason: "aborted" });
+
+  const [a] = signArgs(h);
+  assert.deepEqual(a, {
+    channelId: CH,
+    userId: ME,
+    seats: [ME, BOB],
+    deviceCap: 5,
+    serverList: { version: 2, body: held.body },
+    format: null,
+    authority: null,
+    recovery: false,
+    history: null,
+    historyBoundary: null,
+    preHistory: "wiped",
+    wipeCount: null,
+    channelName: "secret",
+    displayNames: [
+      { user_id: ME, name: ME },
+      { user_id: BOB, name: BOB },
+    ],
+  });
+  const wipeList = signedFor(a);
+  assert.deepEqual(JSON.parse(h.storeAtPut[0]!), {
+    v: 1,
+    op: "wipe",
+    signed: wipeList,
+    sent: true,
+  });
+  // Inside the call that showed the dialog: the SAME bytes, twice.
+  assert.equal(posts(h).length, 2);
+  assert.ok(
+    posts(h).every(
+      (c) => JSON.stringify(c.body) === JSON.stringify(wireOf(wipeList)),
+    ),
+    "the SAME bytes, in the DataSeatList shape",
+  );
+  assert.deepEqual(storedNow(h).signed, wipeList, "still stored");
+
+  // A later call: the stored list is read back, is not on the server, and
+  // is dropped. The POST that follows comes after a new sign (the dialog)
+  // and carries the new bytes, never the stored ones.
+  const before = h.trace.length;
+  await wipeHistory(h.ops, h.port, CH);
+  assert.deepEqual(h.trace.slice(before), [
+    SEATS_GET,
+    SEATS_GET,
+    VERIFY,
+    SIGN,
+    WIPE_POST,
+    SEATS_GET,
+    VERIFY,
+    "e2ee_text_state",
+  ]);
+  const p = posts(h);
+  assert.equal(p.length, 3);
+  assert.ok(p.every((c) => c.path === `/channels/${CH}/history_wipe`));
+  assert.deepEqual(p[2].body, wireOf({ ...wipeList, signature: "FRESH-1" }));
+  assert.notDeepEqual(p[2].body, wireOf(wipeList));
+  assert.equal(count(h, SIGN), 2, "one dialog per call that sends a wipe");
+  assert.deepEqual(
+    h.logs.filter(([, msg]) => /history wipe not on the server/.test(msg)),
+    [["warn", "[protected] history wipe not on the server: dropped"]],
+  );
+  assert.equal(lineOf(server.state.list!.body, "pre_history"), "wiped");
+  assert.equal(h.store.size, 0);
+});
+
+// What the next test proves and what it does not: `wipeHistory` never sends
+// a stored wipe list, and sends nothing when its own sign is declined. It
+// does not prove "a dialog in every call": the dialog is inside native's
+// sign, and native's 60 s consent can answer a later `protect` sign without
+// one (R-W4-40, spec'd after it).
+test("S4 wipeHistory R-W4-34: a stored wipe list plus a declined sign in a later wipeHistory call sends nothing, whatever the entry says about being sent", async () => {
+  const held = heldHistory();
+  const wipeList = wipeListOver(held);
+  for (const sent of [true, false, undefined]) {
+    _resetOwnerFlowsForTest();
+    const server = historyServer({ list: held });
+    const h = historyHarness(server, {
+      sign: () => {
+        throw { type: "declined" };
+      },
+    });
+    h.store.set(
+      publishStoreKey(ME, CH),
+      JSON.stringify({ v: 1, op: "wipe", signed: wipeList, sent }),
+    );
+    await assert.rejects(
+      wipeHistory(h.ops, h.port, CH),
+      { source: "native", error: { type: "declined" } },
+      `sent ${sent}`,
+    );
+    assert.deepEqual(
+      h.trace,
+      [SEATS_GET, SEATS_GET, VERIFY, SIGN],
+      `sent ${sent}`,
+    );
+    assert.equal(posts(h).length, 0, "the stored wipe never goes out");
+    assert.equal(puts(h).length, 0);
+    assert.equal(h.store.size, 0, "and it is gone");
+    assert.equal(lineOf(server.state.list!.body, "pre_history"), "kept");
+  }
+});
+
+test("S4 protect R-W4-40, the one exception to R-W4-34: a second protect with the wipe ticked signs through native again with the same arguments and sends only what that sign returned, never the stored bytes; whether that sign shows a dialog is native's 60 s consent and is not decided here", async () => {
+  // The first call's PUTs never land; the channel stays unprotected.
+  const server = historyServer({
+    protectPuts: [res(503), "transport", LAND],
+  });
+  const h = historyHarness(server, {
+    sleepRejectsAfter: 1,
+    // The second sign returns bytes that differ from the stored ones.
+    sign: (a, n) =>
+      n === 0 ? undefined : { ...signedFor(a), signature: `FRESH-${n}` },
+  });
+  await assert.rejects(protect(h.ops, h.port, CH, [], 5, WIPED), {
+    reason: "aborted",
+  });
+  const first = boundaryGenesis(MSG1, "wiped");
+  assert.equal(count(h, SIGN), 1);
+  assert.equal(server.state.list, null, "still unprotected");
+  const storedBytes = JSON.stringify(h.store.get(publishStoreKey(ME, CH)));
+  assert.match(storedBytes, /wiped/, "the first wipe genesis is stored");
+
+  // The owner ticks and submits again. This code cannot know whether the
+  // owner sees a dialog: it calls native's sign, with nothing in the
+  // arguments that says "already confirmed", and native decides.
+  const before = h.trace.length;
+  await protect(h.ops, h.port, CH, [], 5, WIPED);
+  const second = h.trace.slice(before);
+  assert.equal(
+    second.filter((t) => t === SIGN).length,
+    1,
+    "the second call signs through native",
+  );
+  assert.ok(
+    second.indexOf(SIGN) < second.indexOf(PROTECT_PUT),
+    "and only then sends",
+  );
+  assert.equal(second.filter((t) => t === PROTECT_PUT).length, 1);
+  assert.deepEqual(signArgs(h)[1], signArgs(h)[0]);
+  assert.equal(signArgs(h)[1].preHistory, "wiped");
+
+  const bodies = puts(h).map((p) => p.body);
+  assert.equal(bodies.length, 3);
+  const firstBody = { seat_list: wireOf(first), wipe_history: true };
+  assert.deepEqual(bodies.slice(0, 2), [firstBody, firstBody]);
+  // The request that asks for the wipe carries the second sign's bytes.
+  assert.deepEqual(bodies[2], {
+    seat_list: wireOf({ ...first, signature: "FRESH-1" }),
+    wipe_history: true,
+  });
+  assert.notDeepEqual(bodies[2], firstBody, "the stored bytes never went out");
+  const landedNow: SignedSeatList | null = historyServerList(server);
+  assert.equal(landedNow?.signature, "FRESH-1");
+  assert.equal(h.store.size, 0);
+
+  // And with that sign declined, the second call sends nothing at all.
+  _resetOwnerFlowsForTest();
+  const quiet = historyServer({ protectPuts: [res(503), "transport", LAND] });
+  const d = historyHarness(quiet, {
+    sleepRejectsAfter: 1,
+    sign: (_a, n) => {
+      if (n > 0) throw { type: "declined" };
+      return undefined;
+    },
+  });
+  await assert.rejects(protect(d.ops, d.port, CH, [], 5, WIPED), {
+    reason: "aborted",
+  });
+  const sent = puts(d).length;
+  await assert.rejects(protect(d.ops, d.port, CH, [], 5, WIPED), {
+    source: "native",
+    error: { type: "declined" },
+  });
+  assert.equal(puts(d).length, sent, "nothing after the declined sign");
+  assert.equal(quiet.state.list, null);
+});
+
+test("S4 wipeHistory: a stored wipe list already on the server is finished without a request; an overtaken one is dropped and the call carries on over the server's list", async () => {
+  const wipeList = wipeListOver(heldHistory());
+  const entry = JSON.stringify({
+    v: 1,
+    op: "wipe",
+    signed: wipeList,
+    sent: true,
+  });
+  const landed = historyHarness(historyServer({ list: wipeList }));
+  landed.store.set(publishStoreKey(ME, CH), entry);
+  await wipeHistory(landed.ops, landed.port, CH);
+  assert.equal(posts(landed).length, 0);
+  assert.equal(count(landed, SIGN), 0);
+  assert.equal(landed.store.size, 0);
+
+  // Overtaken by a list that already says wiped: nothing left to do.
+  _resetOwnerFlowsForTest();
+  const overtaken = historyHarness(
+    historyServer({ list: genesis({ ...wipeList, version: 5 }) }),
+  );
+  overtaken.store.set(publishStoreKey(ME, CH), entry);
+  await wipeHistory(overtaken.ops, overtaken.port, CH);
+  assert.deepEqual(overtaken.trace, [SEATS_GET, SEATS_GET, VERIFY]);
+  assert.equal(posts(overtaken).length, 0);
+  assert.equal(overtaken.store.size, 0);
+
+  // Overtaken by a list that still says kept: the stored bytes are dropped
+  // and this call signs its own wipe list over THAT list, behind the dialog.
+  _resetOwnerFlowsForTest();
+  const newer = genesis({
+    version: 5,
+    body: v2Body({ version: 5, seats: [ME, BOB], boundary: MSG1 }),
+    signature: "HELD5",
+  });
+  const server = historyServer({ list: newer });
+  const again = historyHarness(server);
+  again.store.set(publishStoreKey(ME, CH), entry);
+  await wipeHistory(again.ops, again.port, CH);
+  assert.equal(count(again, SIGN), 1);
+  assert.deepEqual(signArgs(again)[0].serverList, {
+    version: 5,
+    body: newer.body,
+  });
+  assert.equal(posts(again).length, 1);
+  assert.notDeepEqual(posts(again)[0].body, wireOf(wipeList));
+  assert.equal(server.state.list?.version, 6);
+  assert.equal(lineOf(server.state.list!.body, "pre_history"), "wiped");
+  assert.equal(again.store.size, 0);
+});
+
+test("S4 wipeHistory R-W4-28 (B9): an overtaken stored wipe list is cleared and the unrelated flow continues over the server's list", async () => {
+  const wipeList = wipeListOver(heldHistory());
+  const newer = genesis({
+    version: 5,
+    body: v2Body({ version: 5, seats: [ME, BOB], boundary: MSG1 }),
+    signature: "HELD5",
+  });
+  for (const sent of [true, false]) {
+    _resetOwnerFlowsForTest();
+    const server = historyServer({ list: newer });
+    const h = historyHarness(server);
+    h.store.set(
+      publishStoreKey(ME, CH),
+      JSON.stringify({ v: 1, op: "wipe", signed: wipeList, sent }),
+    );
+    // An unseat that has nothing to do with the wipe: it goes through.
+    await setSeats(h.ops, h.port, CH, [ME], 5, "left the team");
+    assert.deepEqual(
+      h.trace,
+      [
+        SEATS_GET,
+        SEATS_GET,
+        VERIFY,
+        SIGN,
+        SEATS_PUT,
+        SEATS_GET,
+        VERIFY,
+        "e2ee_text_state",
+      ],
+      `sent ${sent}`,
+    );
+    assert.equal(posts(h).length, 0, "the wipe never goes out");
+    assert.deepEqual(signArgs(h)[0].serverList, {
+      version: 5,
+      body: newer.body,
+    });
+    assert.equal(server.state.list?.version, 6);
+    assert.equal(lineOf(server.state.list!.body, "seats"), ME);
+    assert.equal(lineOf(server.state.list!.body, "pre_history"), "kept");
+    assert.equal(h.store.size, 0);
+  }
+  // The channel is gone from under it (no list): cleared, and the flow
+  // answers what it answers without a stored entry.
+  _resetOwnerFlowsForTest();
+  const none = historyHarness(historyServer());
+  none.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({ v: 1, op: "wipe", signed: wipeList, sent: true }),
+  );
+  await assert.rejects(setSeats(none.ops, none.port, CH, [ME], 5), {
+    source: "client",
+    reason: "not_protected",
+  });
+  assert.equal(none.store.size, 0);
+});
+
+test("S4 wipeHistory R-W4-28: a stored wipe list never blocks or rides on another owner flow: not on the server it is dropped and the flow signs over the server's list", async () => {
+  const held = heldHistory();
+  const wipeList = wipeListOver(held);
+  for (const sent of [true, undefined, false]) {
+    _resetOwnerFlowsForTest();
+    const server = historyServer({ list: held });
+    const h = historyHarness(server);
+    h.store.set(
+      publishStoreKey(ME, CH),
+      JSON.stringify({ v: 1, op: "wipe", signed: wipeList, sent }),
+    );
+    // An unseat, with its reason.
+    await setSeats(h.ops, h.port, CH, [ME], 5, "left the team");
+    assert.deepEqual(
+      h.trace,
+      [
+        SEATS_GET,
+        SEATS_GET,
+        VERIFY,
+        SIGN,
+        SEATS_PUT,
+        SEATS_GET,
+        VERIFY,
+        "e2ee_text_state",
+      ],
+      `sent ${sent}`,
+    );
+    assert.equal(posts(h).length, 0, "the wipe never goes out");
+    const [a] = signArgs(h);
+    assert.deepEqual(a.seats, [ME]);
+    assert.deepEqual(
+      a.serverList,
+      { version: 2, body: held.body },
+      "signed over the list the server holds",
+    );
+    assert.equal(a.preHistory, null);
+    assert.deepEqual(puts(h)[0].headers, {
+      "X-Audit-Log-Reason": "left the team",
+    });
+    assert.notDeepEqual(puts(h)[0].body, wireOf(wipeList));
+    assert.equal(server.state.list?.version, 3);
+    assert.equal(lineOf(server.state.list!.body, "pre_history"), "kept");
+    assert.equal(lineOf(server.state.list!.body, "seats"), ME);
+    assert.equal(h.store.size, 0);
+    // One that may have been sent is dropped loudly.
+    assert.deepEqual(
+      h.logs.filter(([, msg]) => /history wipe not on the server/.test(msg)),
+      [
+        [
+          sent === false ? "info" : "warn",
+          "[protected] history wipe not on the server: dropped",
+        ],
+      ],
+      `sent ${sent}`,
+    );
+  }
+});
+
+test("S4 wipeHistory R-W4-28: another owner flow that finds its stored wipe list on the server finishes it and carries on over the wiped list", async () => {
+  const held = heldHistory();
+  const wipeList = wipeListOver(held);
+  const server = historyServer({ list: wipeList });
+  const h = historyHarness(server);
+  h.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({ v: 1, op: "wipe", signed: wipeList, sent: true }),
+  );
+  await setSeats(h.ops, h.port, CH, [ME], 5, "left the team");
+  assert.deepEqual(h.trace, [
+    // the stored wipe list: read back, landed, verified
+    SEATS_GET,
+    SEATS_GET,
+    VERIFY,
+    "e2ee_text_state",
+    // the unseat, on top of it
+    SEATS_GET,
+    VERIFY,
+    SIGN,
+    SEATS_PUT,
+    SEATS_GET,
+    VERIFY,
+    "e2ee_text_state",
+  ]);
+  assert.equal(posts(h).length, 0);
+  assert.equal(verifiedBody(h), wipeList.body);
+  assert.deepEqual(signArgs(h)[0].serverList, {
+    version: 3,
+    body: wipeList.body,
+  });
+  assert.equal(server.state.list?.version, 4);
+  assert.equal(lineOf(server.state.list!.body, "pre_history"), "wiped");
+  assert.equal(h.store.size, 0);
+});
+
+test("S4 wipeHistory: a plain InvalidOperation is wipe_refused, any other refusal keeps its type, and the bytes are used up", async () => {
+  const refused = historyHarness(
+    historyServer({
+      list: heldHistory(),
+      wipePosts: [res(400, { type: "InvalidOperation" })],
+    }),
+  );
+  await assert.rejects(wipeHistory(refused.ops, refused.port, CH), {
+    source: "client",
+    reason: "wipe_refused",
+  });
+  assert.equal(posts(refused).length, 1);
+  assert.equal(refused.store.size, 0);
+
+  _resetOwnerFlowsForTest();
+  const other = historyHarness(
+    historyServer({
+      list: heldHistory(),
+      wipePosts: [res(403, { type: "NotOwner" })],
+    }),
+  );
+  await assert.rejects(wipeHistory(other.ops, other.port, CH), {
+    source: "server",
+    status: 403,
+    type: "NotOwner",
+  });
+  assert.equal(other.store.size, 0);
+});
+
+test("S4 wipeHistory: already wiped is done with nothing signed or sent; a declined dialog or a list not signed wiped stores nothing", async () => {
+  const done = historyHarness(
+    historyServer({ list: heldHistory({ pre: "wiped" }) }),
+  );
+  await wipeHistory(done.ops, done.port, CH);
+  assert.deepEqual(done.trace, [SEATS_GET, VERIFY]);
+
+  _resetOwnerFlowsForTest();
+  const rollback = historyHarness(historyServer({ list: heldHistory() }), {
+    sign: () => {
+      throw { type: "seat_list_rollback", channel_id: CH };
+    },
+  });
+  await wipeHistory(rollback.ops, rollback.port, CH);
+  assert.equal(posts(rollback).length, 0);
+  assert.equal(rollback.storeWrites, 0);
+
+  _resetOwnerFlowsForTest();
+  const declined = historyHarness(historyServer({ list: heldHistory() }), {
+    sign: () => {
+      throw { type: "declined" };
+    },
+  });
+  await assert.rejects(wipeHistory(declined.ops, declined.port, CH), {
+    source: "native",
+    error: { type: "declined" },
+  });
+  assert.equal(posts(declined).length, 0);
+  assert.equal(declined.storeWrites, 0);
+
+  _resetOwnerFlowsForTest();
+  const kept = historyHarness(historyServer({ list: heldHistory() }), {
+    sign: (a) => signedFor({ ...a, preHistory: "kept" }),
+  });
+  await assert.rejects(wipeHistory(kept.ops, kept.port, CH), {
+    source: "client",
+    reason: "publish_refused",
+  });
+  assert.equal(posts(kept).length, 0, "a list not signed wiped is never sent");
+  assert.equal(kept.storeWrites, 0);
+});
+
+test("S4 flag: with history_setting off, absent, or without formats_v2, protect with history, setHistory and wipeHistory are refused before any request", async () => {
+  for (const over of [
+    { historySetting: false, formatsV2: true },
+    { historySetting: true, formatsV2: false },
+    "absent",
+  ] as const) {
+    _resetOwnerFlowsForTest();
+    const h = historyHarness(
+      historyServer({ list: heldHistory() }),
+      over === "absent" ? {} : over,
+    );
+    if (over === "absent") {
+      delete (h.port as { historySetting?: unknown }).historySetting;
+    }
+    const refused = { source: "client", reason: "history_setting_off" };
+    const label = JSON.stringify(over);
+    await assert.rejects(
+      protect(h.ops, h.port, CH, [BOB], 5, KEPT),
+      refused,
+      label,
+    );
+    await assert.rejects(
+      protect(h.ops, h.port, CH, [BOB], 5, WIPED),
+      refused,
+      label,
+    );
+    await assert.rejects(setHistory(h.ops, h.port, CH, true), refused, label);
+    await assert.rejects(setHistory(h.ops, h.port, CH, false), refused, label);
+    await assert.rejects(wipeHistory(h.ops, h.port, CH), refused, label);
+    assert.equal(h.trace.length, 0, `${label}: no request, no native call`);
+    assert.equal(h.storeWrites, 0);
+    assert.ok(h.logs.some(([level]) => level === "error"));
+  }
 });

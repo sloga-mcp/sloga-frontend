@@ -315,7 +315,9 @@ EXPECTED=(
   # behaviour (no Always-on before the switch answers; the paused copy),
   # which two `settings-*` mutations survived until then. 220 -> 245: the
   # backup courier pins re-stated for Tauri, Electron and iOS (R4-R9).
-  "components/client/e2eeIosGate.test.ts 245 0"
+  # 245 -> 249: four mutants for the text manager's flag-gated
+  # `requestBackupRefresh` (R5, protected channels S4).
+  "components/client/e2eeIosGate.test.ts 249 0"
 )
 
 # --- skips -------------------------------------------------------------------

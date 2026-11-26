@@ -14,6 +14,15 @@
 //  M5  only copy is rendered: never ids, server text or file fields;
 //  M6  no `styled(ImportedComponent, ...)` (blank page at boot).
 //
+// S4 W4-3 lane U1 (design 9.2, `UnknownEpoch` with `removed_self`):
+//
+//  M7  `removed_self` is a gray marker with the `key_off` glyph, the same
+//      look as `sent_before_join`, never the red box;
+//  M8  its copy is `markerCopy("removed_self")`, never the before-join line;
+//  M9  every member of the `ProtectedMarkerKind` union (read from
+//      `protectedTextTypes.ts`) has its own tone arm and a text;
+//  M10 a kind this build does not know, however close to a gray one, is red.
+//
 // Run: node --conditions=browser --test \
 //   components/app/interface/channels/text/protectedMessageMarker.scan.test.ts
 // `PROTECTED_MESSAGE_MARKER_TSX=<path>` scans another copy (named controls).
@@ -27,6 +36,10 @@ const FILE =
   process.env.PROTECTED_MESSAGE_MARKER_TSX ||
   new URL("./ProtectedMessageMarker.tsx", import.meta.url);
 const SRC = readFileSync(FILE, "utf8");
+const TYPES_SRC = readFileSync(
+  new URL("../../../../client/protectedTextTypes.ts", import.meta.url),
+  "utf8",
+);
 
 // ---- Source helpers ---------------------------------------------------------
 
@@ -108,6 +121,20 @@ const RED = [
   "unencrypted_row",
   "error",
 ];
+
+/** The expected gray marker kinds (design 9.2); every other kind is red. */
+const GRAY = [
+  "sent_before_join",
+  "removed_self",
+  "unknown_key",
+  "unsupported_version",
+];
+
+/** The members of the `ProtectedMarkerKind` union, as the types declare it. */
+function markerKindUnion(): string[] {
+  const block = between(TYPES_SRC, "export type ProtectedMarkerKind =", ";");
+  return [...block.matchAll(/^\s*\| "([^"]+)"/gm)].map((m) => m[1]);
+}
 
 // ---- M1 ---------------------------------------------------------------------
 
@@ -277,5 +304,103 @@ test("U1: no styled() over an imported component", () => {
   assert.doesNotMatch(SRC, /\bstyled\(\s*[A-Za-z_$][\w$]*\s*[,)]/);
   for (const m of SRC.matchAll(/\bstyled\(\s*([^\s,)]+)/g)) {
     assert.match(m[1], /^"[a-z0-9]+"$/, `styled(${m[1]})`);
+  }
+});
+
+// ---- M7 ---------------------------------------------------------------------
+
+test("U1: removed_self is a gray marker with the key_off glyph, never the red box", () => {
+  assert.deepEqual(rendered("removed_self"), {
+    tone: "gray",
+    glyph: "key_off",
+    text: "markerCopy:removed_self",
+  });
+  // Expected, not an alarm: the same look as the before-join marker.
+  assert.equal(H.markerTone("removed_self"), H.markerTone("sent_before_join"));
+  assert.deepEqual(
+    { ...rendered("removed_self"), text: "" },
+    { ...rendered("sent_before_join"), text: "" },
+  );
+  // And not the look of a row that failed to decrypt.
+  assert.notEqual(H.markerTone("removed_self"), H.markerTone("decrypt_failed"));
+  assert.notEqual(
+    rendered("removed_self").glyph,
+    rendered("decrypt_failed").glyph,
+  );
+});
+
+// ---- M8 ---------------------------------------------------------------------
+
+test("U1: removed_self has its own copy, never the before-join line", () => {
+  const text = H.markerText("removed_self");
+  assert.equal(text, "markerCopy:removed_self");
+  assert.ok(text.length > 0);
+  assert.notEqual(text, H.markerText("sent_before_join"));
+  // No other kind shares it.
+  for (const kind of markerKindUnion()) {
+    if (kind === "removed_self") continue;
+    assert.notEqual(H.markerText(kind), text, kind);
+  }
+});
+
+// ---- M9 ---------------------------------------------------------------------
+
+test("U1: every ProtectedMarkerKind has its own tone arm and a text", () => {
+  const union = markerKindUnion();
+  // The union as declared is exactly the kinds this spec knows the tone of:
+  // a new member fails here until its tone is decided.
+  assert.deepEqual([...union].sort(), [...RED, ...GRAY].sort());
+  assert.equal(new Set(union).size, union.length, "no repeated member");
+  assert.ok(union.includes("removed_self"));
+
+  const toneSrc = code(functionSource("markerTone"));
+  for (const kind of union) {
+    // Its own arm, not the fail-closed default.
+    assert.equal(
+      toneSrc.split(`case "${kind}":`).length - 1,
+      1,
+      `one tone arm for ${kind}`,
+    );
+    assert.equal(
+      H.markerTone(kind),
+      GRAY.includes(kind) ? "gray" : "red",
+      `tone of ${kind}`,
+    );
+    assert.equal(H.markerText(kind), `markerCopy:${kind}`, `text of ${kind}`);
+    assert.equal(
+      H.markerGlyph(kind, H.markerTone(kind)),
+      GRAY.includes(kind) ? "key_off" : "gpp_bad",
+      `glyph of ${kind}`,
+    );
+  }
+  // The switch stays exhaustive over the union.
+  assert.match(toneSrc, /const _exhaustive: never = kind;/);
+});
+
+// ---- M10 --------------------------------------------------------------------
+
+test("U1: a kind this build does not know is red, however close to a gray one", () => {
+  for (const kind of [
+    "removed_selfx",
+    "removed_sel",
+    "REMOVED_SELF",
+    " removed_self",
+    "removed-self",
+    "removed",
+    "sent_after_removal",
+    "",
+    "gray",
+    "toString",
+    "__proto__",
+  ]) {
+    assert.equal(H.markerTone(kind), "red", JSON.stringify(kind));
+    assert.equal(
+      H.markerGlyph(kind, H.markerTone(kind)),
+      "gpp_bad",
+      JSON.stringify(kind),
+    );
+  }
+  for (const kind of [undefined, null, 0, {}]) {
+    assert.equal(H.markerTone(kind as unknown as string), "red", String(kind));
   }
 });

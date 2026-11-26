@@ -7689,6 +7689,74 @@ msgid "Voice and announcement settings aren't available for protected channels."
 msgstr "Voice and announcement settings aren't available for protected channels."
 
 #: components/client/protectedCopy.ts
+msgid "Messages already in this channel stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted."
+msgstr "Messages already in this channel stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted."
+
+#: components/client/protectedCopy.ts
+msgid "Messages already in #{channel} stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted."
+msgstr "Messages already in #{channel} stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted."
+
+#: components/client/protectedCopy.ts
+msgid "The channel is protected first, with only you in it. The members you pick are added right after."
+msgstr "The channel is protected first, with only you in it. The members you pick are added right after."
+
+#: components/client/protectedCopy.ts
+msgid "Open polls are closed and scheduled messages are canceled when the channel is protected."
+msgstr "Open polls are closed and scheduled messages are canceled when the channel is protected."
+
+#: components/client/protectedCopy.ts
+msgid "Also delete the earlier messages"
+msgstr "Also delete the earlier messages"
+
+#: components/client/protectedCopy.ts
+msgid "Earlier messages and their files will be deleted from Sloga's servers. This can't be undone. Copies on people's devices, forwards, crossposts and reports may remain."
+msgstr "Earlier messages and their files will be deleted from Sloga's servers. This can't be undone. Copies on people's devices, forwards, crossposts and reports may remain."
+
+#: components/client/protectedCopy.ts
+msgid "New members can read earlier messages"
+msgstr "New members can read earlier messages"
+
+#: components/client/protectedCopy.ts
+msgid "People who join later, and new devices of anyone in the channel, can read messages sent from shortly after this is turned on. Anyone in the channel can still share what they read."
+msgstr "People who join later, and new devices of anyone in the channel, can read messages sent from shortly after this is turned on. Anyone in the channel can still share what they read."
+
+#: components/client/protectedCopy.ts
+msgid "New members only see protected messages sent after they join. Messages from before this channel was protected stay readable to everyone in it."
+msgstr "New members only see protected messages sent after they join. Messages from before this channel was protected stay readable to everyone in it."
+
+#: components/client/protectedCopy.ts
+msgid "New members only see messages sent after they join."
+msgstr "New members only see messages sent after they join."
+
+#: components/client/protectedCopy.ts
+msgid "Removing someone doesn't take back what they already read. It stays on their devices."
+msgstr "Removing someone doesn't take back what they already read. It stays on their devices."
+
+#: components/client/protectedCopy.ts
+msgid "Delete the earlier unprotected messages"
+msgstr "Delete the earlier unprotected messages"
+
+#: components/client/protectedCopy.ts
+msgid "The earlier messages are being deleted from Sloga's servers."
+msgstr "The earlier messages are being deleted from Sloga's servers."
+
+#: components/client/protectedCopy.ts
+msgid "Earlier messages deleted from Sloga's servers: {count}"
+msgstr "Earlier messages deleted from Sloga's servers: {count}"
+
+#: components/client/protectedCopy.ts
+msgid "Earlier messages were deleted from Sloga's servers."
+msgstr "Earlier messages were deleted from Sloga's servers."
+
+#: components/client/protectedCopy.ts
+msgid "Earlier history couldn't be loaded right now. Try again later."
+msgstr "Earlier history couldn't be loaded right now. Try again later."
+
+#: components/client/protectedCopy.ts
+msgid "Couldn't check this channel's history settings."
+msgstr "Couldn't check this channel's history settings."
+
+#: components/client/protectedCopy.ts
 msgid "Move ownership key to another device"
 msgstr "Move ownership key to another device"
 
@@ -7784,6 +7852,74 @@ msgstr "Search can't look inside protected channel messages."
 #: components/client/protectedCopy.ts
 msgid "New message"
 msgstr "New message"
+
+#: components/client/protectedCopy.ts
+msgid "The oldest history from your protected channels didn't fit in this backup."
+msgstr "The oldest history from your protected channels didn't fit in this backup."
+
+#: components/client/protectedCopy.ts
+msgid "History from your protected channels didn't fit in this backup."
+msgstr "History from your protected channels didn't fit in this backup."
+
+#: components/client/protectedCopy.ts
+msgid "The oldest history from your protected channels wasn't in the backup, so it couldn't be restored."
+msgstr "The oldest history from your protected channels wasn't in the backup, so it couldn't be restored."
+
+#: components/client/protectedCopy.ts
+msgid "History from your protected channels wasn't in the backup, so it couldn't be restored."
+msgstr "History from your protected channels wasn't in the backup, so it couldn't be restored."
+
+#: components/client/protectedCopy.ts
+msgid "Some history from your protected channels couldn't be restored."
+msgstr "Some history from your protected channels couldn't be restored."
+
+#: components/client/protectedCopy.ts
+msgid "None of the history from your protected channels could be restored."
+msgstr "None of the history from your protected channels could be restored."
+
+#: components/client/protectedCopy.ts
+msgid "History from protected channels uses up to 2 MB of your backup, so fewer direct messages may fit."
+msgstr "History from protected channels uses up to 2 MB of your backup, so fewer direct messages may fit."
+
+#: components/client/protectedCopy.ts
+msgid "Protect channel"
+msgstr "Protect channel"
+
+#: components/client/protectedCopy.ts
+msgid "Delete earlier messages"
+msgstr "Delete earlier messages"
+
+#: components/client/protectedCopy.ts
+msgid "{actor} protected a channel and chose to delete its earlier messages"
+msgstr "{actor} protected a channel and chose to delete its earlier messages"
+
+#: components/client/protectedCopy.ts
+msgid "{actor} protected a channel"
+msgstr "{actor} protected a channel"
+
+#: components/client/protectedCopy.ts
+msgid "{actor} protected the channel {channel} and chose to delete its earlier messages"
+msgstr "{actor} protected the channel {channel} and chose to delete its earlier messages"
+
+#: components/client/protectedCopy.ts
+msgid "{actor} protected the channel {channel}"
+msgstr "{actor} protected the channel {channel}"
+
+#: components/client/protectedCopy.ts
+msgid "The earlier messages in a channel were deleted ({count})"
+msgstr "The earlier messages in a channel were deleted ({count})"
+
+#: components/client/protectedCopy.ts
+msgid "{actor} started deleting the earlier messages in a channel"
+msgstr "{actor} started deleting the earlier messages in a channel"
+
+#: components/client/protectedCopy.ts
+msgid "The earlier messages in {channel} were deleted ({count})"
+msgstr "The earlier messages in {channel} were deleted ({count})"
+
+#: components/client/protectedCopy.ts
+msgid "{actor} started deleting the earlier messages in {channel}"
+msgstr "{actor} started deleting the earlier messages in {channel}"
 
 #: components/app/interface/settings/server/bans/ListBans.tsx
 msgid "Pardon User"
@@ -10771,6 +10907,14 @@ msgstr "Can't add people to this group chat from here yet."
 msgid "Checking…"
 msgstr "Checking…"
 
+#: components/client/protectedCopy.ts
+msgid "Messages above weren't protected"
+msgstr "Messages above weren't protected"
+
+#: components/client/protectedCopy.ts
+msgid "Earlier messages removed from this channel"
+msgstr "Earlier messages removed from this channel"
+
 #: components/modal/modals/AddFriendToGroup.tsx
 msgid "No other group chats to add them to."
 msgstr "No other group chats to add them to."
@@ -11139,6 +11283,10 @@ msgid "Your other device {device} seated {names}. If you didn't do this, secure 
 msgstr "Your other device {device} seated {names}. If you didn't do this, secure your account."
 
 #: components/client/protectedCopy.ts
+msgid "Sent after you were removed."
+msgstr "Sent after you were removed."
+
+#: components/client/protectedCopy.ts
 msgid "Sent before this device joined."
 msgstr "Sent before this device joined."
 
@@ -11175,6 +11323,26 @@ msgid "Update Sloga to see this message."
 msgstr "Update Sloga to see this message."
 
 #: components/client/protectedCopy.ts
+msgid "History from before you joined isn't shared here."
+msgstr "History from before you joined isn't shared here."
+
+#: components/client/protectedCopy.ts
+msgid "Earlier history couldn't be verified and wasn't loaded."
+msgstr "Earlier history couldn't be verified and wasn't loaded."
+
+#: components/client/protectedCopy.ts
+msgid "Two different versions of this channel's earlier history were offered, so earlier history wasn't loaded."
+msgstr "Two different versions of this channel's earlier history were offered, so earlier history wasn't loaded."
+
+#: components/client/protectedCopy.ts
+msgid "Earlier history couldn't be confirmed yet. Sloga will try again later."
+msgstr "Earlier history couldn't be confirmed yet. Sloga will try again later."
+
+#: components/client/protectedCopy.ts
+msgid "{name} added a new device. It can read this channel's history."
+msgstr "{name} added a new device. It can read this channel's history."
+
+#: components/client/protectedCopy.ts
 msgid "{name} added a new device."
 msgstr "{name} added a new device."
 
@@ -11189,6 +11357,26 @@ msgstr "Blocked an unexpected invitation to a protected channel."
 #: components/client/protectedCopy.ts
 msgid "Another of your devices changed a protected channel. Open the channel to see what changed."
 msgstr "Another of your devices changed a protected channel. Open the channel to see what changed."
+
+#: components/client/protectedCopy.ts
+msgid "History keys shared for a protected channel don't match. New members may not be able to read some earlier messages."
+msgstr "History keys shared for a protected channel don't match. New members may not be able to read some earlier messages."
+
+#: components/client/protectedCopy.ts
+msgid "Some earlier history in a protected channel can't be shared with new members: too many people joined or left at once."
+msgstr "Some earlier history in a protected channel can't be shared with new members: too many people joined or left at once."
+
+#: components/client/protectedCopy.ts
+msgid "Sender couldn't be verified (history)."
+msgstr "Sender couldn't be verified (history)."
+
+#: components/client/protectedCopy.ts
+msgid "Timing of this message can't be verified."
+msgstr "Timing of this message can't be verified."
+
+#: components/client/protectedCopy.ts
+msgid "Listed among the earlier, unprotected messages."
+msgstr "Listed among the earlier, unprotected messages."
 
 #: components/client/protectedCopy.ts
 msgid "This channel's member list uses an older format, so its signing devices can't be changed yet. Try again later."
@@ -11478,6 +11666,39 @@ msgstr "Every member's device lost this channel's encrypted group. Re-create it 
 #: components/client/protectedCopy.ts
 msgid "Re-creating the group…"
 msgstr "Re-creating the group…"
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "This channel is too busy to protect right now. Try again in a quiet moment."
+msgstr "This channel is too busy to protect right now. Try again in a quiet moment."
+
+#: components/client/protectedCopy.ts
+msgid "Earlier messages couldn't be deleted right now."
+msgstr "Earlier messages couldn't be deleted right now."
+
+#: components/client/protectedCopy.ts
+msgid "The newest message's time is ahead of this device's clock. Check the date and time settings, or try again in a few minutes."
+msgstr "The newest message's time is ahead of this device's clock. Check the date and time settings, or try again in a few minutes."
+
+#: components/client/protectedCopy.ts
+msgid "This channel is now protected, with only you in it. The members you picked weren't added yet. You can add them below."
+msgstr "This channel is now protected, with only you in it. The members you picked weren't added yet. You can add them below."
+
+#: components/client/protectedCopy.ts
+msgid "This channel is now protected, but the earlier messages were not deleted."
+msgstr "This channel is now protected, but the earlier messages were not deleted."
+
+#: components/client/protectedCopy.ts
+msgid "This channel is now protected. Adding the members you picked didn't finish. Check the seats below."
+msgstr "This channel is now protected. Adding the members you picked didn't finish. Check the seats below."
+
+#: components/client/protectedCopy.ts
+msgid "This channel is now protected, with only you in it. The earlier messages were not deleted, and the members you picked weren't added yet. You can add them below."
+msgstr "This channel is now protected, with only you in it. The earlier messages were not deleted, and the members you picked weren't added yet. You can add them below."
+
+#: components/client/protectedCopy.ts
+msgid "This channel is now protected, but the earlier messages were not deleted. Adding the members you picked didn't finish. Check the seats below."
+msgstr "This channel is now protected, but the earlier messages were not deleted. Adding the members you picked didn't finish. Check the seats below."
 
 #: components/client/protectedCopy.ts
 msgid "Messages in a protected channel are end-to-end encrypted. Only members you give a seat can read and send messages, on devices that support Protected channels."
@@ -12016,6 +12237,10 @@ msgstr "You already have a checkout in progress. Finish it, or pick again after 
 #: components/i18n/errors.ts
 msgid "The payment provider didn't respond. Please try again."
 msgstr "The payment provider didn't respond. Please try again."
+
+#: components/i18n/errors.ts
+msgid "This was already done."
+msgstr "This was already done."
 
 #: components/i18n/errors.ts
 msgid "Prot isn't available right now."

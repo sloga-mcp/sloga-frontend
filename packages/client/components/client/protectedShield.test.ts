@@ -13,6 +13,9 @@
 // S2 OR-10 (W4-3-0 lane F1): `ownerChangeUnlisted` swaps a same-user
 // `owner_changed_review` for `owner_changed_unlisted`, withholds Review
 // (`reviewOffered`) and never changes the state.
+// S4 (W4 lane L1s): an `unknown_epoch` row is `removed_self` or walk-eligible
+// (`walk: true`), the two S4 server types, `historyFloorNotice`,
+// `historyOwnerNotice` and the `rowNotes` matrix.
 // S2 W4 fix FX-S: step 5b applies only off the server's current group
 // (audit LOW-1), and the manager's client refusals carry notices (LOW-3).
 // The step 3 / 6e tag lists are pinned ALWAYS against the in-repo fixture
@@ -48,6 +51,8 @@ import {
   computeShieldState,
   effectiveTankStage,
   explainShield,
+  historyFloorNotice,
+  historyOwnerNotice,
   isProtTankFrozenRefusal,
   PROT_TANK_REFUSAL_LATCH_MS,
   PROT_TANK_SENDING_STAGES,
@@ -63,6 +68,7 @@ import {
   protTankRefusalLatched,
   protTankRefusalRecheckInMs,
   REMOVED_USERS_MAX,
+  rowNotes,
   SHIELD_BENIGN_GROUP_ERRORS,
   SHIELD_BENIGN_SEAT_LIST_ERRORS,
   SHIELD_FALL_THROUGH_GROUP_ERRORS,
@@ -72,8 +78,10 @@ import {
   shieldPresentation,
 } from "./protectedShield.ts";
 import type {
+  HistoryStop,
   ProtectedChannelView,
   ProtectedTextGroupResponse,
+  ProtectedToastKind,
   TextChannelState,
   TextMember,
   TextVerdict,
@@ -1608,6 +1616,7 @@ test("shieldInputsFromView: loading view, roster age, backwards clock", () => {
     capacity: null,
     clientOutdated: null,
     ownerNotice: null,
+    historyWalk: "idle",
   };
   assert.equal(
     shieldInputsFromView(view, flags, 61_000).rosterMismatchAgeMs,
@@ -1659,6 +1668,7 @@ test("S2 shieldInputsFromView maps capacity and clientOutdated from the view", (
     capacity: null,
     clientOutdated: null,
     ownerNotice: null,
+    historyWalk: "idle",
   };
   const at = (v: ProtectedChannelView | null) =>
     explainShield(shieldInputsFromView(v, flags, 5));
@@ -1920,6 +1930,7 @@ test("S2 OR-10: shieldInputsFromView reads ownerChangeUnlisted from the view; ab
     clientOutdated: null,
     ownerNotice: null,
     ownerChangeUnlisted: true,
+    historyWalk: "idle",
   };
   const at = (v: ProtectedChannelView | null) =>
     explainShield(shieldInputsFromView(v, flags, 5));
@@ -2072,6 +2083,7 @@ const OPS: ProtectedErrorOp[] = [
 ];
 const MARKERS: ProtectedMarkerKind[] = [
   "sent_before_join",
+  "removed_self",
   "unknown_key",
   "decrypt_failed",
   "unverified_sender",
@@ -2286,8 +2298,11 @@ test("D17 message rows -> markers (9.2 / 9.3)", () => {
   assert.equal(m(ue(2, 5, 9)), "marker:sent_before_join");
   assert.equal(m(ue(12, 5, 9)), "none"); // catch up and retry once
   assert.equal(m(ue(12, 5, 9), true), "marker:decrypt_failed");
-  assert.equal(m(ue(7, 5, 9)), "marker:decrypt_failed");
-  assert.equal(m(ue(7, null, 9)), "marker:decrypt_failed");
+  // S4: any epoch below `current` waits for the history walk under the S1
+  // marker, inside the held run and with nothing held too (was red in S1)
+  assert.equal(m(ue(7, 5, 9)), "marker:sent_before_join");
+  assert.equal(m(ue(7, null, 9)), "marker:sent_before_join");
+  assert.equal(m(ue(9, 5, 9)), "marker:decrypt_failed");
   assert.equal(
     m(native("unknown_epoch", { epoch: "2", oldest_held: 5, current: 9 })),
     "marker:decrypt_failed",
@@ -2460,9 +2475,14 @@ test("D17 server types (7.6 + extras)", () => {
     for (const op of OPS) {
       const u = s(type, { feature: "e2ee", max: 1 }, op);
       wellFormed(u, `${type}/${op}`);
-      // OR-21: InSlowmode is protected only on the owner path (below)
+      // OR-21: InSlowmode is protected only on the owner path (below). S4:
+      // so is ProtectHistoryMoved; HistoryLinkExists only where links are
+      // written (channel, owner)
       const generic =
-        type === "InSlowmode" && op !== "owner" && op !== "message";
+        op !== "message" &&
+        (((type === "InSlowmode" || type === "ProtectHistoryMoved") &&
+          op !== "owner") ||
+          (type === "HistoryLinkExists" && op !== "owner" && op !== "channel"));
       assert.equal(u.tag, generic ? "unknown" : type, `${type}/${op}`);
     }
   }
@@ -2791,6 +2811,509 @@ test("protectedActionsBlocked: D11 hide/keep lists", () => {
     (PROTECTED_KEPT_ACTIONS as readonly string[]).includes(a),
   );
   assert.deepEqual(both, []);
+});
+
+// ---------------------------------------------------------------------------
+// S4: unknown_epoch routing, history notices, row notes (W4 lane L1s)
+// ---------------------------------------------------------------------------
+
+/** A native `unknown_epoch` with exactly the given fields. */
+const unknownEpoch = (f: Record<string, unknown>) =>
+  native("unknown_epoch", { group_id: GROUP, ...f });
+
+/** The message-row answer, bare and wrapped as a `TextFlowFailure`. */
+function onRow(err: unknown, catchUpDone?: boolean): ProtectedErrorUi {
+  const bare = ui(err, "message", catchUpDone);
+  const wrapped = ui({ source: "native", error: err }, "message", catchUpDone);
+  assert.deepEqual(wrapped, bare, JSON.stringify(err));
+  return bare;
+}
+
+/** Epoch triples on every side of `oldest_held` and `current`, and junk. */
+const EPOCH_SHAPES: Record<string, unknown>[] = [
+  { epoch: 2, oldest_held: 5, current: 9 },
+  { epoch: 7, oldest_held: 5, current: 9 },
+  { epoch: 9, oldest_held: 5, current: 9 },
+  { epoch: 12, oldest_held: 5, current: 9 },
+  { epoch: 2, oldest_held: null, current: 9 },
+  { epoch: 12, oldest_held: null, current: 9 },
+  { epoch: 0, oldest_held: null, current: -1 },
+  { epoch: "2", oldest_held: 5, current: 9 },
+  { epoch: 2, oldest_held: 5, current: "9" },
+  { epoch: 2, oldest_held: 5 },
+  {},
+];
+
+test("S4 unknown_epoch: removed_self true is the gray removed_self marker and beats every epoch comparison", () => {
+  for (const shape of EPOCH_SHAPES) {
+    for (const done of [undefined, false, true]) {
+      const u = onRow(unknownEpoch({ ...shape, removed_self: true }), done);
+      const label = `${JSON.stringify(shape)}/${String(done)}`;
+      assert.equal(u.kind, "marker", label);
+      assert.equal(u.kind === "marker" && u.marker, "removed_self", label);
+      assert.equal(u.tag, "unknown_epoch", label);
+      wellFormed(u, label);
+    }
+  }
+  // gray: not one of the red markers
+  assert.ok(!RED_MARKERS.includes("removed_self"));
+});
+
+test("S4 unknown_epoch: a removed_self row never asks for the walk", () => {
+  for (const shape of EPOCH_SHAPES) {
+    for (const done of [undefined, true]) {
+      const u = onRow(unknownEpoch({ ...shape, removed_self: true }), done);
+      const label = `${JSON.stringify(shape)}/${String(done)}`;
+      assert.notEqual(brief(u), "marker:sent_before_join", label);
+      assert.equal("walk" in u, false, label);
+    }
+  }
+});
+
+test("S4 unknown_epoch: an epoch below current is walk-eligible and shows sent_before_join meanwhile", () => {
+  const eligible = {
+    kind: "marker",
+    marker: "sent_before_join",
+    tag: "unknown_epoch",
+    walk: true,
+  };
+  for (const [epoch, oldest_held, current] of [
+    [2, 5, 9], // below the held run (the S1 row)
+    [7, 5, 9], // inside the held run: the key was never derived or imported
+    [5, 5, 9],
+    [8, 5, 9],
+    [0, 0, 1],
+    [3, 20, 9], // an `oldest_held` above `current` changes nothing
+  ]) {
+    for (const removed_self of [false, undefined]) {
+      for (const done of [undefined, true]) {
+        const u = onRow(
+          unknownEpoch({ epoch, oldest_held, current, removed_self }),
+          done,
+        );
+        assert.deepEqual(u, eligible, `${epoch}/${oldest_held}/${current}`);
+      }
+    }
+  }
+});
+
+test("S4 unknown_epoch: oldest_held null is nothing held, eligible, never a throw", () => {
+  for (const oldest_held of [null, undefined, "5", -1, 1.5]) {
+    const u = onRow(
+      unknownEpoch({ epoch: 7, oldest_held, current: 9, removed_self: false }),
+    );
+    assert.deepEqual(
+      u,
+      {
+        kind: "marker",
+        marker: "sent_before_join",
+        tag: "unknown_epoch",
+        walk: true,
+      },
+      String(oldest_held),
+    );
+  }
+  // and with the key absent altogether
+  const bare = onRow(unknownEpoch({ epoch: 7, current: 9 }));
+  assert.equal(bare.kind === "marker" && bare.walk, true);
+});
+
+test("S4 unknown_epoch: a missing or non-true removed_self is false", () => {
+  const base = { epoch: 2, oldest_held: 5, current: 9 };
+  // an older shell sends no key
+  const absent = onRow(unknownEpoch(base));
+  assert.equal(brief(absent), "marker:sent_before_join");
+  assert.equal(absent.kind === "marker" && absent.walk, true);
+  for (const removed_self of [false, undefined, null, "true", 1, {}, []]) {
+    const u = onRow(unknownEpoch({ ...base, removed_self }));
+    assert.equal(
+      brief(u),
+      "marker:sent_before_join",
+      JSON.stringify(removed_self),
+    );
+    assert.equal(u.kind === "marker" && u.walk, true);
+  }
+});
+
+test("S4 unknown_epoch: an epoch above current keeps the S1 catch-up path and never asks for the walk", () => {
+  for (const [epoch, oldest_held, current] of [
+    [12, 5, 9],
+    [12, null, 9],
+    [10, 5, 9],
+    // native's `current` is -1 for a group it holds no epoch of
+    [0, null, -1],
+    [4, null, -1],
+  ]) {
+    const f = { epoch, oldest_held, current, removed_self: false };
+    const label = `${epoch}/${oldest_held}/${current}`;
+    // first pass: no UI, the bridge catches up and retries once
+    assert.deepEqual(
+      onRow(unknownEpoch(f)),
+      { kind: "none", tag: "unknown_epoch" },
+      label,
+    );
+    assert.deepEqual(
+      onRow(unknownEpoch(f), false),
+      { kind: "none", tag: "unknown_epoch" },
+      label,
+    );
+    // after the catch-up: red, and still no walk
+    assert.deepEqual(
+      onRow(unknownEpoch(f), true),
+      { kind: "marker", marker: "decrypt_failed", tag: "unknown_epoch" },
+      label,
+    );
+  }
+});
+
+test("S4 unknown_epoch: an epoch equal to current, or an unreadable one, is red and never walk-eligible", () => {
+  const red = {
+    kind: "marker",
+    marker: "decrypt_failed",
+    tag: "unknown_epoch",
+  };
+  const shapes: Record<string, unknown>[] = [
+    { epoch: 9, oldest_held: 5, current: 9 },
+    { epoch: 0, oldest_held: null, current: 0 },
+    { epoch: "2", oldest_held: 5, current: 9 },
+    { epoch: -1, oldest_held: 5, current: 9 },
+    { epoch: 2.5, oldest_held: 5, current: 9 },
+    { epoch: null, oldest_held: 5, current: 9 },
+    { oldest_held: 5, current: 9 },
+    { epoch: 2, oldest_held: 5, current: "9" },
+    { epoch: 2, oldest_held: 5, current: null },
+    { epoch: 2, oldest_held: 5, current: -2 },
+    { epoch: 2, oldest_held: 5, current: 9.5 },
+    { epoch: 2, oldest_held: 5 },
+    {},
+  ];
+  for (const shape of shapes) {
+    for (const removed_self of [false, undefined]) {
+      for (const done of [undefined, true]) {
+        const u = onRow(unknownEpoch({ ...shape, removed_self }), done);
+        assert.deepEqual(u, red, JSON.stringify(shape));
+      }
+    }
+  }
+});
+
+test("S4 walk: only an unknown_epoch message row ever carries it", () => {
+  for (const tag of TEXT_NATIVE_ERROR_TAGS) {
+    for (const op of OPS) {
+      const u = ui(
+        native(tag, { group_id: GROUP, epoch: 2, oldest_held: 5, current: 9 }),
+        op,
+      );
+      const expected = tag === "unknown_epoch" && op === "message";
+      assert.equal("walk" in u, expected, `${tag}/${op}`);
+    }
+  }
+  for (const err of [
+    { type: "NotSeated" },
+    { source: "transport" },
+    { source: "client", reason: "protect_failed" },
+    null,
+  ]) {
+    assert.equal("walk" in ui(err, "message"), false);
+  }
+});
+
+test("S4 server types: ProtectHistoryMoved and HistoryLinkExists are recognised, FeatureDisabled is not a history type", () => {
+  // the whole list, in order: Overview's refusal filter reads it
+  assert.deepEqual(
+    [...PROTECTED_SERVER_ERROR_TYPES],
+    [
+      "ProtectedChannelResecuring",
+      "NotSeated",
+      "SeatCapReached",
+      "ChannelProtected",
+      "ProtectedFieldRefused",
+      "DeviceCapReached",
+      "DuplicateNonce",
+      "FeatureDisabled",
+      "MlsCallFull",
+      "SeatListNamesRemovedUsers",
+      "RemovalReasonRequired",
+      "ProtectedClientOutdated",
+      "InSlowmode",
+      "ProtectHistoryMoved",
+      "HistoryLinkExists",
+      "ProtTankFrozen",
+    ],
+  );
+  const listed = PROTECTED_SERVER_ERROR_TYPES as readonly string[];
+  assert.ok(listed.includes("ProtectHistoryMoved"));
+  assert.ok(listed.includes("HistoryLinkExists"));
+  assert.equal(listed.filter((x) => x === "FeatureDisabled").length, 1);
+
+  const s = (
+    type: string,
+    op: ProtectedErrorOp,
+    body: Record<string, unknown> = {},
+  ) => ui({ source: "server", status: 409, type, body: { type, ...body } }, op);
+  const closed = {
+    kind: "notice",
+    notice: "unverified",
+    max: null,
+    tag: "unknown",
+  };
+
+  // ProtectHistoryMoved: a protect that did not land, on the owner op only
+  assert.deepEqual(s("ProtectHistoryMoved", "owner"), {
+    kind: "notice",
+    notice: "protect_failed",
+    max: null,
+    tag: "ProtectHistoryMoved",
+  });
+  for (const op of ["channel", "send", "action", "transfer"] as const) {
+    assert.deepEqual(s("ProtectHistoryMoved", op), closed, op);
+  }
+  assert.deepEqual(s("ProtectHistoryMoved", "message"), {
+    kind: "marker",
+    marker: "error",
+    tag: "ProtectHistoryMoved",
+  });
+
+  // HistoryLinkExists: done and quiet where links are written, else closed
+  for (const op of ["channel", "owner"] as const) {
+    assert.deepEqual(
+      s("HistoryLinkExists", op),
+      { kind: "none", tag: "HistoryLinkExists" },
+      op,
+    );
+  }
+  for (const op of ["send", "action", "transfer"] as const) {
+    assert.deepEqual(s("HistoryLinkExists", op), closed, op);
+  }
+  assert.deepEqual(s("HistoryLinkExists", "message"), {
+    kind: "marker",
+    marker: "error",
+    tag: "HistoryLinkExists",
+  });
+
+  // FeatureDisabled keeps its two features; the history one is the link
+  // write policy's and gets no meaning here (fail closed)
+  for (const op of [
+    "channel",
+    "send",
+    "owner",
+    "action",
+    "transfer",
+  ] as const) {
+    assert.deepEqual(
+      s("FeatureDisabled", op, { feature: "protected_history" }),
+      closed,
+      op,
+    );
+  }
+  assert.equal(
+    brief(s("FeatureDisabled", "owner", { feature: "protected_channels" })),
+    "protected_channels_unavailable",
+  );
+});
+
+const HISTORY_STOPS: HistoryStop[] = [
+  "hidden",
+  "missing",
+  "invalid",
+  "anchor_mismatch",
+  "conflict",
+  "unanchored",
+  "genesis",
+];
+
+test("S4 historyFloorNotice: each HistoryStop", () => {
+  const want: Record<HistoryStop, ReturnType<typeof historyFloorNotice>> = {
+    hidden: { tone: "gray", loud: null },
+    missing: { tone: "before_join", loud: null },
+    genesis: { tone: "before_join", loud: null },
+    invalid: { tone: "loud", loud: "history_invalid" },
+    anchor_mismatch: { tone: "loud", loud: "history_anchor" },
+    unanchored: { tone: "loud", loud: "history_anchor" },
+    conflict: { tone: "loud", loud: "history_conflict" },
+  };
+  assert.deepEqual(Object.keys(want).sort(), [...HISTORY_STOPS].sort());
+  for (const stop of HISTORY_STOPS) {
+    assert.deepEqual(historyFloorNotice(stop), want[stop], stop);
+  }
+  // loud exactly when a loud copy is named
+  for (const stop of HISTORY_STOPS) {
+    const n = historyFloorNotice(stop);
+    assert.equal(n.tone === "loud", n.loud !== null, stop);
+  }
+  // the three loud copies are all in use, and only for the four loud stops
+  const loud = HISTORY_STOPS.filter((x) => historyFloorNotice(x).loud !== null);
+  assert.deepEqual(loud.sort(), [
+    "anchor_mismatch",
+    "conflict",
+    "invalid",
+    "unanchored",
+  ]);
+});
+
+test("S4 historyFloorNotice: an unknown stop is loud, never a quiet line", () => {
+  for (const stop of [
+    "",
+    "Hidden",
+    "expired",
+    "__proto__",
+    null,
+    undefined,
+    7,
+  ]) {
+    const n = historyFloorNotice(stop as unknown as HistoryStop);
+    assert.deepEqual(
+      n,
+      { tone: "loud", loud: "history_invalid" },
+      String(stop),
+    );
+  }
+});
+
+test("S4 historyOwnerNotice: settings errors are inline, background link failures are toasts", () => {
+  type Kind = Parameters<typeof historyOwnerNotice>[0];
+  const want: Record<Kind, ProtectedToastKind | "inline"> = {
+    protect_busy: "inline",
+    wipe_refused: "inline",
+    clock_behind: "inline",
+    history_mismatch: "history_mismatch",
+    history_too_large: "history_too_large",
+  };
+  for (const kind of Object.keys(want) as Kind[]) {
+    assert.equal(historyOwnerNotice(kind), want[kind], kind);
+  }
+  // a kind this build does not know is still shown, inline
+  for (const kind of ["", "unsolicited_welcome", "owner_notice", null]) {
+    assert.equal(historyOwnerNotice(kind as unknown as Kind), "inline");
+  }
+});
+
+test("S4 rowNotes: the full matrix", () => {
+  // [sender_verified, timing_unverified, belowBoundary, fromHistory] -> notes
+  const rows: [boolean, boolean, boolean, boolean, string[]][] = [
+    [true, false, false, false, []],
+    [true, false, false, true, []],
+    [true, false, true, false, ["below_boundary"]],
+    [true, false, true, true, ["below_boundary"]],
+    [true, true, false, false, ["timing_unverified"]],
+    [true, true, false, true, ["timing_unverified"]],
+    [true, true, true, false, ["timing_unverified", "below_boundary"]],
+    [true, true, true, true, ["timing_unverified", "below_boundary"]],
+    [false, false, false, false, ["sender_unverified"]],
+    [false, false, false, true, ["sender_unverified_history"]],
+    [false, false, true, false, ["sender_unverified", "below_boundary"]],
+    [false, false, true, true, ["sender_unverified_history", "below_boundary"]],
+    [
+      false,
+      true,
+      false,
+      false,
+      ["sender_unverified_history", "timing_unverified"],
+    ],
+    [
+      false,
+      true,
+      false,
+      true,
+      ["sender_unverified_history", "timing_unverified"],
+    ],
+    [
+      false,
+      true,
+      true,
+      false,
+      ["sender_unverified_history", "timing_unverified", "below_boundary"],
+    ],
+    [
+      false,
+      true,
+      true,
+      true,
+      ["sender_unverified_history", "timing_unverified", "below_boundary"],
+    ],
+  ];
+  assert.equal(rows.length, 16);
+  const seen = new Set<string>();
+  for (const [
+    sender_verified,
+    timing_unverified,
+    below,
+    history,
+    want,
+  ] of rows) {
+    const label = `${sender_verified}/${timing_unverified}/${below}/${history}`;
+    seen.add(label);
+    assert.deepEqual(
+      rowNotes(
+        { sender_verified, timing_unverified },
+        { belowBoundary: below, fromHistory: history },
+      ),
+      want,
+      label,
+    );
+  }
+  assert.equal(seen.size, 16);
+});
+
+test("S4 rowNotes: a live unverified sender keeps the S1 note, never the history one", () => {
+  for (const belowBoundary of [false, true]) {
+    const notes = rowNotes(
+      { sender_verified: false, timing_unverified: false },
+      { belowBoundary, fromHistory: false },
+    );
+    assert.equal(notes[0], "sender_unverified");
+    assert.ok(!notes.includes("sender_unverified_history"));
+  }
+  // never both sender notes on one row
+  for (const timing_unverified of [false, true]) {
+    for (const fromHistory of [false, true]) {
+      const notes = rowNotes(
+        { sender_verified: false, timing_unverified },
+        { belowBoundary: false, fromHistory },
+      );
+      assert.equal(notes.filter((n) => n.startsWith("sender_")).length, 1);
+    }
+  }
+});
+
+test("S4 rowNotes: only literal booleans count, and an unreadable sender flag shows the note", () => {
+  const loose = (
+    d: Record<string, unknown>,
+    ctx: Record<string, unknown> = {},
+  ) =>
+    rowNotes(
+      d as unknown as Parameters<typeof rowNotes>[0],
+      {
+        belowBoundary: false,
+        fromHistory: false,
+        ...ctx,
+      } as unknown as Parameters<typeof rowNotes>[1],
+    );
+  // an older shell sends no `timing_unverified`
+  assert.deepEqual(loose({ sender_verified: true }), []);
+  assert.deepEqual(loose({ sender_verified: false }), ["sender_unverified"]);
+  for (const junk of [undefined, null, "true", 1, {}]) {
+    // not verified unless literally true
+    assert.deepEqual(
+      loose({ sender_verified: junk, timing_unverified: false }),
+      ["sender_unverified"],
+      `sender ${String(junk)}`,
+    );
+    // no timing note, no "(history)" and no boundary note from junk
+    assert.deepEqual(
+      loose({ sender_verified: true, timing_unverified: junk }),
+      [],
+      `timing ${String(junk)}`,
+    );
+    assert.deepEqual(
+      loose(
+        { sender_verified: false, timing_unverified: junk },
+        { fromHistory: junk, belowBoundary: junk },
+      ),
+      ["sender_unverified"],
+      `ctx ${String(junk)}`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------

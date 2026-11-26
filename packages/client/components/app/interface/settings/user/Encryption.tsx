@@ -1,5 +1,13 @@
 import { Capacitor } from "@capacitor/core";
-import { Match, Show, Switch, createSignal, onMount } from "solid-js";
+import {
+  For,
+  Match,
+  Show,
+  Switch,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
@@ -13,6 +21,7 @@ import {
 import type { BackupStatusView } from "@revolt/client";
 import { useClient, useE2EE } from "@revolt/client";
 import { latchedForClient } from "@revolt/client/encryptedOnlyLatch";
+import { backupNoteCopy, backupTextCopy } from "@revolt/client/protectedCopy";
 import { useModals } from "@revolt/modal";
 import { useE2EESplit } from "@revolt/modal/modals/E2EEDeviceShared";
 import { E2EEOwnDeviceList } from "@revolt/modal/modals/E2EERemoveDevice";
@@ -39,6 +48,12 @@ import MdLock from "@material-design-icons/svg/outlined/lock.svg?component-solid
 import MdShare from "@material-design-icons/svg/outlined/share.svg?component-solid";
 import MdVideocam from "@material-design-icons/svg/outlined/videocam.svg?component-solid";
 import MdWarning from "@material-design-icons/svg/outlined/warning.svg?component-solid";
+
+import {
+  backupTextLines,
+  lastRestoreText,
+  onRestoreText,
+} from "./backupTextLines";
 
 /**
  * Encryption settings page (sidebar id `security`, kept for deep links).
@@ -546,6 +561,12 @@ function EncryptedOnlyCard() {
  * encryption is on. The recovery CODE is shown/entered only in the native
  * recovery window — never here. Rotate and delete are re-auth-gated (MFA),
  * matching the wipe flow; create needs no MFA (the upload is device-bound).
+ *
+ * Protected channels (design 8.5): under the backup rows, what the last
+ * bundle the server kept left out of the protected channel history, and
+ * what the last restore on this device could not bring back. Both come
+ * from `backupTextLines`; nothing is shown for a bundle or a restore that
+ * reported nothing.
  */
 function RecoveryBackupCard() {
   const e2ee = useE2EE();
@@ -656,6 +677,27 @@ function RecoveryBackupCard() {
   const hasBackup = () => !!status()?.exists;
   const reenrollNeeded = () => !!e2ee.reenrollNeeded.get("state");
 
+  // The server's history setting flag: off, the backup says nothing about
+  // protected channel history.
+  const historyFlag = () => e2ee.protectedFlag().historySetting === true;
+  const bundleLines = () =>
+    backupTextLines(
+      e2ee.backupText.get("state")?.truncated,
+      undefined,
+      historyFlag(),
+    );
+
+  // The last restore's summary is recorded by the enable dialog, which can
+  // run while this page is open.
+  const [restoreText, setRestoreText] = createSignal({
+    text: lastRestoreText(e2ee),
+  });
+  onCleanup(
+    onRestoreText(() => setRestoreText({ text: lastRestoreText(e2ee) })),
+  );
+  const restoreLines = () =>
+    backupTextLines(undefined, restoreText().text, historyFlag());
+
   return (
     <>
       {/*
@@ -742,7 +784,19 @@ function RecoveryBackupCard() {
             </CategoryButton>
           </Show>
         </CategoryButton.Group>
+        <Show when={historyFlag()}>
+          <Text class="label">{backupNoteCopy.textBudget()}</Text>
+        </Show>
+        <Show when={hasBackup()}>
+          <For each={bundleLines()}>
+            {(kind) => <Text class="label">{backupTextCopy(kind)}</Text>}
+          </For>
+        </Show>
       </Show>
+
+      <For each={restoreLines()}>
+        {(kind) => <Text class="label">{backupTextCopy(kind)}</Text>}
+      </For>
     </>
   );
 }

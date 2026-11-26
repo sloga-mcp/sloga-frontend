@@ -8,6 +8,7 @@ import {
   on,
   onCleanup,
   onMount,
+  untrack,
 } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
@@ -22,6 +23,7 @@ import {
   errorUiCopy,
   noticeCopy,
   reasonProblemCopy,
+  rowStateCopy,
   seatPickerCopy,
   settingsCopy,
 } from "@revolt/client/protectedCopy";
@@ -30,6 +32,7 @@ import {
   reasonRefusal,
   validReason,
 } from "@revolt/client/protectedRemovalReasonPolicy";
+import { nativeHistoryInput } from "@revolt/client/protectedRowPolicy";
 import {
   type SeatDiscardOutcome,
   seatClientReason,
@@ -55,6 +58,7 @@ import {
 } from "@revolt/client/useProtectedChannel";
 import { useModals } from "@revolt/modal";
 import { Button } from "@revolt/ui/components/design/Button";
+import { Checkbox } from "@revolt/ui/components/design/Checkbox";
 import { CircularProgress } from "@revolt/ui/components/design/LoadingProgress";
 
 import {
@@ -65,6 +69,22 @@ import {
   seatsAfterRemoval,
   serverRemovedSeatIds,
 } from "./SeatList";
+import {
+  type HistoryVerifyAsks,
+  type ProtectOutcomeKind,
+  historyCheckFailedShown,
+  historyCheckWaitMs,
+  historyCheckingShown,
+  historyFailureKind,
+  historySectionModel,
+  historyToggleClick,
+  historyVerifyStep,
+  newProtectDraft,
+  protectDraftStep,
+  protectOpts,
+  protectOutcomeKind,
+  wipeClickAllowed,
+} from "./protectedHistorySettings";
 
 /**
  * Whether this client may see the "Protected channel" settings entry and
@@ -126,6 +146,19 @@ const REMOVAL_RECHECK_MS = 30_000;
  * (design 4.9: nothing is re-signed). Re-creating a poisoned group stays
  * with the channel's own action, not this page.
  *
+ * S4 (design 9.5, 4.9 "S4", plan O-5; rules in `protectedHistorySettings`),
+ * only while the server advertises the history setting: a channel that
+ * already has messages can be protected, with one option (unticked each
+ * time the form opens) to also delete the earlier messages; a protected
+ * channel gets the "new members can read earlier messages" setting, shown
+ * from native's verified state only, and "Delete the earlier unprotected
+ * messages" while native says they were kept. The page confirms neither a
+ * wipe nor hidden to visible itself: those dialogs are native, inside the
+ * sign call. A protect that went through with the members not added, or
+ * without the wipe that was ticked, is shown as its own line and never as a
+ * failed protect. When the page has no verified state for the channel it
+ * asks the bridge for one refresh, once per channel while it is mounted.
+ *
  * Seats come from the bridge's last `GET .../seats` (`seatsSnapshot`).
  * When it has none (the channel isn't protected yet, or the bridge has not
  * opened it) the page reads `GET /channels/:id/seats` itself, read-only.
@@ -184,6 +217,13 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
   const hasMessages = () =>
     channelHasMessages(props.channel.lastMessageId ?? null);
   const selfPrivileged = () => client()?.user?.privileged === true;
+  /**
+   * S4: the server advertises the history setting. False when the flag was
+   * not fetched, the fetch failed or the server is older: nothing about
+   * history is offered then.
+   */
+  const historyFlag = () =>
+    readUi((api) => api.protectedFlag().historySetting === true, false);
 
   // ---- seat reads -------------------------------------------------------
 
@@ -200,6 +240,7 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
       capable: capable(),
       selfPrivileged: selfPrivileged(),
       hasMessages: hasMessages(),
+      historySetting: historyFlag(),
     })
       ? `unprotected:${id}`
       : null;
@@ -317,13 +358,41 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
   // ---- actions ----------------------------------------------------------
 
   const [pending, setPending] = createSignal<
-    "protect" | "seats" | "authority" | "discard" | null
+    "protect" | "seats" | "authority" | "discard" | "history" | "wipe" | null
   >(null);
   const [error, setError] = createSignal<string | null>(null);
   const [saved, setSaved] = createSignal(false);
   const [confirming, setConfirming] = createSignal(false);
   /** A neutral S2 outcome line (Finish now, a discard); never an error. */
   const [note, setNote] = createSignal<string | null>(null);
+  /**
+   * S4: the protect form's wipe option. Never stored and never read from
+   * anywhere else; unticked whenever the form opens.
+   */
+  const [draft, setDraft] = createSignal(newProtectDraft());
+  /** S4: a failed history toggle or wipe, shown in the history section. */
+  const [historyError, setHistoryError] = createSignal<string | null>(null);
+  /**
+   * S4: the channel was protected, with something left out (the members,
+   * or the wipe that was ticked). A line of its own, never the error.
+   */
+  const [protectOutcome, setProtectOutcome] =
+    createSignal<ProtectOutcomeKind | null>(null);
+
+  // Another channel in the same page: the form closes and nothing ticked
+  // carries over.
+  createEffect(
+    on(
+      () => props.channel.id,
+      () => {
+        setDraft(newProtectDraft());
+        setConfirming(false);
+        setHistoryError(null);
+        setProtectOutcome(null);
+      },
+      { defer: true },
+    ),
+  );
 
   /** D7: an unresolved publish refuses signing; so does our own call. */
   const busy = () => view()?.publishInFlight === true || pending() !== null;
@@ -366,6 +435,10 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
         tag: ui.tag,
       });
     }
+    // S4: a protect over existing messages, or a wipe, that failed for a
+    // cause with a line of its own (design 9.5).
+    const history = historyFailureKind(err);
+    if (history !== null) return settingsCopy.historyError(history);
     // S2 D40: the reason section says it (with its input) while the stored
     // change waits for a reason; otherwise the notice says it here.
     if (seatReasonRequired(ui) && askReason()) return null;
@@ -392,12 +465,43 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
       tauriE2eeOff: tauriE2eeOff(),
       selfPrivileged: selfPrivileged(),
       hasMessages: hasMessages(),
+      historySetting: historyFlag(),
       seats: r === null ? null : r.state === "ok" ? r.body : r.state,
       defaultDeviceCap: flag().defaultDeviceCap,
     });
   });
 
-  /** The picker's `onConfirm` for the genesis list; rejects on failure. */
+  /** S4: the channel has messages and protecting it keeps them (R-W4-9). */
+  const withHistory = () => {
+    const a = availability();
+    return a.ok && a.withHistory === true;
+  };
+
+  /**
+   * S4: after a history call was rejected. It may have changed things all
+   * the same (a protect can reject after its first list landed), so the
+   * seats and the bridge's view are read again, never assumed.
+   */
+  function rereadAfterHistory() {
+    const id = props.channel.id;
+    rereadSeats();
+    readUi((api) => api.retryNow(id), undefined);
+  }
+
+  /**
+   * The picker's `onConfirm` for the genesis list; rejects on failure.
+   *
+   * S4: for a channel with messages the call carries `opts`; the bridge
+   * then protects with the owner alone and seats the picked members in a
+   * second step. A wipe is asked for only by a tick made in the form this
+   * picker was opened from; the confirmation is native's dialog, and a
+   * decline comes back as a silent rejection.
+   *
+   * Some rejections mean the channel IS protected (`protectOutcomeKind`):
+   * the member step did not go through, the ticked wipe was not done, or
+   * both. Those resolve here, so the picker closes, and the page says
+   * which.
+   */
   async function runProtect(userIds: string[]): Promise<void> {
     const a = availability();
     const api = ui();
@@ -405,28 +509,67 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     if (!a.ok || !api || owner === null || !eligible()) {
       throw new ProtectedChannelUnavailable();
     }
+    const opts = protectOpts({
+      withHistory: a.withHistory === true,
+      wipeArmed: draft().wipeArmed,
+    });
     setPending("protect");
     setError(null);
     setSaved(false);
+    setProtectOutcome(null);
+    let outcome: ProtectOutcomeKind | null = null;
     try {
-      await api.protect(
-        props.channel.id,
-        ownerFirst(userIds, owner),
-        a.deviceCap,
-      );
+      if (opts === undefined) {
+        await api.protect(
+          props.channel.id,
+          ownerFirst(userIds, owner),
+          a.deviceCap,
+        );
+      } else {
+        await api.protect(
+          props.channel.id,
+          ownerFirst(userIds, owner),
+          a.deviceCap,
+          opts,
+        );
+      }
     } catch (err) {
-      setError(errorText(err));
-      throw err;
+      outcome = protectOutcomeKind(err);
+      // A rejection may come after the first list landed: the page reads
+      // what is there again, never assumes it.
+      if (opts !== undefined || outcome !== null) rereadAfterHistory();
+      if (outcome === null) {
+        setError(errorText(err));
+        throw err;
+      }
     } finally {
       setPending(null);
     }
+    // Protected, perhaps with something left out: the tick is used up.
+    setDraft(protectDraftStep(draft(), { type: "done" }));
+    setProtectOutcome(outcome);
     rereadSeats();
+  }
+
+  /** "Protect this channel": the form, with the wipe option unticked. */
+  function openProtectForm() {
+    setDraft(protectDraftStep(draft(), { type: "open" }));
+    setConfirming(true);
+  }
+
+  function closeProtectForm() {
+    setDraft(protectDraftStep(draft(), { type: "cancel" }));
+    setConfirming(false);
   }
 
   function openProtectPicker() {
     const a = availability();
+    // The tick goes with the picker only when the picker really opens.
+    const next = protectDraftStep(draft(), { type: "continue" });
+    setDraft(newProtectDraft());
     setConfirming(false);
     if (!a.ok || busy() || !eligible()) return;
+    setDraft(next);
     openModal({
       type: "protected_seat_picker",
       channel: props.channel,
@@ -471,6 +614,7 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     setError(null);
     setSaved(false);
     setNote(null);
+    setProtectOutcome(null);
     try {
       await api.setSeats(
         props.channel.id,
@@ -678,6 +822,187 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     void runSetSeats(editableIds(), false, check.reason);
   }
 
+  // ---- S4 history setting and wipe (design 9.5) ---------------------------
+
+  /** Native's history values from the bridge's view; null while loading. */
+  const historyNative = () => {
+    const v = view();
+    if (v === null) return null;
+    const n = nativeHistoryInput(v.native, { seatListError: v.seatListError });
+    if (n === null) return null;
+    return {
+      verified: n.verified,
+      historySetting: v.native?.history_setting,
+      boundary: n.boundary,
+      preHistory: n.preHistory,
+    };
+  };
+
+  /** What the history section offers now (`historySectionModel`). */
+  const historyModel = createMemo(() =>
+    historySectionModel({
+      isOwner: eligible(),
+      flag: historyFlag(),
+      canAct: canAct(),
+      native: historyNative(),
+      serverWipe: props.channel.protectedHistory?.wipe,
+      busy: busy(),
+      storedChange: stored() !== null,
+    }),
+  );
+  const historyOwner = () => {
+    const m = historyModel();
+    return m.kind === "owner" ? m : null;
+  };
+
+  /**
+   * The history section needs the bridge's verified view. When native has
+   * not loaded the channel the page asks for ONE refresh of it (`retryNow`,
+   * never the open's loop), once per channel for as long as it is mounted
+   * (`historyVerifyStep`), and shows the checking line until its own timer
+   * ends it, `HISTORY_CHECK_LINE_MS` after the ask. Never with the flag
+   * off, and never for a channel native has loaded. When the timer ends
+   * and native still has not loaded the channel, a line says the check did
+   * not finish; it offers no history control.
+   */
+  const [verifyAsks, setVerifyAsks] = createSignal<HistoryVerifyAsks>(
+    new Map(),
+  );
+  /** The time the checking line is judged at: an ask, or its timer. */
+  const [checkNow, setCheckNow] = createSignal(Date.now());
+  let checkTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearCheckTimer = () => {
+    if (checkTimer === undefined) return;
+    clearTimeout(checkTimer);
+    checkTimer = undefined;
+  };
+  onCleanup(clearCheckTimer);
+  const verifyInput = (at: number) => ({
+    channelId: props.channel.id,
+    isOwner: eligible(),
+    flag: historyFlag(),
+    canAct: canAct(),
+    modelKind: historyModel().kind,
+    nativeLoaded: historyNative() !== null,
+    now: at,
+  });
+  // Runs again on a channel change (and on any other change of the input):
+  // the timer of the channel left behind is cleared each time, and one is
+  // set only for what is left of this channel's own ask.
+  createEffect(() => {
+    const at = Date.now();
+    const input = verifyInput(at);
+    const step = historyVerifyStep(untrack(verifyAsks), input);
+    clearCheckTimer();
+    setCheckNow(at);
+    const wait = historyCheckWaitMs(step.asks, input.channelId, at);
+    if (wait !== null) {
+      checkTimer = setTimeout(() => {
+        checkTimer = undefined;
+        setCheckNow(Math.max(Date.now(), at + wait));
+      }, wait);
+    }
+    if (!step.ask) return;
+    setVerifyAsks(step.asks);
+    readUi((api) => api.retryNow(input.channelId), undefined);
+  });
+  const historyChecking = () =>
+    historyCheckingShown(verifyAsks(), verifyInput(checkNow()));
+  const historyCheckFailed = () =>
+    historyCheckFailedShown(verifyAsks(), verifyInput(checkNow()));
+
+  /** The line for a protect that left something out, or null. */
+  const protectOutcomeLine = (): string | null => {
+    const outcome = protectOutcome();
+    switch (outcome) {
+      case null:
+        return null;
+      case "members_pending":
+        return settingsCopy.membersPending();
+      case "members_unconfirmed":
+        return settingsCopy.membersUnconfirmed();
+      case "wipe_not_done":
+        return settingsCopy.wipeNotDone();
+      case "wipe_not_done_members_pending":
+        return settingsCopy.wipeNotDoneMembersPending();
+      case "wipe_not_done_members_unconfirmed":
+        return settingsCopy.wipeNotDoneMembersUnconfirmed();
+      default: {
+        const _exhaustive: never = outcome;
+        return null;
+      }
+    }
+  };
+
+  /** The server's wipe progress line; its count is the only number shown. */
+  const wipeProgressLine = (): string | null => {
+    const p = historyOwner()?.progress;
+    if (p === undefined || p.kind === "none") return null;
+    return p.kind === "requested"
+      ? settingsCopy.wipeRequested()
+      : settingsCopy.wipeDone(p.count);
+  };
+
+  /**
+   * The history toggle changed. The box keeps showing native's verified
+   * setting (its own flip is undone here); the new setting shows only once
+   * native holds it. Hidden to visible is confirmed by native's dialog.
+   */
+  function onHistoryToggle(event: { currentTarget: { checked: boolean } }) {
+    const click = historyToggleClick(
+      historyModel(),
+      event.currentTarget.checked,
+    );
+    event.currentTarget.checked = click.shown;
+    if (click.request === null) return;
+    void runSetHistory(click.request);
+  }
+
+  async function runSetHistory(visible: boolean) {
+    const api = ui();
+    if (!api || busy()) return;
+    setPending("history");
+    setError(null);
+    setHistoryError(null);
+    setSaved(false);
+    setNote(null);
+    setProtectOutcome(null);
+    try {
+      await api.setHistoryVisible(props.channel.id, visible);
+    } catch (err) {
+      // `none` (native Declined) maps to null: nothing shown
+      setHistoryError(errorText(err));
+      rereadAfterHistory();
+    } finally {
+      setPending(null);
+    }
+  }
+
+  /**
+   * "Delete the earlier unprotected messages": called only from that
+   * button. One request per click: `pending` is set before anything is
+   * awaited, and it disables the button. The confirmation is native's.
+   */
+  async function runWipe() {
+    const api = ui();
+    if (!api || busy() || !wipeClickAllowed(historyModel())) return;
+    setPending("wipe");
+    setError(null);
+    setHistoryError(null);
+    setSaved(false);
+    setNote(null);
+    setProtectOutcome(null);
+    try {
+      await api.wipeHistory(props.channel.id);
+    } catch (err) {
+      // `none` (native Declined) maps to null: nothing shown
+      setHistoryError(errorText(err));
+      rereadAfterHistory();
+    } finally {
+      setPending(null);
+    }
+  }
+
   // ---- S2 local msgids, the seat picker's texts (catalog owed, L9) -------
 
   const unknownMember = () => t`Unknown member`;
@@ -728,7 +1053,8 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
         // C16: local msgid, same text as C12's
         return t`Staff accounts can't be seated.`;
       case "has_messages":
-        // C16: local msgid (protecting a channel with history is S4)
+        // C16: local msgid. Shown while the server's history setting is
+        // off (S4, R-W4-9): the block and its text are as before.
         return t`Only a channel without messages can be protected.`;
       case "loading":
         return null;
@@ -792,11 +1118,45 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
                       {settingsCopy.protectConfirmTitle()}
                     </ConfirmTitle>
                     <Warning>{settingsCopy.protectConfirmBody()}</Warning>
-                    <Actions>
-                      <Button
-                        variant="text"
-                        onPress={() => setConfirming(false)}
+                    {/* S4: the earlier messages stay unless this is ticked
+                        here; the wipe itself is confirmed by native. The
+                        line under the box says what the box's state does:
+                        "they stay" is never shown beside a tick. */}
+                    <Show when={withHistory()}>
+                      <Info data-protect-order>
+                        {settingsCopy.protectOrder()}
+                      </Info>
+                      <Info data-protect-closes-open>
+                        {settingsCopy.protectClosesOpen()}
+                      </Info>
+                      <Checkbox
+                        checked={draft().wipeTicked}
+                        onChange={(event) =>
+                          setDraft(
+                            protectDraftStep(draft(), {
+                              type: "tick",
+                              checked: event.currentTarget.checked,
+                            }),
+                          )
+                        }
                       >
+                        {settingsCopy.deleteEarlierOption()}
+                      </Checkbox>
+                      <Show
+                        when={draft().wipeTicked}
+                        fallback={
+                          <Info data-protect-history>
+                            {settingsCopy.protectWithHistory(
+                              props.channel.name,
+                            )}
+                          </Info>
+                        }
+                      >
+                        <Info>{settingsCopy.wipeDescription()}</Info>
+                      </Show>
+                    </Show>
+                    <Actions>
+                      <Button variant="text" onPress={closeProtectForm}>
                         <Trans>Cancel</Trans>
                       </Button>
                       <Button
@@ -810,13 +1170,18 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
                   </Confirm>
                 </Match>
                 <Match when={availability().ok}>
+                  <Show when={withHistory()}>
+                    <Info data-protect-history>
+                      {settingsCopy.protectWithHistory(props.channel.name)}
+                    </Info>
+                  </Show>
                   {/* One-way (plan D1): said before the first click. */}
                   <Warning>{settingsCopy.protectConfirmBody()}</Warning>
                   <Actions>
                     <Button
                       variant="filled"
                       isDisabled={busy()}
-                      onPress={() => setConfirming(true)}
+                      onPress={openProtectForm}
                     >
                       {settingsCopy.protectButton()}
                     </Button>
@@ -962,9 +1327,81 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
                   </>
                 )}
               </Show>
+
+              {/* S4: history setting and wipe. Owner only, with the server's
+                  history setting on and native's state verified. */}
+              <Show when={historyOwner()}>
+                {(m) => (
+                  <Confirm role="group" data-history-section>
+                    <Checkbox
+                      checked={m().toggle.checked}
+                      disabled={m().toggle.disabled}
+                      onChange={onHistoryToggle}
+                    >
+                      {settingsCopy.historyToggle()}
+                    </Checkbox>
+                    <span>
+                      {m().toggle.checked
+                        ? settingsCopy.historyVisibleDescription()
+                        : settingsCopy.historyHiddenDescription(
+                            m().earlierKept,
+                          )}
+                    </span>
+                    <Show when={m().removalNote}>
+                      <Info>{settingsCopy.historyRemovalNote()}</Info>
+                    </Show>
+                    {/* The wipe is irreversible: its button has the look of
+                        the other destructive ones (remove seat, delete
+                        account). */}
+                    <Show when={m().wipe.offered}>
+                      <Info>{settingsCopy.wipeDescription()}</Info>
+                      <Actions>
+                        <Button
+                          variant="_error"
+                          isDisabled={m().wipe.disabled}
+                          onPress={() => void runWipe()}
+                        >
+                          {settingsCopy.wipeButton()}
+                        </Button>
+                      </Actions>
+                    </Show>
+                    <Show when={wipeProgressLine()}>
+                      {(line) => (
+                        <Saved role="status" data-wipe-progress>
+                          {line()}
+                        </Saved>
+                      )}
+                    </Show>
+                    <Show when={historyError()}>
+                      {(text) => <Notice role="alert">{text()}</Notice>}
+                    </Show>
+                  </Confirm>
+                )}
+              </Show>
+              {/* No verified state yet for a channel this page asked the
+                  bridge to refresh. */}
+              <Show when={historyChecking()}>
+                <Info data-history-checking>{rowStateCopy("checking")}</Info>
+              </Show>
+              {/* The check's time is up and native still holds no state
+                  for the channel: say so. No history control here. */}
+              <Show when={historyCheckFailed()}>
+                <Info role="status" data-history-check-failed>
+                  {settingsCopy.historyCheckFailed()}
+                </Info>
+              </Show>
             </Section>
           </Match>
         </Switch>
+
+        {/* S4: protected, with the members or the ticked wipe left out. */}
+        <Show when={protectOutcomeLine()}>
+          {(line) => (
+            <Callout role="status" data-protect-outcome>
+              {line()}
+            </Callout>
+          )}
+        </Show>
 
         <Show when={saved() && !error()}>
           <Saved aria-live="polite">{settingsCopy.seatsSaved()}</Saved>
@@ -1028,18 +1465,23 @@ export function deviceCapForProtect(
   return capValue(entitlementDeviceCap) ?? capValue(defaultDeviceCap);
 }
 
-/** Whether the unprotected page needs a seats read (the entitlement). */
+/**
+ * Whether the unprotected page needs a seats read (the entitlement). A
+ * channel with messages needs it only while the server advertises the
+ * history setting (S4): it can't be protected otherwise.
+ */
 export function protectReadWanted(i: {
   flagEnabled: unknown;
   capable: unknown;
   selfPrivileged: unknown;
   hasMessages: unknown;
+  historySetting?: unknown;
 }): boolean {
   return (
     i.flagEnabled === true &&
     i.capable === true &&
     i.selfPrivileged !== true &&
-    i.hasMessages !== true
+    (i.hasMessages !== true || i.historySetting === true)
   );
 }
 
@@ -1057,7 +1499,12 @@ export type ProtectBlock =
 /**
  * Whether "Protect this channel" is offered, and with which caps. The flag
  * (D13) gates it; so do capability (D3), a staff owner (refused, design
- * 7.2), history (S4) and the entitlement (`slot_cap` null = none).
+ * 7.2), history and the entitlement (`slot_cap` null = none).
+ *
+ * History (S4, R-W4-9): a channel with messages is blocked unless the
+ * server advertises the history setting (`historySetting` literally true;
+ * not fetched, failed or an older server all block). When it is offered
+ * the result carries `withHistory: true`, and only then.
  */
 export function protectAvailability(i: {
   flagEnabled: unknown;
@@ -1065,6 +1512,7 @@ export function protectAvailability(i: {
   tauriE2eeOff: unknown;
   selfPrivileged: unknown;
   hasMessages: unknown;
+  historySetting?: unknown;
   seats:
     | null
     | "loading"
@@ -1072,7 +1520,7 @@ export function protectAvailability(i: {
     | { slot_cap?: unknown; entitlement_device_cap?: unknown };
   defaultDeviceCap: unknown;
 }):
-  | { ok: true; slotCap: number; deviceCap: number }
+  | { ok: true; slotCap: number; deviceCap: number; withHistory?: true }
   | { ok: false; block: ProtectBlock } {
   const block = (b: ProtectBlock) => ({ ok: false as const, block: b });
   if (i.capable !== true) {
@@ -1080,7 +1528,8 @@ export function protectAvailability(i: {
   }
   if (i.flagEnabled !== true) return block("flag_off");
   if (i.selfPrivileged === true) return block("staff_owner");
-  if (i.hasMessages === true) return block("has_messages");
+  const withHistory = i.hasMessages === true;
+  if (withHistory && i.historySetting !== true) return block("has_messages");
   if (i.seats === null || i.seats === "loading") return block("loading");
   if (i.seats === "failed" || typeof i.seats !== "object") {
     return block("load_failed");
@@ -1092,6 +1541,7 @@ export function protectAvailability(i: {
     i.defaultDeviceCap,
   );
   if (deviceCap === null) return block("no_device_cap");
+  if (withHistory) return { ok: true, slotCap, deviceCap, withHistory: true };
   return { ok: true, slotCap, deviceCap };
 }
 

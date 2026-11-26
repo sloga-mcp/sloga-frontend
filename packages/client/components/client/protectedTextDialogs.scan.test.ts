@@ -1963,7 +1963,7 @@ const DIALOG = ktLoad(readFileSync(DIALOG_FILE, "utf8"));
 test(`sources: ${String(PLUGIN_FILE)} + ${String(DIALOG_FILE)}`, () => {
   assert.match(PLUGIN.code, /\bclass\s+E2eePlugin\b/);
   assert.match(DIALOG.code, /\bclass\s+TextConfirmDialog\b/);
-  assert.equal(TEXT_COMMANDS.length, 21);
+  assert.equal(TEXT_COMMANDS.length, 23);
 });
 
 for (const [id, rule] of Object.entries(RULES)) {
@@ -2052,6 +2052,33 @@ const CONTROLS: Control[] = [
     edits: [[ARM("e2ee_text_state"), `// ${ARM("e2ee_text_state")}`]],
     expect: "fail",
   },
+  // The two S4 history commands: generic arms, never a dialog.
+  {
+    id: "history-import-arm-dropped",
+    rule: "R1",
+    file: "plugin",
+    edits: [[`                ${ARM("e2ee_text_history_import")}\n`, ""]],
+    expect: "fail",
+  },
+  {
+    id: "history-link-build-arm-dropped",
+    rule: "R1",
+    file: "plugin",
+    edits: [[`                ${ARM("e2ee_text_history_link_build")}\n`, ""]],
+    expect: "fail",
+  },
+  {
+    id: "history-import-on-the-dialog-path",
+    rule: "R1",
+    file: "plugin",
+    edits: [
+      [
+        ARM("e2ee_text_history_import"),
+        `"e2ee_text_history_import" -> runTextDialog(call) { args, _ -> engine.textHistoryImport(args) }`,
+      ],
+    ],
+    expect: "fail",
+  },
   {
     id: "dialog-method-renamed",
     rule: "R1",
@@ -2135,6 +2162,18 @@ const CONTROLS: Control[] = [
       [
         ARM("e2ee_text_decrypt"),
         `"e2ee_text_decrypt" -> resolveJson(call, engine.textDecrypt(call.data.toString()))`,
+      ],
+    ],
+    expect: "fail",
+  },
+  {
+    id: "history-link-build-calls-the-import-method",
+    rule: "R2",
+    file: "plugin",
+    edits: [
+      [
+        ARM("e2ee_text_history_link_build"),
+        `"e2ee_text_history_link_build" -> resolveText(call) { engine.textHistoryImport(it) }`,
       ],
     ],
     expect: "fail",

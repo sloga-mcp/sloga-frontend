@@ -47,24 +47,57 @@
  *   can never land: F3 may discard it, and the next `recoverOwnership`
  *   drops it and signs afresh instead of re-sending it.
  *
+ * S4 (W4 L2o; design 4.9 "S4", R-W4-9 / 10 / 11):
+ * - `protect` with `opts.withHistory` protects a channel that has messages:
+ *   an OWNER-ONLY v2 genesis naming the newest message as the boundary,
+ *   then the picked members through `setSeats`. Every genesis signed while
+ *   the server answers `ProtectHistoryMoved` stays in the stored entry
+ *   (`ProtectJournalV2`, written BEFORE its PUT) and a read-back equal to
+ *   any of them has landed. At most `PROTECT_HISTORY_MAX_ATTEMPTS`.
+ * - A wipe is asked for only when the caller passed `wipe: true` AND the
+ *   signed bytes say `pre_history:wiped`; its one confirmation is the
+ *   native dialog inside the sign call. A stored protect signed with a
+ *   wipe is never re-sent by a later call: it is read back, and dropped
+ *   when it did not land.
+ * - `setHistory` signs the next list with the `history` line changed and
+ *   publishes it as any seat list. `wipeHistory` signs the one-change wipe
+ *   list and POSTs it. A stored wipe list is never sent again by a later
+ *   call (R-W4-34): on the server it is finished, otherwise it is dropped,
+ *   and a later `wipeHistory` signs afresh behind native's dialog.
+ * - Fix round W4 (R-W4-35, audit B7): once the boundary genesis has landed,
+ *   a failed member step rejects `protected_members_pending`, and a wipe
+ *   the caller asked for that the landed list does not carry rejects
+ *   `wipe_not_done`. Both mean "protected, with something left out".
+ *   Second fix round (RB2, RB3): three more reasons of the same kind, see
+ *   `protect`.
+ * - All three are refused while `history_setting` is off. Without `opts`,
+ *   `protect` is the S2 flow, request for request.
+ *
  * Pure of Solid / livekit / lingui; driven through `GroupOps` and the port,
  * so `node --test --conditions=browser` loads it over fakes.
  */
 import type { MlsMemberDevice } from "./e2ee";
 import { reasonRefusal } from "./protectedRemovalReasonPolicy.ts";
 import {
+  type HistorySignOp,
+  type ProtectJournalV2,
   type ProtectReadBack,
   type PublishAnswer,
   type PublishOp,
   type PublishStep,
+  historySignArgs,
+  protectBody,
+  protectLanded,
   publishBackoffMs,
   publishStep,
+  readProtectJournal,
   resolveProtectReadBack,
   signAllowed,
 } from "./protectedTextPolicy.ts";
 import type {
   CancelPendingSeatsResult,
   GroupOps,
+  HistorySetting,
   NativeError,
   PendingSeats,
   ProtectedSeatsResponse,
@@ -72,6 +105,7 @@ import type {
   RecoveryPlan,
   SeatListInput,
   SeatListVerdict,
+  ServerSeatList,
   SignedAuthority,
   SignedHandover,
   SignedSeatList,
@@ -138,6 +172,23 @@ export interface StoredPublish {
    * while `neverAccepted` (unsent, or refused for its reason header).
    */
   recovery?: true;
+  /**
+   * S4: published by `setHistory`, with the `history` line it asked for; a
+   * retry of the same change resumes these bytes and shows no dialog again.
+   */
+  history?: HistorySetting;
+}
+
+/**
+ * S4: the wipe list `wipeHistory` POSTs (design 4.9 "S4"), under the same
+ * D7c key. `sent` is written BEFORE the first POST (as F3's `"sent"`), so
+ * `false` proves no request of these bytes ever went out.
+ */
+interface StoredWipe {
+  v: 1;
+  op: "wipe";
+  signed: SignedSeatList;
+  sent: boolean;
 }
 
 type PublishAnswerSeen = "unsent" | "sent" | "refused";
@@ -259,6 +310,12 @@ interface Ctx {
    * successor step before a PUT and the re-send budget of one call.
    */
   recovery?: RecoveryPlan;
+  /**
+   * R-W4-42: the boundary genesis a read-back found on the server while
+   * its finish (verify, group create) has not gone through. Written by
+   * `finishLanded` only, read by `protect` only.
+   */
+  landedUnfinished?: ServerList;
 }
 
 /**
@@ -343,13 +400,19 @@ function readStored(ctx: StoreAt): StoredPublish | "corrupt" | null {
       ...(answer !== null ? { answer } : {}),
       ...(handover !== null ? { handover } : {}),
       ...(v.recovery === true ? { recovery: true as const } : {}),
+      ...(v.history === "visible" || v.history === "hidden"
+        ? { history: v.history }
+        : {}),
     };
   } catch {
     return "corrupt";
   }
 }
 
-function persist(ctx: Ctx, entry: StoredPublish): void {
+function persist(
+  ctx: Ctx,
+  entry: StoredPublish | ProtectJournalV2 | StoredWipe,
+): void {
   const raw = JSON.stringify(entry);
   memo.set(ctx.key, raw);
   if (!ctx.port.store.set(ctx.key, raw)) {
@@ -887,23 +950,38 @@ async function resolveStoredSeats(
  * FX-R: whether a stored publish takes the caller's reason header on its
  * re-PUT. Only a plain seat publish can unseat anyone; an owner-devices,
  * handover or recovery publish keeps the seats it was signed over and
- * never carries another flow's reason.
+ * never carries another flow's reason; nor does an S4 history publish.
  */
 function carriesReason(e: StoredPublish): boolean {
   return (
-    e.ownerDevices !== true && e.handover === undefined && e.recovery !== true
+    e.ownerDevices !== true &&
+    e.handover === undefined &&
+    e.recovery !== true &&
+    e.history === undefined
   );
 }
 
 /**
  * Resolve a stored (unresolved) publish first; returns the entry it
  * resolved, or null. `reason` rides on a stored plain seat publish's
- * re-PUT only (`carriesReason`).
+ * re-PUT only (`carriesReason`). S4: a stored boundary protect that landed
+ * answers as a protect entry; a stored wipe list is finished or dropped
+ * (`settleStoredWipe`), never sent, and never answers as an entry.
  */
 async function resumeStored(
   ctx: Ctx,
   reason: string | null,
 ): Promise<StoredPublish | null> {
+  // S4: the two history shapes first (`readStored` calls both corrupt).
+  const history = readHistoryEntry(ctx);
+  if (history !== null && history.op === "protect") {
+    const landed = await resumeJournal(ctx, history);
+    return landed === null ? null : { v: 1, op: "protect", signed: landed };
+  }
+  if (history !== null) {
+    await settleStoredWipe(ctx, history);
+    return null;
+  }
   const stored = readStored(ctx);
   if (stored === null) return null;
   if (stored === "corrupt") {
@@ -1033,6 +1111,547 @@ async function run(
 }
 
 // ---------------------------------------------------------------------------
+// S4: history (design 4.9 "S4")
+// ---------------------------------------------------------------------------
+
+/**
+ * `history_setting` as the bridge reads it (root advert, R-W4-9), read at
+ * call time. An absent method or any answer but `true` is off. A boundary,
+ * a `history` line and a wipe all need a v2 list, so `formats_v2` has to be
+ * on as well.
+ */
+function historySettingOn(port: ProtectedTextPort): boolean {
+  return port.historySetting?.() === true && formatsV2On(port);
+}
+
+/**
+ * Refuse an S4 owner call while the setting is off. The UI offers none of
+ * them then, so this is a caller defect: loud, and before any request.
+ */
+function assertHistorySetting(port: ProtectedTextPort, channelId: string) {
+  if (historySettingOn(port)) return;
+  port.log("error", "[protected] history call with history_setting off", {
+    channelId,
+  });
+  throw clientFailure("history_setting_off");
+}
+
+/** `protect`'s `opts`: absent, or both members booleans; a wipe needs history. */
+function validProtectOpts(opts: unknown): boolean {
+  if (opts === undefined) return true;
+  if (!isRecord(opts)) return false;
+  if (typeof opts.withHistory !== "boolean") return false;
+  if (typeof opts.wipe !== "boolean") return false;
+  return opts.withHistory || !opts.wipe;
+}
+
+/**
+ * The value of a signed body's `key:` line, or null unless there is exactly
+ * one. Read for local checks only (is the answer the list that was asked
+ * for); native and the server parse the body strictly.
+ */
+function bodyLine(body: string, key: string): string | null {
+  const lines = body.split("\n").filter((l) => l.startsWith(`${key}:`));
+  return lines.length === 1 ? lines[0].slice(key.length + 1) : null;
+}
+
+/** Whether a signed body seats `userId` and nobody else. */
+function seatsOnly(list: { body: string }, userId: string): boolean {
+  return bodyLine(list.body, "seats") === userId;
+}
+
+/** A message id (a ULID), as `publishStep` and native accept one. */
+const MESSAGE_ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+
+/**
+ * The id of the channel's newest message (the boundary B), or null for a
+ * channel without messages. Read like the seats: a transient or unreadable
+ * answer is retried with backoff, a definitive 4xx rejects.
+ */
+async function newestMessageId(ctx: Ctx): Promise<string | null> {
+  const path = `/channels/${ctx.channelId}/messages?limit=1&sort=Latest`;
+  for (let failures = 0; ; failures++) {
+    const a = await request(ctx, "GET", path);
+    if (a.kind === "response") {
+      const { status, body } = a.response;
+      if (is2xx(status)) {
+        let rows: unknown[] | null = null;
+        if (Array.isArray(body)) rows = body;
+        else if (isRecord(body) && Array.isArray(body.messages)) {
+          rows = body.messages;
+        }
+        if (rows !== null && rows.length === 0) return null;
+        const first: unknown = rows === null ? null : rows[0];
+        const id = isRecord(first) ? first._id : null;
+        if (typeof id === "string" && MESSAGE_ID.test(id)) return id;
+      } else if (status >= 400 && status < 500 && status !== 429) {
+        throw serverFailure(a.response);
+      }
+    }
+    await pause(ctx, publishBackoffMs(failures));
+  }
+}
+
+const HISTORY_SIGN_FIELDS: readonly unknown[] = [
+  "history",
+  "history_boundary",
+  "pre_history",
+  "seats",
+];
+
+/**
+ * `_seat_list_sign` for a list that says something about history; any
+ * dialog (growth, wipe) is native's, inside this call. Two refusals are
+ * named here: a boundary ahead of this device's clock is `clock_behind`,
+ * and an S4 argument native calls invalid is a defect in this module,
+ * logged loudly. `declined` and everything else pass through unchanged.
+ */
+async function signHistoryList(
+  ctx: Ctx,
+  list: {
+    seats: string[];
+    deviceCap: number;
+    serverList: ServerSeatList | null;
+    format: number | null;
+  },
+  op: HistorySignOp,
+): Promise<unknown> {
+  const history = historySignArgs(op);
+  try {
+    return await ctx.port.invoke("e2ee_text_seat_list_sign", {
+      channelId: ctx.channelId,
+      userId: ctx.port.selfUserId,
+      seats: list.seats,
+      deviceCap: list.deviceCap,
+      serverList: list.serverList,
+      format: list.format,
+      authority: null,
+      recovery: false,
+      ...history,
+      channelName: ctx.channelName,
+      displayNames: ctx.port.displayNames(list.seats),
+    });
+  } catch (e) {
+    const err = nativeErrorOf(e);
+    if (err?.type === "seat_list_invalid" && err.reason === "future_boundary") {
+      throw clientFailure("clock_behind");
+    }
+    if (
+      err?.type === "invalid_argument" &&
+      HISTORY_SIGN_FIELDS.includes(err.field)
+    ) {
+      ctx.port.log("error", "[protected] history sign arguments refused", {
+        channelId: ctx.channelId,
+        op: op.kind,
+      });
+    }
+    throw toFailure(e);
+  }
+}
+
+/**
+ * Sign the owner-only v2 genesis over `boundary` (native refuses any other
+ * seat on a boundary genesis). The answer must be the list asked for: this
+ * device's version 1, v2, seating the signer alone, with that boundary and
+ * the `pre_history` the caller chose; else nothing is stored or sent.
+ */
+async function signBoundaryGenesis(
+  ctx: Ctx,
+  boundary: string,
+  deviceCap: number,
+  wipe: boolean,
+): Promise<SignedSeatList> {
+  const self = ctx.port.selfUserId;
+  const raw = await signHistoryList(
+    ctx,
+    {
+      seats: [self],
+      deviceCap,
+      serverList: null,
+      format: nextFormat(ctx.port, "genesis"),
+    },
+    wipe
+      ? { kind: "genesis_wiped", boundary }
+      : { kind: "genesis_kept", boundary },
+  );
+  const signed = parseSigned(raw);
+  if (
+    signed === null ||
+    signed.version !== 1 ||
+    !isOwn(ctx, signed) ||
+    heldFormat(signed) !== 2 ||
+    !seatsOnly(signed, self) ||
+    bodyLine(signed.body, "history_boundary") !== boundary ||
+    bodyLine(signed.body, "pre_history") !== (wipe ? "wiped" : "kept")
+  ) {
+    throw clientFailure("protect_failed");
+  }
+  return signed;
+}
+
+/** The two S4 shapes of a stored entry; null for anything else. */
+function readHistoryEntry(ctx: StoreAt): ProtectJournalV2 | StoredWipe | null {
+  const raw = ctx.port.store.get(ctx.key) ?? memo.get(ctx.key) ?? null;
+  if (raw === null) return null;
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(v)) return null;
+  if (v.op === "protect" && v.v === 2) return readProtectJournal(v);
+  if (v.op === "wipe" && v.v === 1) {
+    const signed = parseSigned(v.signed);
+    // Anything but a stored `false` reads as "may have been sent".
+    return signed === null
+      ? null
+      : { v: 1, op: "wipe", signed, sent: v.sent !== false };
+  }
+  return null;
+}
+
+type JournalReadBack =
+  | { kind: "landed"; list: ServerList; snap: SeatsSnapshot }
+  | { kind: "none" }
+  | { kind: "other" };
+
+/**
+ * Read back a boundary protect (S4-RR-5), retried while transient. `none`:
+ * the channel is not protected or holds no list. `landed`: the server's
+ * list is one of `geneses`; the caller verifies THAT list (the read-back
+ * one), since this does not say which genesis it was. `other`: anything
+ * else a definitive answer can be.
+ */
+async function journalReadBack(
+  ctx: Ctx,
+  geneses: readonly SignedSeatList[],
+): Promise<JournalReadBack> {
+  for (let failures = 0; ; failures++) {
+    const ch = await request(ctx, "GET", `/channels/${ctx.channelId}`);
+    const seats = await request(ctx, "GET", `/channels/${ctx.channelId}/seats`);
+    // The policy's read-back says whether both reads are definitive and
+    // whether a list is there at all; which genesis is `protectLanded`'s.
+    const rb = resolveProtectReadBack({
+      channel: ch.kind === "response" ? ch.response : null,
+      seats: seats.kind === "response" ? seats.response : null,
+      genesis: geneses[0],
+    });
+    if (rb.kind !== "retry") {
+      if (rb.kind === "refused") {
+        if (rb.reason === "not_protected" || rb.reason === "no_list") {
+          return { kind: "none" };
+        }
+        if (rb.reason !== "different_list") return { kind: "other" };
+      }
+      const snap =
+        seats.kind === "response" ? parseSeats(seats.response.body) : null;
+      const list = snap?.list ?? null;
+      if (snap === null || list === null) return { kind: "other" };
+      return protectLanded(list, geneses) === "landed"
+        ? { kind: "landed", list, snap }
+        : { kind: "other" };
+    }
+    await pause(ctx, publishBackoffMs(failures));
+  }
+}
+
+/**
+ * The landed read-back list: verify it (the self-pin), then generation 0.
+ * The channel is protected from here on, whatever this does (R-W4-42): the
+ * list stays on `ctx.landedUnfinished` until the finish went through, so
+ * `protect` can tell a rejection from here apart from a protect that
+ * failed. The rejection itself is unchanged for every other flow.
+ */
+async function finishLanded(
+  ctx: Ctx,
+  rb: Extract<JournalReadBack, { kind: "landed" }>,
+): Promise<void> {
+  ctx.landedUnfinished = rb.list;
+  await finishGenesis(
+    ctx,
+    rb.list,
+    rb.snap.asOfEpoch,
+    rb.snap.asOfGroupId,
+    rb.snap.asOfGeneration,
+  );
+  ctx.landedUnfinished = undefined;
+}
+
+function protectRefused(ctx: Ctx, reason: string): TextFlowFailure {
+  ctx.port.log("warn", "[protected] protect refused", {
+    channelId: ctx.channelId,
+    reason,
+  });
+  return clientFailure("protect_failed");
+}
+
+function isAborted(e: unknown): boolean {
+  return isRecord(e) && e.source === "client" && e.reason === "aborted";
+}
+
+/**
+ * A boundary protect stops signing: `protect_busy`, or the re-sign or the
+ * boundary read failed (`cause`). That is not a resolution: an earlier
+ * genesis may be what the server holds, so read back before the stored
+ * entry goes. Landed: finish it (the protect succeeded). Else reject with
+ * `cause`. An abort keeps the entry for the next flow.
+ */
+async function giveUp(
+  ctx: Ctx,
+  geneses: readonly SignedSeatList[],
+  cause: unknown,
+): Promise<void> {
+  if (isAborted(cause)) throw cause;
+  const rb = await journalReadBack(ctx, geneses);
+  clearStored(ctx);
+  if (rb.kind !== "landed") throw cause;
+  await finishLanded(ctx, rb);
+}
+
+/**
+ * Protect a channel that has messages (R-W4-11): sign the owner-only
+ * genesis over `boundary`, store it, PUT it. `publishStep` decides each
+ * answer:
+ * - a 429 re-sends the SAME bytes; a 5xx or a lost answer reads back first
+ *   (landed = done) and then re-sends the SAME bytes;
+ * - `ProtectHistoryMoved`: read the newest message id again and sign a new
+ *   genesis over it, appended to the stored entry BEFORE its PUT. This
+ *   re-sign does not pass `assertSignAllowed`: the entry it would refuse is
+ *   this protect's own. A wiped re-sign is covered by native's short wipe
+ *   consent, or native asks again;
+ * - anything else resolves by read-back against EVERY genesis signed here.
+ * `wipe_history` rides only on bytes signed `pre_history:wiped` for a
+ * caller that asked for the wipe (`protectBody` throws on a mismatch).
+ */
+async function protectFromBoundary(
+  ctx: Ctx,
+  first: string,
+  deviceCap: number,
+  wipe: boolean,
+): Promise<void> {
+  let boundary = first;
+  let geneses = [await signBoundaryGenesis(ctx, boundary, deviceCap, wipe)];
+  persist(ctx, { v: 2, op: "protect", geneses, wipe });
+  for (let failures = 0; ; failures++) {
+    const signed = geneses[geneses.length - 1];
+    const answer = await request(
+      ctx,
+      "PUT",
+      `/channels/${ctx.channelId}/protect`,
+      { ...protectBody(signed, wipe), seat_list: dataSeatList(signed) },
+    );
+    const history = { attempt: geneses.length, boundary };
+    const step = publishStep(answer, { op: "protect", failures, history });
+    if (step.kind === "resend") {
+      await pause(ctx, step.delayMs);
+      if (step.cause === "rate_limited") continue;
+      const rb = await journalReadBack(ctx, geneses);
+      if (rb.kind === "none") continue;
+      clearStored(ctx);
+      if (rb.kind === "other") throw protectRefused(ctx, "different_list");
+      await finishLanded(ctx, rb);
+      return;
+    }
+    if (step.kind === "failed") {
+      await giveUp(ctx, geneses, clientFailure("protect_busy"));
+      return;
+    }
+    if (step.kind !== "resign") break;
+    let fresh: SignedSeatList;
+    let next: string | null;
+    try {
+      next = await newestMessageId(ctx);
+      const again = publishStep(
+        { kind: "reread", boundary: next },
+        { op: "protect", failures, history },
+      );
+      if (again.kind !== "resign" || next === null) {
+        throw clientFailure("protect_busy");
+      }
+      fresh = await signBoundaryGenesis(ctx, next, deviceCap, wipe);
+    } catch (e) {
+      await giveUp(ctx, geneses, e);
+      return;
+    }
+    boundary = next;
+    geneses = [...geneses, fresh];
+    persist(ctx, { v: 2, op: "protect", geneses, wipe });
+    failures = -1;
+  }
+  const rb = await journalReadBack(ctx, geneses);
+  clearStored(ctx);
+  if (rb.kind !== "landed") throw protectRefused(ctx, rb.kind);
+  await finishLanded(ctx, rb);
+}
+
+/**
+ * A stored boundary protect from an earlier call (a restart, an abort).
+ * Nothing is signed here. Read back first: landed = verify and finish
+ * (the list is returned); a foreign list = refused. Not landed: a `kept`
+ * genesis is re-sent with the SAME bytes, as the S2 entry is (the newest
+ * one; its answer resolves by read-back, and a moved boundary is then a
+ * refusal). An entry signed with a wipe is NEVER re-sent from here: a wipe
+ * goes out only in the call that asked for it. It is dropped (null), and
+ * the caller's GET-first path runs.
+ */
+async function resumeJournal(
+  ctx: Ctx,
+  journal: ProtectJournalV2,
+): Promise<SignedSeatList | null> {
+  const { geneses } = journal;
+  const last = geneses[geneses.length - 1];
+  const wiped =
+    journal.wipe ||
+    geneses.some((g) => bodyLine(g.body, "pre_history") !== "kept");
+  for (let failures = 0; ; failures++) {
+    const rb = await journalReadBack(ctx, geneses);
+    if (rb.kind === "landed") {
+      clearStored(ctx);
+      await finishLanded(ctx, rb);
+      return rb.list;
+    }
+    if (rb.kind === "other") {
+      clearStored(ctx);
+      throw protectRefused(ctx, "different_list");
+    }
+    if (wiped) {
+      clearStored(ctx);
+      ctx.port.log("warn", "[protected] unfinished wipe protect dropped", {
+        channelId: ctx.channelId,
+      });
+      return null;
+    }
+    const answer = await request(
+      ctx,
+      "PUT",
+      `/channels/${ctx.channelId}/protect`,
+      { seat_list: dataSeatList(last) },
+    );
+    const step = publishStep(answer, { op: "protect", failures });
+    if (step.kind !== "resend") break;
+    await pause(ctx, step.delayMs);
+  }
+  const rb = await journalReadBack(ctx, geneses);
+  clearStored(ctx);
+  if (rb.kind !== "landed") throw protectRefused(ctx, rb.kind);
+  await finishLanded(ctx, rb);
+  return rb.list;
+}
+
+/**
+ * F3's write-ahead for the wipe list: `sent` is stored BEFORE the POST. If
+ * that write failed and the store still says unsent, nothing is sent: a
+ * later flow would drop bytes the server may hold.
+ */
+function wipeWriteAhead(ctx: Ctx, entry: StoredWipe): StoredWipe {
+  const sent: StoredWipe = { ...entry, sent: true };
+  persist(ctx, sent);
+  const now = readHistoryEntry(ctx);
+  if (now !== null && now.op === "wipe" && !now.sent) {
+    throw clientFailure("publish_not_persisted");
+  }
+  return sent;
+}
+
+/**
+ * POST the SAME wipe-list bytes until resolved, then read back and verify
+ * as after any seat list. A 429, a 5xx or a lost answer re-sends them (the
+ * server answers a byte-identical retry without writing again). A 4xx is a
+ * refusal and uses the bytes up: a plain `InvalidOperation` (a legal hold,
+ * no boundary) is `wipe_refused`, any other keeps its server type.
+ */
+async function postWipe(ctx: Ctx, entry: StoredWipe): Promise<void> {
+  const sent = wipeWriteAhead(ctx, entry);
+  for (let failures = 0; ; failures++) {
+    const answer = await request(
+      ctx,
+      "POST",
+      `/channels/${ctx.channelId}/history_wipe`,
+      dataSeatList(sent.signed),
+    );
+    const step = publishStep(answer, { op: "seats", failures });
+    if (step.kind === "resend") {
+      await pause(ctx, step.delayMs);
+      continue;
+    }
+    clearStored(ctx);
+    if (step.kind === "resolved_ok") break;
+    if (answer.kind !== "response") throw clientFailure("publish_refused");
+    if (step.kind === "resolved_refused" && step.type === "InvalidOperation") {
+      ctx.port.log("warn", "[protected] history wipe refused", {
+        channelId: ctx.channelId,
+      });
+      throw clientFailure("wipe_refused");
+    }
+    throw serverFailure(answer.response);
+  }
+  await finishSeats(ctx);
+}
+
+/**
+ * A stored wipe list from an earlier call, GET first (D7c). Nothing is
+ * signed or sent here, whoever calls (R-W4-34): a wipe request goes out
+ * only in the call that showed native's dialog for it.
+ * - On the server already: finish it (verify, removals). Returns true.
+ * - Anything else (not landed yet, or overtaken by another list): the bytes
+ *   are dropped and the caller carries on over what the server holds.
+ *   Returns false. No flow is held up by one (R-W4-28: an unseat must not
+ *   wait behind a wipe whose answer was lost), and an overtaken one fails
+ *   nothing: the caller reads the server's list itself.
+ * Dropping is a clean continue because native keeps nothing from a sign (a
+ * list is held only once verify accepts the read-back), so the next sign
+ * builds on the server's list. Re-sending instead is not an option: the
+ * seat route refuses a list that moves `kept` to `wiped`, and the wipe
+ * route would start a wipe nobody confirmed in this call. The cost, unlike
+ * a plain seat publish (F3): if the lost request still arrives, two lists
+ * of this device exist at one version. Arriving after the new list it is
+ * refused as stale; arriving before it, the wipe the owner confirmed lands,
+ * the new list is refused once, and the next flow builds on the wiped list.
+ */
+async function settleStoredWipe(ctx: Ctx, entry: StoredWipe): Promise<boolean> {
+  const { signed } = entry;
+  const l = (await readSeats(ctx)).list;
+  if (
+    l !== null &&
+    l.version === signed.version &&
+    l.body === signed.body &&
+    l.signature === signed.signature
+  ) {
+    clearStored(ctx);
+    await finishSeats(ctx);
+    return true;
+  }
+  clearStored(ctx);
+  ctx.port.log(
+    entry.sent ? "warn" : "info",
+    "[protected] history wipe not on the server: dropped",
+    { channelId: ctx.channelId, sent: entry.sent },
+  );
+  return false;
+}
+
+/** Whether a signed body says the earlier messages are wiped. */
+function signedWiped(list: { body: string }): boolean {
+  return bodyLine(list.body, "pre_history") === "wiped";
+}
+
+/** What a rejection was, for a log line: its source and tag (D16). */
+function failureTag(e: unknown): { source: string; tag: string | null } {
+  const f = toFailure(e);
+  switch (f.source) {
+    case "client":
+      return { source: f.source, tag: f.reason };
+    case "native":
+      return { source: f.source, tag: f.error.type };
+    case "server":
+      return { source: f.source, tag: f.type };
+    default:
+      return { source: f.source, tag: null };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public flows (A1 `OwnerFlows`)
 // ---------------------------------------------------------------------------
 
@@ -1040,6 +1659,44 @@ async function run(
  * Protect a channel (design 6.3 "Protect"): genesis list signed with
  * `server_list: null` (the owner is always seated), persisted, PUT until
  * resolved, read back, verified (the self-pin), then the generation-0 group.
+ *
+ * `opts` (S4, R-W4-11). Absent, or `withHistory: false`: exactly the flow
+ * above. `withHistory: true` protects a channel that already has messages
+ * (refused while `history_setting` is off): an owner-only genesis over the
+ * newest message (`protectFromBoundary`), then `seats` through `setSeats`
+ * with its own growth dialog. If that second step fails for any reason (a
+ * declined dialog included) the channel stays protected and nothing is
+ * rolled back (R-W4-35). The seats are then read once more: with the owner
+ * alone on the list this rejects `protected_members_pending`; with anyone
+ * else on it (the member list landed before the step failed), or when that
+ * read gives no list, it rejects `protected_members_unconfirmed` (RB2).
+ * A channel that turns out to have no message is protected by
+ * the flow above (no boundary, and no wipe: there is nothing to delete).
+ * `wipe: true` signs the genesis `pre_history: "wiped"` behind native's
+ * dialog and is valid only with `withHistory`.
+ *
+ * `wipe_not_done` (audit B7): the caller asked for the wipe, but the list
+ * that protects the channel was signed by an earlier call (a stored entry
+ * that resumed, or this device's genesis found on the server) and does not
+ * say `wiped`. Nothing is signed to change that here: the channel is
+ * protected, the earlier messages are still there, and the caller is told.
+ * It is reported after the member step. When that step failed as well the
+ * caller hears both (RB3): `wipe_not_done_members_pending` or
+ * `wipe_not_done_members_unconfirmed`, split as above.
+ *
+ * R-W4-40, the one exception to R-W4-34: with `wipe: true` every call signs
+ * its genesis through native and never re-sends stored bytes, but whether
+ * that sign shows a dialog is native's decision. Native keeps the owner's
+ * confirmation for the channel in memory for 60 s, so a second call inside
+ * that window, on a channel that is still unprotected, can sign and send
+ * `wipe_history` without a dialog of its own.
+ *
+ * R-W4-42: once a read-back shows the boundary genesis on the server, a
+ * rejection of what follows (the verify with its pin, the group create) is
+ * not a failed protect either. The member step is skipped, the cause is
+ * logged by its tag, and the call rejects `protected_members_unconfirmed`,
+ * or `wipe_not_done_members_unconfirmed` when a wipe was asked for and the
+ * landed list does not say `wiped`.
  */
 export async function protect(
   ops: GroupOps,
@@ -1047,12 +1704,36 @@ export async function protect(
   channelId: string,
   seats: string[],
   deviceCap: number,
+  opts?: { withHistory: boolean; wipe: boolean },
 ): Promise<void> {
-  if (!validSeatsArgs(seats, deviceCap)) {
+  if (!validSeatsArgs(seats, deviceCap) || !validProtectOpts(opts)) {
     throw clientFailure("invalid_argument");
   }
+  const withHistory = opts?.withHistory === true;
+  const wipe = withHistory && opts?.wipe === true;
+  if (withHistory) assertHistorySetting(port, channelId);
+  const self = port.selfUserId;
+  const genesisSeats = [self, ...seats.filter((s) => s !== self)];
+  const unique = [...new Set(genesisSeats)];
+  // S4: the genesis that landed seats the owner alone, so the picked
+  // members still need a seat list of their own.
+  let ownerOnly = false;
+  // B7: the list that landed is one an earlier call signed, without the
+  // wipe this call asked for.
+  let wipeMissed = false;
+  // R-W4-42: this call's context, and the landed list whose finish failed.
+  const flow: { ctx: Ctx | null } = { ctx: null };
+  const unfinished: { list: ServerList | null } = { list: null };
   await run(ops, port, channelId, async (ctx) => {
-    if ((await resumeStored(ctx, null))?.op === "protect") return;
+    flow.ctx = ctx;
+    const boundaryEntry = readHistoryEntry(ctx)?.op === "protect";
+    const resumed = await resumeStored(ctx, null);
+    if (resumed?.op === "protect") {
+      ownerOnly =
+        (withHistory || boundaryEntry) && seatsOnly(resumed.signed, self);
+      wipeMissed = wipe && !signedWiped(resumed.signed);
+      return;
+    }
     assertSignAllowed(ctx);
     const snap = await readSeats(ctx);
     if (snap.list !== null) {
@@ -1066,13 +1747,23 @@ export async function protect(
           snap.asOfGroupId,
           snap.asOfGeneration,
         );
+        ownerOnly = withHistory && seatsOnly(snap.list, self);
+        wipeMissed = wipe && !signedWiped(snap.list);
         return;
       }
       throw clientFailure("protect_failed");
     }
-    const self = port.selfUserId;
-    const genesisSeats = [self, ...seats.filter((s) => s !== self)];
-    const unique = [...new Set(genesisSeats)];
+    if (withHistory) {
+      const boundary = await newestMessageId(ctx);
+      if (boundary !== null) {
+        await protectFromBoundary(ctx, boundary, deviceCap, wipe);
+        ownerOnly = true;
+        return;
+      }
+      ctx.port.log("info", "[protected] no message yet: plain protect", {
+        channelId,
+      });
+    }
     const raw = await port.invoke("e2ee_text_seat_list_sign", {
       channelId,
       userId: self,
@@ -1082,6 +1773,7 @@ export async function protect(
       format: nextFormat(port, "genesis"),
       authority: null,
       recovery: false,
+      ...historySignArgs({ kind: "plain" }),
       channelName: ctx.channelName,
       displayNames: port.displayNames(unique),
     });
@@ -1091,7 +1783,104 @@ export async function protect(
     }
     persist(ctx, { v: 1, op: "protect", signed });
     await publishProtect(ctx, signed);
+  }).catch((e: unknown) => {
+    const list = flow.ctx?.landedUnfinished;
+    if (list === undefined) throw e;
+    // The read-back showed this device's genesis on the server: the channel
+    // is protected, and only the steps after that failed.
+    unfinished.list = list;
+    port.log("error", "[protected] protected, the landed list not finished", {
+      channelId,
+      ...failureTag(e),
+    });
   });
+  if (unfinished.list !== null) {
+    // No member step: it needs the list verified and the group created.
+    // Who is seated is not known here, so the reason is the one that
+    // claims less. A ticked wipe counts as done only when the landed list
+    // itself says `wiped`.
+    throw clientFailure(
+      wipe && !signedWiped(unfinished.list)
+        ? "wipe_not_done_members_unconfirmed"
+        : "protected_members_unconfirmed",
+    );
+  }
+  let membersPending = false;
+  let seated: SeatedNow = "unknown";
+  if (ownerOnly && unique.length > 1) {
+    try {
+      await setSeats(ops, port, channelId, unique, deviceCap);
+    } catch (e) {
+      // R-W4-35: the protect itself went through. Whatever stopped the
+      // member list (a declined dialog included), the caller hears that the
+      // members are still to be added, not that protecting failed.
+      membersPending = true;
+      port.log("warn", "[protected] protected, members not added", {
+        channelId,
+        ...failureTag(e),
+      });
+      // RB2: the rejection can come after the member list landed (its
+      // read-back, verify or removals failed), so who is seated is read
+      // again rather than assumed.
+      seated = await seatedAfterMemberStep(ops, port, channelId, self);
+    }
+  }
+  const ownerAlone = seated === "owner";
+  if (wipeMissed) {
+    port.log("warn", "[protected] protected, the wipe asked for was not done", {
+      channelId,
+      membersPending,
+    });
+    // RB3: when the member step failed as well, the caller hears both.
+    if (!membersPending) throw clientFailure("wipe_not_done");
+    throw clientFailure(
+      ownerAlone
+        ? "wipe_not_done_members_pending"
+        : "wipe_not_done_members_unconfirmed",
+    );
+  }
+  if (membersPending) {
+    throw clientFailure(
+      ownerAlone
+        ? "protected_members_pending"
+        : "protected_members_unconfirmed",
+    );
+  }
+}
+
+/** Who the server's seat list names after a failed member step. */
+type SeatedNow = "owner" | "more" | "unknown";
+
+/**
+ * One read of the seats after `protect`'s member step rejected (RB2).
+ * `owner`: the list seats the owner alone. `more`: it names someone else
+ * too. `unknown`: no answer, an unreadable one, or no list. One request and
+ * no retry: this only picks which of two reasons the caller hears, and
+ * anything but a readable owner-only list picks the one that claims less.
+ * The list is the server's word, not verified here; the seat list the page
+ * shows under the line is the verified one.
+ */
+async function seatedAfterMemberStep(
+  ops: GroupOps,
+  port: ProtectedTextPort,
+  channelId: string,
+  self: string,
+): Promise<SeatedNow> {
+  let seated: SeatedNow = "unknown";
+  try {
+    await run(ops, port, channelId, async (ctx) => {
+      const a = await request(ctx, "GET", `/channels/${channelId}/seats`);
+      if (a.kind !== "response" || !is2xx(a.response.status)) return;
+      const list = parseSeats(a.response.body)?.list ?? null;
+      if (list !== null) seated = seatsOnly(list, self) ? "owner" : "more";
+    });
+  } catch (e) {
+    port.log("warn", "[protected] seats not read after the member step", {
+      channelId,
+      ...failureTag(e),
+    });
+  }
+  return seated;
 }
 
 /**
@@ -1143,6 +1932,7 @@ export async function setSeats(
       format: nextFormat(port, snap.list),
       authority: null,
       recovery: false,
+      ...historySignArgs({ kind: "plain" }),
       channelName: ctx.channelName,
       displayNames: port.displayNames(unique),
     });
@@ -1224,6 +2014,7 @@ export async function signOwnerDevices(
       format,
       authority,
       recovery: false,
+      ...historySignArgs({ kind: "plain" }),
       channelName: ctx.channelName,
       displayNames: port.displayNames(verdict.seats),
     });
@@ -1399,6 +2190,7 @@ export async function moveOwnerKey(
       format: nextFormat(port, snap.list),
       authority: null,
       recovery: false,
+      ...historySignArgs({ kind: "plain" }),
       channelName: ctx.channelName,
       displayNames: port.displayNames(verdict.seats),
     });
@@ -1478,6 +2270,140 @@ export async function recoverOwnership(
     };
     persist(base, entry);
     await publishSeats(ctx, entry, null);
+  });
+}
+
+/**
+ * S4 (design 6.3 "History setting"): sign the next list with its `history`
+ * line set to `visible` / `hidden` over the same seats and device cap,
+ * then publish it as any seat list (`publishSeats`: same bytes until
+ * resolved, read back, verify). hidden -> visible is growth, so native
+ * shows its dialog inside the sign call; `declined` changes nothing.
+ * Refused while `history_setting` is off. Never signed as a recovery list,
+ * and an unresolved recovery publish refuses this flow like every other
+ * (FX-R). A retry of the same change resumes the stored bytes: no dialog,
+ * nothing signed.
+ */
+export async function setHistory(
+  ops: GroupOps,
+  port: ProtectedTextPort,
+  channelId: string,
+  visible: boolean,
+): Promise<void> {
+  if (typeof visible !== "boolean") throw clientFailure("invalid_argument");
+  assertHistorySetting(port, channelId);
+  const history: HistorySetting = visible ? "visible" : "hidden";
+  await run(ops, port, channelId, async (ctx) => {
+    const resumed = await resumeStored(ctx, null);
+    if (resumed?.history === history) return;
+    assertSignAllowed(ctx);
+    const snap = await readSeats(ctx);
+    if (snap.list === null) throw clientFailure("not_protected");
+    const verdict = await verifyList(
+      ctx,
+      snap.list,
+      snap.asOfEpoch,
+      snap.asOfGroupId,
+      snap.asOfGeneration,
+    );
+    const raw = await signHistoryList(
+      ctx,
+      {
+        seats: verdict.seats,
+        deviceCap: verdict.device_cap,
+        serverList: { version: snap.list.version, body: snap.list.body },
+        format: nextFormat(port, snap.list),
+      },
+      { kind: "set_history", history, recovery: false },
+    );
+    const signed = parseSigned(raw);
+    if (
+      signed === null ||
+      signed.version !== snap.list.version + 1 ||
+      !isOwn(ctx, signed) ||
+      bodyLine(signed.body, "history") !== history
+    ) {
+      throw clientFailure("publish_refused");
+    }
+    const entry: StoredPublish = {
+      v: 1,
+      op: "seats",
+      signed,
+      history,
+      answer: "unsent",
+    };
+    persist(ctx, entry);
+    await publishSeats(ctx, entry, null);
+  });
+}
+
+/**
+ * S4 (design 4.9 "S4", S4-D20): delete the messages from before the channel
+ * was protected. Signs the one-change wipe list (the held list with
+ * `pre_history: "wiped"`; native's dialog is the only confirmation and
+ * `declined` signs nothing), stores it, then
+ * `POST /channels/:id/history_wipe`.
+ * - A stored wipe list is settled FIRST (R-W4-34): on the server = done,
+ *   nothing signed or sent. Otherwise it is dropped, however old, and this
+ *   call signs a new list behind native's dialog: stored wipe bytes are
+ *   never POSTed by a later call.
+ * - Already wiped (the verified list says so, or native answers
+ *   `seat_list_rollback`): done, nothing signed or sent.
+ * - Refused while `history_setting` is off.
+ */
+export async function wipeHistory(
+  ops: GroupOps,
+  port: ProtectedTextPort,
+  channelId: string,
+): Promise<void> {
+  assertHistorySetting(port, channelId);
+  await run(ops, port, channelId, async (ctx) => {
+    const stored = readHistoryEntry(ctx);
+    if (stored !== null && stored.op === "wipe") {
+      if (await settleStoredWipe(ctx, stored)) return;
+    } else {
+      await resumeStored(ctx, null);
+    }
+    assertSignAllowed(ctx);
+    const snap = await readSeats(ctx);
+    if (snap.list === null) throw clientFailure("not_protected");
+    const verdict = await verifyList(
+      ctx,
+      snap.list,
+      snap.asOfEpoch,
+      snap.asOfGroupId,
+      snap.asOfGeneration,
+    );
+    if (signedWiped(snap.list)) return;
+    let raw: unknown;
+    try {
+      raw = await signHistoryList(
+        ctx,
+        {
+          seats: verdict.seats,
+          deviceCap: verdict.device_cap,
+          serverList: { version: snap.list.version, body: snap.list.body },
+          format: nextFormat(port, snap.list),
+        },
+        { kind: "wipe" },
+      );
+    } catch (e) {
+      // Native says the wipe is already held: nothing left to do.
+      if (nativeErrorOf(e)?.type === "seat_list_rollback") return;
+      throw e;
+    }
+    const signed = parseSigned(raw);
+    if (
+      signed === null ||
+      signed.version !== snap.list.version + 1 ||
+      !isOwn(ctx, signed) ||
+      !signedWiped(signed)
+    ) {
+      throw clientFailure("publish_refused");
+    }
+    const entry: StoredWipe = { v: 1, op: "wipe", signed, sent: false };
+    persist(ctx, entry);
+    await postWipe(ctx, entry);
   });
 }
 

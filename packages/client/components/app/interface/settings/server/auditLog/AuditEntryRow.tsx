@@ -13,6 +13,7 @@ import { styled } from "styled-system/jsx";
 import { decodeTime } from "ulid";
 
 import { useClient } from "@revolt/client";
+import { auditCopy } from "@revolt/client/protectedCopy";
 import { useTime } from "@revolt/i18n";
 import { Avatar, Button, Text } from "@revolt/ui";
 import { DisplayName } from "@revolt/ui/components/features/DisplayName";
@@ -22,6 +23,7 @@ import {
   type AuditEntryDescriptor,
   auditValueText,
   describeAuditEntry,
+  protectedAuditCopyArgs,
 } from "./auditEntryModel";
 
 /**
@@ -109,6 +111,25 @@ export function AuditEntryRow(props: {
   function channelName(id: string, fallback?: string) {
     const name = client().channels.get(id)?.name ?? fallback;
     return name ? `#${name}` : id;
+  }
+
+  /**
+   * The sentence for a protected channel entry. An entry the model could not
+   * read gets the generic sentence: the row never guesses whether earlier
+   * messages were deleted. A channel this client cannot name (a deleted
+   * one, say) keeps what the entry says and names no channel; a channel id
+   * is never shown as a name.
+   */
+  function protectedSentence(actor: string) {
+    const detail = descriptor().protectedDetail;
+    const name = detail && client().channels.get(detail.channel)?.name;
+    const args = protectedAuditCopyArgs(detail, {
+      actor,
+      channel: name ? `#${name}` : undefined,
+    });
+    return args
+      ? auditCopy(args.action, args.detail)
+      : t`${actor} performed an action`;
   }
 
   /**
@@ -214,6 +235,9 @@ export function AuditEntryRow(props: {
         return t`${actor} transferred ownership of the server to ${target}`;
       case "unknown":
         return t`${actor} performed an action`;
+      case "channel_protect":
+      case "channel_history_wipe":
+        return protectedSentence(actor);
       default: {
         const _exhaustive: never = kind;
         return t`${actor} performed an action`;
