@@ -44,6 +44,7 @@ import {
   tierDailyCost,
   withdrawOpen,
 } from "@revolt/client/protTank";
+import { protectedUiOf } from "@revolt/client/useProtectedChannel";
 import CONFIGURATION from "@revolt/common/lib/env";
 import { useError } from "@revolt/i18n/errors";
 import { Button } from "@revolt/ui/components/design/Button";
@@ -172,13 +173,17 @@ export type LaunchChannelInput = {
 
 /**
  * Channels a funded launch goal can be launched on (8.6): text channels of
- * this server that are not protected, not voice, not announcement and have
- * no messages. The server checks all of it again, and that the channel has
- * no tank.
+ * this server that are not protected, not voice and not announcement. A
+ * launch works like a direct protect (owner decision 2026-11-26): a channel
+ * with messages qualifies only while the server advertises the history
+ * setting (`historySetting` literally true; anything else is off), and the
+ * protect step then asks whether to keep or delete them. The server checks
+ * all of it again, and that the channel has no tank.
  */
 export function launchableChannels<C extends LaunchChannelInput>(
   channels: readonly C[],
   serverId: string,
+  historySetting: unknown,
 ): C[] {
   return channels.filter(
     (channel) =>
@@ -187,10 +192,11 @@ export function launchableChannels<C extends LaunchChannelInput>(
       channel.voice !== true &&
       channel.announcement !== true &&
       channel.protected !== true &&
-      !(
-        typeof channel.lastMessageId === "string" &&
-        channel.lastMessageId.length > 0
-      ),
+      (historySetting === true ||
+        !(
+          typeof channel.lastMessageId === "string" &&
+          channel.lastMessageId.length > 0
+        )),
   );
 }
 
@@ -261,7 +267,8 @@ type Confirming =
  *
  * The owner, only while Prot and self-serve are both on (owner answer 1:
  * no goals before self-serve): "Open a launch goal" (one open per server,
- * owner answer 5) and "Launch" on an empty text channel, both behind
+ * owner answer 5) and "Launch" on a text channel (an empty one unless the
+ * server advertises the history setting), both behind
  * `allowsProtSpending()`; "Cancel goal" in every build (pledges go back).
  * With self-serve off the owner sees a note, never a button that fails.
  *
@@ -500,7 +507,24 @@ export function ProtServerGoalsModal(
     }
   }
 
-  /** Empty text channels of this server, for the launch picker */
+  /**
+   * S4 `history_setting`, read as the protect page reads it: false without
+   * a bridge, when the read throws, or when the flag was not fetched.
+   */
+  const historySetting = () => {
+    const api = protectedUiOf(client()?.e2ee);
+    if (!api) return false;
+    try {
+      return api.protectedFlag().historySetting === true;
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * Unprotected text channels of this server for the launch picker; ones
+   * with messages only while the history setting is on.
+   */
   const launchable = createMemo(() =>
     launchableChannels(
       props.server.channels.map((channel: Channel) => ({
@@ -514,6 +538,7 @@ export function ProtServerGoalsModal(
         lastMessageId: channel.lastMessageId ?? null,
       })),
       serverId(),
+      historySetting(),
     ),
   );
 
@@ -977,20 +1002,42 @@ export function ProtServerGoalsModal(
                         >
                           <Confirm>
                             <span>
-                              <Trans>
-                                Pick an empty text channel to launch on. It
-                                becomes a Protected channel once you protect it
-                                from its settings.
-                              </Trans>
+                              <Show
+                                when={historySetting()}
+                                fallback={
+                                  <Trans>
+                                    Pick an empty text channel to launch on. It
+                                    becomes a Protected channel once you protect
+                                    it from its settings.
+                                  </Trans>
+                                }
+                              >
+                                <Trans>
+                                  Pick a text channel to launch on. It becomes a
+                                  Protected channel once you protect it from its
+                                  settings. If it already has messages, you
+                                  choose there whether to keep or delete them.
+                                </Trans>
+                              </Show>
                             </span>
                             <Show
                               when={launchable().length}
                               fallback={
                                 <Note>
-                                  <Trans>
-                                    There's no empty text channel to launch on.
-                                    Create a new text channel first.
-                                  </Trans>
+                                  <Show
+                                    when={historySetting()}
+                                    fallback={
+                                      <Trans>
+                                        There's no empty text channel to launch
+                                        on. Create a new text channel first.
+                                      </Trans>
+                                    }
+                                  >
+                                    <Trans>
+                                      There's no text channel to launch on.
+                                      Create a new text channel first.
+                                    </Trans>
+                                  </Show>
                                 </Note>
                               }
                             >

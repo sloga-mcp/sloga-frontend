@@ -825,7 +825,10 @@ export async function postUpgradeGoal(
   return readAs(response, parseProtGoalView);
 }
 
-/** `POST /prot/goals/<id>/launch`: launch a funded goal on an empty channel */
+/**
+ * `POST /prot/goals/<id>/launch`: launch a funded goal on a text channel
+ * (one with messages only while the server's history setting is on)
+ */
 export async function postGoalLaunch(
   api: CipherApi,
   goalId: string,

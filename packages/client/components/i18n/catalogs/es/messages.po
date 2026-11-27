@@ -7109,6 +7109,14 @@ msgstr "Elige un canal de texto vacío para el lanzamiento. Se convierte en un c
 msgid "There's no empty text channel to launch on. Create a new text channel first."
 msgstr "No hay ningún canal de texto vacío para el lanzamiento. Crea primero un canal de texto nuevo."
 
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Pick a text channel to launch on. It becomes a Protected channel once you protect it from its settings. If it already has messages, you choose there whether to keep or delete them."
+msgstr "Elige un canal de texto para el lanzamiento. Se convierte en un canal Protected cuando lo proteges desde sus ajustes. Si ya tiene mensajes, allí eliges si conservarlos o eliminarlos."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "There's no text channel to launch on. Create a new text channel first."
+msgstr "No hay ningún canal de texto para el lanzamiento. Crea primero un canal de texto nuevo."
+
 #: components/modal/modals/ProtectedTank.tsx
 msgid "Withdraw your pledge?"
 msgstr "¿Retirar tu promesa de aporte?"

@@ -23,7 +23,10 @@
 //      and launch per goal state and deadline;
 //  T6  withdraw returns Prot: never spend-gated, only Held pledges with
 //      something left while the window is open;
-//  T7  the launch picker offers only empty text channels of the server;
+//  T7  the launch picker offers the server's unprotected text channels;
+//      ones with messages only while the history setting is literally true
+//      (a launch works like a direct protect, owner decision 2026-11-26),
+//      and its copy follows the same flag;
 //  T8  nonces are kept per intent;
 //  T9  copy and traps: the seat notice is byte for byte protTank's, next to
 //      Pledge; Anonymous / Deleted user carry the "Prot contributor"
@@ -161,6 +164,7 @@ interface GoalsRules {
   launchableChannels<C extends LaunchChannel>(
     channels: readonly C[],
     serverId: string,
+    historySetting: unknown,
   ): C[];
   parseWholeNumber(text: string): number | null;
   createNonceKeeper(make: () => string): NonceKeeper;
@@ -713,23 +717,64 @@ describe("T7 launch picker", () => {
     protected: false,
     lastMessageId: null,
   };
+  const channels: LaunchChannel[] = [
+    base,
+    { ...base, id: "undefinedLast", lastMessageId: undefined },
+    { ...base, id: "emptyLast", lastMessageId: "" },
+    { ...base, id: "messages", lastMessageId: "01MSG" },
+    { ...base, id: "voice", voice: true },
+    { ...base, id: "voiceMessages", voice: true, lastMessageId: "01MSG" },
+    { ...base, id: "announce", announcement: true },
+    { ...base, id: "protected", protected: true },
+    {
+      ...base,
+      id: "protectedMessages",
+      protected: true,
+      lastMessageId: "01MSG",
+    },
+    { ...base, id: "other", serverId: "T" },
+    { ...base, id: "otherMessages", serverId: "T", lastMessageId: "01MSG" },
+    { ...base, id: "noserver", serverId: undefined },
+    { ...base, id: "vc", type: "VoiceChannel" },
+    { ...base, id: "dm", type: "DirectMessage" },
+  ];
 
-  it("offers only empty, unprotected text channels of the server", () => {
-    const channels: LaunchChannel[] = [
-      base,
-      { ...base, id: "undefinedLast", lastMessageId: undefined },
-      { ...base, id: "emptyLast", lastMessageId: "" },
-      { ...base, id: "voice", voice: true },
-      { ...base, id: "announce", announcement: true },
-      { ...base, id: "protected", protected: true },
-      { ...base, id: "messages", lastMessageId: "01MSG" },
-      { ...base, id: "other", serverId: "T" },
-      { ...base, id: "noserver", serverId: undefined },
-      { ...base, id: "vc", type: "VoiceChannel" },
-    ];
+  // Only a literal `true` turns the history setting on.
+  for (const off of [false, undefined, null, "true", 1, {}]) {
+    it(`history setting off (${JSON.stringify(off)}): only empty channels`, () => {
+      assert.deepEqual(
+        G.launchableChannels(channels, "S", off).map((c) => c.id),
+        ["ok", "undefinedLast", "emptyLast"],
+      );
+    });
+  }
+
+  it("history setting on: channels with messages are listed too", () => {
     assert.deepEqual(
-      G.launchableChannels(channels, "S").map((c) => c.id),
-      ["ok", "undefinedLast", "emptyLast"],
+      G.launchableChannels(channels, "S", true).map((c) => c.id),
+      ["ok", "undefinedLast", "emptyLast", "messages"],
+    );
+  });
+
+  it("the picker reads the history setting as the protect page does", () => {
+    assert.match(
+      GOALS,
+      /const historySetting = \(\) => \{\s*const api = protectedUiOf\(client\(\)\?\.e2ee\);\s*if \(!api\) return false;\s*try \{\s*return api\.protectedFlag\(\)\.historySetting === true;\s*\} catch \{\s*return false;\s*\}\s*\};/,
+    );
+    assert.match(
+      GOALS,
+      /const launchable = createMemo\(\(\) =>\s*launchableChannels\([\s\S]*?lastMessageId: channel\.lastMessageId \?\? null,\s*\}\)\),\s*serverId\(\),\s*historySetting\(\),\s*\),\s*\);/,
+    );
+  });
+
+  it("the picker's copy follows the same flag", () => {
+    assert.match(
+      GOALS,
+      /<Show\s+when=\{historySetting\(\)\}\s+fallback=\{\s*<Trans>\s*Pick an empty text channel to launch on\.[^<]*<\/Trans>\s*\}\s*>\s*<Trans>\s*Pick a text channel to launch on\.[^<]*keep or delete them\.\s*<\/Trans>\s*<\/Show>/,
+    );
+    assert.match(
+      GOALS,
+      /<Show\s+when=\{historySetting\(\)\}\s+fallback=\{\s*<Trans>\s*There's no empty text channel to launch\s+on\.[^<]*<\/Trans>\s*\}\s*>\s*<Trans>\s*There's no text channel to launch on\.[^<]*<\/Trans>\s*<\/Show>/,
     );
   });
 
