@@ -1,4 +1,4 @@
-import { Accessor, JSX, Setter, Show } from "solid-js";
+import { Accessor, JSX, Show } from "solid-js";
 
 import { css } from "styled-system/css";
 import { styled } from "styled-system/jsx";
@@ -12,6 +12,8 @@ import MdClose from "@material-design-icons/svg/outlined/close.svg?component-sol
 import { SettingsList } from "..";
 import { useSettingsNavigation } from "../Settings";
 
+import { SettingsSearchTitle } from "./Search";
+
 /**
  * Content portion of the settings menu
  */
@@ -21,14 +23,15 @@ export function SettingsContent(props: {
   list: Accessor<SettingsList<unknown>>;
   title: (ctx: SettingsList<never>, key: string) => string;
   page: Accessor<string | undefined>;
-  ref: Setter<HTMLDivElement | undefined>;
+  ref: (element: HTMLDivElement) => void;
+  searching: Accessor<boolean>;
 }) {
   const { navigate } = useSettingsNavigation();
   const { diagDrawer } = useState();
 
   return (
     <div ref={props.ref} use:scrollable={{ class: base }}>
-      <Show when={props.page()}>
+      <Show when={props.page() || props.searching()}>
         <InnerContent class="settings_cont">
           <InnerColumn>
             <BackAction>
@@ -39,7 +42,12 @@ export function SettingsContent(props: {
                 <MdArrowBack />
               </IconButton>
             </BackAction>
-            <Show when={props.page() !== "account"}>
+            <Show when={props.searching()}>
+              <Text class="title" size="large">
+                <SettingsSearchTitle />
+              </Text>
+            </Show>
+            <Show when={!props.searching() && props.page() !== "account"}>
               <Text class="title" size="large">
                 <Breadcrumbs
                   elements={props.page()!.split("/")}

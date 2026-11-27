@@ -67,6 +67,7 @@ export function SettingsModal(
                 render={config.render}
                 title={config.title}
                 list={config.list}
+                searchIndex={config.searchIndex}
                 context={props.context as never}
                 contentRef={setContRef}
               />

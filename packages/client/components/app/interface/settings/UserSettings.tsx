@@ -66,6 +66,7 @@ import { ProtSettings } from "./user/ProtSettings";
 import { parseProtFeature } from "./user/protWallet";
 import { Referrals } from "./user/Referrals";
 import { RemoteControlSettings } from "./user/RemoteControl";
+import { userSettingsSearchIndex } from "./user/searchIndex";
 import { Sessions } from "./user/Sessions";
 import { StreamerModeSettings } from "./user/StreamerMode";
 import { EditSubscription } from "./user/subscriptions";
@@ -75,6 +76,8 @@ import { VideoSettings } from "./user/voice/VideoSettings";
 import { VoiceSettings } from "./user/voice/VoiceSettings";
 
 const Config: SettingsConfiguration<{ server: Server }> = {
+  searchIndex: userSettingsSearchIndex,
+
   /**
    * Page titles
    * @param key

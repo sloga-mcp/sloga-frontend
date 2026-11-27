@@ -1,5 +1,6 @@
 import { Accessor, JSX } from "solid-js";
 
+import type { SettingsSearchItem } from "./_layout/searchMatch";
 import channel from "./ChannelSettings";
 import server from "./ServerSettings";
 import user from "./UserSettings";
@@ -29,6 +30,13 @@ export type SettingsConfiguration<T> = {
     props: { page: Accessor<undefined | string> },
     context: T,
   ) => JSX.Element;
+
+  /**
+   * Everything the sidebar search box can find. Called inside the settings
+   * component, so it may use hooks (translations). Without it the sidebar
+   * shows no search box.
+   */
+  searchIndex?: () => SettingsSearchItem[];
 };
 
 /**

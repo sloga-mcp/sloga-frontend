@@ -8,8 +8,14 @@ import { Column, OverflowingText, iconSize } from "@revolt/ui";
 import MdOpenInNew from "@material-design-icons/svg/filled/open_in_new.svg?component-solid";
 
 import { SettingsList } from "..";
-import { useSettingsNavigation } from "../Settings";
+import { SettingsSearch, useSettingsNavigation } from "../Settings";
 
+import {
+  PhoneOnly,
+  SettingsSearchField,
+  SettingsSearchResults,
+  hideOnPhone,
+} from "./Search";
 import {
   SidebarButton,
   SidebarButtonContent,
@@ -24,8 +30,27 @@ export function SettingsSidebar(props: {
   list: Accessor<SettingsList<unknown>>;
   setPage: Setter<string | undefined>;
   page: Accessor<string | undefined>;
+  search?: SettingsSearch;
+  searching: Accessor<boolean>;
 }) {
   const { navigate } = useSettingsNavigation();
+
+  /**
+   * Opening a page from the sidebar ends the search, or the results would
+   * stay on screen in front of it
+   */
+  function open(entry: Parameters<typeof navigate>[0]) {
+    props.search?.setQuery("");
+    navigate(entry);
+  }
+
+  /**
+   * Enter in the search box opens the best result
+   */
+  function openFirst() {
+    const first = props.search?.groups()[0];
+    if (first) props.search!.onPick(first.page, first.rows[0]?.label);
+  }
 
   /**
    * Select first page on load
@@ -52,10 +77,34 @@ export function SettingsSidebar(props: {
         <Content class="content">
           <Column gap="lg">
             {props.list().prepend}
+            <Show when={props.search}>
+              {(search) => (
+                <>
+                  <SettingsSearchField
+                    query={search().query}
+                    setQuery={search().setQuery}
+                    onSubmit={openFirst}
+                  />
+                  {/* Phones show one pane at a time, so the results take
+                      the category list's place there; wider layouts show
+                      them in the content pane beside the list. */}
+                  <Show when={props.searching()}>
+                    <PhoneOnly>
+                      <SettingsSearchResults
+                        query={search().query}
+                        groups={search().groups}
+                        entry={search().entry}
+                        onPick={search().onPick}
+                      />
+                    </PhoneOnly>
+                  </Show>
+                </>
+              )}
+            </Show>
             <For each={props.list().entries}>
               {(category) => (
                 <Show when={!category.hidden}>
-                  <Column>
+                  <Column class={props.searching() ? hideOnPhone : undefined}>
                     <Show when={category.title}>
                       <CategoryTitle>{category.title}</CategoryTitle>
                     </Show>
@@ -64,7 +113,7 @@ export function SettingsSidebar(props: {
                         {(entry) => (
                           <Show when={!entry.hidden}>
                             <SidebarButton
-                              onClick={() => navigate(entry)}
+                              onClick={() => open(entry)}
                               aria-selected={
                                 props.page()?.split("/")[0] ===
                                 entry.id?.split("/")[0]
