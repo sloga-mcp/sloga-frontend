@@ -54,6 +54,7 @@
 
 import { env, pipeline } from "@huggingface/transformers";
 
+import { purgeHtmlFromModelCache } from "./modelCache.ts";
 import { cleanTranscript } from "./transcriptText.ts";
 import type {
   TranscriptionWorkerRequest,
@@ -95,6 +96,14 @@ async function load(model: WhisperModel): Promise<void> {
     // used. Say so explicitly rather than relying on a silent fallback.
     env.backends.onnx.wasm.numThreads = 1;
   }
+
+  // A browser that once got the app's HTML page back for a model file keeps
+  // it in transformers.js's cache and would fail on it forever. Drop such
+  // entries first; `modelCache.ts` has the history.
+  await purgeHtmlFromModelCache(
+    typeof caches === "undefined" ? undefined : caches,
+    MODEL_BASE,
+  );
 
   const total = { bytes: 0, loaded: 0 };
   asr = (await pipeline("automatic-speech-recognition", model, {

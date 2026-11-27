@@ -22,12 +22,15 @@ import type { Connect, Plugin } from "vite";
  * third-party requests made while a private call is in progress, one of which
  * the desktop shell's CSP blocks outright. See `transcriptionEngine.ts`.
  *
- * ## Dev and preview both
+ * ## Dev and preview only, NOT production
  *
- * `vite preview` is how the built app is served in production here, so
- * registering only the dev hook would produce a feature that works locally and
- * 404s everywhere else. Both hooks share one handler, and neither requires a
- * change to the edge configuration.
+ * Both hooks share one handler, so `vite dev` and `vite preview` serve the
+ * same files. Production does not run vite at all: since the 2026-08-24 move
+ * to heart1 the web app is served by Caddy straight from `dist`, and
+ * `/models/` there needs its own Caddy route onto a copy of these files on
+ * that host. Without that route every model request falls through to the
+ * single-page-app fallback and gets `index.html` (200, text/html), which is
+ * how transcription was broken on the web from that move until 2026-11-27.
  */
 
 const ROUTE = "/models/";

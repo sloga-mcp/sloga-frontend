@@ -6,14 +6,15 @@
 #   bash packages/client/scripts/stage-transcription-models.sh <target-dir>
 #
 # The web does not need this: there, `/models/` is served from outside the
-# repository by `models.plugin.ts` (dev and preview both). The shells have no
-# such server — they load a bundled copy of `dist` off disk — so without this
-# step `/models/` is empty in the app, the Transcribe button appears, and it
-# fails the moment somebody presses it.
+# repository — by `models.plugin.ts` under vite dev/preview, and in production
+# by a Caddy route on heart1 onto /home/mcp/frontend-assets/models. The shells
+# have no such server — they load a bundled copy of `dist` off disk — so
+# without this step `/models/` is empty in the app, the Transcribe button
+# appears, and it fails the moment somebody presses it.
 #
 # 🔴 The target is the SHELL'S COPY, never `packages/client/dist` itself.
-# That directory is what production serves (vite preview on :5174) and what the
-# deploy swaps; putting 64MB inside it would bloat every dist swap and every
+# That directory is what production serves (Caddy file_server) and what the
+# deploy swaps (rsync --delete); putting 64MB inside it would bloat every dist swap and every
 # rollback copy for no benefit, since the web already serves these from
 # elsewhere. Desktop: stage into `acutest-desktop/frontend-dist`. Android:
 # stage into `android/app/src/main/assets/public` AFTER `cap sync`.
