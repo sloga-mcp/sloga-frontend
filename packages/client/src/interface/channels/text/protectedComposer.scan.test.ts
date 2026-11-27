@@ -729,7 +729,7 @@ test("U4 client_outdated hides the composer behind the update notice", async () 
   }
 });
 
-test("U4 the input exists only in the protected state; loading fails closed", async () => {
+test("U4 the input exists only in the protected or grace state; loading fails closed", async () => {
   const { protectedComposerLine } = await loadRules();
   for (const state of PROTECTED_SHIELD_STATES) {
     const mode = shieldPresentation(state).composer;
@@ -740,7 +740,13 @@ test("U4 the input exists only in the protected state; loading fails closed", as
         notice: "not_available",
         hasDraft,
       });
-      assert.equal(line.kind === "input", state === "protected", state);
+      // S5b D14 (merge with S2): `grace` is the step 8 green with a tank in
+      // Grace, so it sends like `protected`. No other state has the input.
+      assert.equal(
+        line.kind === "input",
+        state === "protected" || state === "grace",
+        state,
+      );
       // a hidden composer is never the input, whatever the state
       assert.notEqual(
         protectedComposerLine({

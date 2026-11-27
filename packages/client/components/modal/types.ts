@@ -380,6 +380,47 @@ export type Modals =
    */
   | ProtectedOwnerReviewProps
   | {
+      /**
+       * A Protected channel's Prot tank (S5b, contracts 16.3 L6c): stage
+       * and dates, balance, seats, goals and contributors, for anyone who
+       * can see the channel. Its "Top up" and "Pledge" open
+       * `prot_contribute` only where `allowsProtSpending()` is true.
+       */
+      type: "prot_tank";
+      channel: Channel;
+    }
+  | {
+      /**
+       * Top up a channel's tank or pledge to a goal (S5b, contracts 16.3
+       * L6d). Open it only behind `allowsProtSpending()` (D5): the store
+       * scan `components/client/protStore.scan.test.ts` lists every open
+       * site. `onDone` runs after a contribution or pledge was added.
+       */
+      type: "prot_contribute";
+      target:
+        | { kind: "tank"; channel: Channel }
+        | { kind: "goal"; goalId: string; serverId: string };
+      onDone?: () => void;
+    }
+  | {
+      /**
+       * A server's launch goals (S5b, contracts 16.3 L6e): members pool
+       * Prot for a new Protected channel; the owner opens, cancels and
+       * launches them.
+       */
+      type: "prot_server_goals";
+      server: Server;
+    }
+  | {
+      /**
+       * An in-app Prot purchase the launch recovery found held for staff
+       * review because crediting it would take the wallet over its cap
+       * (S6 R66). Opened only by ProtStoreWorker, once per purchase per
+       * device; it carries no purchase detail.
+       */
+      type: "prot_store_under_review";
+    }
+  | {
       type: "e2ee_enable";
       /**
        * Lead with the restore-vs-start-fresh choice (slice 5.5). Set when the

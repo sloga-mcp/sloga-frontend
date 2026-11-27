@@ -14,12 +14,23 @@
  *   retries once. Never rejects: every failure is a marker. S2 (OR-20): an
  *   `ok` view carries only the COUNT of its files (`filesUnsupported`).
  * - `markerForError`: D17's message mapping (A2), fail closed.
+ * - S4 (design 9.5): a row without `encrypted` goes through the row policy
+ *   (`decidePlainRow`). It is `plain` only from a natively verified state
+ *   with every lookup present; anything else is `checking` or the red
+ *   marker, and none of it reaches native. A missing epoch may be opened by
+ *   the history walk (`HistoryOps.requestWalk`), asked once per row per call.
  *
  * Never plaintext: the typed text goes to `e2ee_text_encrypt` and nowhere
  * else (no request, no storage, no log). Logs carry ids only (D16).
  * Pure of Solid / livekit / lingui; tested over a fake port.
  */
-import { protectedNoticeForError } from "./protectedShield.ts";
+import { type WalkGroupView, walkTrigger } from "./protectedHistoryWalk.ts";
+import { nativeHistoryInput, rowPolicy } from "./protectedRowPolicy.ts";
+import {
+  type RowNote,
+  protectedNoticeForError,
+  rowNotes,
+} from "./protectedShield.ts";
 import {
   type SendAnswer,
   type SendContext,
@@ -39,6 +50,7 @@ import type {
   ProtectedSendOutcome,
   ProtectedTextPort,
   TextApiResponse,
+  TextChannelState,
   TextDecrypted,
   TextEncrypted,
   TextFlowFailure,
@@ -90,6 +102,12 @@ const memo = new Map<string, string>();
 
 /** In-flight decrypts by message id (own row: POST answer + live event). */
 const inflight = new Map<string, Promise<ProtectedMessageView>>();
+
+/** What a walk request came to; `failed` is a rejected or unreadable answer. */
+type WalkOutcome = WalkAnswer | "failed";
+
+/** Walk requests in flight per ops object, by channel, group and epoch. */
+let walksInFlight = new WeakMap<object, Map<string, Promise<WalkOutcome>>>();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -445,13 +463,25 @@ export async function encryptAndSend(
 // ---------------------------------------------------------------------------
 
 /**
- * D17 message mapping (A2), with the one catch-up already spent. Delegates
- * to the shield: `unsupported_envelope_version` is the grey
- * `unsupported_version` (OR-19, `v` never shown), never `error`/`malformed`.
+ * D17 message mapping (A2), with the one catch-up already spent and no
+ * history walk left to run: the row's final marker. Delegates to the shield:
+ * `unsupported_envelope_version` is the grey `unsupported_version` (OR-19,
+ * `v` never shown), never `error`/`malformed`.
+ *
+ * S4: the shield answers `sent_before_join` for every `unknown_epoch` below
+ * `current`, as the line a row may show while the walk can still open it.
+ * As a final state that line is kept only when the epoch is below the oldest
+ * one this device holds. A key missing inside the held run, or with nothing
+ * readable about the run, was not "sent before this device joined": that
+ * row is the red `decrypt_failed`.
  */
 export function markerForError(err: unknown): ProtectedMarkerKind {
   const ui = protectedNoticeForError(err, { op: "message", catchUpDone: true });
-  return ui.kind === "marker" ? ui.marker : "error";
+  if (ui.kind !== "marker") return "error";
+  if (ui.marker === "sent_before_join" && !belowHeldRun(nativeErrorOf(err))) {
+    return "decrypt_failed";
+  }
+  return ui.marker;
 }
 
 const marker = (kind: ProtectedMarkerKind): ProtectedMessageView => ({
@@ -475,6 +505,41 @@ export type ProtectedOkView = Extract<
 const isCount = (v: unknown): boolean =>
   typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 
+/** `unknown_epoch` names an epoch below the oldest one this device holds. */
+function belowHeldRun(err: Record<string, unknown> | null): boolean {
+  return (
+    err !== null &&
+    isCount(err.epoch) &&
+    isCount(err.oldest_held) &&
+    (err.epoch as number) < (err.oldest_held as number)
+  );
+}
+
+/**
+ * `unknown_epoch` for a group this device holds no epoch of and was not
+ * removed from: native sends `oldest_held: null` and `current: -1`.
+ */
+function neverHeld(err: Record<string, unknown> | null): boolean {
+  return (
+    err !== null &&
+    err.type === "unknown_epoch" &&
+    err.removed_self !== true &&
+    isCount(err.epoch) &&
+    err.oldest_held === null &&
+    err.current === -1
+  );
+}
+
+/**
+ * The marker of a row whose key is still missing after the history walk
+ * ended. A group this device never held anything of is a predecessor it
+ * joined after, so its rows are "sent before this device joined"; the rest
+ * is `markerForError`.
+ */
+function markerAfterWalk(e: unknown): ProtectedMarkerKind {
+  return neverHeld(nativeErrorOf(e)) ? "sent_before_join" : markerForError(e);
+}
+
 /** Native `FileMeta` (mls/text/types.rs); `fail_reason` absent or a string. */
 function isFileMeta(f: unknown): boolean {
   return (
@@ -488,14 +553,294 @@ function isFileMeta(f: unknown): boolean {
   );
 }
 
+// ---------------------------------------------------------------------------
+// S4: history ports and the row policy (design 9.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * What `requestWalk` answers: `imported` (the walk ended and brought keys,
+ * retry the decrypt), `floor` (the walk ended without this epoch),
+ * `retry_later` (it could not run or finish now; the row stays pending).
+ */
+export type WalkAnswer = "imported" | "floor" | "retry_later";
+
+/**
+ * The S4 members the manager adds beside `GroupOps`. The four lookups are
+ * read-only and cost no native call per row. Every one of them is needed
+ * for a row without `encrypted` to be anything but the red marker.
+ */
+export interface HistoryOps {
+  /** The local pin's history record (`ProtectedPinSet.historyOf`). */
+  pinHistory(channelId: string): { boundary: string; wiped: boolean } | null;
+  /** The manager's copy of native `e2ee_text_state`; null until loaded. */
+  nativeState(channelId: string): TextChannelState | null;
+  /** The last seat list verify failure of the channel; null when none. */
+  seatListError(channelId: string): string | null;
+  /**
+   * The SDK's session view of the pre-protect rows:
+   * `client.protectedHistory.isConflicted` / `isWiped`. Either one turns
+   * every row without `encrypted` red, whatever native says.
+   */
+  preHistoryState(channelId: string): { conflicted: boolean; wiped: boolean };
+  /** The epoch's keys came from this session's history walk. */
+  epochFromWalk(groupId: string, epoch: number): boolean;
+  /**
+   * True only when the manager KNOWS the group is a predecessor of the
+   * channel's group (it followed the chain itself). Optional even with the
+   * rest present: without it only the group of `history_floor` counts.
+   */
+  knownPredecessor?(channelId: string, groupId: string): boolean;
+  /** Run (or join) the history walk for a missing epoch. */
+  requestWalk(
+    channelId: string,
+    groupId: string,
+    epoch: number,
+  ): Promise<WalkAnswer>;
+}
+
+/** `GroupOps` plus whatever of `HistoryOps` the caller has. */
+export type RowOps = GroupOps & Partial<HistoryOps>;
+
+/**
+ * One `decryptHistory` batch. Rows of the batch that miss the same epoch
+ * share one walk request and its answer.
+ */
+export interface WalkBatch {
+  readonly answers: Map<string, Promise<WalkOutcome>>;
+}
+
+export function newWalkBatch(): WalkBatch {
+  return { answers: new Map() };
+}
+
+/** What the policy reads for a row without `encrypted`. */
+export interface PlainRowInput {
+  /** Message id (a ULID). */
+  id: string;
+  pin: { boundary: string; wiped: boolean } | null;
+  native: TextChannelState | null;
+  seatListError: string | null;
+  conflicted: boolean;
+  wiped: boolean;
+}
+
+export type PlainRowDecision = "plain" | "checking" | "red";
+
+/**
+ * Read the policy inputs of a row without `encrypted`. Null when a lookup
+ * is missing, throws or answers something unreadable: the row is then red.
+ */
+export function plainRowInput(
+  ops: RowOps,
+  channelId: string,
+  id: string,
+): PlainRowInput | null {
+  if (
+    typeof ops.pinHistory !== "function" ||
+    typeof ops.nativeState !== "function" ||
+    typeof ops.seatListError !== "function" ||
+    typeof ops.preHistoryState !== "function"
+  ) {
+    return null;
+  }
+  try {
+    const pin: unknown = ops.pinHistory(channelId);
+    const native: unknown = ops.nativeState(channelId);
+    const seatListError: unknown = ops.seatListError(channelId);
+    const pre: unknown = ops.preHistoryState(channelId);
+    if (
+      pin !== null &&
+      !(
+        isRecord(pin) &&
+        typeof pin.boundary === "string" &&
+        typeof pin.wiped === "boolean"
+      )
+    ) {
+      return null;
+    }
+    if (native !== null && !isRecord(native)) return null;
+    if (seatListError !== null && typeof seatListError !== "string") {
+      return null;
+    }
+    if (
+      !isRecord(pre) ||
+      typeof pre.conflicted !== "boolean" ||
+      typeof pre.wiped !== "boolean"
+    ) {
+      return null;
+    }
+    return {
+      id,
+      pin: pin === null ? null : { boundary: pin.boundary, wiped: pin.wiped },
+      native: native as TextChannelState | null,
+      seatListError,
+      conflicted: pre.conflicted,
+      wiped: pre.wiped,
+    } as PlainRowInput;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Design 9.5 for a row without `encrypted`. `plain` is the row policy's
+ * arm 3 over `nativeHistoryInput` and nothing else. A channel whose reveal
+ * conflicted or whose pre-protect rows the server says were wiped is red
+ * before the policy is asked, also while the state is still loading.
+ */
+export function decidePlainRow(i: PlainRowInput | null): PlainRowDecision {
+  if (i === null) return "red";
+  if (i.conflicted !== false || i.wiped !== false) return "red";
+  try {
+    const result = rowPolicy({
+      hasEncrypted: false,
+      id: i.id,
+      pin: i.pin,
+      native: nativeHistoryInput(i.native, { seatListError: i.seatListError }),
+    });
+    switch (result.kind) {
+      case "plain":
+        return "plain";
+      case "checking":
+        return "checking";
+      case "red":
+        return "red";
+      // an encrypted row's arm for a row known to carry none: refuse
+      case "decrypt":
+        return "red";
+      default: {
+        const _x: never = result;
+        return "red";
+      }
+    }
+  } catch {
+    return "red";
+  }
+}
+
+/** An encrypted row's id is at or below the verified boundary. */
+function belowBoundaryFrom(
+  native: TextChannelState | null,
+  seatListError: string | null,
+  id: string,
+): boolean {
+  try {
+    const result = rowPolicy({
+      hasEncrypted: true,
+      id,
+      pin: null,
+      native: nativeHistoryInput(native, { seatListError }),
+    });
+    return result.kind === "decrypt" && result.belowBoundary === true;
+  } catch {
+    return false;
+  }
+}
+
+function belowBoundaryOf(ops: RowOps, row: ProtectedMessageRow): boolean {
+  if (
+    typeof ops.nativeState !== "function" ||
+    typeof ops.seatListError !== "function"
+  ) {
+    return false;
+  }
+  try {
+    const native: unknown = ops.nativeState(row.channelId);
+    const seatListError: unknown = ops.seatListError(row.channelId);
+    if (native !== null && !isRecord(native)) return false;
+    if (seatListError !== null && typeof seatListError !== "string") {
+      return false;
+    }
+    return belowBoundaryFrom(
+      native as TextChannelState | null,
+      seatListError,
+      row.id,
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a cached view has to be computed again (through `decryptRow`)
+ * now that the native state, the pin or the SDK's pre-protect state
+ * changed. `input` is `plainRowInput` of the SAME row, read now.
+ *
+ * - `checking`: as soon as the decision is `plain` or red;
+ * - `plain`: as soon as it is anything else (a wipe, a conflict, a state
+ *   that is no longer verified);
+ * - the red `unencrypted_row`: only when the decision is `plain`, which the
+ *   policy gives from a verified state alone; it never goes back to
+ *   `checking`;
+ * - `ok`: when the row turns out to sit at or below the boundary and the
+ *   view does not say so yet (the note is only ever added);
+ * - anything else: never.
+ */
+export function redecide(
+  view: ProtectedMessageView,
+  input: PlainRowInput | null,
+): boolean {
+  switch (view.status) {
+    case "checking":
+      return decidePlainRow(input) !== "checking";
+    case "plain":
+      return decidePlainRow(input) !== "plain";
+    case "marker":
+      return (
+        view.kind === "unencrypted_row" && decidePlainRow(input) === "plain"
+      );
+    case "ok":
+      return (
+        view.belowBoundary !== true &&
+        input !== null &&
+        belowBoundaryFrom(input.native, input.seatListError, input.id)
+      );
+    default:
+      return false;
+  }
+}
+
+/** The notes under an `ok` view, in display order (shield `rowNotes`). */
+export function okViewNotes(
+  view: Extract<ProtectedMessageView, { status: "ok" }>,
+): RowNote[] {
+  return rowNotes(
+    {
+      sender_verified: view.senderVerified === true,
+      timing_unverified: view.timingUnverified === true,
+    },
+    {
+      belowBoundary: view.belowBoundary === true,
+      fromHistory: view.historySender === true,
+    },
+  );
+}
+
+/** The decrypted epoch's keys came from this session's history walk. */
+function fromWalkOf(ops: RowOps, d: TextDecrypted): boolean {
+  if (typeof ops.epochFromWalk !== "function") return false;
+  if (typeof d.group_id !== "string" || !isCount(d.epoch)) return false;
+  try {
+    return ops.epochFromWalk(d.group_id, d.epoch) === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Native's result, checked against the row. `files` is always serialized
  * (876c034): absent, not an array or any element not FileMeta-shaped is a
  * mismatch, never dropped to a count of 0.
+ *
+ * S4: `timing_unverified` is absent from an older shell, so only a literal
+ * true counts. `historySender` follows the shield's rule for the
+ * "(history)" sender note: the epoch came from this session's walk, or
+ * native says the timing is unverified.
  */
 function okView(
   row: ProtectedMessageRow,
   d: TextDecrypted,
+  ctx: { belowBoundary: boolean; fromWalk: boolean },
 ): ProtectedOkView | null {
   if (
     !isRecord(d) ||
@@ -511,6 +856,7 @@ function okView(
   ) {
     return null;
   }
+  const timingUnverified = d.timing_unverified === true;
   const view: ProtectedOkView = {
     status: "ok",
     text: d.text,
@@ -519,6 +865,9 @@ function okView(
     tsSkew: d.ts_skew === true,
     cid: d.cid,
     filesUnsupported: d.files.length,
+    timingUnverified,
+    belowBoundary: ctx.belowBoundary === true,
+    historySender: ctx.fromWalk === true || timingUnverified,
   };
   return view;
 }
@@ -532,15 +881,122 @@ function aheadOfCurrent(err: Record<string, unknown>): boolean {
   );
 }
 
+/**
+ * The channel as `walkTrigger` wants it. Without a loaded state nothing is
+ * known about the group, which leaves only the routes that need no group.
+ * A predecessor is the group of the native `history_floor` when that is not
+ * the channel's own group, or one the manager vouches for; never a group
+ * taken from the row alone.
+ */
+function groupViewOf(
+  ops: RowOps,
+  row: ProtectedMessageRow,
+  err: Record<string, unknown>,
+): WalkGroupView {
+  const rowEpoch =
+    row.encrypted !== null && isCount(row.encrypted.epoch)
+      ? row.encrypted.epoch
+      : null;
+  const unknown: WalkGroupView = {
+    state: "",
+    verdict: "",
+    groupId: null,
+    epoch: null,
+    predecessor: false,
+    rowEpoch,
+  };
+  if (typeof ops.nativeState !== "function") return unknown;
+  try {
+    const n: unknown = ops.nativeState(row.channelId);
+    if (!isRecord(n)) return unknown;
+    const groupId = typeof n.group_id === "string" ? n.group_id : null;
+    const errGroup = err.group_id;
+    let predecessor = false;
+    if (typeof errGroup === "string" && errGroup !== groupId) {
+      const floor = n.history_floor;
+      predecessor =
+        (isRecord(floor) && floor.group_id === errGroup) ||
+        (typeof ops.knownPredecessor === "function" &&
+          ops.knownPredecessor(row.channelId, errGroup) === true);
+    }
+    return {
+      state: typeof n.state === "string" ? n.state : "",
+      verdict: typeof n.verdict === "string" ? n.verdict : "",
+      groupId,
+      epoch: isCount(n.epoch) ? (n.epoch as number) : null,
+      predecessor,
+      rowEpoch,
+    };
+  } catch {
+    return unknown;
+  }
+}
+
+/**
+ * Ask for the history walk of one missing epoch. A request already in
+ * flight for the same channel, group and epoch is joined, and inside a
+ * batch the first answer serves every later row. Never rejects.
+ */
+function requestWalkOnce(
+  ops: RowOps,
+  port: ProtectedTextPort,
+  channelId: string,
+  groupId: string,
+  epoch: number,
+  batch: WalkBatch | null,
+): Promise<WalkOutcome> {
+  const key = `${channelId}:${groupId}:${epoch}`;
+  let flying = walksInFlight.get(ops);
+  if (flying === undefined) {
+    flying = new Map();
+    walksInFlight.set(ops, flying);
+  }
+  const prior = batch?.answers.get(key) ?? flying.get(key);
+  if (prior !== undefined) return prior;
+  const mine = flying;
+  const p = (async (): Promise<WalkOutcome> => {
+    try {
+      const answer: unknown = await (ops as HistoryOps).requestWalk(
+        channelId,
+        groupId,
+        epoch,
+      );
+      if (
+        answer === "imported" ||
+        answer === "floor" ||
+        answer === "retry_later"
+      ) {
+        return answer;
+      }
+    } catch {
+      // logged below with the unreadable answers
+    }
+    port.log("error", "[protected] history walk request failed", {
+      channelId,
+    });
+    return "failed";
+  })().finally(() => mine.delete(key));
+  flying.set(key, p);
+  batch?.answers.set(key, p);
+  return p;
+}
+
 async function decryptOnce(
-  ops: GroupOps,
+  ops: RowOps,
   port: ProtectedTextPort,
   row: ProtectedMessageRow,
   live: boolean,
+  batch: WalkBatch | null,
 ): Promise<ProtectedMessageView> {
   const ids = { messageId: row.id, channelId: row.channelId };
-  // Design 3.9 step 1: never a native call, never the server's content.
-  if (row.encrypted === null) return marker("unencrypted_row");
+  // Design 3.9 step 1 and 9.5: never a native call, never the server's
+  // content. Only the row policy lets such a row be anything but red.
+  if (row.encrypted === null) {
+    const decision = decidePlainRow(plainRowInput(ops, row.channelId, row.id));
+    if (decision === "plain") return { status: "plain" };
+    if (decision === "checking") return { status: "checking" };
+    return marker("unencrypted_row");
+  }
   if (row.nonce === null) return marker("malformed");
   const args = {
     channelId: row.channelId,
@@ -551,15 +1007,59 @@ async function decryptOnce(
     live,
   };
   const attempt = async (): Promise<ProtectedMessageView> => {
-    const view = okView(row, await port.invoke("e2ee_text_decrypt", args));
+    const d = await port.invoke("e2ee_text_decrypt", args);
+    const view = okView(row, d, {
+      belowBoundary: belowBoundaryOf(ops, row),
+      fromWalk: fromWalkOf(ops, d),
+    });
     if (view !== null) return view;
     port.log("error", "[protected] decrypt result mismatch", ids);
     return marker("error");
+  };
+  const failed = (e: unknown, kind: ProtectedMarkerKind) => {
+    port.log("warn", "[protected] decrypt failed", { ...ids, tag: tagOf(e) });
+    return marker(kind);
   };
   try {
     return await attempt();
   } catch (e) {
     const err = nativeErrorOf(e);
+    const trigger =
+      err === null
+        ? null
+        : walkTrigger(
+            err as unknown as NativeError,
+            groupViewOf(ops, row, err),
+          );
+    // Sent after this device was removed: no key will ever come. No walk,
+    // no catch-up, no retry.
+    if (trigger?.kind === "removed_self") return failed(e, "removed_self");
+    if (trigger?.kind === "walk" && typeof ops.requestWalk === "function") {
+      // One request per row per call, and at most one retry after it.
+      const answer = await requestWalkOnce(
+        ops,
+        port,
+        row.channelId,
+        trigger.groupId,
+        trigger.missingEpoch,
+        batch,
+      );
+      switch (answer) {
+        case "retry_later":
+          // Decided by a later walk result, so not a marker yet.
+          return { status: "pending" };
+        case "imported":
+          try {
+            return await attempt();
+          } catch (e2) {
+            return failed(e2, markerAfterWalk(e2));
+          }
+        case "floor":
+          return failed(e, markerAfterWalk(e));
+        default:
+          return failed(e, "error");
+      }
+    }
     if (err?.type === "unknown_epoch" && aheadOfCurrent(err)) {
       try {
         await ops.catchUp(
@@ -574,15 +1074,10 @@ async function decryptOnce(
       try {
         return await attempt();
       } catch (e2) {
-        port.log("warn", "[protected] decrypt failed", {
-          ...ids,
-          tag: tagOf(e2),
-        });
-        return marker(markerForError(e2));
+        return failed(e2, markerForError(e2));
       }
     }
-    port.log("warn", "[protected] decrypt failed", { ...ids, tag: tagOf(e) });
-    return marker(markerForError(e));
+    return failed(e, markerForError(e));
   }
 }
 
@@ -597,17 +1092,21 @@ function tagOf(e: unknown): string {
  * arrives as the POST answer AND as the live event. `live` is part of the
  * key so a history decrypt never swallows the live-only removed-sender
  * check (design 3.9 step 9). Never rejects.
+ *
+ * `opts.batch` (S4): the `WalkBatch` of the `decryptHistory` call the row
+ * belongs to, so its rows share one walk request per missing epoch.
  */
 export function decryptRow(
-  ops: GroupOps,
+  ops: RowOps,
   port: ProtectedTextPort,
   row: ProtectedMessageRow,
   live: boolean,
+  opts?: { batch?: WalkBatch },
 ): Promise<ProtectedMessageView> {
   const key = `${row.id}:${live ? "live" : "history"}`;
   const prior = inflight.get(key);
   if (prior !== undefined) return prior;
-  const p = decryptOnce(ops, port, row, live)
+  const p = decryptOnce(ops, port, row, live, opts?.batch ?? null)
     .catch(() => marker("error"))
     .finally(() => inflight.delete(key));
   inflight.set(key, p);
@@ -618,4 +1117,5 @@ export function decryptRow(
 export function _resetMessageFlowsForTest(): void {
   memo.clear();
   inflight.clear();
+  walksInFlight = new WeakMap();
 }

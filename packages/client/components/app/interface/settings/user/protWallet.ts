@@ -27,6 +27,9 @@ import type {
   ProtPackView,
   ProtPendingView,
   ProtSku,
+  ProtStore,
+  ProtStoreFeature,
+  ProtStoreProductView,
 } from "stoat.js";
 
 import {
@@ -49,6 +52,9 @@ export type {
   ProtMe,
   ProtPackView,
   ProtPendingView,
+  ProtStore,
+  ProtStoreFeature,
+  ProtStoreProductView,
 } from "stoat.js";
 
 export type ProtSettingsContext = {
@@ -63,6 +69,9 @@ export type ProtBalanceUpdate = { balance: number; version: number };
 
 /** Longest pack id the server accepts (`DataProtCheckout.pack`) */
 const MAX_PACK_ID = 16;
+
+/** Longest store product id the server accepts (`DataProtStoreIntent`) */
+const MAX_STORE_PRODUCT_ID = 64;
 
 /** Every ledger kind, in the server's order (`v0::ProtEntryKind`) */
 export const PROT_ENTRY_KINDS: readonly ProtEntryKind[] = [
@@ -152,12 +161,72 @@ function parsePack(value: unknown): ProtPackView | undefined {
   return { id, cents, prot };
 }
 
+function isProtStore(value: unknown): value is ProtStore {
+  return value === "apple" || value === "play";
+}
+
+function parseStoreProduct(value: unknown): ProtStoreProductView | undefined {
+  if (!isRecord(value)) return undefined;
+  const { store, product_id, prot } = value;
+  if (
+    !isProtStore(store) ||
+    typeof product_id !== "string" ||
+    product_id.length === 0 ||
+    product_id.length > MAX_STORE_PRODUCT_ID ||
+    !isPositiveInteger(prot)
+  ) {
+    return undefined;
+  }
+  return { store, product_id, prot };
+}
+
+/**
+ * `features.prot.store`, the in-app packs (S6), or `undefined` when it is
+ * not well formed: not an object, an open flag that is not a boolean, or no
+ * product list. Without it the server's store state is unknown and the
+ * purchase gate is closed, even for a preview account, so a malformed
+ * advert is never read as "closed, but open to preview accounts". A product
+ * that is not well formed (or repeats a store and id) is dropped. A closed
+ * store still lists its products: preview accounts buy them. The US
+ * web-link flag is carried as advertised and read by nothing (E8: the app
+ * has no web-link path).
+ */
+function parseProtStoreFeature(value: unknown): ProtStoreFeature | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.apple_open !== "boolean" ||
+    typeof value.play_open !== "boolean" ||
+    !Array.isArray(value.products)
+  ) {
+    return undefined;
+  }
+
+  const store: ProtStoreFeature = {
+    apple_open: value.apple_open,
+    play_open: value.play_open,
+    products: [],
+    us_web_link: value.us_web_link === true,
+  };
+  const seen = new Set<string>();
+  for (const raw of value.products) {
+    const product = parseStoreProduct(raw);
+    if (!product) continue;
+    const key = `${product.store}:${product.product_id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    store.products.push(product);
+  }
+  return store;
+}
+
 /**
  * `features.prot` from the root config. Fails closed: a missing or
  * unreadable advert is everything off with no packs; a flag is on only when
  * it is literally `true`; a pack that is not well formed (or repeats an id)
  * is dropped; unreadable pay-exact bounds are 0 (no pay-exact); an
- * unreadable cap is 0 (every purchase reads as over it).
+ * unreadable cap is 0 (every purchase reads as over it). The in-app `store`
+ * key is set only from a well-formed store advert and is otherwise absent
+ * (an older server sends none): read it as `feature.store ?? null`.
  */
 export function parseProtFeature(value: unknown): ProtFeature {
   const feature = closedFeature();
@@ -188,6 +257,9 @@ export function parseProtFeature(value: unknown): ProtFeature {
   if (isNonNegativeInteger(value.wallet_cap)) {
     feature.wallet_cap = value.wallet_cap;
   }
+
+  const store = parseProtStoreFeature(value.store);
+  if (store) feature.store = store;
 
   return feature;
 }
@@ -254,7 +326,9 @@ function parseEntry(value: unknown): ProtLedgerView | undefined {
  * account version are required: a wallet whose balance cannot be read is
  * reported as a bad response, never shown as 0. `held` is at most the
  * balance. A pending order or history row this page cannot read is dropped
- * rather than guessed at.
+ * rather than guessed at. `store_preview` (this account may buy in-app
+ * before the store opens) is set only when the server sent literally
+ * `true`, and is otherwise absent: read it as `me.store_preview === true`.
  */
 export function parseProtMe(value: unknown): ProtMe {
   if (!isRecord(value)) throw new CipherClientError("badResponse");
@@ -283,6 +357,8 @@ export function parseProtMe(value: unknown): ProtMe {
       if (entry) me.recent.push(entry);
     }
   }
+
+  if (value.store_preview === true) me.store_preview = true;
 
   return me;
 }
@@ -351,6 +427,50 @@ export function wouldExceedCap(
 /** Bonus Prot a pack carries over its price (1 Prot = 1 cent) */
 export function packBonus(pack: ProtPackView): number {
   return Math.max(0, pack.prot - pack.cents);
+}
+
+/** One in-app pack as the store page shows it */
+export type ProtStorePack = { id: string; prot: number; displayPrice: string };
+
+/**
+ * The in-app packs to show for `store` (S6): the server's products for that
+ * store, in the advert's order, each with the price the store itself
+ * returned for it (the ProtStore plugin's `products()`). The Prot always
+ * comes from the server and the price only from the store. A pack the store
+ * did not return (not set up in its console, not sold in the buyer's
+ * region) or returned without a price is hidden, and a product the store
+ * returned that the server does not list is never shown. Which store is
+ * open, and for whom, is the purchase gate's call, not this one.
+ */
+export function storePacks(
+  feature: ProtFeature,
+  store: ProtStore,
+  products: readonly { id: string; displayPrice: string }[],
+): ProtStorePack[] {
+  const advert = feature.store ?? null;
+  if (!advert || !Array.isArray(products)) return [];
+
+  // The native bridge's answer, read defensively: the first price per id
+  const prices = new Map<string, string>();
+  for (const product of products) {
+    if (!isRecord(product)) continue;
+    const { id, displayPrice } = product;
+    if (typeof id !== "string" || typeof displayPrice !== "string") continue;
+    const price = displayPrice.trim();
+    if (price.length === 0 || prices.has(id)) continue;
+    prices.set(id, price);
+  }
+
+  const packs: ProtStorePack[] = [];
+  const shown = new Set<string>();
+  for (const product of advert.products) {
+    if (product.store !== store || shown.has(product.product_id)) continue;
+    const displayPrice = prices.get(product.product_id);
+    if (displayPrice === undefined) continue;
+    shown.add(product.product_id);
+    packs.push({ id: product.product_id, prot: product.prot, displayPrice });
+  }
+  return packs;
 }
 
 /**

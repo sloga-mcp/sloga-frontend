@@ -4,6 +4,7 @@ import { Trans } from "@lingui-solid/solid/macro";
 import dayjs from "dayjs";
 import { Server } from "stoat.js";
 
+import { parseProtFeature } from "@revolt/app/interface/settings/user/protWallet";
 import { useClient } from "@revolt/client";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
@@ -26,6 +27,7 @@ import MdDoNotDisturbOn from "@material-symbols/svg-400/outlined/do_not_disturb_
 import MdNotificationSettings from "@material-symbols/svg-400/outlined/notification_settings.svg?component-solid";
 import MdRadioButtonChecked from "@material-symbols/svg-400/outlined/radio_button_checked-fill.svg?component-solid";
 import MdRadioButtonUnchecked from "@material-symbols/svg-400/outlined/radio_button_unchecked.svg?component-solid";
+import MdToll from "@material-symbols/svg-400/outlined/toll.svg?component-solid";
 
 import {
   ContextMenu,
@@ -126,6 +128,27 @@ export function ServerContextMenu(props: { server: Server }) {
   function copyId() {
     navigator.clipboard.writeText(props.server.id);
   }
+
+  /**
+   * Open the server's Prot launch goals (S5b, contracts 16.3 L6h)
+   */
+  function openProtFunding() {
+    openModal({
+      type: "prot_server_goals",
+      server: props.server,
+    });
+  }
+
+  /**
+   * Whether the server advertises Prot (the upstream config type has no
+   * `prot`). Every member may look; the dialog gates pledging and the
+   * owner's controls itself.
+   */
+  const protEnabled = () =>
+    parseProtFeature(
+      (client().configuration?.features as { prot?: unknown } | undefined)
+        ?.prot,
+    ).enabled;
 
   /**
    * Determine whether we can invite others to any channels
@@ -300,11 +323,17 @@ export function ServerContextMenu(props: { server: Server }) {
           <Trans>Open server settings</Trans>
         </ContextMenuButton>
       </Show>
+      <Show when={protEnabled()}>
+        <ContextMenuButton symbol={MdToll} onClick={openProtFunding}>
+          <Trans>Protected channel funding</Trans>
+        </ContextMenuButton>
+      </Show>
       <Show
         when={
           permissionInviteOthers() ||
           permissionEditIdentity() ||
-          permissionServerSettings()
+          permissionServerSettings() ||
+          protEnabled()
         }
       >
         <ContextMenuDivider />

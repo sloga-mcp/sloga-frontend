@@ -19,11 +19,22 @@
  *   every design 7.6 server type and the D17 extras; anything else fails
  *   closed (red marker for a message, `unverified` otherwise).
  * - `protectedActionsBlocked`: plan D11.
+ * - S4: an `unknown_epoch` row answers `removed_self` or asks for the history
+ *   walk (`walk: true`); `historyFloorNotice`, `historyOwnerNotice` and
+ *   `rowNotes` route the walk's stop, the owner's history failures and the
+ *   per-row notes (design 9.2 / 9.3 "S4").
+ * - S5b (Prot tanks): `tankStage` drives step 3d (`frozen`) and the step 8
+ *   `grace` split; `effectiveTankStage` adds the `ProtTankFrozen` refusal
+ *   latch (contracts 22.1 item 3).
  *
  * Nothing here holds key material or message text.
  */
+import type { ProtTankStage } from "stoat.js";
+
+import { isProtectedSendError } from "./protectedSendError.ts";
 import { holdsCurrentGroup } from "./protectedTextPolicy.ts";
 import type {
+  HistoryStop,
   NativeErrorTag,
   ProtectedChannelView,
   ProtectedMarkerKind,
@@ -54,8 +65,10 @@ export const PROTECTED_SHIELD_STATES = [
 ] as const;
 
 /**
- * `grace` and `frozen` are reserved for S5: typed and presented, never
- * produced in S1. `capacity` (S2 D35) is read-only and not alarming.
+ * `grace` and `frozen` come only from the S5b tank stage (`tankStage`):
+ * `frozen` from step 3d, `grace` from step 8 (green prerequisites). Without
+ * a tank stage they are never produced (S1 behaviour). `capacity` (S2 D35)
+ * is read-only and not alarming.
  */
 export type ProtectedShieldState = (typeof PROTECTED_SHIELD_STATES)[number];
 
@@ -136,6 +149,38 @@ export const SHIELD_BENIGN_SEAT_LIST_ERRORS = [
   "declined",
 ] as const satisfies readonly NativeErrorTag[];
 
+/**
+ * S5b step 3d: tank stages that stop text traffic (the server refuses
+ * sends with `ProtTankFrozen`). `Launching`, `Active` and `Grace` send.
+ */
+export const PROT_TANK_STOPPED_STAGES = [
+  "Frozen",
+  "Settling",
+  "Deleted",
+  "Terminated",
+] as const satisfies readonly ProtTankStage[];
+
+/** S5b: the tank stages that keep text traffic (D14 for `Grace`). */
+export const PROT_TANK_SENDING_STAGES = [
+  "Launching",
+  "Active",
+  "Grace",
+] as const satisfies readonly ProtTankStage[];
+
+/**
+ * Step 3d's test. A stage outside `PROT_TANK_SENDING_STAGES` stops the
+ * channel: the stopped stages, and (fail closed) any value this client
+ * does not recognise, e.g. a stage a newer server added. Null, undefined
+ * and the empty string are "no tank".
+ */
+function tankStopsText(stage: unknown): boolean {
+  if (stage === null || stage === undefined || stage === "") return false;
+  return !(
+    typeof stage === "string" &&
+    (PROT_TANK_SENDING_STAGES as readonly string[]).includes(stage)
+  );
+}
+
 /** The design 9.1 inputs plus `capable` per plan D3. */
 export interface ShieldInputs {
   serverProtected: boolean;
@@ -174,15 +219,26 @@ export interface ShieldInputs {
    * Review is not offered. Absent = false.
    */
   ownerChangeUnlisted?: boolean;
+  /**
+   * S5b: the channel's Prot tank stage (`effectiveTankStage`); null or
+   * absent when there is no tank. Never makes a shield green: it only
+   * stops (step 3d; an unrecognised stage stops too) or splits green into
+   * `grace` (step 8).
+   */
+  tankStage?: ProtTankStage | null;
 }
 
-/** Which design 9.1 step decided (`3b` is the fail-closed error catch-all). */
+/**
+ * Which design 9.1 step decided (`3b` is the fail-closed error catch-all,
+ * `3c` S2's outdated client, `3d` the S5b stopped tank).
+ */
 export type ShieldStep =
   | "1"
   | "2"
   | "3"
   | "3b"
   | "3c"
+  | "3d"
   | "4"
   | "5"
   | "5b"
@@ -346,6 +402,21 @@ export function explainShield(i: ShieldInputs): ShieldExplanation | null {
   if ((i.clientOutdated ?? null) !== null) {
     return { state: "not_available", step: "3c", notice: "client_outdated" };
   }
+  // 3d. S5b: a stopped tank. After 1-3c, so a security alert (or the
+  // "update Sloga" notice) is never hidden; before 4-9, so a stopped
+  // channel never reads as sendable. An unrecognised stage stops too
+  // (fail closed) and reads as frozen.
+  const tank = i.tankStage ?? null;
+  if (tankStopsText(tank)) {
+    return {
+      state: "frozen",
+      step: "3d",
+      notice:
+        tank === "Deleted" || tank === "Terminated"
+          ? "tank_deleted"
+          : "tank_frozen",
+    };
+  }
   const n = i.native;
   // 4. Still loading.
   if (!n) {
@@ -404,9 +475,12 @@ export function explainShield(i: ShieldInputs): ShieldExplanation | null {
   ) {
     return { state: "resecuring", step: "7", notice: "resecuring" };
   }
-  // 8. The ONLY source of green.
+  // 8. The ONLY source of green, and of `grace` (S5b D14: Grace keeps
+  // sending, encrypted as ever; only new members wait).
   if (nativeConsistentlyOk(n)) {
-    return { state: "protected", step: "8", notice: null };
+    return i.tankStage === "Grace"
+      ? { state: "grace", step: "8", notice: "tank_grace" }
+      : { state: "protected", step: "8", notice: null };
   }
   // 9. Fail closed.
   return { state: "unverified", step: "9", notice: "unverified" };
@@ -431,6 +505,8 @@ export function shieldInputsFromView(
     locallyPinned: boolean;
     capable: boolean;
     tauriE2eeOff?: boolean;
+    /** S5b: `effectiveTankStage(...)`; null or absent without a tank. */
+    tankStage?: ProtTankStage | null;
   },
   nowMs: number,
 ): ShieldInputs {
@@ -451,6 +527,7 @@ export function shieldInputsFromView(
     clientOutdated: view?.clientOutdated ?? null,
     ownerChangePending: view?.ownerChangePending ?? false,
     ownerChangeUnlisted: view?.ownerChangeUnlisted === true,
+    tankStage: flags.tankStage ?? null,
   };
 }
 
@@ -474,7 +551,7 @@ export type ProtectedHueVar =
   | "--sloga-protected-grace"
   | "--sloga-protected-frozen";
 
-/** `enabled` only in `protected` (design 9.1). */
+/** `enabled` only in `protected` (design 9.1) and S5b `grace` (D14). */
 export type ProtectedComposerMode = "enabled" | "disabled" | "hidden";
 
 export interface ShieldPresentation {
@@ -546,22 +623,24 @@ export function shieldPresentation(
         composer: "hidden",
         notice: "unverified",
       };
-    // S5 reserved: read-only until S5 defines them.
+    // S5b D14: Grace sends work (only from step 8, so still encrypted and
+    // verified); new members wait for a top-up.
     case "grace":
       return {
         glyph: "verified_user",
         hueVar: "--sloga-protected-grace",
         tintName: false,
-        composer: "hidden",
-        notice: "not_available",
+        composer: "enabled",
+        notice: "tank_grace",
       };
+    // S5b step 3d: read-only; the server refuses sends (`ProtTankFrozen`).
     case "frozen":
       return {
         glyph: "shield",
         hueVar: "--sloga-protected-frozen",
         tintName: false,
         composer: "hidden",
-        notice: "not_available",
+        notice: "tank_frozen",
       };
     default: {
       const _x: never = state;
@@ -603,6 +682,10 @@ export const PROTECTED_NOTICE_KINDS = [
   "owner_changed_review",
   "owner_changed_locked",
   "join_stalled",
+  // S5b Prot tank (step 3d, step 8 grace, `ProtTankFrozen`)
+  "tank_grace",
+  "tank_frozen",
+  "tank_deleted",
   // flows
   "channel_full",
   "seat_cap_reached",
@@ -656,7 +739,10 @@ export interface ProtectedErrorContext {
 
 /**
  * - `notice`: show this notice (`max` fills `{max}`, null when absent);
- * - `marker`: render this marker instead of the message body;
+ * - `marker`: render this marker instead of the message body. S4: `walk`
+ *   is present (and true) only on an `unknown_epoch` row the history walk may
+ *   still open; the marker is what the row shows until the walk imports its
+ *   epoch, and what it keeps when the walk does not;
  * - `toast`: raise this toast;
  * - `none`: no UI; the bridge handles it (retry, catch-up, ack + drop) or
  *   the user cancelled a native dialog.
@@ -676,7 +762,7 @@ export type ProtectedErrorUi =
        */
       users?: readonly string[];
     }
-  | { kind: "marker"; marker: ProtectedMarkerKind; tag: string }
+  | { kind: "marker"; marker: ProtectedMarkerKind; tag: string; walk?: true }
   | { kind: "toast"; toast: ProtectedToastKind; tag: string }
   | { kind: "none"; tag: string };
 
@@ -730,24 +816,54 @@ function catchAll(ctx: ProtectedErrorContext): ProtectedErrorUi {
     : notice("unverified", "unknown");
 }
 
-/** Message rows: everything not listed is the red `error` marker. */
+/**
+ * `UnknownEpoch.current`: native sends -1 for a group it holds no epoch of
+ * (design 3.9 "S4", as built), so -1 is a value here and not a malformed one.
+ */
+function currentEpoch(v: unknown): number | null {
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= -1 ? v : null;
+}
+
+/**
+ * Message rows: everything not listed is the red `error` marker.
+ *
+ * `unknown_epoch` (design 3.9 "S4" step 4, first match wins):
+ * 1. `removed_self === true`: the gray `removed_self` marker and no walk,
+ *    whatever the epochs say. An older shell sends no key, which is false.
+ * 2. `epoch > current`: the S1 path, one catch-up and one retry.
+ * 3. `epoch < current`: the row may be opened by the history walk. It shows
+ *    `sent_before_join` meanwhile and carries `walk: true`. `oldest_held` is
+ *    not read: a key can be missing below it or inside the held run, and
+ *    null only means nothing is held.
+ * 4. `epoch === current`, or an epoch this cannot read: red, no walk.
+ * This cannot see the group, so a closed or `left` group's rows above its
+ * last held epoch are the caller's (`walkTrigger` in protectedHistoryWalk).
+ */
 function onMessage(
   tag: TextNativeErrorTag,
   f: Fields,
   ctx: ProtectedErrorContext,
-) {
+): ProtectedErrorUi {
   switch (tag) {
     case "unknown_epoch": {
+      if (f.removed_self === true) return marker("removed_self", tag);
       const epoch = count(f.epoch);
-      const oldest = count(f.oldest_held);
-      const current = count(f.current);
-      if (epoch !== null && oldest !== null && epoch < oldest) {
-        return marker("sent_before_join", tag);
+      const current = currentEpoch(f.current);
+      if (epoch === null || current === null) {
+        return marker("decrypt_failed", tag);
       }
-      if (epoch !== null && current !== null && epoch > current) {
+      if (epoch > current) {
         return ctx.catchUpDone === true
           ? marker("decrypt_failed", tag)
           : none(tag);
+      }
+      if (epoch < current) {
+        return {
+          kind: "marker",
+          marker: "sent_before_join",
+          tag,
+          walk: true,
+        };
       }
       return marker("decrypt_failed", tag);
     }
@@ -858,6 +974,12 @@ export const PROTECTED_SERVER_ERROR_TYPES = [
   "RemovalReasonRequired",
   "ProtectedClientOutdated",
   "InSlowmode",
+  // S4 (design 9.2). `FeatureDisabled` stays the general type above: its
+  // history meaning is in `feature`, which the link write policy reads.
+  "ProtectHistoryMoved",
+  "HistoryLinkExists",
+  // S5b: send / react / pin refused while the tank is stopped
+  "ProtTankFrozen",
 ] as const;
 
 export type ProtectedServerErrorType =
@@ -908,6 +1030,19 @@ const SERVER_RULES: Record<ProtectedServerErrorType, Rule> = {
   // successor create; any other op keeps the catch-all it had before.
   InSlowmode: (_f, c) =>
     c.op === "owner" ? notice("resecured_too_often", "") : catchAll(c),
+  // S4: the boundary moved under a protect. The bridge re-signs and retries
+  // (at most 5) and then reports the client reason `protect_busy`
+  // (`historyOwnerNotice`), so a raw one reaching the owner UI is a protect
+  // that did not land. Any other op never expects it and fails closed.
+  ProtectHistoryMoved: (_f, c) =>
+    c.op === "owner" ? notice("protect_failed", "") : catchAll(c),
+  // S4: this user's history link already stands, or the slots are taken.
+  // Done, logged by the bridge and never retried: nothing to show on the two
+  // ops that write links. Any other op never expects it and fails closed.
+  HistoryLinkExists: (_f, c) =>
+    c.op === "channel" || c.op === "owner" ? none("") : catchAll(c),
+  // S5b: the shield follows through `noteProtTankRefusal` (the latch).
+  ProtTankFrozen: () => notice("tank_frozen", ""),
 };
 
 /**
@@ -1003,6 +1138,198 @@ export function protectedNoticeForError(
   return isNativeTag(err.type)
     ? mapNative(err, ctx)
     : mapServer(err.type, err, ctx);
+}
+
+// ---------------------------------------------------------------------------
+// S4 history: the walk's floor, owner failures, row notes (design 9.2, 9.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * How the `history_floor` timeline marker reads. `gray` and `before_join`
+ * are quiet lines (`before_join` reuses the S1 "Sent before this device
+ * joined." wording); `loud` names which of the three 9.2 notices to show.
+ */
+export type HistoryFloorNotice =
+  | { tone: "gray"; loud: null }
+  | { tone: "before_join"; loud: null }
+  | {
+      tone: "loud";
+      loud: "history_invalid" | "history_anchor" | "history_conflict";
+    };
+
+/**
+ * Where the history walk stopped, as the floor marker's tone. A stop this
+ * build does not know (a newer shell) is loud: earlier history was not
+ * loaded and that is never shown as an ordinary "before you joined" line.
+ */
+export function historyFloorNotice(stop: HistoryStop): HistoryFloorNotice {
+  switch (stop) {
+    case "hidden":
+      return { tone: "gray", loud: null };
+    case "missing":
+    case "genesis":
+      return { tone: "before_join", loud: null };
+    case "invalid":
+      return { tone: "loud", loud: "history_invalid" };
+    case "anchor_mismatch":
+    case "unanchored":
+      return { tone: "loud", loud: "history_anchor" };
+    case "conflict":
+      return { tone: "loud", loud: "history_conflict" };
+    default: {
+      const _x: never = stop;
+      return { tone: "loud", loud: "history_invalid" };
+    }
+  }
+}
+
+/** The owner's S4 history failures (design 9.2 "S4" owner rows). */
+export type HistoryOwnerNoticeKind =
+  | "protect_busy"
+  | "wipe_refused"
+  | "clock_behind"
+  | "history_mismatch"
+  | "history_too_large";
+
+/**
+ * Where an owner history failure shows. `protect_busy` (five
+ * `ProtectHistoryMoved` in a row), `wipe_refused` (a plain
+ * `InvalidOperation` on the wipe route: a legal hold, or not the owner) and
+ * `clock_behind` (`seat_list_invalid{reason: future_boundary}`) answer an
+ * action in the channel's protected settings, so they are inline errors
+ * there. The other two come from background link work and are toasts. A
+ * kind this build does not know stays an inline error: never a toast it has
+ * no copy for, never nothing.
+ */
+export function historyOwnerNotice(
+  kind: HistoryOwnerNoticeKind,
+): ProtectedToastKind | "inline" {
+  switch (kind) {
+    case "protect_busy":
+    case "wipe_refused":
+    case "clock_behind":
+      return "inline";
+    case "history_mismatch":
+      return "history_mismatch";
+    case "history_too_large":
+      return "history_too_large";
+    default: {
+      const _x: never = kind;
+      return "inline";
+    }
+  }
+}
+
+/** A note under a decrypted row, in display order. */
+export type RowNote =
+  | "sender_unverified"
+  | "sender_unverified_history"
+  | "timing_unverified"
+  | "below_boundary";
+
+/**
+ * The notes a decrypted row carries, in display order.
+ *
+ * - The sender note shows unless `sender_verified` is literally true. It is
+ *   the "(history)" variant when the row's epoch came from this session's
+ *   history walk (`fromHistory`) or native says `timing_unverified`; a live
+ *   unverified sender keeps the S1 note. Native reports no provenance, so
+ *   this is the closest the bridge can tell.
+ * - `timing_unverified`: only a literal true (an older shell sends no key).
+ * - `below_boundary`: an encrypted row listed at or below the boundary.
+ */
+export function rowNotes(
+  d: { sender_verified: boolean; timing_unverified: boolean },
+  ctx: { belowBoundary: boolean; fromHistory: boolean },
+): RowNote[] {
+  const notes: RowNote[] = [];
+  const timing = d.timing_unverified === true;
+  if (d.sender_verified !== true) {
+    notes.push(
+      ctx.fromHistory === true || timing
+        ? "sender_unverified_history"
+        : "sender_unverified",
+    );
+  }
+  if (timing) notes.push("timing_unverified");
+  if (ctx.belowBoundary === true) notes.push("below_boundary");
+  return notes;
+}
+
+// ---------------------------------------------------------------------------
+// Prot tank stage (S5b BR3, contracts 22.1 item 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether `err` is the server's `ProtTankFrozen` refusal: a
+ * `ProtectedSendError` wrapping it, a server `TextFlowFailure`
+ * (`type`, else `body.type`) or a bare server body. A native or transport
+ * failure never is.
+ */
+export function isProtTankFrozenRefusal(err: unknown): boolean {
+  const cause = isProtectedSendError(err) ? err.failure : err;
+  if (!isRecord(cause)) return false;
+  if (cause.source !== undefined && cause.source !== "server") return false;
+  const body = isRecord(cause.body) ? cause.body : {};
+  return (cause.type ?? body.type) === "ProtTankFrozen";
+}
+
+/**
+ * A `ProtTankFrozen` refusal held until the next tank read (22.1 item 3:
+ * with no fresh summary the shield would stay green on a frozen channel).
+ */
+export interface ProtTankRefusalLatch {
+  /**
+   * `client.protTanks.get(channelId)` when the refusal landed (null when
+   * absent). Any later read or `ProtTankUpdate` stores a new object, which
+   * ends the latch.
+   */
+  summary: unknown;
+  /** When the refusal landed. */
+  atMs: number;
+}
+
+/**
+ * Upper bound of a latch: a `NotFound` re-read changes nothing observable,
+ * so the latch also ends after one tank poll period (`ProtBanner`, 5 min).
+ * The next refused send latches again; the server refuses either way.
+ */
+export const PROT_TANK_REFUSAL_LATCH_MS = 5 * 60_000;
+
+/** Whether `latch` still holds for the summary now stored. */
+export function protTankRefusalLatched(
+  latch: ProtTankRefusalLatch | null | undefined,
+  summary: unknown,
+  nowMs: number,
+): boolean {
+  if (!latch || latch.summary !== (summary ?? null)) return false;
+  // A clock that went backwards reads as age 0 (still latched).
+  return Math.max(0, nowMs - latch.atMs) < PROT_TANK_REFUSAL_LATCH_MS;
+}
+
+/** Milliseconds until a holding latch ends, or null when none holds. */
+export function protTankRefusalRecheckInMs(
+  latch: ProtTankRefusalLatch | null | undefined,
+  summary: unknown,
+  nowMs: number,
+): number | null {
+  if (!latch || !protTankRefusalLatched(latch, summary, nowMs)) return null;
+  return Math.max(1, latch.atMs + PROT_TANK_REFUSAL_LATCH_MS - nowMs);
+}
+
+/**
+ * The `tankStage` shield input: the stored summary's stage (null without
+ * a tank), or `Frozen` while a refusal latch holds. A stored stopped stage
+ * always wins (its notice is more specific).
+ */
+export function effectiveTankStage(
+  summary: { stage: ProtTankStage } | null | undefined,
+  latch: ProtTankRefusalLatch | null | undefined,
+  nowMs: number,
+): ProtTankStage | null {
+  const stored = summary?.stage ?? null;
+  if (has(PROT_TANK_STOPPED_STAGES, stored)) return stored;
+  return protTankRefusalLatched(latch, summary, nowMs) ? "Frozen" : stored;
 }
 
 // ---------------------------------------------------------------------------

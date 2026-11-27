@@ -7,7 +7,8 @@
 //     from memory (a same-origin path is not possible on iOS: `loadView` is
 //     final, and WKWebView refuses handlers for http/https);
 //   - the main-frame bridge guard, and the E2ee, SlogaCallAudio and Passkey
-//     plugins ONLY when the guard is in place;
+//     plugins and the in-app ProtStore plugin (S6) ONLY when the guard is in
+//     place;
 //   - the `window.__slogaIosCaps` capability object (call E2EE phase 2, C4),
 //     defined by a document-start user script in the main frame;
 //   - teardown of any open consent dialog, save folder picker and
@@ -17,9 +18,11 @@
 //
 // It never constructs the engine and never calls into it: the engine is
 // built lazily by the first command the webview sends, so a user who never
-// enabled E2EE never opens a store or touches the keychain at launch.
+// enabled E2EE never opens the E2EE key store or touches the keychain at
+// launch.
 import Capacitor
 import Foundation
+import SlogaStore
 import UIKit
 import WebKit
 
@@ -130,6 +133,9 @@ open class SlogaBridgeViewController: CAPBridgeViewController {
                 // Passkey sheets (PasskeyPlugin.swift): the same rule, so an
                 // embed frame can never raise one over the app.
                 bridge.registerPluginInstance(PasskeyPlugin())
+                // In-app Prot (S6). Behind the same guard: an embed frame must never open a store sheet.
+                ProtStorePlugin.arm()
+                bridge.registerPluginInstance(ProtStorePlugin())
             }
         }
 

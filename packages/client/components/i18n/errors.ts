@@ -243,6 +243,13 @@ export function useError() {
         if (feature === "e2ee")
           return t`Encrypted messaging is unavailable right now.`;
       }
+      // S4 (design 9.2). `ProtectHistoryMoved`: the channel's history moved
+      // while it was being protected, so the protect did not land (the
+      // `protect_busy` msgid of `protectedCopy.ts`). `HistoryLinkExists` is
+      // handled by the bridge and never shown in practice: neutral wording.
+      if (errType === "ProtectHistoryMoved")
+        return t`This channel is too busy to protect right now. Try again in a quiet moment.`;
+      if (errType === "HistoryLinkExists") return t`This was already done.`;
       // Prot (same lag pattern). Amounts are grouped in the app locale.
       if (errType === "ProtDisabled") return t`Prot isn't available right now.`;
       if (errType === "ProtSalesClosed")
@@ -270,6 +277,29 @@ export function useError() {
         );
         return t`You don't have enough Prot for this: it needs ${protNeeded} Prot and you have ${protAvailable}.`;
       }
+      // Prot tanks and goals (S5b, same lag pattern). The refusal carries no
+      // hours and this hook has no client to read the advert from, so the
+      // contribute dialog words the hold with the advert's
+      // `contribute_hold_hours` itself (contracts 16.4, NIT 26); this is the
+      // copy for anywhere else, with no number in it.
+      if (errType === "ProtHeldPurchase")
+        return t`Prot bought recently can't be contributed yet.`;
+      if (errType === "ProtTankFrozen")
+        return t`This Protected channel is frozen until it's topped up.`;
+      // Goals only (NIT 23): a closed tank answers InvalidOperation
+      if (errType === "ProtGoalClosed") return t`This goal is closed.`;
+      if (errType === "ProtTierBelowSeats")
+        return t`Some members are still seated or cooling down. Unseat members first, or wait for their seats to free up.`;
+      // In-app Prot purchases (S6, same lag pattern). Verify answers a wrong
+      // account or a test purchase as a 200 `rejected` reason, not an error.
+      if (errType === "ProtStoreClosed")
+        return t`Prot isn't on sale in the app right now.`;
+      if (errType === "ProtStoreProductUnknown")
+        return t`That Prot pack isn't available.`;
+      if (errType === "ProtStoreVerifyFailed")
+        return t`We couldn't confirm this purchase with the store. Please try again.`;
+      if (errType === "ProtStoreUnavailable")
+        return t`In-app purchases aren't available right now. Please try again later.`;
       // A first publication of a device id removed from the account's
       // encryption (same lag pattern). The bridge also raises `deviceRemoved`,
       // whose modal offers to set this install up again as a new device.

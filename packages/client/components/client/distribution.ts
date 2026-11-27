@@ -2,6 +2,8 @@ import { createSignal } from "solid-js";
 
 import { Capacitor, registerPlugin } from "@capacitor/core";
 
+import { type ProtStoreAdvert, protStoreFacts } from "./protStoreFacts.ts";
+
 /**
  * Which channel this client was distributed through.
  *
@@ -95,9 +97,74 @@ export const distributionChannel = channel;
 export const allowsDonationLinks = () =>
   channel() !== "play" && channel() !== "appstore";
 
-/** Contributing Prot to a tank or goal (S5b). Off in store builds until S6 brings in-app purchase (D5). */
-export const allowsProtSpending = () =>
-  channel() !== "play" && channel() !== "appstore";
+/**
+ * Play and App Store builds, where digital goods are bought through the
+ * store's own billing (S6). Desktop shells resolve to "web".
+ */
+export function isStoreBuild(channel: DistributionChannel): boolean {
+  return channel === "play" || channel === "appstore";
+}
+
+/** How this client buys Prot. "none": it cannot, so it may not spend either. */
+export type ProtPurchaseChannel = "stripe" | "appstore" | "play" | "none";
+
+/**
+ * Pick the Prot purchase channel from the distribution channel and the store
+ * facts (protStoreFacts.ts). Outside the stores it is always Stripe. A store
+ * build buys only through its own store, and only when all of these hold:
+ * - the shell has the ProtStore plugin. An older shell without it can never
+ *   buy in app, and 3.1.3(b) lets Prot bought on the web be spent in an
+ *   App Store app only when in-app purchase is offered there too;
+ * - the server sent a store advert. Without one the server's store state is
+ *   unknown, so this fails closed even for a preview account (R26);
+ * - that store is open, or this account has store preview access.
+ * The other store's open flag never counts.
+ */
+export function protPurchaseChannel(
+  channel: DistributionChannel,
+  store: ProtStoreAdvert | null,
+  storePreview: boolean,
+  pluginAvailable: boolean,
+): ProtPurchaseChannel {
+  if (!isStoreBuild(channel)) return "stripe";
+  if (pluginAvailable !== true) return "none";
+  if (!store) return "none";
+
+  const open = channel === "appstore" ? store.apple_open : store.play_open;
+  if (open !== true && storePreview !== true) return "none";
+
+  return channel === "appstore" ? "appstore" : "play";
+}
+
+/** Pure form of `allowsProtSpending()`, with the store facts passed in. */
+export function allowsProtSpendingFor(
+  channel: DistributionChannel,
+  store: ProtStoreAdvert | null,
+  storePreview: boolean,
+  pluginAvailable: boolean,
+): boolean {
+  return (
+    !isStoreBuild(channel) ||
+    protPurchaseChannel(channel, store, storePreview, pluginAvailable) !==
+      "none"
+  );
+}
+
+/**
+ * Contributing Prot to a tank or goal (S5b). A store build may spend only
+ * once it can buy Prot through that store (S6, D5); until ProtStoreWorker
+ * sets the facts they are NO_PROT_STORE_FACTS, so store builds start off.
+ * Reactive: it tracks both the channel and the store facts.
+ */
+export const allowsProtSpending = () => {
+  const f = protStoreFacts();
+  return allowsProtSpendingFor(
+    channel(),
+    f.store,
+    f.storePreview,
+    f.pluginAvailable,
+  );
+};
 
 /**
  * Sloga's Ko-fi page, opened straight from the "Support Sloga" buttons. Keep

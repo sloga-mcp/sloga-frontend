@@ -68,6 +68,7 @@ const DEPS: ProtectedTextManagerDeps = {
     recoverOwnership,
   },
   messages: { encryptAndSend, decryptRow, markerForError },
+  requestBackupRefresh: () => undefined,
 };
 
 function ok(body: unknown, status = 200): TextApiResponse {
@@ -256,6 +257,7 @@ function make(port: Port) {
       onView: (ch, v) => port.views.set(ch, v),
       onMessageView: (id, v) => port.msgViews.set(id, v),
       onTimelineMarker: () => undefined,
+      onHistoryPolicy: () => undefined,
     },
     DEPS,
   );
@@ -419,6 +421,7 @@ test("send → update_required → in-flight Update awaited → retry encrypts o
       sender_verified: true,
       ts_skew: false,
       files: [],
+      timing_unverified: false,
     };
   };
   const m = make(port);
@@ -600,6 +603,7 @@ test("C9 protector: a refused decrypt (real B4) stays pending, never a red marke
       sender_verified: true,
       ts_skew: false,
       files: [],
+      timing_unverified: false,
     };
   };
   const row = {

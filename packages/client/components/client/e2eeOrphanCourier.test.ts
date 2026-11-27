@@ -174,6 +174,7 @@ type Bridge = {
   onEvent(event: { type: string; accepted?: boolean }): void;
   dispose?: () => Promise<void>;
   refreshBackupIfDue(): Promise<void>;
+  backupText: Map<string, { truncated: string | null }>;
   createRecoveryCode(): Promise<void>;
   rotateRecoveryCode(): Promise<void>;
 };
@@ -748,6 +749,35 @@ test("echo control: the matching echo is marked with the sent generation", async
   await claimedBridge();
   assert.deepEqual(puts, [7]);
   assert.equal(plugin.marks(), 1);
+});
+
+// Protected channels S4 (design 8.5): the text section's `truncated` of the
+// bundle the server kept is what the settings card reads.
+test("backup text: a kept upload records the bundle's text_truncated, null without a text section", async () => {
+  for (const [extra, truncated] of [
+    [{ text_truncated: "none" }, "none"],
+    [{ text_truncated: "oldest" }, "oldest"],
+    [{ text_truncated: "all" }, "all"],
+    [{}, null],
+    // B5: a value this build does not know is kept as unknown, not dropped
+    [{ text_truncated: "everything" }, "unknown"],
+  ] as const) {
+    fresh("electron");
+    plugin.due = [{ ...BUNDLE, ...extra }];
+    const { bridge } = await claimedBridge();
+    assert.deepEqual(puts, [7]);
+    assert.deepEqual(bridge.backupText.get("state"), { truncated });
+  }
+});
+
+test("backup text: an upload the server did not keep records nothing", async () => {
+  fresh("electron");
+  storedGeneration = 9;
+  plugin.due = [{ ...BUNDLE, text_truncated: "all" }];
+  const { bridge } = await claimedBridge();
+  assert.deepEqual(puts, [7]);
+  assert.equal(plugin.marks(), 0);
+  assert.equal(bridge.backupText.has("state"), false);
 });
 
 // The echo check on the other transports (final audit B, code 8): every

@@ -21,7 +21,8 @@ import { Symbol } from "@revolt/ui/components/utils/Symbol";
  * not `ok`, so a marker is never mistaken for a normal message: it always
  * carries a glyph and italic copy, and red markers sit in an outlined,
  * alert-tinted box. Red markers are loud; gray markers (the message predates
- * this device, or used a key it never had) are expected and muted.
+ * this device, used a key it never had, or was sent after this device was
+ * removed) are expected and muted.
  *
  * Besides the marker kinds it takes:
  * - `pending`: the view is `{status: "pending"}` (in place of the body).
@@ -36,6 +37,9 @@ import { Symbol } from "@revolt/ui/components/utils/Symbol";
  *
  * `unsupported_version` (S2, OR-19: a newer envelope version) is a gray
  * marker: this build is outdated, nothing is under attack.
+ *
+ * `removed_self` (S4, design 9.2: sent after this device was removed) is a
+ * gray marker too: being unable to read it is what removal means.
  *
  * Only C0 copy is rendered: never plaintext, ids or server content. Imports
  * are file paths (never a barrel) and the only `styled` call uses a string
@@ -80,7 +84,10 @@ export function markerTone(
       return "red";
     // `unsupported_version` (S2, OR-19): a newer envelope version, so this
     // build is outdated; nothing is under attack.
+    // `removed_self` (S4): sent after this device was removed, so it has no
+    // key for it; expected, same tone as `sent_before_join`.
     case "sent_before_join":
+    case "removed_self":
     case "unknown_key":
     case "unsupported_version":
       return "gray";
@@ -114,6 +121,9 @@ function markerText(kind: ProtectedMessageMarkerKind): string {
       return messageCopy.senderNotVerified();
     case "files_unsupported":
       return messageCopy.filesUnsupported();
+    case "removed_self":
+      // S4: its own line, never the "before this device joined" one.
+      return markerCopy("removed_self");
     default:
       // `markerCopy` is exhaustive and falls back to the catch-all copy.
       return markerCopy(kind);

@@ -183,8 +183,10 @@ describe("the real tree", () => {
       result.stdout,
       // Phase 2 C-W2-8: the call route and the 100-name split; multi-device
       // (split_begin/commit/discard) makes it 103; protected channels S2's
-      // e2ee_text_authority_sign (.out) makes it 104.
-      /^ok: table generic 39, native 2, call 22, dedicated 8, out 33;/,
+      // e2ee_text_authority_sign (.out) makes it 104; S4's
+      // e2ee_text_history_link_build and e2ee_text_history_import (.out)
+      // make it 106.
+      /^ok: table generic 39, native 2, call 22, dedicated 8, out 35;/,
     );
   });
 
@@ -1166,6 +1168,8 @@ const W_OUT = [
   "e2ee_text_mark_left",
   "e2ee_text_pin_own_devices",
   "e2ee_mls_group_kind",
+  "e2ee_text_history_link_build",
+  "e2ee_text_history_import",
 ];
 /** Gated engine method (snake) → its dedicated plugin method. */
 const W_GATED = {
@@ -1228,7 +1232,7 @@ const W_COMMANDS_SWIFT = [
   "    static let nativeCount = 2",
   "    static let callCount = 22",
   "    static let dedicatedCount = 8",
-  "    static let outCount = 33",
+  "    static let outCount = 35",
   "",
   "    static func route(for name: String) -> E2eeRoute {",
   "        .out",
@@ -1895,16 +1899,16 @@ describe("phase 2: the command table (C-W2-3)", () => {
     );
   });
 
-  test("a 34th .out name, its static count kept in step", () => {
+  test("a 36th .out name, its static count kept in step", () => {
     worldExpect(
       "G6-count",
-      ["the table has 34 .out lines; the contract pins 33"],
+      ["the table has 36 .out lines; the contract pins 35"],
       [
         COMMANDS,
         '        ("e2ee_rc_start", .out),\n',
         '        ("e2ee_rc_start", .out),\n        ("e2ee_rc_extra", .out),\n',
       ],
-      [COMMANDS, "static let outCount = 33", "static let outCount = 34"],
+      [COMMANDS, "static let outCount = 35", "static let outCount = 36"],
     );
   });
 

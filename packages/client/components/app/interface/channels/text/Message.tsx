@@ -6,6 +6,7 @@ import {
   Show,
   Switch,
   createContext,
+  createMemo,
   createSignal,
   onMount,
   useContext,
@@ -22,11 +23,11 @@ import { styled } from "styled-system/jsx";
 import { decodeTime } from "ulid";
 
 import { useClient, useE2EE } from "@revolt/client";
-import { protectedActionsBlocked } from "@revolt/client/protectedShield";
-import type {
-  ProtectedMarkerKind,
-  ProtectedMessageView,
-} from "@revolt/client/protectedTextTypes";
+import { rowNoteCopy, rowStateCopy } from "@revolt/client/protectedCopy";
+import {
+  type RowNote,
+  protectedActionsBlocked,
+} from "@revolt/client/protectedShield";
 import { useProtectedMessage } from "@revolt/client/useProtectedChannel";
 import { translationAvailable } from "@revolt/common/lib/translation";
 import { useTime } from "@revolt/i18n";
@@ -73,6 +74,13 @@ import {
 import { SoftResMessage, isSoftResMessage } from "./SoftResMessage";
 import { TimelockMessage, isTimelockMessage } from "./TimelockMessage";
 import { serverActionsBlocked } from "./e2eeTranscriptTrust";
+import {
+  protectedRowBody,
+  protectedRowNotes,
+  protectedRowScope,
+  protectedViewClass,
+  replyTargetShown,
+} from "./messageProtectedView";
 
 /**
  * Regex for matching URLs
@@ -94,33 +102,6 @@ const MAX_PROTECTED_REPLIES = 5;
 
 /** Message ids are ULIDs; anything else is never fetched or shown. */
 const RE_MESSAGE_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-
-/**
- * What a Protected channel row shows IN PLACE of its body (design 9.3):
- * the marker kind for anything but a decrypted (`ok`) view; no view yet
- * is `pending`, never the server text, and on a device with no protected
- * text plane it is `not_available` (it would never decrypt). A real marker
- * view wins over both. An unknown status fails closed.
- */
-function protectedMarkerKind(
-  view: ProtectedMessageView | null | undefined,
-  capable: boolean,
-): ProtectedMarkerKind | "pending" | "not_available" | undefined {
-  const waiting = capable === true ? "pending" : "not_available";
-  if (!view) return waiting;
-  switch (view.status) {
-    case "ok":
-      return undefined;
-    case "marker":
-      return view.kind;
-    case "pending":
-      return waiting;
-    default: {
-      const _exhaustive: never = view;
-      return "error";
-    }
-  }
-}
 
 /**
  * Whether this device runs the protected text plane (plan D3, the bridge's
@@ -173,6 +154,13 @@ interface Props {
    * Whether this message is a link
    */
   isLink?: boolean;
+
+  /**
+   * Channel of the list this row renders in. The message list passes it, so
+   * a row that names another channel never shows a body in a Protected
+   * list. Without it only the row's own channel is known.
+   */
+  listChannelId?: string;
 }
 
 interface MessageContextShape {
@@ -303,28 +291,70 @@ export function Message(props: Props) {
    * D2). Its body is the decrypted view ONLY (D22): server `content`,
    * embeds, attachments, components and other server-set text are never
    * rendered here, even if present (D25 strips them; this is the second
-   * guard).
+   * guard). The one exception is a plain row from before the channel was
+   * protected (design 9.5 arm 3), see `guardedRow`.
+   *
+   * The LIST's channel decides too (`protectedRowScope`): in a Protected
+   * list every row is a Protected row, and one that names another channel
+   * is `foreign` and shows the red error marker, never a body.
    */
-  const protectedRow = () =>
-    props.message.encrypted !== undefined ||
-    client().isProtectedChannel(props.message.channelId);
-
-  /** The decrypted view; never read for any other row. */
-  const protectedView = useProtectedMessage(() =>
-    protectedRow() ? props.message.id : undefined,
+  const rowScope = createMemo(() =>
+    protectedRowScope({
+      encrypted: props.message.encrypted,
+      rowChannelId: props.message.channelId,
+      listChannelId: props.listChannelId,
+      rowHeld: client().isProtectedChannel(props.message.channelId),
+      listHeld:
+        props.listChannelId !== undefined &&
+        client().isProtectedChannel(props.listChannelId),
+    }),
   );
 
-  /** Marker shown in place of the body: anything but an `ok` view. */
-  const protectedMarker = () =>
+  /** Whether this row is a Protected channel row (a foreign one included). */
+  const protectedRow = () => rowScope() !== "open";
+
+  /** The channel this row is shown in: the list's, else the row's own. */
+  const shownChannelId = () => props.listChannelId ?? props.message.channelId;
+
+  /** The decrypted view; never read for a foreign row or any other row. */
+  const protectedView = useProtectedMessage(() =>
+    rowScope() === "protected" ? props.message.id : undefined,
+  );
+
+  /**
+   * What a Protected row shows as its body (design 9.3, 9.5), decided in
+   * `messageProtectedView.ts`: a marker, the decrypted view, the checking
+   * line, or `ordinary` for a plain row from before the channel was
+   * protected. A memo: the row reads it many times per render.
+   */
+  const protectedBody = createMemo(() =>
     protectedRow()
-      ? protectedMarkerKind(protectedView(), protectedTextPlane(client().e2ee))
-      : undefined;
+      ? protectedRowBody(
+          protectedView(),
+          protectedTextPlane(client().e2ee),
+          props.message,
+          rowScope() === "foreign",
+        )
+      : undefined,
+  );
+
+  /**
+   * Whether the row's server-set fields stay off the screen: every Protected
+   * row except a plain one. A Protected row with no answer counts as guarded.
+   */
+  const guardedRow = () =>
+    protectedRow() && protectedBody()?.kind !== "ordinary";
+
+  /** Marker shown in place of the body. */
+  const protectedMarker = () => {
+    const body = protectedBody();
+    return body?.kind === "marker" ? body.marker : undefined;
+  };
 
   /** The decrypted view, when there is one to render. */
   const protectedOk = () => {
-    if (!protectedRow()) return undefined;
-    const view = protectedView();
-    return view?.status === "ok" ? view : undefined;
+    const body = protectedBody();
+    return body?.kind === "ok" ? body.view : undefined;
   };
 
   /** Reply previews come from the decrypted view, never server `replies`. */
@@ -345,17 +375,15 @@ export function Message(props: Props) {
                 user={props.message.author}
                 member={props.message.member}
                 name={
-                  // A server-set masquerade never names a Protected row
-                  (protectedRow()
-                    ? undefined
-                    : props.message.masquerade?.name) ??
+                  // A server-set masquerade never names a guarded row
+                  (guardedRow() ? undefined : props.message.masquerade?.name) ??
                   props.message.member?.nickname ??
                   props.message.author?.displayName ??
                   props.message.author?.username ??
                   props.message.username ??
                   ""
                 }
-                masquerade={!protectedRow() && !!props.message.masquerade}
+                masquerade={!guardedRow() && !!props.message.masquerade}
                 colour={props.message.roleColour}
                 brand={isSlogaStaff(props.message.author)}
                 animate={!props.isLink}
@@ -400,23 +428,38 @@ export function Message(props: Props) {
           <>
             <Show
               when={
-                !protectedRow() &&
+                !guardedRow() &&
                 props.message.isInteractionResponse &&
                 props.message.commandContext
               }
             >
               <InteractionContext message={props.message} />
             </Show>
-            <For each={protectedRow() ? undefined : props.message.replyIds}>
+            <For each={guardedRow() ? undefined : props.message.replyIds}>
               {(reply_id) => {
                 /**
-                 * Signal the actual message
+                 * Signal the actual message. On a Protected row only a
+                 * target of the shown channel is previewed.
                  */
-                const message = () => client().messages.get(reply_id);
+                const message = () => {
+                  const target = client().messages.get(reply_id);
+                  return replyTargetShown({
+                    protectedRow: protectedRow(),
+                    listChannelId: shownChannelId(),
+                    targetChannelId: target?.channelId,
+                  })
+                    ? target
+                    : undefined;
+                };
 
                 onMount(() => {
-                  if (!message()) {
-                    props.message.channel!.fetchMessage(reply_id);
+                  // A row cached under another channel is not asked for
+                  // again. A fetch that fails, or that answers with a row
+                  // of another channel, leaves the preview "not loaded".
+                  if (!client().messages.get(reply_id)) {
+                    props.message.channel
+                      ?.fetchMessage(reply_id)
+                      .catch(() => undefined);
                   }
                 });
 
@@ -434,7 +477,7 @@ export function Message(props: Props) {
               {(replyId) => (
                 <ProtectedReplyPreview
                   id={replyId}
-                  channelId={props.message.channelId}
+                  channelId={shownChannelId()}
                 />
               )}
             </For>
@@ -523,11 +566,11 @@ export function Message(props: Props) {
           </Switch>
         }
         compact={
-          (!protectedRow() && !!props.message.systemMessage) ||
+          (!guardedRow() && !!props.message.systemMessage) ||
           state.settings.getValue("appearance:compact_mode")
         }
         infoMatch={
-          <Match when={!protectedRow() && props.message.systemMessage}>
+          <Match when={!guardedRow() && props.message.systemMessage}>
             <SystemMessageIcon
               systemMessage={props.message.systemMessage!}
               createdAt={props.message.createdAt}
@@ -536,7 +579,7 @@ export function Message(props: Props) {
           </Match>
         }
       >
-        <Show when={!protectedRow() && props.message.systemMessage}>
+        <Show when={!guardedRow() && props.message.systemMessage}>
           <SystemMessage
             systemMessage={props.message.systemMessage!}
             menuGenerator={(user) =>
@@ -598,7 +641,7 @@ export function Message(props: Props) {
             }}
           </CompositionMediaPicker>
         </Show>
-        <Show when={!protectedRow() && props.message.isCrosspost}>
+        <Show when={!guardedRow() && props.message.isCrosspost}>
           <CrosspostAttribution>
             <Symbol size={14}>campaign</Symbol>
             <span>{crosspostOrigin()}</span>
@@ -614,7 +657,8 @@ export function Message(props: Props) {
               PLACE of the body for anything but a decrypted view, and no
               view yet is `pending`. Never the server content, even when
               present, and never translated (decrypted text must not leave
-              the device) */}
+              the device). Only a plain row (design 9.5) passes these three
+              and renders through the ordinary branches below */}
           <Match when={protectedMarker()}>
             {(kind) => <ProtectedMessageMarker kind={kind()} />}
           </Match>
@@ -627,12 +671,18 @@ export function Message(props: Props) {
                 <Show when={view().tsSkew}>
                   <ProtectedMessageMarker kind="ts_skew" />
                 </Show>
-                <Show when={!view().senderVerified}>
-                  <ProtectedMessageMarker kind="sender_not_verified" />
-                </Show>
+                <For each={protectedRowNotes(view())}>
+                  {(note) => <ProtectedRowNote kind={note} />}
+                </For>
                 <ProtectedFilesNote view={view()} />
               </>
             )}
+          </Match>
+          {/* A row still being checked (design 9.5 arm 2), and any guarded
+              row the two branches above did not take: one muted line,
+              never the branches below */}
+          <Match when={guardedRow()}>
+            <ProtectedCheckingLine />
           </Match>
           <Match
             when={isDiceRollMessage(props.message.flags, props.message.content)}
@@ -691,9 +741,10 @@ export function Message(props: Props) {
             </Show>
           </Match>
         </Switch>
-        {/* Never on a Protected channel row: attachments, embeds and
-            components there are server-set, not from the ciphertext */}
-        <Show when={!protectedRow()}>
+        {/* Never on a guarded row: attachments, embeds and components there
+            are server-set, not from the ciphertext. A plain row from before
+            the channel was protected shows its own (design 9.5) */}
+        <Show when={!guardedRow()}>
           <For each={props.message.attachments}>
             {(attachment) => (
               <Attachment message={props.message} file={attachment} />
@@ -718,7 +769,7 @@ export function Message(props: Props) {
             <MessageComponents message={props.message} />
           </Show>
         </Show>
-        <Show when={!protectedRow() && props.message.isCrossposted}>
+        <Show when={!guardedRow() && props.message.isCrossposted}>
           <PublishedChip>
             <Symbol size={14}>campaign</Symbol>
             <span>
@@ -739,7 +790,7 @@ export function Message(props: Props) {
             </a>
           </EphemeralNotice>
         </Show>
-        <Show when={!protectedRow() && props.message.thread}>
+        <Show when={!guardedRow() && props.message.thread}>
           <a href={props.message.thread!.path}>
             <ThreadPill>
               <Symbol size={16}>subdirectory_arrow_right</Symbol>
@@ -755,9 +806,7 @@ export function Message(props: Props) {
             reactions={
               props.message.reactions as never as Map<string, Set<string>>
             }
-            interactions={
-              protectedRow() ? undefined : props.message.interactions
-            }
+            interactions={guardedRow() ? undefined : props.message.interactions}
             userId={client().user!.id}
             addReaction={react}
             removeReaction={unreact}
@@ -789,12 +838,19 @@ function ProtectedReplyPreview(props: { id: string; channelId: string }) {
   };
 
   const view = useProtectedMessage(() => (target() ? props.id : undefined));
-  const marker = () =>
-    protectedMarkerKind(view(), protectedTextPlane(client().e2ee));
+  const body = () =>
+    protectedViewClass(view(), protectedTextPlane(client().e2ee));
+  const marker = () => {
+    const b = body();
+    return b.kind === "marker" ? b.marker : undefined;
+  };
 
+  // Only a decrypted view has a line. A plain target (an ordinary earlier
+  // message) shows its author and no text: nothing of the row is read here.
   const text = () => {
-    const v = view();
-    if (v?.status !== "ok") return "";
+    const b = body();
+    if (b.kind !== "ok") return "";
+    const v = b.view;
     const line = v.text.length > 128 ? v.text.slice(0, 128) + "..." : v.text;
     return line.replace(/\n/g, " ");
   };
@@ -840,6 +896,11 @@ function ProtectedReplyPreview(props: { id: string; channelId: string }) {
                     </ReplyMarker>
                   )}
                 </Match>
+                <Match when={body().kind === "checking"}>
+                  <ReplyText>
+                    <ProtectedCheckingLine />
+                  </ReplyText>
+                </Match>
               </Switch>
             </ReplyLink>
           </ReplyBase>
@@ -848,6 +909,58 @@ function ProtectedReplyPreview(props: { id: string; channelId: string }) {
     </Switch>
   );
 }
+
+/**
+ * The line a row shows while its channel's history state is not loaded or
+ * verified (design 9.5 arm 2): fixed copy, nothing of the row.
+ */
+function ProtectedCheckingLine() {
+  return (
+    <CheckingLine role="note" data-protected-row="checking">
+      {rowStateCopy("checking")}
+    </CheckingLine>
+  );
+}
+
+/**
+ * One note under a decrypted body (design 9.2): what could not be checked
+ * about the row. Fixed copy by kind.
+ */
+function ProtectedRowNote(props: { kind: RowNote }) {
+  return (
+    <RowNoteLine role="note" data-protected-note={props.kind}>
+      <Symbol size={14}>info</Symbol>
+      <span>{rowNoteCopy(props.kind)}</span>
+    </RowNoteLine>
+  );
+}
+
+/**
+ * Muted line in place of a body that is still being checked
+ */
+const CheckingLine = styled("div", {
+  base: {
+    color: "var(--md-sys-color-outline)",
+    fontStyle: "italic",
+  },
+});
+
+/**
+ * Small muted note under a decrypted body, one per line
+ */
+const RowNoteLine = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    width: "fit-content",
+    maxWidth: "100%",
+    marginTop: "var(--gap-xs)",
+    color: "var(--md-sys-color-outline)",
+    fontSize: "0.75rem",
+    fontStyle: "italic",
+  },
+});
 
 /**
  * Author of a Protected channel reply preview

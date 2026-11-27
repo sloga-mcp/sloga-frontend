@@ -675,10 +675,11 @@ test("S8: the manager is built only once status.device_id is known (and capable)
   );
   // S2 F3: the owner flows also read / discard the stored seat publish;
   // F5: and hand the owner key over (S2-D42); FX-R: and publish the
-  // recovery list as a stored publish.
+  // recovery list as a stored publish; S4: and carry the history toggle
+  // and the wipe (without them the manager answers `history_unavailable`).
   assert.match(
     ensure,
-    /owner: \{\s*protect,\s*setSeats,\s*signOwnerDevices,\s*moveOwnerKey,\s*pendingSeats,\s*cancelPendingSeats,\s*recoverOwnership,\s*\}/,
+    /owner: \{\s*protect,\s*setSeats,\s*signOwnerDevices,\s*moveOwnerKey,\s*pendingSeats,\s*cancelPendingSeats,\s*recoverOwnership,\s*setHistory,\s*wipeHistory,\s*\}/,
   );
   assert.match(
     ensure,

@@ -35,6 +35,10 @@
  *   (`welcomeRefusalOf`, `refusalRetryable`, `welcomeRefusalRejoin`, the
  *   persisted `RefusalPace`) and the owner-change intent hold
  *   (`joinIntentHeldByOwnerChange`).
+ * - S4 protect with history (design 4.9 "S4", R-W4-7 / 10 / 11): the
+ *   `resign` / `failed` publish steps, `PROTECT_HISTORY_MAX_ATTEMPTS`,
+ *   `protectLanded`, `readProtectJournal`, `protectBody`, `historySignArgs`;
+ *   `parseCommitInfo` with the commit row's `created_at`.
  *
  * Fail-closed rules this module holds everywhere:
  * - An answer whose outcome is unknown (transport error, lost response, 5xx)
@@ -59,7 +63,10 @@
  */
 import type { MlsJoinRequest, MlsMemberDevice, MlsRemovedReason } from "./e2ee";
 import type {
+  HistorySetting,
+  PreHistorySetting,
   SeatListInput,
+  SignedAuthority,
   SignedHandover,
   SignedSeatList,
   TextApiResponse,
@@ -222,15 +229,41 @@ function rateLimitDelayMs(response: TextApiResponse, failures: number) {
 /** Which publish: `PUT /channels/:id/protect` or `PUT .../seats`. */
 export type PublishOp = "protect" | "seats";
 
-/** One attempt's answer: the courier's response, or a transport failure. */
+/**
+ * S4 (R-W4-11): how many owner-only geneses one protect may sign while the
+ * server keeps answering `ProtectHistoryMoved` (design 4.9 "S4": at most 5
+ * attempts in all, the first one included).
+ */
+export const PROTECT_HISTORY_MAX_ATTEMPTS = 5;
+
+/**
+ * One attempt's answer: the courier's response, or a transport failure.
+ * S4: `reread` is the newest message id read again after a `resign` step
+ * (`GET /channels/:id/messages?limit=1&sort=Latest`); null when the read
+ * gave no id. It is only meaningful with `PublishContext.history`.
+ */
 export type PublishAnswer =
   | { kind: "response"; response: TextApiResponse }
-  | { kind: "transport_error" };
+  | { kind: "transport_error" }
+  | { kind: "reread"; boundary: string | null };
+
+/** S4: the genesis of a protect that carries a boundary. */
+export interface ProtectHistoryContext {
+  /** Which genesis of this protect the answer is for, counted from 1. */
+  attempt: number;
+  /** The boundary that genesis was signed with. */
+  boundary: string;
+}
 
 export interface PublishContext {
   op: PublishOp;
   /** Consecutive unresolved attempts so far (backoff index). */
   failures: number;
+  /**
+   * S4: set only for a protect whose genesis carries a boundary. Absent,
+   * every answer is classified exactly as before S4.
+   */
+  history?: ProtectHistoryContext;
 }
 
 /**
@@ -244,6 +277,15 @@ export interface PublishContext {
  *   (N3): resolve it with `resolveProtectReadBack`. Still unresolved.
  * - `resend`: re-send the SAME signed bytes after `delayMs`. Still
  *   unresolved; never re-sign.
+ * - `resign` (S4, boundary protect only): the channel moved past the
+ *   boundary and nothing landed. From a response: read the newest message
+ *   id again and hand it back as a `reread` answer. From a `reread`: that
+ *   id may be signed as genesis number `attempt`. Still unresolved, and
+ *   every genesis signed so far stays in the journal.
+ * - `failed` (S4): stop signing. `protect_busy` after the last allowed
+ *   attempt, or when the boundary did not move up. Not a resolution: an
+ *   earlier genesis may still be what the server holds, so read back
+ *   (`protectLanded`) before the journal is cleared.
  */
 export type PublishStep =
   | { kind: "resolved_ok" }
@@ -253,7 +295,38 @@ export type PublishStep =
       kind: "resend";
       delayMs: number;
       cause: "rate_limited" | "server_error" | "transport";
-    };
+    }
+  | { kind: "resign"; attempt: number }
+  | { kind: "failed"; reason: "protect_busy" };
+
+const PROTECT_BUSY: PublishStep = { kind: "failed", reason: "protect_busy" };
+
+/**
+ * The step after `ProtectHistoryMoved` or after the boundary was read
+ * again. `next` undefined = the answer itself (no new boundary yet). A
+ * count that is not a whole attempt number fails closed, so broken
+ * bookkeeping can never sign without end.
+ */
+function resignStep(
+  history: ProtectHistoryContext,
+  next: string | null | undefined,
+): PublishStep {
+  const n = history.attempt;
+  if (!Number.isSafeInteger(n) || n < 1) return PROTECT_BUSY;
+  if (n >= PROTECT_HISTORY_MAX_ATTEMPTS) return PROTECT_BUSY;
+  if (next !== undefined) {
+    // Message ids are ULIDs, which sort as their text does. A boundary that
+    // is not above the signed one means the channel did not move although
+    // the server said it had: stop, never sign the same boundary again.
+    const previous = history.boundary;
+    if (typeof next !== "string" || !ULID_RE.test(next)) return PROTECT_BUSY;
+    if (typeof previous !== "string" || !ULID_RE.test(previous)) {
+      return PROTECT_BUSY;
+    }
+    if (next <= previous) return PROTECT_BUSY;
+  }
+  return { kind: "resign", attempt: n + 1 };
+}
 
 /**
  * Classify one publish answer. 2xx resolves; a 429 is retryable, NEVER a
@@ -264,11 +337,23 @@ export type PublishStep =
  * read-back can only answer "refused" from an honest server, so this is the
  * design's rule (a 4xx after an unresolved attempt) without having to trust
  * the caller's bookkeeping of which attempt came first.
+ *
+ * S4: with `ctx.history` on a protect, a 409 `ProtectHistoryMoved` is
+ * `resign` or `failed` (see `PublishStep`); a 5xx, a 429 or a lost answer
+ * still re-sends the SAME bytes, and any other 4xx still reads back. A
+ * `reread` answer without that context is a caller defect and is `failed`.
  */
 export function publishStep(
   answer: PublishAnswer,
   ctx: PublishContext,
 ): PublishStep {
+  const history =
+    ctx.op === "protect" && isRecord(ctx.history) ? ctx.history : null;
+  if (answer.kind === "reread") {
+    return history === null
+      ? PROTECT_BUSY
+      : resignStep(history, answer.boundary);
+  }
   if (answer.kind === "transport_error") {
     return {
       kind: "resend",
@@ -288,6 +373,9 @@ export function publishStep(
   }
   if (is4xx(status)) {
     const type = errorTypeOf(response.body);
+    if (history !== null && status === 409 && type === "ProtectHistoryMoved") {
+      return resignStep(history, undefined);
+    }
     return ctx.op === "protect"
       ? { kind: "read_back", status, type }
       : { kind: "resolved_refused", status, type };
@@ -418,6 +506,235 @@ export function resolveProtectReadBack(
     asOfGroupId:
       typeof seats.as_of_group_id === "string" ? seats.as_of_group_id : null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// S4: protect with history (design 4.9 "S4", R-W4-10, R-W4-11)
+// ---------------------------------------------------------------------------
+
+/**
+ * What the read-back of a boundary protect found (S4-RR-5). The owner keeps
+ * EVERY genesis it signed in the retry loop, because a delayed earlier one
+ * can land after a later one was signed.
+ * - `landed`: the server's list is one of `geneses`, by the same comparison
+ *   `resolveProtectReadBack` makes for one list (version 1, body, signature
+ *   and both signer ids). Verify the read-back list next (the self-pin).
+ * - `other`: a list is there and it is none of ours.
+ * - `none`: the server holds no list.
+ */
+export function protectLanded(
+  readBack: SignedSeatList | null,
+  geneses: readonly SignedSeatList[],
+): "landed" | "other" | "none" {
+  if (readBack === null || readBack === undefined) return "none";
+  if (!isRecord(readBack)) return "other";
+  const list: Record<string, unknown> = readBack;
+  const text = (v: unknown): v is string => typeof v === "string";
+  for (const g of geneses) {
+    if (
+      list.version === 1 &&
+      g.version === 1 &&
+      text(g.body) &&
+      list.body === g.body &&
+      text(g.signature) &&
+      list.signature === g.signature &&
+      text(g.signer_user_id) &&
+      list.signer_user_id === g.signer_user_id &&
+      text(g.signer_device_id) &&
+      list.signer_device_id === g.signer_device_id
+    ) {
+      return "landed";
+    }
+  }
+  return "other";
+}
+
+/**
+ * The write-ahead entry of a protect (D7c), S4 shape: every genesis signed
+ * for this protect, oldest first, and whether the owner asked for a wipe.
+ */
+export type ProtectJournalV2 = {
+  v: 2;
+  op: "protect";
+  geneses: SignedSeatList[];
+  wipe: boolean;
+};
+
+function journalAuthority(v: unknown): SignedAuthority | null {
+  return isRecord(v) &&
+    typeof v.body === "string" &&
+    typeof v.signature === "string"
+    ? { body: v.body, signature: v.signature }
+    : null;
+}
+
+/** One stored signed list, copied field by field; null when it is not one. */
+function journalSigned(v: unknown): SignedSeatList | null {
+  if (
+    !isRecord(v) ||
+    typeof v.version !== "number" ||
+    !Number.isSafeInteger(v.version) ||
+    v.version < 1 ||
+    typeof v.body !== "string" ||
+    typeof v.signature !== "string" ||
+    typeof v.signer_user_id !== "string" ||
+    typeof v.signer_device_id !== "string"
+  ) {
+    return null;
+  }
+  const signed: SignedSeatList = {
+    version: v.version,
+    body: v.body,
+    signature: v.signature,
+    signer_user_id: v.signer_user_id,
+    signer_device_id: v.signer_device_id,
+  };
+  if (v.authority === undefined) return signed;
+  const authority = journalAuthority(v.authority);
+  if (authority === null) return null;
+  return { ...signed, authority };
+}
+
+/**
+ * Read a stored protect entry: the stored string or its parsed JSON. The
+ * S2 entry `{ v: 1, op: "protect", signed }` reads as one genesis and no
+ * wipe. Anything else is null and nothing throws: an entry of another op,
+ * an unknown version, no genesis, one unreadable genesis (the whole entry
+ * goes, never a shortened list), or a `wipe` that is not a boolean. A wipe
+ * is never read out of a missing field.
+ */
+export function readProtectJournal(raw: unknown): ProtectJournalV2 | null {
+  let v: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      v = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!isRecord(v) || v.op !== "protect") return null;
+  if (v.v === 1) {
+    const signed = journalSigned(v.signed);
+    return signed === null
+      ? null
+      : { v: 2, op: "protect", geneses: [signed], wipe: false };
+  }
+  if (v.v !== 2 || typeof v.wipe !== "boolean") return null;
+  if (!Array.isArray(v.geneses) || v.geneses.length === 0) return null;
+  const geneses: SignedSeatList[] = [];
+  for (const entry of v.geneses) {
+    const signed = journalSigned(entry);
+    if (signed === null) return null;
+    geneses.push(signed);
+  }
+  return { v: 2, op: "protect", geneses, wipe: v.wipe };
+}
+
+/**
+ * Whether a signed body carries the line `pre_history:wiped`. A v1 body
+ * has no such line. A body with more than one `pre_history:` line is not
+ * one native writes and is not read as wiped.
+ */
+function signedAsWiped(body: unknown): boolean {
+  if (typeof body !== "string") return false;
+  const lines = body.split("\n").filter((l) => l.startsWith("pre_history:"));
+  return lines.length === 1 && lines[0] === "pre_history:wiped";
+}
+
+/**
+ * The body of `PUT /channels/:id/protect` (`DataProtectChannel`).
+ * `wipe_history` is sent only for a wipe the owner asked for AND signed.
+ * The request and the signed bytes must say the same thing (4.9): asking
+ * for a wipe with a list that is not signed `wiped`, or the reverse, is a
+ * programmer error and throws before anything is sent.
+ */
+export function protectBody(
+  signed: SignedSeatList,
+  wipe: boolean,
+): { seat_list: SignedSeatList; wipe_history?: true } {
+  const wiped = signedAsWiped(signed.body);
+  if (wipe !== true && wipe !== false) {
+    throw new Error("protectBody: wipe must be a boolean");
+  }
+  if (wipe !== wiped) {
+    throw new Error(
+      wipe
+        ? "protectBody: a wipe was asked for but the signed list is not wiped"
+        : "protectBody: the signed list is wiped but no wipe was asked for",
+    );
+  }
+  return wipe
+    ? { seat_list: signed, wipe_history: true }
+    : { seat_list: signed };
+}
+
+/** The five ways a seat list is signed with respect to history (S4). */
+export type HistorySignOp =
+  /** Any list that says nothing about history (every S2 sign). */
+  | { kind: "plain" }
+  /** A v2 genesis with a boundary; earlier messages stay. */
+  | { kind: "genesis_kept"; boundary: string }
+  /** A v2 genesis with a boundary; native asks before it signs the wipe. */
+  | { kind: "genesis_wiped"; boundary: string }
+  /** The next list with the `history` line changed. */
+  | { kind: "set_history"; history: HistorySetting; recovery: boolean }
+  /** The one-change wipe list over a held boundary. */
+  | { kind: "wipe" };
+
+/** The four S4 arguments of `e2ee_text_seat_list_sign` (always sent). */
+export interface HistorySignArgs {
+  history: HistorySetting | null;
+  historyBoundary: string | null;
+  preHistory: PreHistorySetting | null;
+  /** R-W4-10: no route counts the rows, so the dialog shows no number. */
+  wipeCount: null;
+}
+
+/**
+ * The S4 sign arguments for one of the five sign shapes. Throws (a
+ * programmer error, as native would refuse the call) for a boundary that
+ * is not a message id, a `history` value that is not one of the two, and
+ * `history` on a recovery list.
+ */
+export function historySignArgs(op: HistorySignOp): HistorySignArgs {
+  const none: HistorySignArgs = {
+    history: null,
+    historyBoundary: null,
+    preHistory: null,
+    wipeCount: null,
+  };
+  switch (op.kind) {
+    case "plain":
+      return none;
+    case "genesis_kept":
+    case "genesis_wiped": {
+      if (typeof op.boundary !== "string" || !ULID_RE.test(op.boundary)) {
+        throw new Error("historySignArgs: the boundary is not a message id");
+      }
+      return {
+        ...none,
+        historyBoundary: op.boundary,
+        preHistory: op.kind === "genesis_wiped" ? "wiped" : "kept",
+      };
+    }
+    case "set_history": {
+      if (op.recovery !== false) {
+        throw new Error("historySignArgs: history on a recovery list");
+      }
+      if (op.history !== "visible" && op.history !== "hidden") {
+        throw new Error("historySignArgs: unknown history value");
+      }
+      return { ...none, history: op.history };
+    }
+    case "wipe":
+      return { ...none, preHistory: "wiped" };
+    default: {
+      const unknown: never = op;
+      throw new Error(
+        `historySignArgs: unknown sign shape ${String((unknown as { kind?: unknown }).kind)}`,
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -574,13 +891,39 @@ function removedReasons(v: unknown): MlsRemovedReason[] | null {
   return out;
 }
 
+/** `parseCommitInfo`'s answer for a row that is one. */
+export interface ParsedCommitInfo {
+  row: TextCommitInfo;
+  /**
+   * S4 (R-W4-7): the row carried a `created_at` that is not a safe integer
+   * >= 0 and `row` has none. The caller logs it loudly.
+   */
+  droppedCreatedAt: boolean;
+}
+
 /**
  * A stored commit row, or null when the shape is not one. Only the fields
  * read here are checked, and `removed_reasons` (OR-5): a malformed label
  * vector makes the whole row malformed. A present vector comes back as the
  * validated copy; an absent one stays absent.
+ *
+ * S4 (R-W4-7): `created_at` is kept only as a safe integer >= 0. Native
+ * refuses the whole call on any other value, so a string, a fraction, a
+ * negative or a number above 2^53 - 1 is left out of the row (the row
+ * itself is still good) and reported in `droppedCreatedAt`.
  */
-function parseCommitInfo(v: unknown): TextCommitInfo | null {
+export function parseCommitInfo(v: unknown): ParsedCommitInfo | null {
+  const row = commitRow(v);
+  if (row === null) return null;
+  const at: unknown = row.created_at;
+  if (at === undefined || isEpoch(at)) return { row, droppedCreatedAt: false };
+  const rest: TextCommitInfo = { ...row };
+  delete rest.created_at;
+  return { row: rest, droppedCreatedAt: true };
+}
+
+/** The row checks of `parseCommitInfo`, before the `created_at` rule. */
+function commitRow(v: unknown): TextCommitInfo | null {
   if (!isRecord(v)) return null;
   const c = v.committer;
   if (
@@ -605,9 +948,9 @@ function parseCommitRows(body: unknown): TextCommitInfo[] | null {
   if (!isRecord(body) || !Array.isArray(body.commits)) return null;
   const rows: TextCommitInfo[] = [];
   for (const raw of body.commits) {
-    const row = parseCommitInfo(raw);
-    if (row === null) return null;
-    rows.push(row);
+    const parsed = parseCommitInfo(raw);
+    if (parsed === null) return null;
+    rows.push(parsed.row);
   }
   return rows;
 }
@@ -662,7 +1005,7 @@ function classifySubmitResponse(
   }
   const type = errorTypeOf(body);
   if (status === 409 && isRecord(body) && body.result === "Lost") {
-    const winner = parseCommitInfo(body.winning);
+    const winner = parseCommitInfo(body.winning)?.row ?? null;
     if (
       winner === null ||
       winner.group_id !== ctx.groupId ||

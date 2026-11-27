@@ -10,17 +10,28 @@
 // L-MGR): a row is the own send only when it binds (X#4, C-X4);
 // `not_member` is refused without a retry (X#5, C-X5b). S2-W4 (lane L2x):
 // `files` is checked and counted, never shown (OR-20); a newer envelope is
-// the grey `unsupported_version` marker (OR-19).
+// the grey `unsupported_version` marker (OR-19). S4-W4 (lane L2x): a row
+// without `encrypted` goes through the row policy with the manager's history
+// ops; the ok view's three S4 keys; the history walk for a missing epoch.
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
+import { ulidTimeMs } from "./protectedRowPolicy.ts";
 import {
+  type HistoryOps,
+  type RowOps,
+  type WalkAnswer,
   _resetMessageFlowsForTest,
   CONFIRM_PAGE_LIMIT,
+  decidePlainRow,
   decryptRow,
   encryptAndSend,
   markerForError,
+  newWalkBatch,
+  okViewNotes,
   parseSendStoreKey,
+  plainRowInput,
+  redecide,
   SEND_ATTEMPTS_PER_CALL,
   sendStoreKey,
 } from "./protectedTextMessages.ts";
@@ -31,6 +42,7 @@ import type {
   ProtectedMessageRow,
   ProtectedTextPort,
   TextApiResponse,
+  TextChannelState,
 } from "./protectedTextTypes.ts";
 
 // Compile-time: the exports are exactly what B5 wires as `deps.messages`.
@@ -590,6 +602,9 @@ test("decrypt ok → view from native only; args carry the message-level nonce a
     tsSkew: false,
     cid: CID1,
     filesUnsupported: 0,
+    timingUnverified: false,
+    belowBoundary: false,
+    historySender: false,
   });
   assert.deepEqual(h.decrypts[0], {
     channelId: CH,
@@ -808,6 +823,10 @@ const OK_VIEW = {
   senderVerified: true,
   tsSkew: false,
   cid: CID1,
+  // S4: false without the history ops and without native's timing flag
+  timingUnverified: false,
+  belowBoundary: false,
+  historySender: false,
 };
 
 const ERROR_VIEW = { status: "marker", kind: "error" };
@@ -941,5 +960,793 @@ test("S3-N0 (OR-19): a newer envelope version is the grey unsupported_version ma
   assert.equal(
     markerForError({ source: "native", error: v3 }),
     "unsupported_version",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// S4-W4 L2x: the row policy in the decrypt path, the ok notes, the walk
+// ---------------------------------------------------------------------------
+
+const ulid = (tail: string) => `01JA${"0".repeat(19)}${tail}`;
+const BOUNDARY = ulid("BND");
+const BELOW = ulid("AAA");
+const ABOVE = ulid("CCC");
+/** The three ids share their time part, so one limit fits them all. */
+const LIMIT = ulidTimeMs(BOUNDARY)!;
+
+/** A verified `e2ee_text_state` whose list keeps the pre-protect history. */
+const nativeState = (over: Record<string, unknown> = {}) =>
+  ({
+    channel_id: CH,
+    group_id: "g0",
+    generation: 1,
+    epoch: 6,
+    state: "active",
+    members: [],
+    seat_list: {
+      version: 2,
+      signer_user_id: ME,
+      signer_device_id: MY_DEV,
+      seats: [ME, BOB],
+      device_cap: 0,
+      issued_at: LIMIT,
+    },
+    owner_pin: {
+      channel_id: CH,
+      status: "pinned",
+      owner_user_id: ME,
+      owner_device_id: MY_DEV,
+      owner_verified: true,
+      source: "protect",
+      pending_signer: null,
+    },
+    self_seated: true,
+    roster_matches_list: true,
+    update_due: false,
+    update_required: false,
+    verdict: "ok",
+    history_boundary: BOUNDARY,
+    pre_history: "kept",
+    history_time_limit: LIMIT,
+    ...over,
+  }) as unknown as TextChannelState;
+
+interface S4Script {
+  state?: TextChannelState | null;
+  pin?: { boundary: string; wiped: boolean } | null;
+  seatListError?: string | null;
+  pre?: { conflicted: boolean; wiped: boolean };
+  fromWalk?: (groupId: string, epoch: number) => unknown;
+  predecessor?: (groupId: string) => unknown;
+  walk?: (n: number) => unknown;
+}
+
+/** `h.ops` plus every S4 member, as the manager passes them. */
+function s4(h: H, o: S4Script = {}) {
+  const walks: string[] = [];
+  const ops: RowOps & HistoryOps = {
+    ...h.ops,
+    pinHistory: () =>
+      o.pin === undefined ? { boundary: BOUNDARY, wiped: false } : o.pin,
+    nativeState: () => (o.state === undefined ? nativeState() : o.state),
+    seatListError: () => o.seatListError ?? null,
+    preHistoryState: () => o.pre ?? { conflicted: false, wiped: false },
+    epochFromWalk: (g, e) => (o.fromWalk?.(g, e) ?? false) as boolean,
+    knownPredecessor: (_ch, g) => (o.predecessor?.(g) ?? false) as boolean,
+    async requestWalk(ch, g, e) {
+      walks.push(`${ch} ${g} ${e}`);
+      h.events.push(`walk ${g} ${e}`);
+      if (!o.walk) throw new Error("unscripted walk");
+      return (await o.walk(walks.length)) as WalkAnswer;
+    },
+  };
+  return { ops, walks };
+}
+
+const PLAIN = { status: "plain" };
+const CHECKING = { status: "checking" };
+const RED = { status: "marker", kind: "unencrypted_row" };
+const PENDING = { status: "pending" };
+const mark = (kind: string) => ({ status: "marker", kind });
+
+/** A row without `encrypted`, as a pre-protect message arrives. */
+const plainRow = (id = BELOW) => prow({ id, nonce: null, encrypted: null });
+
+const unknownEpoch = (
+  epoch: number,
+  oldest: number | null,
+  current: number,
+  over: Record<string, unknown> = {},
+) => ({
+  type: "unknown_epoch",
+  group_id: "g0",
+  epoch,
+  oldest_held: oldest,
+  current,
+  removed_self: false,
+  ...over,
+});
+
+/** Native refuses the first `times` decrypts of each message, then opens it. */
+function failFirst(err: unknown, times = 1) {
+  const seen = new Map<string, number>();
+  return (a: Record<string, unknown>) => {
+    const id = a.messageId as string;
+    const n = (seen.get(id) ?? 0) + 1;
+    seen.set(id, n);
+    if (n <= times) throw err;
+    return decrypted({ message_id: id });
+  };
+}
+
+const refuse = (err: unknown) => () => {
+  throw err;
+};
+
+const catchUps = (h: H) => h.events.filter((e) => e.startsWith("catchUp"));
+
+async function plainView(o: S4Script, id = BELOW) {
+  _resetMessageFlowsForTest();
+  const h = harness({ decrypt: () => decrypted() });
+  const { ops } = s4(h, o);
+  const v = await decryptRow(ops, h.port, plainRow(id), false);
+  assert.equal(h.decrypts.length, 0, "a row without encrypted is never native");
+  return v;
+}
+
+test("S4 plain row: a verified pre-boundary row is plain, with no native call", async () => {
+  assert.deepEqual(await plainView({}), PLAIN);
+  assert.deepEqual(await plainView({ pin: null }), PLAIN);
+  assert.deepEqual(await plainView({}, BOUNDARY), PLAIN);
+  // Live or fetched makes no difference to the arm (R-W4-17: the SDK keeps
+  // a live row stripped; plain only allows the ordinary rendering).
+  const h = harness({ decrypt: () => decrypted() });
+  assert.deepEqual(
+    await decryptRow(s4(h).ops, h.port, plainRow(), true),
+    PLAIN,
+  );
+  assert.equal(h.decrypts.length, 0);
+  assert.deepEqual(h.logs, []);
+});
+
+test("S4 plain row: a missing, throwing or unreadable lookup is the red marker", async () => {
+  const lookups = [
+    "pinHistory",
+    "nativeState",
+    "seatListError",
+    "preHistoryState",
+  ] as const;
+  const run = async (change: (ops: Record<string, unknown>) => void) => {
+    _resetMessageFlowsForTest();
+    const h = harness({ decrypt: () => decrypted() });
+    const ops = s4(h).ops as unknown as Record<string, unknown>;
+    change(ops);
+    const v = await decryptRow(
+      ops as unknown as RowOps,
+      h.port,
+      plainRow(),
+      false,
+    );
+    assert.equal(h.decrypts.length, 0);
+    return v;
+  };
+  // Nothing changed: the same row is plain, so each red below is the change.
+  assert.deepEqual(await run(() => undefined), PLAIN);
+  for (const name of lookups) {
+    assert.deepEqual(await run((ops) => delete ops[name]), RED, name);
+    assert.deepEqual(
+      await run((ops) => {
+        ops[name] = refuse(new Error("lookup"));
+      }),
+      RED,
+      `${name} throws`,
+    );
+  }
+  const unreadable: [string, unknown][] = [
+    ["pinHistory", undefined],
+    ["pinHistory", "pin"],
+    ["pinHistory", { boundary: 1, wiped: false }],
+    ["pinHistory", { boundary: BOUNDARY }],
+    ["pinHistory", { boundary: BOUNDARY, wiped: "false" }],
+    ["nativeState", undefined],
+    ["nativeState", "state"],
+    ["nativeState", [nativeState()]],
+    ["seatListError", undefined],
+    ["seatListError", 0],
+    ["seatListError", false],
+    ["preHistoryState", undefined],
+    ["preHistoryState", null],
+    ["preHistoryState", {}],
+    ["preHistoryState", { conflicted: false }],
+    ["preHistoryState", { conflicted: "no", wiped: false }],
+    ["preHistoryState", { conflicted: false, wiped: 0 }],
+  ];
+  for (const [name, answer] of unreadable) {
+    assert.deepEqual(
+      await run((ops) => (ops[name] = () => answer)),
+      RED,
+      `${name} ${JSON.stringify(answer)}`,
+    );
+  }
+  // No S4 member at all (the manager before S4).
+  const h = harness({ decrypt: () => decrypted() });
+  assert.deepEqual(await decryptRow(h.ops, h.port, plainRow(), false), RED);
+  assert.equal(plainRowInput(h.ops, CH, BELOW), null);
+  assert.equal(decidePlainRow(null), "red");
+});
+
+test("S4 plain row: no native state is checking, and redecide asks again once it is verified", async () => {
+  const v = await plainView({ state: null });
+  assert.deepEqual(v, CHECKING);
+  const h = harness({});
+  const loading = plainRowInput(s4(h, { state: null }).ops, CH, BELOW);
+  const verified = plainRowInput(s4(h).ops, CH, BELOW);
+  assert.equal(redecide(v, loading), false, "nothing changed yet");
+  assert.equal(redecide(v, verified), true);
+  assert.deepEqual(await plainView({}), PLAIN);
+  // Verified, but the row is above the boundary: asked again, and red.
+  const above = plainRowInput(s4(h).ops, CH, ABOVE);
+  assert.equal(redecide(v, above), true);
+  assert.deepEqual(await plainView({}, ABOVE), RED);
+});
+
+test("S4 plain row: an unverified native state is checking, never plain", async () => {
+  const unverified: S4Script[] = [
+    { state: nativeState({ verdict: "owner_changed" }) },
+    { state: nativeState({ verdict: "a_newer_verdict" }) },
+    { state: nativeState({ seat_list: null }) },
+    { seatListError: "bad_sig" },
+    { seatListError: "" },
+  ];
+  for (const o of unverified) {
+    assert.deepEqual(await plainView(o), CHECKING, JSON.stringify(o));
+    const h = harness({});
+    assert.equal(
+      decidePlainRow(plainRowInput(s4(h, o).ops, CH, BELOW)),
+      "checking",
+    );
+  }
+});
+
+test("S4 plain row: each clause of the policy that fails is the red marker", async () => {
+  const state = (over: Record<string, unknown>) => ({
+    state: nativeState(over),
+  });
+  const cases: [string, S4Script, string][] = [
+    ["above the boundary", {}, ABOVE],
+    ["a malformed id", {}, "01MSG1"],
+    ["natively wiped", state({ pre_history: "wiped" }), BELOW],
+    ["no pre_history", state({ pre_history: undefined }), BELOW],
+    ["no boundary", state({ history_boundary: undefined }), BELOW],
+    ["pin wiped", { pin: { boundary: BOUNDARY, wiped: true } }, BELOW],
+    ["pin mismatch", { pin: { boundary: ABOVE, wiped: false } }, BELOW],
+    ["after the limit", state({ history_time_limit: LIMIT - 1 }), BELOW],
+    ["no limit", state({ history_time_limit: undefined }), BELOW],
+  ];
+  for (const [name, o, id] of cases) {
+    assert.deepEqual(await plainView(o, id), RED, name);
+  }
+});
+
+test("S4 plain row: a conflicted channel is red, also while the state is loading", async () => {
+  const pre = { conflicted: true, wiped: false };
+  assert.deepEqual(await plainView({ pre }), RED);
+  assert.deepEqual(await plainView({ pre, state: null }), RED);
+  assert.deepEqual(await plainView({ pre, pin: null }), RED);
+});
+
+test("S4 plain row: a channel the server says was wiped is red, also while the state is loading", async () => {
+  const pre = { conflicted: false, wiped: true };
+  assert.deepEqual(await plainView({ pre }), RED);
+  assert.deepEqual(await plainView({ pre, state: null }), RED);
+  assert.deepEqual(await plainView({ pre, pin: null }), RED);
+});
+
+test("S4 encrypted row: decrypts whatever the policy inputs are, flagged at or below the boundary", async () => {
+  const run = async (o: S4Script | null, id: string) => {
+    _resetMessageFlowsForTest();
+    const h = harness({ decrypt: () => decrypted({ message_id: id }) });
+    const ops = o === null ? h.ops : s4(h, o).ops;
+    const v = await decryptRow(ops, h.port, prow({ id }), false);
+    assert.equal(v.status, "ok", JSON.stringify(o));
+    assert.equal(h.decrypts.length, 1);
+    return (v as { belowBoundary: boolean }).belowBoundary;
+  };
+  assert.equal(await run({}, BELOW), true);
+  assert.equal(await run({}, BOUNDARY), true);
+  assert.equal(await run({}, ABOVE), false);
+  assert.equal(await run({}, "01MSG1"), false, "a malformed id is not below");
+  // The flag needs the verified boundary; the decrypt needs nothing.
+  const never: (S4Script | null)[] = [
+    null,
+    { state: null },
+    { state: nativeState({ verdict: "owner_changed" }) },
+    { state: nativeState({ seat_list: null }) },
+    { seatListError: "bad_sig" },
+    { state: nativeState({ history_boundary: undefined }) },
+  ];
+  for (const o of never) assert.equal(await run(o, BELOW), false);
+  // What turns a row without encrypted red leaves an encrypted one alone.
+  const still: S4Script[] = [
+    { pre: { conflicted: true, wiped: false } },
+    { pre: { conflicted: false, wiped: true } },
+    { pin: { boundary: BOUNDARY, wiped: true } },
+    { state: nativeState({ pre_history: "wiped" }) },
+  ];
+  for (const o of still) assert.equal(await run(o, BELOW), true);
+});
+
+test("S4 ok view: timingUnverified and historySender, a literal true only", async () => {
+  const run = async (over: Record<string, unknown>, o: S4Script | null) => {
+    _resetMessageFlowsForTest();
+    const h = harness({ decrypt: () => decrypted(over) });
+    const ops = o === null ? h.ops : s4(h, o).ops;
+    const v = await decryptRow(ops, h.port, prow(), false);
+    assert.equal(v.status, "ok");
+    const ok = v as { timingUnverified: boolean; historySender: boolean };
+    return [ok.timingUnverified, ok.historySender];
+  };
+  assert.deepEqual(await run({}, {}), [false, false]);
+  assert.deepEqual(await run({ timing_unverified: true }, {}), [true, true]);
+  assert.deepEqual(await run({ timing_unverified: true }, null), [true, true]);
+  for (const junk of [false, "true", 1, null, {}]) {
+    assert.deepEqual(await run({ timing_unverified: junk }, {}), [
+      false,
+      false,
+    ]);
+  }
+  // The epoch native decrypted under came from this session's walk.
+  const asked: unknown[][] = [];
+  const fromWalk = (g: string, e: number) => {
+    asked.push([g, e]);
+    return g === "g0" && e === 3;
+  };
+  assert.deepEqual(await run({}, { fromWalk }), [false, true]);
+  assert.deepEqual(asked, [["g0", 3]]);
+  assert.deepEqual(await run({ epoch: 4 }, { fromWalk }), [false, false]);
+  assert.deepEqual(await run({}, { fromWalk: () => "yes" }), [false, false]);
+  assert.deepEqual(await run({}, { fromWalk: refuse(new Error("lookup")) }), [
+    false,
+    false,
+  ]);
+  asked.length = 0;
+  assert.deepEqual(await run({ group_id: 7 }, { fromWalk }), [false, false]);
+  assert.deepEqual(await run({ epoch: -1 }, { fromWalk }), [false, false]);
+  assert.deepEqual(asked, [], "an unreadable group or epoch is never asked");
+});
+
+test("S4 okViewNotes: the notes of an ok view through the shield", () => {
+  const view = (over: Record<string, boolean>) =>
+    ({
+      status: "ok",
+      text: "",
+      replies: [],
+      senderVerified: true,
+      tsSkew: false,
+      cid: CID1,
+      filesUnsupported: 0,
+      timingUnverified: false,
+      belowBoundary: false,
+      historySender: false,
+      ...over,
+    }) as Parameters<typeof okViewNotes>[0];
+  assert.deepEqual(okViewNotes(view({})), []);
+  assert.deepEqual(okViewNotes(view({ senderVerified: false })), [
+    "sender_unverified",
+  ]);
+  assert.deepEqual(
+    okViewNotes(view({ senderVerified: false, historySender: true })),
+    ["sender_unverified_history"],
+  );
+  assert.deepEqual(okViewNotes(view({ historySender: true })), []);
+  assert.deepEqual(
+    okViewNotes(
+      view({
+        timingUnverified: true,
+        historySender: true,
+        belowBoundary: true,
+      }),
+    ),
+    ["timing_unverified", "below_boundary"],
+  );
+  assert.deepEqual(okViewNotes(view({ belowBoundary: true })), [
+    "below_boundary",
+  ]);
+});
+
+test("S4 redecide: checking and plain follow the decision, red only ever turns plain, ok only gains the note", async () => {
+  const h = harness({});
+  const at = (o: S4Script, id = BELOW) => plainRowInput(s4(h, o).ops, CH, id);
+  const verified = at({});
+  const loading = at({ state: null });
+  const unverified = at({ seatListError: "bad_sig" });
+  const pinWiped = at({ pin: { boundary: BOUNDARY, wiped: true } });
+  const serverWiped = at({ pre: { conflicted: false, wiped: true } });
+  const conflicted = at({ pre: { conflicted: true, wiped: false } });
+  const above = at({}, ABOVE);
+  const view = (v: unknown) => v as Parameters<typeof redecide>[0];
+
+  assert.equal(redecide(view(CHECKING), verified), true);
+  assert.equal(redecide(view(CHECKING), above), true);
+  assert.equal(redecide(view(CHECKING), null), true);
+  assert.equal(redecide(view(CHECKING), loading), false);
+  assert.equal(redecide(view(CHECKING), unverified), false);
+
+  assert.equal(redecide(view(PLAIN), verified), false);
+  const noLongerPlain = [
+    pinWiped,
+    serverWiped,
+    conflicted,
+    loading,
+    unverified,
+    above,
+    null,
+  ];
+  for (const i of noLongerPlain) {
+    assert.equal(redecide(view(PLAIN), i), true);
+  }
+
+  assert.equal(redecide(view(RED), verified), true);
+  for (const i of [loading, unverified, above, pinWiped, conflicted, null]) {
+    assert.equal(redecide(view(RED), i), false, "red never leaves unverified");
+  }
+  // A wipe turns a plain view red when it is computed again.
+  assert.deepEqual(
+    await plainView({ pre: { conflicted: false, wiped: true } }),
+    RED,
+  );
+  assert.deepEqual(
+    await plainView({ pin: { boundary: BOUNDARY, wiped: true } }),
+    RED,
+  );
+
+  for (const v of [PENDING, mark("decrypt_failed"), mark("sent_before_join")]) {
+    for (const i of [verified, loading, null]) {
+      assert.equal(redecide(view(v), i), false);
+    }
+  }
+
+  const ok = (belowBoundary: boolean) =>
+    view({ ...OK_VIEW, filesUnsupported: 0, belowBoundary });
+  assert.equal(redecide(ok(false), verified), true);
+  assert.equal(redecide(ok(true), verified), false);
+  assert.equal(redecide(ok(false), above), false);
+  for (const i of [loading, unverified, null]) {
+    assert.equal(redecide(ok(false), i), false);
+    assert.equal(redecide(ok(true), i), false, "the note is never taken back");
+  }
+});
+
+test("S4 removed_self: the gray marker with no walk, no catch-up and no retry", async () => {
+  const errors = [
+    unknownEpoch(2, 4, 6, { removed_self: true }),
+    unknownEpoch(5, 4, 6, { removed_self: true }),
+    // the shape that would otherwise catch up
+    unknownEpoch(9, 4, 6, { removed_self: true }),
+    unknownEpoch(9, null, -1, { removed_self: true }),
+  ];
+  for (const err of errors) {
+    for (const withS4 of [true, false]) {
+      _resetMessageFlowsForTest();
+      const h = harness({ decrypt: refuse(err) });
+      const x = s4(h, { walk: () => "imported" });
+      const v = await decryptRow(withS4 ? x.ops : h.ops, h.port, prow(), false);
+      assert.deepEqual(v, mark("removed_self"), JSON.stringify(err));
+      assert.deepEqual(x.walks, [], "never a walk");
+      assert.deepEqual(catchUps(h), [], "never a catch-up");
+      assert.equal(h.decrypts.length, 1, "never a retry");
+    }
+  }
+});
+
+const batchRows = (n: number) =>
+  Array.from({ length: n }, (_, i) =>
+    prow({ id: ulid(String(i).padStart(3, "0")) }),
+  );
+
+test("S4 walk: 20 rows of one epoch in one batch share one walk request", async () => {
+  const h = harness({ decrypt: failFirst(unknownEpoch(2, 4, 6)) });
+  const x = s4(h, { walk: () => "imported" });
+  const batch = newWalkBatch();
+  for (const row of batchRows(20)) {
+    // one after the other, as the manager's decryptHistory runs them
+    const v = await decryptRow(x.ops, h.port, row, false, { batch });
+    assert.equal(v.status, "ok");
+  }
+  assert.deepEqual(x.walks, [`${CH} g0 2`]);
+  assert.equal(h.decrypts.length, 40, "each row: one refusal, one retry");
+  assert.deepEqual(catchUps(h), []);
+  // Another epoch of the same batch is its own request.
+  const h2 = harness({ decrypt: failFirst(unknownEpoch(3, 4, 6)) });
+  const other = prow({ id: ulid("ZZZ") });
+  await decryptRow(x.ops, h2.port, other, false, { batch });
+  assert.deepEqual(x.walks, [`${CH} g0 2`, `${CH} g0 3`]);
+});
+
+test("S4 walk: rows decrypted at the same time share the request in flight; later ones ask again", async () => {
+  let release!: (a: string) => void;
+  const gate = new Promise<string>((r) => (release = r));
+  const h = harness({ decrypt: failFirst(unknownEpoch(2, 4, 6)) });
+  const x = s4(h, { walk: (n) => (n === 1 ? gate : "imported") });
+  const all = Promise.all(
+    batchRows(20).map((row) => decryptRow(x.ops, h.port, row, false)),
+  );
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(x.walks.length, 1, "one request while it is in flight");
+  release("imported");
+  assert.ok((await all).every((v) => v.status === "ok"));
+  assert.equal(x.walks.length, 1);
+  // Outside a batch nothing is remembered once the request settled.
+  const late = prow({ id: ulid("ZZZ") });
+  await decryptRow(x.ops, h.port, late, false);
+  assert.equal(x.walks.length, 2);
+});
+
+test("S4 walk: imported retries the decrypt exactly once", async () => {
+  // The key came: the retry opens the row, and its sender note is the
+  // history one because the epoch is from the walk.
+  const h = harness({ decrypt: failFirst(unknownEpoch(2, 4, 6)) });
+  const x = s4(h, { walk: () => "imported", fromWalk: () => true });
+  const v = await decryptRow(x.ops, h.port, prow(), false);
+  assert.deepEqual(v, {
+    ...OK_VIEW,
+    filesUnsupported: 0,
+    historySender: true,
+  });
+  assert.equal(h.decrypts.length, 2);
+  assert.deepEqual(x.walks, [`${CH} g0 2`]);
+  assert.deepEqual(catchUps(h), []);
+
+  // Imported, yet this epoch is still missing: one retry, one walk, and the
+  // final marker. Native would open the row on the sixth try.
+  _resetMessageFlowsForTest();
+  const h2 = harness({ decrypt: failFirst(unknownEpoch(2, 4, 6), 5) });
+  const x2 = s4(h2, { walk: () => "imported" });
+  assert.deepEqual(
+    await decryptRow(x2.ops, h2.port, prow(), false),
+    mark("sent_before_join"),
+  );
+  assert.equal(h2.decrypts.length, 2, "exactly one retry");
+  assert.equal(x2.walks.length, 1, "exactly one walk request");
+
+  // The retry fails for another reason: that reason's marker.
+  _resetMessageFlowsForTest();
+  const h3 = harness({
+    decrypt: (_a, n) => {
+      if (n === 1) throw unknownEpoch(2, 4, 6);
+      throw { type: "bad_sig", user_id: BOB, device_id: "bb" };
+    },
+  });
+  const x3 = s4(h3, { walk: () => "imported" });
+  assert.deepEqual(
+    await decryptRow(x3.ops, h3.port, prow(), false),
+    mark("unverified_sender"),
+  );
+  assert.equal(h3.decrypts.length, 2);
+});
+
+test("S4 walk: retry_later is pending, never a marker", async () => {
+  const h = harness({ decrypt: failFirst(unknownEpoch(2, 4, 6)) });
+  const x = s4(h, { walk: () => "retry_later" });
+  const batch = newWalkBatch();
+  for (const row of batchRows(3)) {
+    const v = await decryptRow(x.ops, h.port, row, false, { batch });
+    assert.deepEqual(v, PENDING);
+  }
+  assert.equal(x.walks.length, 1);
+  assert.equal(h.decrypts.length, 3, "no retry before the walk has a result");
+  assert.deepEqual(catchUps(h), []);
+  // Inside the held run it is pending as well, not red and not gray.
+  _resetMessageFlowsForTest();
+  const h2 = harness({ decrypt: failFirst(unknownEpoch(5, 4, 6)) });
+  const x2 = s4(h2, { walk: () => "retry_later" });
+  assert.deepEqual(await decryptRow(x2.ops, h2.port, prow(), true), PENDING);
+});
+
+const NOT_FOUND = { type: "mls_group_not_found", group_id: "gOld" };
+const FLOOR_OLD = { group_id: "gOld", epoch: 7, stopped: null };
+
+/** [name, native error, script, walk request, marker once the walk ended] */
+const WALK_ENDS: [string, unknown, S4Script, string, string][] = [
+  ["below the held run", unknownEpoch(2, 4, 6), {}, "g0 2", "sent_before_join"],
+  ["inside the held run", unknownEpoch(5, 4, 6), {}, "g0 5", "decrypt_failed"],
+  ["at its oldest epoch", unknownEpoch(4, 4, 6), {}, "g0 4", "decrypt_failed"],
+  ["nothing held", unknownEpoch(5, null, 6), {}, "g0 5", "decrypt_failed"],
+  [
+    "a predecessor never held",
+    unknownEpoch(3, null, -1, { group_id: "gOld" }),
+    { state: nativeState({ history_floor: FLOOR_OLD }) },
+    "gOld 3",
+    "sent_before_join",
+  ],
+  [
+    "a left group above its last epoch",
+    unknownEpoch(9, 4, 6),
+    { state: nativeState({ state: "left" }) },
+    "g0 9",
+    "decrypt_failed",
+  ],
+  [
+    "a predecessor native has no group for",
+    NOT_FOUND,
+    { predecessor: (g) => g === "gOld" },
+    "gOld 3",
+    "unknown_key",
+  ],
+];
+
+test("S4 walk: floor keeps the before-join line only below the held run", async () => {
+  for (const [name, err, o, request, kind] of WALK_ENDS) {
+    for (const answer of ["floor", "imported"]) {
+      _resetMessageFlowsForTest();
+      const h = harness({ decrypt: refuse(err) });
+      const x = s4(h, { ...o, walk: () => answer });
+      const v = await decryptRow(x.ops, h.port, prow(), false);
+      assert.deepEqual(v, mark(kind), `${name} (${answer})`);
+      assert.deepEqual(x.walks, [`${CH} ${request}`], name);
+      assert.deepEqual(catchUps(h), [], name);
+      // floor: nothing to retry; imported: the one retry
+      assert.equal(h.decrypts.length, answer === "floor" ? 1 : 2, name);
+    }
+  }
+});
+
+test("S4 walk not started: a key missing inside the held run is red, never the before-join line", async () => {
+  const cases: [unknown, string][] = [
+    [unknownEpoch(2, 4, 6), "sent_before_join"],
+    [unknownEpoch(5, 4, 6), "decrypt_failed"],
+    [unknownEpoch(4, 4, 6), "decrypt_failed"],
+    [unknownEpoch(5, null, 6), "decrypt_failed"],
+    [unknownEpoch(5, undefined as never, 6), "decrypt_failed"],
+    [unknownEpoch(6, 4, 6), "decrypt_failed"],
+  ];
+  for (const [err, kind] of cases) {
+    assert.equal(markerForError(err), kind, JSON.stringify(err));
+    assert.equal(markerForError({ source: "native", error: err }), kind);
+    for (const withS4 of [true, false]) {
+      _resetMessageFlowsForTest();
+      const h = harness({ decrypt: refuse(err) });
+      // every S4 member but the walk itself
+      const ops: RowOps = { ...s4(h).ops, requestWalk: undefined };
+      const v = await decryptRow(withS4 ? ops : h.ops, h.port, prow(), false);
+      assert.deepEqual(v, mark(kind), JSON.stringify(err));
+      assert.equal(h.decrypts.length, 1);
+      assert.deepEqual(catchUps(h), []);
+    }
+  }
+});
+
+test("S4 walk: a rejected or unreadable walk answer is the red error marker", async () => {
+  const answers: (() => unknown)[] = [
+    refuse(new Error("walk")),
+    () => Promise.reject({ source: "transport" }),
+    () => "done",
+    () => undefined,
+    () => true,
+  ];
+  for (const walk of answers) {
+    _resetMessageFlowsForTest();
+    const h = harness({ decrypt: failFirst(unknownEpoch(2, 4, 6)) });
+    const x = s4(h, { walk });
+    const v = await decryptRow(x.ops, h.port, prow(), false);
+    assert.deepEqual(v, mark("error"));
+    assert.equal(h.decrypts.length, 1, "no retry on an answer nobody gave");
+    assert.equal(x.walks.length, 1);
+    assert.deepEqual(h.logs[0], [
+      "error",
+      "[protected] history walk request failed",
+      { channelId: CH },
+    ]);
+  }
+});
+
+test("S4 catch-up: the S1 path is unchanged with the history ops present (snapshot of calls)", async () => {
+  const ahead = unknownEpoch(9, 1, 5);
+  const transport = async () => {
+    throw { source: "transport" };
+  };
+  const caughtUp = `catchUp ${CH} 9 g0`;
+  /** [name, harness script, view, native decrypts] */
+  const scripts: [
+    string,
+    () => Parameters<typeof harness>[0],
+    unknown,
+    number,
+  ][] = [
+    [
+      "caught up",
+      () => ({ decrypt: failFirst(ahead) }),
+      { ...OK_VIEW, filesUnsupported: 0 },
+      2,
+    ],
+    [
+      "still unknown",
+      () => ({ decrypt: refuse(ahead) }),
+      mark("decrypt_failed"),
+      2,
+    ],
+    [
+      "catch-up fails",
+      () => ({ decrypt: refuse(ahead), catchUp: transport }),
+      mark("decrypt_failed"),
+      1,
+    ],
+  ];
+  // The channel's own active group, a state that is not loaded, and no S4
+  // member at all: the same calls, logs and view each time.
+  const variants: (S4Script | null)[] = [
+    { state: nativeState({ epoch: 5 }) },
+    { state: null },
+    null,
+  ];
+  for (const [name, script, view, decrypts] of scripts) {
+    const snapshots: unknown[] = [];
+    for (const o of variants) {
+      _resetMessageFlowsForTest();
+      const h = harness(script());
+      const x = s4(h, { ...(o ?? {}), walk: () => "imported" });
+      const ops = o === null ? h.ops : x.ops;
+      const v = await decryptRow(ops, h.port, prow(), true);
+      assert.deepEqual(x.walks, [], name);
+      assert.deepEqual(v, view, name);
+      assert.equal(h.decrypts.length, decrypts, name);
+      assert.deepEqual(h.events, [caughtUp], name);
+      snapshots.push([v, h.events, h.decrypts, h.logs]);
+    }
+    assert.deepEqual(snapshots[0], snapshots[2], name);
+    assert.deepEqual(snapshots[1], snapshots[2], name);
+  }
+});
+
+test("S4 walk: a closed or left group above its last held epoch walks; a group nobody vouches for never does", async () => {
+  const above = unknownEpoch(9, 4, 6);
+  const foreign = unknownEpoch(3, null, -1, { group_id: "gX" });
+  const run = async (err: unknown, o: S4Script) => {
+    _resetMessageFlowsForTest();
+    const h = harness({ decrypt: refuse(err) });
+    const x = s4(h, { ...o, walk: () => "floor" });
+    await decryptRow(x.ops, h.port, prow(), false);
+    return { walks: x.walks, catchUps: catchUps(h) };
+  };
+  for (const state of [
+    nativeState({ state: "left" }),
+    nativeState({ verdict: "no_group" }),
+  ]) {
+    assert.deepEqual(await run(above, { state }), {
+      walks: [`${CH} g0 9`],
+      catchUps: [],
+    });
+  }
+  // A group named by the row alone: the S1 catch-up, never a walk.
+  const s1 = { walks: [], catchUps: [`catchUp ${CH} 3 gX`] };
+  assert.deepEqual(await run(foreign, {}), s1);
+  assert.deepEqual(await run(foreign, { predecessor: () => "yes" }), s1);
+  assert.deepEqual(
+    await run(foreign, { state: nativeState({ history_floor: FLOOR_OLD }) }),
+    s1,
+  );
+  assert.deepEqual(
+    await run(foreign, { predecessor: refuse(new Error("lookup")) }),
+    s1,
+  );
+  // The manager vouches for it, or native's floor sits in it: a walk.
+  const walked = { walks: [`${CH} gX 3`], catchUps: [] };
+  assert.deepEqual(
+    await run(foreign, { predecessor: (g) => g === "gX" }),
+    walked,
+  );
+  const floor = { group_id: "gX", epoch: 7, stopped: null };
+  assert.deepEqual(
+    await run(foreign, { state: nativeState({ history_floor: floor }) }),
+    walked,
+  );
+  // The channel's own group is never its own predecessor.
+  const ownFloor = { group_id: "g0", epoch: 2, stopped: null };
+  assert.deepEqual(
+    await run(above, {
+      state: nativeState({ history_floor: ownFloor }),
+      predecessor: () => true,
+    }),
+    { walks: [], catchUps: [`catchUp ${CH} 9 g0`] },
   );
 });

@@ -21,6 +21,8 @@ import { test } from "node:test";
 import { SHIELD_LOUD_GROUP_ERRORS } from "./protectedShield.ts";
 import {
   type CapacityReason,
+  type HistorySignOp,
+  type ProtectJournalV2,
   type PublishAnswer,
   type PublishStep,
   type SendContext,
@@ -38,6 +40,7 @@ import {
   CONFIRM_WINDOW_MS,
   confirmAfterId,
   errorTypeOf,
+  historySignArgs,
   holdsCurrentGroup,
   isCatchUpDesync,
   isProtectorError,
@@ -59,10 +62,14 @@ import {
   ownAddedEntry,
   ownSendRowBinds,
   parkedReplay,
+  parseCommitInfo,
   parseRefusalPaces,
   pinFailureOutcome,
   pinRetryAllowed,
   pinRetryKey,
+  PROTECT_HISTORY_MAX_ATTEMPTS,
+  protectBody,
+  protectLanded,
   PROTECTOR_BACKOFF,
   PROTECTOR_GATE_OPEN,
   protectorBackoffMs,
@@ -72,6 +79,7 @@ import {
   publishBackoffMs,
   publishResolved,
   publishStep,
+  readProtectJournal,
   REFRESH_INTERVAL_MS,
   REFUSAL_PACE_BASE_MS,
   REFUSAL_PACE_CAP_MS,
@@ -2907,4 +2915,664 @@ test("FXP joinIntentHeldByOwnerChange: held while a confirm replays the Welcome,
     true,
     "the replay window",
   );
+});
+
+// ---------------------------------------------------------------------------
+// S4-W4 lane L1o: protect with history (design 4.9 "S4", R-W4-7 / 10 / 11).
+// Tests named "S4 ..." are targets of the L1o controls.
+// ---------------------------------------------------------------------------
+
+/** A message id (ULID) that sorts by `n`. */
+const boundaryId = (n: number) =>
+  `01JA${"0".repeat(20)}${n > 9 ? "" : "0"}${n}`;
+
+const MOVED = res(409, { type: "ProtectHistoryMoved" });
+
+const historyCtx = (attempt: number, failures = 0) => ({
+  op: "protect" as const,
+  failures,
+  history: { attempt, boundary: boundaryId(attempt) },
+});
+
+test("S4 budgets: a boundary protect signs at most five geneses", () => {
+  assert.equal(PROTECT_HISTORY_MAX_ATTEMPTS, 5);
+});
+
+test("S4 publishStep: five ProtectHistoryMoved answers, then protect_busy", () => {
+  const steps: PublishStep[] = [];
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const step = publishStep(answer(MOVED), historyCtx(attempt));
+    steps.push(step);
+    if (step.kind !== "resign") break;
+    // The channel moved: the newest id is above the signed boundary.
+    assert.deepEqual(
+      publishStep(
+        { kind: "reread", boundary: boundaryId(attempt + 1) },
+        historyCtx(attempt),
+      ),
+      { kind: "resign", attempt: attempt + 1 },
+    );
+  }
+  assert.deepEqual(steps, [
+    { kind: "resign", attempt: 2 },
+    { kind: "resign", attempt: 3 },
+    { kind: "resign", attempt: 4 },
+    { kind: "resign", attempt: 5 },
+    { kind: "failed", reason: "protect_busy" },
+  ]);
+  // Past the cap nothing is signed either, whatever the count says.
+  for (const attempt of [6, 7, 1000]) {
+    assert.deepEqual(publishStep(answer(MOVED), historyCtx(attempt)), {
+      kind: "failed",
+      reason: "protect_busy",
+    });
+  }
+});
+
+test("S4 publishStep: a boundary that did not move up stops at once", () => {
+  const busy = { kind: "failed", reason: "protect_busy" };
+  const reread = (boundary: string | null, attempt = 2) =>
+    publishStep({ kind: "reread", boundary }, historyCtx(attempt));
+  // historyCtx(2) signed boundaryId(2).
+  assert.deepEqual(reread(boundaryId(2)), busy, "equal");
+  assert.deepEqual(reread(boundaryId(1)), busy, "lower");
+  assert.deepEqual(reread(boundaryId(3)), { kind: "resign", attempt: 3 });
+  assert.deepEqual(reread(boundaryId(40)), { kind: "resign", attempt: 3 });
+  // Nothing that is not a message id is ever signed as a boundary.
+  assert.deepEqual(reread(null), busy, "no id read");
+  assert.deepEqual(reread(""), busy);
+  assert.deepEqual(reread(boundaryId(3).toLowerCase()), busy, "not a ULID");
+  assert.deepEqual(reread(`${boundaryId(3)}0`), busy, "27 characters");
+  assert.deepEqual(reread("Z".repeat(26)), busy, "sorts above, not a ULID");
+  assert.deepEqual(reread(7 as never), busy);
+  // A signed boundary that is not a message id cannot be compared.
+  assert.deepEqual(
+    publishStep(
+      { kind: "reread", boundary: boundaryId(3) },
+      { op: "protect", failures: 0, history: { attempt: 2, boundary: "" } },
+    ),
+    busy,
+  );
+  // The fifth genesis was the last one: no sixth, even with a higher id.
+  assert.deepEqual(reread(boundaryId(9), 5), busy);
+});
+
+test("S4 publishStep: every S2 answer class keeps its result with a boundary context", () => {
+  // [answer, failures, the result for a protect, the result for a seat PUT]
+  const table: [PublishAnswer, number, PublishStep, PublishStep][] = [
+    [answer(res(200)), 3, { kind: "resolved_ok" }, { kind: "resolved_ok" }],
+    [answer(res(204)), 0, { kind: "resolved_ok" }, { kind: "resolved_ok" }],
+    [
+      answer(res(429, null, 1200)),
+      5,
+      { kind: "resend", delayMs: 1200, cause: "rate_limited" },
+      { kind: "resend", delayMs: 1200, cause: "rate_limited" },
+    ],
+    [
+      answer(res(429)),
+      2,
+      { kind: "resend", delayMs: 1000, cause: "rate_limited" },
+      { kind: "resend", delayMs: 1000, cause: "rate_limited" },
+    ],
+    [
+      answer(res(429, { type: "InSlowmode", retry_after: 3 })),
+      0,
+      { kind: "resend", delayMs: 3000, cause: "rate_limited" },
+      { kind: "resend", delayMs: 3000, cause: "rate_limited" },
+    ],
+    [
+      answer(res(500, { type: "DatabaseError" })),
+      1,
+      { kind: "resend", delayMs: 500, cause: "server_error" },
+      { kind: "resend", delayMs: 500, cause: "server_error" },
+    ],
+    [
+      answer(res(503)),
+      0,
+      { kind: "resend", delayMs: 250, cause: "server_error" },
+      { kind: "resend", delayMs: 250, cause: "server_error" },
+    ],
+    [
+      answer(res(302)),
+      1,
+      { kind: "resend", delayMs: 500, cause: "server_error" },
+      { kind: "resend", delayMs: 500, cause: "server_error" },
+    ],
+    [
+      { kind: "transport_error" },
+      9,
+      { kind: "resend", delayMs: 30000, cause: "transport" },
+      { kind: "resend", delayMs: 30000, cause: "transport" },
+    ],
+    [
+      answer(res(400, { type: "FailedValidation" })),
+      0,
+      { kind: "read_back", status: 400, type: "FailedValidation" },
+      { kind: "resolved_refused", status: 400, type: "FailedValidation" },
+    ],
+    [
+      answer(res(403, { type: "NotOwner" })),
+      4,
+      { kind: "read_back", status: 403, type: "NotOwner" },
+      { kind: "resolved_refused", status: 403, type: "NotOwner" },
+    ],
+    [
+      answer(res(404)),
+      0,
+      { kind: "read_back", status: 404, type: null },
+      { kind: "resolved_refused", status: 404, type: null },
+    ],
+    [
+      answer(res(409, { type: "SeatListEquivocation" })),
+      0,
+      { kind: "read_back", status: 409, type: "SeatListEquivocation" },
+      { kind: "resolved_refused", status: 409, type: "SeatListEquivocation" },
+    ],
+  ];
+  for (const [a, failures, protect, seats] of table) {
+    const history = { attempt: 2, boundary: boundaryId(2) };
+    // Before S4 (no context) and with a boundary context: the same result.
+    assert.deepEqual(publishStep(a, { op: "protect", failures }), protect);
+    assert.deepEqual(
+      publishStep(a, { op: "protect", failures, history }),
+      protect,
+    );
+    assert.deepEqual(publishStep(a, { op: "seats", failures }), seats);
+    assert.deepEqual(publishStep(a, { op: "seats", failures, history }), seats);
+  }
+});
+
+test("S4 publishStep: ProtectHistoryMoved re-signs only on a boundary protect and only as a 409", () => {
+  // An S2 protect (no boundary) reads back, as every 4xx does.
+  assert.deepEqual(publishStep(answer(MOVED), { op: "protect", failures: 0 }), {
+    kind: "read_back",
+    status: 409,
+    type: "ProtectHistoryMoved",
+  });
+  // A seat PUT never re-signs, with or without the context.
+  assert.deepEqual(
+    publishStep(answer(MOVED), { ...historyCtx(1), op: "seats" }),
+    { kind: "resolved_refused", status: 409, type: "ProtectHistoryMoved" },
+  );
+  // The type under another status is not the server's answer.
+  assert.deepEqual(
+    publishStep(
+      answer(res(400, { type: "ProtectHistoryMoved" })),
+      historyCtx(1),
+    ),
+    { kind: "read_back", status: 400, type: "ProtectHistoryMoved" },
+  );
+  // A 5xx or a lost answer re-sends the SAME bytes, never a new genesis.
+  assert.deepEqual(
+    publishStep(
+      answer(res(503, { type: "ProtectHistoryMoved" })),
+      historyCtx(1),
+    ),
+    { kind: "resend", delayMs: 250, cause: "server_error" },
+  );
+  assert.deepEqual(publishStep({ kind: "transport_error" }, historyCtx(1)), {
+    kind: "resend",
+    delayMs: 250,
+    cause: "transport",
+  });
+});
+
+test("S4 publishStep: a broken attempt count or a reread without a boundary context fails closed", () => {
+  const busy = { kind: "failed", reason: "protect_busy" };
+  for (const attempt of [0, -1, 1.5, Number.NaN, Infinity, "1" as never]) {
+    const ctx = {
+      op: "protect" as const,
+      failures: 0,
+      history: { attempt, boundary: boundaryId(1) },
+    };
+    assert.deepEqual(publishStep(answer(MOVED), ctx), busy);
+    assert.deepEqual(
+      publishStep({ kind: "reread", boundary: boundaryId(2) }, ctx),
+      busy,
+    );
+  }
+  const reread: PublishAnswer = { kind: "reread", boundary: boundaryId(2) };
+  assert.deepEqual(publishStep(reread, { op: "protect", failures: 0 }), busy);
+  assert.deepEqual(
+    publishStep(reread, { ...historyCtx(1), op: "seats" }),
+    busy,
+  );
+});
+
+test("S4 publishResolved: resign and failed leave the publish unresolved", () => {
+  assert.equal(publishResolved({ kind: "resign", attempt: 2 }), false);
+  assert.equal(
+    publishResolved({ kind: "failed", reason: "protect_busy" }),
+    false,
+  );
+});
+
+/** Genesis `n` of one protect: its own body and signature, same signer. */
+const genesisN = (n: number): SignedSeatList => ({
+  ...GENESIS,
+  body: `${GENESIS.body}history_boundary:${boundaryId(n)}\n`,
+  signature: `c2ln${n}`,
+});
+
+const GENESES = [genesisN(1), genesisN(2), genesisN(3), genesisN(4)];
+
+test("S4 protectLanded: a read-back equal to the first or the third genesis has landed", () => {
+  assert.equal(protectLanded({ ...genesisN(1) }, GENESES), "landed");
+  assert.equal(protectLanded({ ...genesisN(3) }, GENESES), "landed");
+  assert.equal(protectLanded({ ...genesisN(4) }, GENESES), "landed");
+  // The server's list carries more fields than the signed one.
+  assert.equal(
+    protectLanded({ ...genesisN(2), handovers: [] } as SignedSeatList, GENESES),
+    "landed",
+  );
+});
+
+test("S4 protectLanded: a list that is none of the geneses is other, no list is none", () => {
+  assert.equal(protectLanded(null, GENESES), "none");
+  assert.equal(protectLanded(null, []), "none");
+  assert.equal(protectLanded(undefined as never, GENESES), "none");
+  assert.equal(protectLanded(genesisN(5), GENESES), "other");
+  assert.equal(protectLanded(genesisN(1), []), "other");
+  assert.equal(protectLanded("list" as never, GENESES), "other");
+  const g = genesisN(2);
+  const others: SignedSeatList[] = [
+    { ...g, body: `${g.body} ` },
+    { ...g, signature: genesisN(3).signature },
+    { ...g, signer_user_id: "01OTHER0000000000000000000" },
+    { ...g, signer_device_id: "b".repeat(32) },
+    { ...g, version: 2 },
+    { ...g, version: "1" as never },
+  ];
+  for (const other of others) {
+    assert.equal(protectLanded(other, GENESES), "other");
+  }
+  // A journal entry past version 1 is never "our genesis".
+  assert.equal(
+    protectLanded({ ...g, version: 2 }, [{ ...g, version: 2 }]),
+    "other",
+  );
+  // Fields that are not text never compare equal.
+  const hollow = { version: 1 } as never;
+  assert.equal(protectLanded(hollow, [hollow]), "other");
+});
+
+test("S4 protectLanded: one genesis is judged as resolveProtectReadBack judges it", () => {
+  const variants: Record<string, unknown>[] = [
+    {},
+    { body: `${GENESIS.body} ` },
+    { signature: "b3RoZXI=" },
+    { signer_user_id: "01OTHER0000000000000000000" },
+    { signer_device_id: "b".repeat(32) },
+    { version: 2 },
+  ];
+  for (const over of variants) {
+    const list = serverList(over);
+    const old = readBack(
+      res(200, { protected: true }),
+      res(200, seatsBody(list)),
+    );
+    assert.equal(
+      protectLanded(list as unknown as SignedSeatList, [GENESIS]) === "landed",
+      old.kind === "landed",
+      JSON.stringify(over),
+    );
+  }
+});
+
+const AUTHORITY = {
+  body: "sloga-channel-authority-v1\n",
+  signature: "YXV0aA==",
+};
+
+test("S4 readProtectJournal: a v2 entry reads back whole, from the stored string or the parsed value", () => {
+  const entry: ProtectJournalV2 = {
+    v: 2,
+    op: "protect",
+    geneses: [genesisN(1), { ...genesisN(2), authority: AUTHORITY }],
+    wipe: true,
+  };
+  assert.deepEqual(readProtectJournal(JSON.stringify(entry)), entry);
+  assert.deepEqual(readProtectJournal(entry), entry);
+  assert.deepEqual(readProtectJournal({ ...entry, wipe: false }), {
+    ...entry,
+    wipe: false,
+  });
+  // Only the known fields of a signed list are kept.
+  const noisy = { ...entry, extra: 1, geneses: [{ ...genesisN(1), x: 1 }] };
+  assert.deepEqual(readProtectJournal(noisy), {
+    v: 2,
+    op: "protect",
+    geneses: [genesisN(1)],
+    wipe: true,
+  });
+});
+
+test("S4 readProtectJournal: the S2 v1 protect entry is one genesis and no wipe", () => {
+  const v1 = { v: 1, op: "protect", signed: GENESIS };
+  const want = { v: 2, op: "protect", geneses: [GENESIS], wipe: false };
+  assert.deepEqual(readProtectJournal(JSON.stringify(v1)), want);
+  assert.deepEqual(readProtectJournal(v1), want);
+  // The S2 entry's other members never turn into a wipe.
+  assert.deepEqual(
+    readProtectJournal({ ...v1, wipe: true, answer: "refused" }),
+    want,
+  );
+});
+
+test("S4 readProtectJournal: a corrupt entry is null and never throws", () => {
+  const good = { v: 2, op: "protect", geneses: [genesisN(1)], wipe: false };
+  assert.notEqual(readProtectJournal(good), null);
+  const corrupt: unknown[] = [
+    null,
+    undefined,
+    "",
+    "{",
+    "not json",
+    "null",
+    "[]",
+    7,
+    [],
+    [good],
+    {},
+    // Another op or version
+    { ...good, op: "seats" },
+    { v: 1, op: "seats", signed: GENESIS },
+    { ...good, op: "wipe" },
+    { ...good, v: 3 },
+    { ...good, v: "2" },
+    { op: "protect", geneses: [genesisN(1)], wipe: false },
+    // A wipe is never read out of a missing or odd field
+    { v: 2, op: "protect", geneses: [genesisN(1)] },
+    { ...good, wipe: "true" },
+    { ...good, wipe: 1 },
+    { ...good, wipe: null },
+    // Geneses
+    { ...good, geneses: [] },
+    { ...good, geneses: genesisN(1) },
+    { ...good, geneses: null },
+    { ...good, geneses: [genesisN(1), null] },
+    { ...good, geneses: [genesisN(1), { ...genesisN(2), body: 5 }] },
+    { ...good, geneses: [{ ...genesisN(1), version: 0 }] },
+    { ...good, geneses: [{ ...genesisN(1), version: 1.5 }] },
+    { ...good, geneses: [{ ...genesisN(1), signature: undefined }] },
+    { ...good, geneses: [{ ...genesisN(1), signer_user_id: null }] },
+    { ...good, geneses: [{ ...genesisN(1), signer_device_id: 3 }] },
+    { ...good, geneses: [{ ...genesisN(1), authority: "x" }] },
+    { ...good, geneses: [{ ...genesisN(1), authority: { body: "b" } }] },
+    // v1
+    { v: 1, op: "protect" },
+    { v: 1, op: "protect", signed: null },
+    { v: 1, op: "protect", signed: { ...GENESIS, body: undefined } },
+    { v: 1, op: "protect", geneses: [GENESIS], wipe: false },
+  ];
+  for (const raw of corrupt) {
+    assert.equal(readProtectJournal(raw), null, JSON.stringify(raw));
+    if (typeof raw !== "string" && raw !== undefined) {
+      assert.equal(readProtectJournal(JSON.stringify(raw)), null);
+    }
+  }
+  // A string is parsed once: a JSON string holding JSON is not an entry.
+  assert.equal(readProtectJournal(JSON.stringify(JSON.stringify(good))), null);
+});
+
+/** A v2 genesis body as native writes it (formats.rs), with a boundary. */
+const v2Body = (preHistory: string) =>
+  [
+    "sloga-seat-list-v2",
+    "v:2",
+    "channel_id:01J9Z3K4M5N6P7Q8R9S0T1V2W3",
+    "version:1",
+    "device_cap:5",
+    "issued_at:1790812860000",
+    `signer_user_id:${GENESIS.signer_user_id}`,
+    `signer_device_id:${GENESIS.signer_device_id}`,
+    `seats:${GENESIS.signer_user_id}`,
+    "authority:",
+    "history:visible",
+    `history_boundary:${boundaryId(1)}`,
+    `pre_history:${preHistory}`,
+    `group_salt:${"a0".repeat(32)}`,
+  ].join("\n");
+
+const KEPT: SignedSeatList = { ...GENESIS, body: v2Body("kept") };
+const WIPED: SignedSeatList = { ...GENESIS, body: v2Body("wiped") };
+
+test("S4 protectBody: wipe_history only with a wiped genesis and a wipe asked for", () => {
+  const wiped = protectBody(WIPED, true);
+  assert.deepEqual(wiped, { seat_list: WIPED, wipe_history: true });
+  assert.equal(
+    wiped.seat_list,
+    WIPED,
+    "the signed list is passed, not rebuilt",
+  );
+  const kept = protectBody(KEPT, false);
+  assert.deepEqual(kept, { seat_list: KEPT });
+  assert.equal("wipe_history" in kept, false);
+  // The S2 genesis (a v1 body has no pre_history line): the S2 request.
+  const s2 = protectBody(GENESIS, false);
+  assert.deepEqual(s2, { seat_list: GENESIS });
+  assert.equal("wipe_history" in s2, false);
+  assert.equal(JSON.stringify(s2), JSON.stringify({ seat_list: GENESIS }));
+});
+
+test("S4 protectBody: the request and the signed list must agree", () => {
+  // A wipe asked for, but the signed bytes do not say wiped
+  assert.throws(() => protectBody(KEPT, true), /not wiped/);
+  assert.throws(() => protectBody(GENESIS, true), /not wiped/);
+  // The signed bytes say wiped, but no wipe was asked for
+  assert.throws(() => protectBody(WIPED, false), /no wipe was asked/);
+  // Only the exact line counts
+  for (const line of ["wiped ", "Wiped", "", "kept\npre_history:wiped"]) {
+    const odd = { ...GENESIS, body: v2Body(line) };
+    assert.throws(() => protectBody(odd, true), /not wiped/, line);
+    assert.deepEqual(protectBody(odd, false), { seat_list: odd });
+  }
+  const inline = { ...GENESIS, body: "seats:pre_history:wiped\nv:2" };
+  assert.throws(() => protectBody(inline, true), /not wiped/);
+  // Not a boolean: nothing is sent
+  assert.throws(() => protectBody(WIPED, "true" as never), /boolean/);
+  assert.throws(() => protectBody(KEPT, undefined as never), /boolean/);
+  assert.throws(() => protectBody({} as never, true), /not wiped/);
+});
+
+test("S4 historySignArgs: the five sign shapes", () => {
+  const b = boundaryId(7);
+  assert.deepEqual(historySignArgs({ kind: "plain" }), {
+    history: null,
+    historyBoundary: null,
+    preHistory: null,
+    wipeCount: null,
+  });
+  assert.deepEqual(historySignArgs({ kind: "genesis_kept", boundary: b }), {
+    history: null,
+    historyBoundary: b,
+    preHistory: "kept",
+    wipeCount: null,
+  });
+  assert.deepEqual(historySignArgs({ kind: "genesis_wiped", boundary: b }), {
+    history: null,
+    historyBoundary: b,
+    preHistory: "wiped",
+    wipeCount: null,
+  });
+  for (const history of ["visible", "hidden"] as const) {
+    assert.deepEqual(
+      historySignArgs({ kind: "set_history", history, recovery: false }),
+      { history, historyBoundary: null, preHistory: null, wipeCount: null },
+    );
+  }
+  assert.deepEqual(historySignArgs({ kind: "wipe" }), {
+    history: null,
+    historyBoundary: null,
+    preHistory: "wiped",
+    wipeCount: null,
+  });
+});
+
+const SIGN_SHAPES: HistorySignOp[] = [
+  { kind: "plain" },
+  { kind: "genesis_kept", boundary: boundaryId(7) },
+  { kind: "genesis_wiped", boundary: boundaryId(7) },
+  { kind: "set_history", history: "visible", recovery: false },
+  { kind: "set_history", history: "hidden", recovery: false },
+  { kind: "wipe" },
+];
+
+test("S4 historySignArgs: wipeCount is always null and all four arguments are always present", () => {
+  for (const op of SIGN_SHAPES) {
+    const args = historySignArgs(op);
+    assert.equal(args.wipeCount, null, op.kind);
+    assert.deepEqual(Object.keys(args).sort(), [
+      "history",
+      "historyBoundary",
+      "preHistory",
+      "wipeCount",
+    ]);
+  }
+});
+
+test("S4 historySignArgs: history on a recovery list, a bad boundary and an unknown value are refused", () => {
+  for (const history of ["visible", "hidden"] as const) {
+    assert.throws(
+      () => historySignArgs({ kind: "set_history", history, recovery: true }),
+      /recovery/,
+    );
+    // Only a plain `false` says "not a recovery list".
+    assert.throws(
+      () =>
+        historySignArgs({
+          kind: "set_history",
+          history,
+          recovery: undefined as never,
+        }),
+      /recovery/,
+    );
+  }
+  assert.throws(
+    () =>
+      historySignArgs({
+        kind: "set_history",
+        history: "shown" as never,
+        recovery: false,
+      }),
+    /history value/,
+  );
+  for (const kind of ["genesis_kept", "genesis_wiped"] as const) {
+    for (const boundary of [
+      "",
+      boundaryId(7).toLowerCase(),
+      `${boundaryId(7)}0`,
+      null as never,
+    ]) {
+      assert.throws(() => historySignArgs({ kind, boundary }), /message id/);
+    }
+  }
+  assert.throws(() => historySignArgs({ kind: "other" } as never), /shape/);
+});
+
+test("S4 parseCommitInfo: created_at is kept only as a safe integer of at least 0", () => {
+  for (const at of [0, 1, 1790812860000, Number.MAX_SAFE_INTEGER]) {
+    const raw = row(OTHER, { created_at: at });
+    const parsed = parseCommitInfo(raw);
+    assert.equal(parsed?.droppedCreatedAt, false, String(at));
+    assert.equal(parsed?.row.created_at, at);
+    assert.deepEqual(parsed?.row, raw);
+  }
+  const bad: unknown[] = [
+    1.5,
+    -1,
+    "1",
+    2 ** 53,
+    Number.NaN,
+    Infinity,
+    null,
+    true,
+    {},
+    [1],
+  ];
+  for (const at of bad) {
+    const raw = row(OTHER, { created_at: at });
+    const parsed = parseCommitInfo(raw);
+    assert.equal(parsed?.droppedCreatedAt, true, String(at));
+    assert.equal(parsed !== null && "created_at" in parsed.row, false);
+    // Everything else of the row is unchanged, and the input is not edited.
+    assert.deepEqual(parsed?.row, row(OTHER));
+    assert.equal("created_at" in raw, true);
+  }
+  // Absent (an older server): nothing dropped, nothing invented.
+  const absent = parseCommitInfo(row(OTHER));
+  assert.equal(absent?.droppedCreatedAt, false);
+  assert.equal(absent !== null && "created_at" in absent.row, false);
+});
+
+test("S4 parseCommitInfo: the S2 row rules are unchanged and an unknown field is still ignored", () => {
+  const raw = row(OTHER, { rejoin_intents: [INTENT], later_field: { a: 1 } });
+  assert.deepEqual(parseCommitInfo(raw), {
+    row: raw,
+    droppedCreatedAt: false,
+  });
+  const labels = [
+    { user_id: OTHER.user_id, device_id: OTHER.device_id, reason: "left" },
+  ];
+  assert.deepEqual(
+    parseCommitInfo(row(OTHER, { removed_reasons: labels, created_at: 5 }))
+      ?.row,
+    row(OTHER, { removed_reasons: labels, created_at: 5 }),
+  );
+  const malformed: unknown[] = [
+    null,
+    "row",
+    [],
+    row(OTHER, { group_id: 5 }),
+    row(OTHER, { epoch: -1 }),
+    row(OTHER, { epoch: 1.5 }),
+    row(OTHER, { commit: null }),
+    row(null as never),
+    row({ user_id: "u" } as never),
+    row(OTHER, { removed_reasons: "x" }),
+    row(OTHER, { removed_reasons: [{ user_id: "u" }] }),
+    // A bad created_at never rescues a row that is not one
+    row(OTHER, { epoch: "7", created_at: 5 }),
+  ];
+  for (const m of malformed) assert.equal(parseCommitInfo(m), null);
+});
+
+test("S4 classifySubmit: a winner or a stored row never carries an unusable created_at", () => {
+  const lost = (created_at: unknown) =>
+    classifySubmit(
+      {
+        kind: "submit",
+        response: res(409, {
+          result: "Lost",
+          winning: row(OTHER, { created_at }),
+        }),
+      },
+      sctx(),
+    );
+  assert.deepEqual(lost(1790812860000), {
+    kind: "lost",
+    winner: row(OTHER, { created_at: 1790812860000 }),
+    then: "process_winner",
+  });
+  for (const at of [1.5, -1, "1", 2 ** 53]) {
+    assert.deepEqual(lost(at), {
+      kind: "lost",
+      winner: row(OTHER),
+      then: "process_winner",
+    });
+  }
+  // A refetched row of another committer: the same rule, the row still counts.
+  const refetched = classifySubmit(
+    {
+      kind: "refetch",
+      purpose: UNKNOWN,
+      response: res(200, commits(row(OTHER, { created_at: 1.5 }))),
+    },
+    sctx(),
+  );
+  assert.deepEqual(refetched, {
+    kind: "lost",
+    winner: row(OTHER),
+    then: "process_winner",
+  });
 });

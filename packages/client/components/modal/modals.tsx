@@ -87,9 +87,13 @@ import { PasskeyNameModal } from "./modals/PasskeyName";
 import { PasskeyRemoveModal } from "./modals/PasskeyRemove";
 import { PolicyChangeModal } from "./modals/PolicyChange";
 import { PollVotersModal } from "./modals/PollVoters";
+import { ProtContributeModal } from "./modals/ProtContribute";
+import { ProtServerGoalsModal } from "./modals/ProtServerGoals";
+import { ProtStoreUnderReviewModal } from "./modals/ProtStoreUnderReview";
 import { ProtectedDeviceCapModal } from "./modals/ProtectedDeviceCap";
 import { ProtectedOwnerReviewModal } from "./modals/ProtectedOwnerReview";
 import { ProtectedSeatPickerModal } from "./modals/ProtectedSeatPicker";
+import { ProtectedTankModal } from "./modals/ProtectedTank";
 import { RemoveMemberModal } from "./modals/RemoveMember";
 import { RenameSessionModal } from "./modals/RenameSession";
 import { ReportContentModal } from "./modals/ReportContent";
@@ -273,6 +277,14 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <E2EEGroupPlaintextConfirmModal {...modalProps} />;
     case "protected_seat_picker":
       return <ProtectedSeatPickerModal {...modalProps} />;
+    case "prot_tank":
+      return <ProtectedTankModal {...modalProps} />;
+    case "prot_contribute":
+      return <ProtContributeModal {...modalProps} />;
+    case "prot_server_goals":
+      return <ProtServerGoalsModal {...modalProps} />;
+    case "prot_store_under_review":
+      return <ProtStoreUnderReviewModal {...modalProps} />;
     case "protected_device_cap":
       return <ProtectedDeviceCapModal {...modalProps} />;
     case "protected_owner_review":

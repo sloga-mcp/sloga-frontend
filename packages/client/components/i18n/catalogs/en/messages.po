@@ -969,6 +969,11 @@ msgstr "Acknowledge"
 msgid "Active"
 msgstr "Active"
 
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Protected until {date}"
+msgstr "Protected until {date}"
+
 #: components/ui/components/features/profiles/ProfileBadges.tsx
 msgid "Active Sloga supporter"
 msgstr "Active Sloga supporter"
@@ -2041,6 +2046,39 @@ msgstr "Can't verify"
 msgid "Cancel"
 msgstr "Cancel"
 
+#: components/modal/modals/ProtContribute.tsx
+msgid "Contribute"
+msgstr "Contribute"
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Goal"
+msgstr "Goal"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Contributors"
+msgstr "Contributors"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "No contributions yet."
+msgstr "No contributions yet."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "You"
+msgstr "You"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "This channel doesn't have a Prot tank."
+msgstr "This channel doesn't have a Prot tank."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "To fund a new Protected channel, open a launch goal from the server menu."
+msgstr "To fund a new Protected channel, open a launch goal from the server menu."
+
 #: src/interface/channels/text/GameLookupPicker.tsx
 msgid "Enter to send, Esc to cancel"
 msgstr "Enter to send, Esc to cancel"
@@ -2414,6 +2452,35 @@ msgstr "Clicks on the shared screen go to their computer, so Sloga's own buttons
 #: components/modal/modals/AddFriend.tsx
 msgid "Close"
 msgstr "Close"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Prot is the credit that keeps Protected servers and channels running. With a launch goal, members pool Prot to fund a new Protected channel on this server."
+msgstr "Prot is the credit that keeps Protected servers and channels running. With a launch goal, members pool Prot to fund a new Protected channel on this server."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Prot is switched off right now, so launch goals can't be opened or changed."
+msgstr "Prot is switched off right now, so launch goals can't be opened or changed."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launch goals aren't available yet."
+msgstr "Launch goals aren't available yet."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Open a launch goal"
+msgstr "Open a launch goal"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launch goals can't be opened right now."
+msgstr "Launch goals can't be opened right now."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Prot is the credit that keeps Protected servers and channels running. This channel uses Prot from its tank each day."
+msgstr "Prot is the credit that keeps Protected servers and channels running. This channel uses Prot from its tank each day."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Tank balance"
+msgstr "Tank balance"
 
 #: components/app/menus/UserContextMenu.tsx
 msgid "Close chat"
@@ -3562,6 +3629,18 @@ msgstr "Date format"
 #: components/ui/components/utils/AutoArchiveField.tsx
 msgid "Days"
 msgstr "Days"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Open launch goal"
+msgstr "Open launch goal"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "This server already has an open launch goal. Only one can be open at a time."
+msgstr "This server already has an open launch goal. Only one can be open at a time."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "No open launch goals."
+msgstr "No open launch goals."
 
 #: src/interface/navigation/UserFooter.tsx
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
@@ -7736,6 +7815,39 @@ msgstr "Not going"
 msgid "Not now"
 msgstr "Not now"
 
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Change seats"
+msgstr "Change seats"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "An upgrade goal needs at least one full day of Prot in the tank."
+msgstr "An upgrade goal needs at least one full day of Prot in the tank."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Ask members to fund more seats. The target covers the extra cost for the days of Prot the tank has left."
+msgstr "Ask members to fund more seats. The target covers the extra cost for the days of Prot the tank has left."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Open upgrade goal"
+msgstr "Open upgrade goal"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Cancel goal"
+msgstr "Cancel goal"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Cancel this goal? Every pledge goes back to the member who made it."
+msgstr "Cancel this goal? Every pledge goes back to the member who made it."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Keep goal"
+msgstr "Keep goal"
+
 #: components/app/interface/settings/user/Encryption.tsx
 msgid "Your devices"
 msgstr "Your devices"
@@ -8079,6 +8191,74 @@ msgid "Voice and announcement settings aren't available for protected channels."
 msgstr "Voice and announcement settings aren't available for protected channels."
 
 #: components/client/protectedCopy.ts
+msgid "Messages already in this channel stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted."
+msgstr "Messages already in this channel stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted."
+
+#: components/client/protectedCopy.ts
+msgid "Messages already in #{channel} stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted."
+msgstr "Messages already in #{channel} stay as they are, above a line that says they weren't protected. New messages are end-to-end encrypted."
+
+#: components/client/protectedCopy.ts
+msgid "The channel is protected first, with only you in it. The members you pick are added right after."
+msgstr "The channel is protected first, with only you in it. The members you pick are added right after."
+
+#: components/client/protectedCopy.ts
+msgid "Open polls are closed and scheduled messages are canceled when the channel is protected."
+msgstr "Open polls are closed and scheduled messages are canceled when the channel is protected."
+
+#: components/client/protectedCopy.ts
+msgid "Also delete the earlier messages"
+msgstr "Also delete the earlier messages"
+
+#: components/client/protectedCopy.ts
+msgid "Earlier messages and their files will be deleted from Sloga's servers. This can't be undone. Copies on people's devices, forwards, crossposts and reports may remain."
+msgstr "Earlier messages and their files will be deleted from Sloga's servers. This can't be undone. Copies on people's devices, forwards, crossposts and reports may remain."
+
+#: components/client/protectedCopy.ts
+msgid "New members can read earlier messages"
+msgstr "New members can read earlier messages"
+
+#: components/client/protectedCopy.ts
+msgid "People who join later, and new devices of anyone in the channel, can read messages sent from shortly after this is turned on. Anyone in the channel can still share what they read."
+msgstr "People who join later, and new devices of anyone in the channel, can read messages sent from shortly after this is turned on. Anyone in the channel can still share what they read."
+
+#: components/client/protectedCopy.ts
+msgid "New members only see protected messages sent after they join. Messages from before this channel was protected stay readable to everyone in it."
+msgstr "New members only see protected messages sent after they join. Messages from before this channel was protected stay readable to everyone in it."
+
+#: components/client/protectedCopy.ts
+msgid "New members only see messages sent after they join."
+msgstr "New members only see messages sent after they join."
+
+#: components/client/protectedCopy.ts
+msgid "Removing someone doesn't take back what they already read. It stays on their devices."
+msgstr "Removing someone doesn't take back what they already read. It stays on their devices."
+
+#: components/client/protectedCopy.ts
+msgid "Delete the earlier unprotected messages"
+msgstr "Delete the earlier unprotected messages"
+
+#: components/client/protectedCopy.ts
+msgid "The earlier messages are being deleted from Sloga's servers."
+msgstr "The earlier messages are being deleted from Sloga's servers."
+
+#: components/client/protectedCopy.ts
+msgid "Earlier messages deleted from Sloga's servers: {count}"
+msgstr "Earlier messages deleted from Sloga's servers: {count}"
+
+#: components/client/protectedCopy.ts
+msgid "Earlier messages were deleted from Sloga's servers."
+msgstr "Earlier messages were deleted from Sloga's servers."
+
+#: components/client/protectedCopy.ts
+msgid "Earlier history couldn't be loaded right now. Try again later."
+msgstr "Earlier history couldn't be loaded right now. Try again later."
+
+#: components/client/protectedCopy.ts
+msgid "Couldn't check this channel's history settings."
+msgstr "Couldn't check this channel's history settings."
+
+#: components/client/protectedCopy.ts
 msgid "Move ownership key to another device"
 msgstr "Move ownership key to another device"
 
@@ -8174,6 +8354,74 @@ msgstr "Search can't look inside protected channel messages."
 #: components/client/protectedCopy.ts
 msgid "New message"
 msgstr "New message"
+
+#: components/client/protectedCopy.ts
+msgid "The oldest history from your protected channels didn't fit in this backup."
+msgstr "The oldest history from your protected channels didn't fit in this backup."
+
+#: components/client/protectedCopy.ts
+msgid "History from your protected channels didn't fit in this backup."
+msgstr "History from your protected channels didn't fit in this backup."
+
+#: components/client/protectedCopy.ts
+msgid "The oldest history from your protected channels wasn't in the backup, so it couldn't be restored."
+msgstr "The oldest history from your protected channels wasn't in the backup, so it couldn't be restored."
+
+#: components/client/protectedCopy.ts
+msgid "History from your protected channels wasn't in the backup, so it couldn't be restored."
+msgstr "History from your protected channels wasn't in the backup, so it couldn't be restored."
+
+#: components/client/protectedCopy.ts
+msgid "Some history from your protected channels couldn't be restored."
+msgstr "Some history from your protected channels couldn't be restored."
+
+#: components/client/protectedCopy.ts
+msgid "None of the history from your protected channels could be restored."
+msgstr "None of the history from your protected channels could be restored."
+
+#: components/client/protectedCopy.ts
+msgid "History from protected channels uses up to 2 MB of your backup, so fewer direct messages may fit."
+msgstr "History from protected channels uses up to 2 MB of your backup, so fewer direct messages may fit."
+
+#: components/client/protectedCopy.ts
+msgid "Protect channel"
+msgstr "Protect channel"
+
+#: components/client/protectedCopy.ts
+msgid "Delete earlier messages"
+msgstr "Delete earlier messages"
+
+#: components/client/protectedCopy.ts
+msgid "{actor} protected a channel and chose to delete its earlier messages"
+msgstr "{actor} protected a channel and chose to delete its earlier messages"
+
+#: components/client/protectedCopy.ts
+msgid "{actor} protected a channel"
+msgstr "{actor} protected a channel"
+
+#: components/client/protectedCopy.ts
+msgid "{actor} protected the channel {channel} and chose to delete its earlier messages"
+msgstr "{actor} protected the channel {channel} and chose to delete its earlier messages"
+
+#: components/client/protectedCopy.ts
+msgid "{actor} protected the channel {channel}"
+msgstr "{actor} protected the channel {channel}"
+
+#: components/client/protectedCopy.ts
+msgid "The earlier messages in a channel were deleted ({count})"
+msgstr "The earlier messages in a channel were deleted ({count})"
+
+#: components/client/protectedCopy.ts
+msgid "{actor} started deleting the earlier messages in a channel"
+msgstr "{actor} started deleting the earlier messages in a channel"
+
+#: components/client/protectedCopy.ts
+msgid "The earlier messages in {channel} were deleted ({count})"
+msgstr "The earlier messages in {channel} were deleted ({count})"
+
+#: components/client/protectedCopy.ts
+msgid "{actor} started deleting the earlier messages in {channel}"
+msgstr "{actor} started deleting the earlier messages in {channel}"
 
 #: components/app/interface/settings/server/bans/ListBans.tsx
 msgid "Pardon User"
@@ -9893,10 +10141,36 @@ msgstr "Share Game Activity"
 msgid "Your Prot wallet couldn't be loaded. Try again in a moment."
 msgstr "Your Prot wallet couldn't be loaded. Try again in a moment."
 
+#: components/modal/modals/ProtContribute.tsx
+msgid "We couldn't confirm that this went through. Try again; it won't be counted twice."
+msgstr "We couldn't confirm that this went through. Try again; it won't be counted twice."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Your name setting couldn't be saved. Try again in a moment."
+msgstr "Your name setting couldn't be saved. Try again in a moment."
+
+#: components/modal/modals/ProtContribute.tsx
+#: components/modal/modals/ProtContribute.tsx
+msgid "This was already added earlier, so nothing more was taken from your wallet."
+msgstr "This was already added earlier, so nothing more was taken from your wallet."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Your contribution of {amount} Prot was added."
+msgstr "Your contribution of {amount} Prot was added."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Your pledge of {amount} Prot was added."
+msgstr "Your pledge of {amount} Prot was added."
+
 #: components/app/interface/settings/user/ProtSettings.tsx
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "{amount} Prot"
 msgstr "{amount} Prot"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Launching"
+msgstr "Launching"
 
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "{held} Prot on hold"
@@ -9925,6 +10199,34 @@ msgstr "Contribution"
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Pledge"
 msgstr "Pledge"
+
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Withdraw pledge"
+msgstr "Withdraw pledge"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Keep pledge"
+msgstr "Keep pledge"
+
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launch"
+msgstr "Launch"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Pick an empty text channel to launch on. It becomes a Protected channel once you protect it from its settings."
+msgstr "Pick an empty text channel to launch on. It becomes a Protected channel once you protect it from its settings."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "There's no empty text channel to launch on. Create a new text channel first."
+msgstr "There's no empty text channel to launch on. Create a new text channel first."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Withdraw your pledge?"
+msgstr "Withdraw your pledge?"
 
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Returned to your wallet"
@@ -9958,6 +10260,18 @@ msgstr "The minimum is {min} Prot."
 msgid "The maximum is {max} Prot."
 msgstr "The maximum is {max} Prot."
 
+#: components/modal/modals/ProtContribute.tsx
+msgid "This goal needs {open} more Prot."
+msgstr "This goal needs {open} more Prot."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "The goal needs only {open} Prot, so that's what will be pledged."
+msgstr "The goal needs only {open} Prot, so that's what will be pledged."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Prot bought in the last {hours} hours can't be contributed yet."
+msgstr "Prot bought in the last {hours} hours can't be contributed yet."
+
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "A wallet can hold up to {max} Prot."
 msgstr "A wallet can hold up to {max} Prot."
@@ -9982,9 +10296,65 @@ msgstr "Pay an exact amount"
 msgid "Amount of Prot"
 msgstr "Amount of Prot"
 
+#: components/modal/modals/ProtContribute.tsx
+msgid "Hide my name"
+msgstr "Hide my name"
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Hidden contributors show as Anonymous to everyone, the server owner included. This applies to all your contributions and pledges on this server."
+msgstr "Hidden contributors show as Anonymous to everyone, the server owner included. This applies to all your contributions and pledges on this server."
+
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Enter an amount"
 msgstr "Enter an amount"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Waiting for approval. Your Prot arrives when the purchase completes."
+msgstr "Waiting for approval. Your Prot arrives when the purchase completes."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot added to your wallet."
+msgstr "Prot added to your wallet."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "This purchase was refunded, so no Prot was added."
+msgstr "This purchase was refunded, so no Prot was added."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Test purchases aren't credited on this server."
+msgstr "Test purchases aren't credited on this server."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Sign in to the account that bought this to receive the Prot."
+msgstr "Sign in to the account that bought this to receive the Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "This purchase needs our help. Contact support and we'll add the Prot to your account."
+msgstr "This purchase needs our help. Contact support and we'll add the Prot to your account."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "This purchase is under review because it would take your Prot wallet over its limit. We'll add the Prot or help you get a refund."
+msgstr "This purchase is under review because it would take your Prot wallet over its limit. We'll add the Prot or help you get a refund."
+
+#: components/modal/modals/ProtStoreUnderReview.tsx
+msgid "Purchase under review"
+msgstr "Purchase under review"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "We couldn't reach Sloga to confirm your purchase. It's safe, and we'll try again."
+msgstr "We couldn't reach Sloga to confirm your purchase. It's safe, and we'll try again."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot packs"
+msgstr "Prot packs"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Protected channels open in Sloga for desktop and Android. On iPhone you can buy Prot and fund channels."
+msgstr "Protected channels open in Sloga for desktop and Android. On iPhone you can buy Prot and fund channels."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Purchase"
+msgstr "Purchase"
 
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Prot is the credit you'll use for Protected servers and channels. Your balance and recent activity are below."
@@ -10339,6 +10709,36 @@ msgstr "Slogatron minigame"
 #: components/client/toastShell.ts
 msgid "Slow down — try again in a moment"
 msgstr "Slow down — try again in a moment"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Something went wrong. Try again in a moment."
+msgstr "Something went wrong. Try again in a moment."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "This server's launch goals couldn't be loaded. Try again in a moment."
+msgstr "This server's launch goals couldn't be loaded. Try again in a moment."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "This couldn't be loaded. Try again in a moment."
+msgstr "This couldn't be loaded. Try again in a moment."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "This channel's funding couldn't be loaded. Try again in a moment."
+msgstr "This channel's funding couldn't be loaded. Try again in a moment."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Your pledge couldn't be withdrawn. Try again in a moment."
+msgstr "Your pledge couldn't be withdrawn. Try again in a moment."
+
+#: components/app/interface/settings/ChannelSettings.tsx
+#: components/app/menus/ChannelContextMenu.tsx
+#: components/app/menus/ServerContextMenu.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Protected channel funding"
+msgstr "Protected channel funding"
 
 #: components/app/interface/settings/user/CipherSettings.tsx
 msgid "Checkout couldn't be started. Try again in a moment."
@@ -11037,6 +11437,14 @@ msgstr "Can't add people to this group chat from here yet."
 msgid "Checking…"
 msgstr "Checking…"
 
+#: components/client/protectedCopy.ts
+msgid "Messages above weren't protected"
+msgstr "Messages above weren't protected"
+
+#: components/client/protectedCopy.ts
+msgid "Earlier messages removed from this channel"
+msgstr "Earlier messages removed from this channel"
+
 #: components/modal/modals/AddFriendToGroup.tsx
 msgid "No other group chats to add them to."
 msgstr "No other group chats to add them to."
@@ -11405,6 +11813,10 @@ msgid "Your other device {device} seated {names}. If you didn't do this, secure 
 msgstr "Your other device {device} seated {names}. If you didn't do this, secure your account."
 
 #: components/client/protectedCopy.ts
+msgid "Sent after you were removed."
+msgstr "Sent after you were removed."
+
+#: components/client/protectedCopy.ts
 msgid "Sent before this device joined."
 msgstr "Sent before this device joined."
 
@@ -11441,6 +11853,26 @@ msgid "Update Sloga to see this message."
 msgstr "Update Sloga to see this message."
 
 #: components/client/protectedCopy.ts
+msgid "History from before you joined isn't shared here."
+msgstr "History from before you joined isn't shared here."
+
+#: components/client/protectedCopy.ts
+msgid "Earlier history couldn't be verified and wasn't loaded."
+msgstr "Earlier history couldn't be verified and wasn't loaded."
+
+#: components/client/protectedCopy.ts
+msgid "Two different versions of this channel's earlier history were offered, so earlier history wasn't loaded."
+msgstr "Two different versions of this channel's earlier history were offered, so earlier history wasn't loaded."
+
+#: components/client/protectedCopy.ts
+msgid "Earlier history couldn't be confirmed yet. Sloga will try again later."
+msgstr "Earlier history couldn't be confirmed yet. Sloga will try again later."
+
+#: components/client/protectedCopy.ts
+msgid "{name} added a new device. It can read this channel's history."
+msgstr "{name} added a new device. It can read this channel's history."
+
+#: components/client/protectedCopy.ts
 msgid "{name} added a new device."
 msgstr "{name} added a new device."
 
@@ -11455,6 +11887,26 @@ msgstr "Blocked an unexpected invitation to a protected channel."
 #: components/client/protectedCopy.ts
 msgid "Another of your devices changed a protected channel. Open the channel to see what changed."
 msgstr "Another of your devices changed a protected channel. Open the channel to see what changed."
+
+#: components/client/protectedCopy.ts
+msgid "History keys shared for a protected channel don't match. New members may not be able to read some earlier messages."
+msgstr "History keys shared for a protected channel don't match. New members may not be able to read some earlier messages."
+
+#: components/client/protectedCopy.ts
+msgid "Some earlier history in a protected channel can't be shared with new members: too many people joined or left at once."
+msgstr "Some earlier history in a protected channel can't be shared with new members: too many people joined or left at once."
+
+#: components/client/protectedCopy.ts
+msgid "Sender couldn't be verified (history)."
+msgstr "Sender couldn't be verified (history)."
+
+#: components/client/protectedCopy.ts
+msgid "Timing of this message can't be verified."
+msgstr "Timing of this message can't be verified."
+
+#: components/client/protectedCopy.ts
+msgid "Listed among the earlier, unprotected messages."
+msgstr "Listed among the earlier, unprotected messages."
 
 #: components/client/protectedCopy.ts
 msgid "This channel's member list uses an older format, so its signing devices can't be changed yet. Try again later."
@@ -11509,6 +11961,194 @@ msgstr "Grace period"
 msgid "Frozen"
 msgstr "Frozen"
 
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Closing"
+msgstr "Closing"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Deleted"
+msgstr "Deleted"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Closed by Sloga"
+msgstr "Closed by Sloga"
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "This Protected channel's tank is being set up."
+msgstr "This Protected channel's tank is being set up."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel has run out of Prot. It keeps working until {date}, but new members can't be added. Top it up to keep it active."
+msgstr "This Protected channel has run out of Prot. It keeps working until {date}, but new members can't be added. Top it up to keep it active."
+
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel is closing."
+msgstr "This Protected channel is closing."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel is frozen. You can read its history, but nothing can be sent until it's topped up."
+msgstr "This Protected channel is frozen. You can read its history, but nothing can be sent until it's topped up."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "This Protected channel is being closed."
+msgstr "This Protected channel is being closed."
+
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel was deleted from Sloga's servers because it ran out of Prot."
+msgstr "This Protected channel was deleted from Sloga's servers because it ran out of Prot."
+
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel has about {days} days of Prot left."
+msgstr "This Protected channel has about {days} days of Prot left."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "It may be deleted from Sloga's servers after {date}."
+msgstr "It may be deleted from Sloga's servers after {date}."
+
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel was deleted from Sloga's servers."
+msgstr "This Protected channel was deleted from Sloga's servers."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Move to {slots} seats? The tank pays the extra cost for the rest of today now, then {amount} Prot a day."
+msgstr "Move to {slots} seats? The tank pays the extra cost for the rest of today now, then {amount} Prot a day."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Move to {slots} seats? The tank pays {amount} Prot a day from the next day. If more members are seated or cooling down than that, the change waits until enough seats are free."
+msgstr "Move to {slots} seats? The tank pays {amount} Prot a day from the next day. If more members are seated or cooling down than that, the change waits until enough seats are free."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Uses {amount} Prot a day"
+msgstr "Uses {amount} Prot a day"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Moving to {tier} seats once enough seats are free."
+msgstr "Moving to {tier} seats once enough seats are free."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Upgrade goal"
+msgstr "Upgrade goal"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Launch goal"
+msgstr "Launch goal"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "{slots} seats"
+msgstr "{slots} seats"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "{days} days"
+msgstr "{days} days"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "{amount} Prot a day"
+msgstr "{amount} Prot a day"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "{pledged} of {target} Prot"
+msgstr "{pledged} of {target} Prot"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Ends {date}"
+msgstr "Ends {date}"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Funded"
+msgstr "Funded"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Funded. Launch it by {date}."
+msgstr "Funded. Launch it by {date}."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launched on #{name}. Protect the channel from its settings to finish."
+msgstr "Launched on #{name}. Protect the channel from its settings to finish."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Funded, waiting to launch"
+msgstr "Funded, waiting to launch"
+
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "You pledged {pledged} Prot"
+msgstr "You pledged {pledged} Prot"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "You can withdraw until {date}."
+msgstr "You can withdraw until {date}."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Withdraw your pledge of {amount} Prot? It goes back to your wallet."
+msgstr "Withdraw your pledge of {amount} Prot? It goes back to your wallet."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Target: {amount} Prot"
+msgstr "Target: {amount} Prot"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Open a goal for {slots} seats with a target of {amount} Prot?"
+msgstr "Open a goal for {slots} seats with a target of {amount} Prot?"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Choose from {min} to {max} days."
+msgstr "Choose from {min} to {max} days."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Members have {days} days to fund it."
+msgstr "Members have {days} days to fund it."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launch on #{name}"
+msgstr "Launch on #{name}"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgctxt "Prot contributor"
+msgid "Anonymous"
+msgstr "Anonymous"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgctxt "Prot contributor"
+msgid "Deleted user"
+msgstr "Deleted user"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Prot is the credit that keeps Protected servers and channels running. Members fund this channel's tank, and the tank pays for its seats each day."
+msgstr "Prot is the credit that keeps Protected servers and channels running. Members fund this channel's tank, and the tank pays for its seats each day."
+
 #: components/client/protectedCopy.ts
 msgid "Status: {label}"
 msgstr "Status: {label}"
@@ -11558,6 +12198,39 @@ msgid "Re-creating the group…"
 msgstr "Re-creating the group…"
 
 #: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "This channel is too busy to protect right now. Try again in a quiet moment."
+msgstr "This channel is too busy to protect right now. Try again in a quiet moment."
+
+#: components/client/protectedCopy.ts
+msgid "Earlier messages couldn't be deleted right now."
+msgstr "Earlier messages couldn't be deleted right now."
+
+#: components/client/protectedCopy.ts
+msgid "The newest message's time is ahead of this device's clock. Check the date and time settings, or try again in a few minutes."
+msgstr "The newest message's time is ahead of this device's clock. Check the date and time settings, or try again in a few minutes."
+
+#: components/client/protectedCopy.ts
+msgid "This channel is now protected, with only you in it. The members you picked weren't added yet. You can add them below."
+msgstr "This channel is now protected, with only you in it. The members you picked weren't added yet. You can add them below."
+
+#: components/client/protectedCopy.ts
+msgid "This channel is now protected, but the earlier messages were not deleted."
+msgstr "This channel is now protected, but the earlier messages were not deleted."
+
+#: components/client/protectedCopy.ts
+msgid "This channel is now protected. Adding the members you picked didn't finish. Check the seats below."
+msgstr "This channel is now protected. Adding the members you picked didn't finish. Check the seats below."
+
+#: components/client/protectedCopy.ts
+msgid "This channel is now protected, with only you in it. The earlier messages were not deleted, and the members you picked weren't added yet. You can add them below."
+msgstr "This channel is now protected, with only you in it. The earlier messages were not deleted, and the members you picked weren't added yet. You can add them below."
+
+#: components/client/protectedCopy.ts
+msgid "This channel is now protected, but the earlier messages were not deleted. Adding the members you picked didn't finish. Check the seats below."
+msgstr "This channel is now protected, but the earlier messages were not deleted. Adding the members you picked didn't finish. Check the seats below."
+
+#: components/client/protectedCopy.ts
 msgid "Messages in a protected channel are end-to-end encrypted. Only members you give a seat can read and send messages, on devices that support Protected channels."
 msgstr "Messages in a protected channel are end-to-end encrypted. Only members you give a seat can read and send messages, on devices that support Protected channels."
 
@@ -11585,6 +12258,55 @@ msgstr "Only the server owner can manage this protected channel."
 #: components/client/protectedCopy.ts
 msgid "Seats"
 msgstr "Seats"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Only the server owner can change the seats or open goals."
+msgstr "Only the server owner can change the seats or open goals."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Prot is switched off right now, so the seats and goals can't be changed."
+msgstr "Prot is switched off right now, so the seats and goals can't be changed."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Changing the seats and opening goals isn't available yet."
+msgstr "Changing the seats and opening goals isn't available yet."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Seat tier"
+msgstr "Seat tier"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Choose how many seats the tank pays for."
+msgstr "Choose how many seats the tank pays for."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "The seats can't change while an upgrade goal is open."
+msgstr "The seats can't change while an upgrade goal is open."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "You contributed"
+msgstr "You contributed"
+
+#: components/modal/modals/ProtContribute.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Contributing supports this server. It does not reserve a seat; the owner chooses members."
+msgstr "Contributing supports this server. It does not reserve a seat; the owner chooses members."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Contributing isn't available in this version of Sloga."
+msgstr "Contributing isn't available in this version of Sloga."
+
+#: components/modal/modals/ProtContribute.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "Top up"
+msgstr "Top up"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Goals"
+msgstr "Goals"
 
 #: components/client/protectedCopy.ts
 msgid "Each member can use up to {max} devices."
@@ -12047,8 +12769,25 @@ msgid "The payment provider didn't respond. Please try again."
 msgstr "The payment provider didn't respond. Please try again."
 
 #: components/i18n/errors.ts
+msgid "This was already done."
+msgstr "This was already done."
+
+#: components/i18n/errors.ts
 msgid "Prot isn't available right now."
 msgstr "Prot isn't available right now."
+
+#: components/i18n/errors.ts
+#: components/modal/modals/ProtContribute.tsx
+msgid "This goal is closed."
+msgstr "This goal is closed."
+
+#: components/i18n/errors.ts
+msgid "Some members are still seated or cooling down. Unseat members first, or wait for their seats to free up."
+msgstr "Some members are still seated or cooling down. Unseat members first, or wait for their seats to free up."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "This channel isn't taking contributions right now."
+msgstr "This channel isn't taking contributions right now."
 
 #: components/i18n/errors.ts
 msgid "Prot isn't on sale right now."
@@ -12081,6 +12820,22 @@ msgstr "This Prot request was already sent with different details. Refresh and t
 #: components/i18n/errors.ts
 msgid "You don't have enough Prot for this: it needs {protNeeded} Prot and you have {protAvailable}."
 msgstr "You don't have enough Prot for this: it needs {protNeeded} Prot and you have {protAvailable}."
+
+#: components/i18n/errors.ts
+msgid "Prot isn't on sale in the app right now."
+msgstr "Prot isn't on sale in the app right now."
+
+#: components/i18n/errors.ts
+msgid "That Prot pack isn't available."
+msgstr "That Prot pack isn't available."
+
+#: components/i18n/errors.ts
+msgid "We couldn't confirm this purchase with the store. Please try again."
+msgstr "We couldn't confirm this purchase with the store. Please try again."
+
+#: components/i18n/errors.ts
+msgid "In-app purchases aren't available right now. Please try again later."
+msgstr "In-app purchases aren't available right now. Please try again later."
 
 #: components/i18n/errors.ts
 msgid "This device was removed from your account's encryption."
@@ -13810,6 +14565,19 @@ msgstr "You are banned from this server."
 msgid "You are in slowmode, wait before invoking commands."
 msgstr "You are in slowmode, wait before invoking commands."
 
+#: components/client/protectedCopy.ts
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "Grace period: new members can't be added until it's topped up."
+msgstr "Grace period: new members can't be added until it's topped up."
+
+#: components/client/protectedCopy.ts
+msgid "Frozen: top it up to send messages again."
+msgstr "Frozen: top it up to send messages again."
+
+#: components/client/protectedCopy.ts
+msgid "Deleted from Sloga's servers."
+msgstr "Deleted from Sloga's servers."
+
 #: components/ui/components/features/voice/callCard/VoiceCallRecordingBanner.tsx
 msgid "You are recording"
 msgstr "You are recording"
@@ -14217,6 +14985,14 @@ msgstr "Your suspension has expired — try logging in again."
 #: components/i18n/errors.ts
 msgid "Your user has already been created? Try logging in again or refreshing the app."
 msgstr "Your user has already been created? Try logging in again or refreshing the app."
+
+#: components/i18n/errors.ts
+msgid "Prot bought recently can't be contributed yet."
+msgstr "Prot bought recently can't be contributed yet."
+
+#: components/i18n/errors.ts
+msgid "This Protected channel is frozen until it's topped up."
+msgstr "This Protected channel is frozen until it's topped up."
 
 #: components/ui/components/features/voice/watch/WatchOverlay.tsx
 msgid "YouTube"

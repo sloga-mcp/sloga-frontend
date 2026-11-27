@@ -13,7 +13,9 @@
  * literal commit 5b61eef1 (the S7 frontend base, carrying the d12b6ed4 v0.69
  * regen), never from HEAD: a control against HEAD goes vacuous once the S7
  * regen lands. Likewise the S2 control reads the real S7 .kt (the 37497811
- * regen, no text_authority_sign) from the literal commit 68653961.
+ * regen, no text_authority_sign) from the literal commit 68653961, and the S4
+ * control reads the real S2 .kt (the 2872fb61 regen, no history commands) from
+ * the literal commit b011e7c7.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -51,6 +53,10 @@ const REPO = dirname(dirname(CLIENT));
 
 const PRE_S7_COMMIT = "5b61eef1";
 const S7_COMMIT = "68653961";
+const S2_COMMIT = "b011e7c7";
+// The two history commands S4 added. Named here, not read from TEXT_METHODS:
+// dropping one from the script's list must turn these tests red.
+const S4_METHODS = ["text_history_link_build", "text_history_import"];
 const COMMIT = "e8939a5bd0209e410e718fee8214d0fdff0559c7";
 const OTHER_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
@@ -568,7 +574,7 @@ describe("negative controls (each must fail)", () => {
     const root = makeTree({ kt: goodKt({ methods: [] }) });
     assertFails(
       check(root),
-      /FAIL: .*acutest_e2ee\.kt lacks 22 of 22 protected-text methods \(stale bindings\?\)/,
+      /FAIL: .*acutest_e2ee\.kt lacks 24 of 24 protected-text methods \(stale bindings\?\)/,
     );
   });
 
@@ -587,7 +593,7 @@ describe("negative controls (each must fail)", () => {
     const root = makeTree({ kt });
     assertFails(
       check(root),
-      /acutest_e2ee\.kt lacks 22 of 22 protected-text methods/,
+      /acutest_e2ee\.kt lacks 24 of 24 protected-text methods/,
     );
   });
 
@@ -610,7 +616,30 @@ describe("negative controls (each must fail)", () => {
     const root = makeTree({ kt });
     assertFails(
       check(root),
-      /lacks 1 of 22 protected-text methods .*: text_authority_sign$/m,
+      /lacks 3 of 24 protected-text methods .*: text_authority_sign text_history_link_build text_history_import$/m,
+    );
+  });
+
+  test(`stale .kt: the real S2 bindings at ${S2_COMMIT} (no history commands)`, () => {
+    const show = spawnSync(
+      "git",
+      ["-C", REPO, "show", `${S2_COMMIT}:packages/client/${KT_REL}`],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(show.status, 0, `git show failed: ${show.stderr}`);
+    const kt = show.stdout;
+    assert.ok(kt.includes("package uniffi.acutest_e2ee"), "a uniffi .kt");
+    assert.ok(
+      kt.includes(
+        "lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_authority_sign()",
+      ),
+      "it carries the S2 text plane",
+    );
+    // As above: only the two methods S4 added can fail it.
+    const root = makeTree({ kt });
+    assertFails(
+      check(root),
+      /lacks 2 of 24 protected-text methods .*: text_history_link_build text_history_import$/m,
     );
   });
 
@@ -622,9 +651,65 @@ describe("negative controls (each must fail)", () => {
     });
     assertFails(
       check(root),
-      /lacks 1 of 22 protected-text methods .*: text_capability$/m,
+      /lacks 1 of 24 protected-text methods .*: text_capability$/m,
     );
   });
+
+  test("TEXT_METHODS is 24 names and carries S4's history commands", () => {
+    assert.equal(TEXT_METHODS.length, 24);
+    assert.equal(new Set(TEXT_METHODS).size, 24);
+    for (const m of S4_METHODS) assert.ok(TEXT_METHODS.includes(m), m);
+  });
+
+  for (const m of S4_METHODS) {
+    const withS4 = [...new Set([...TEXT_METHODS, ...S4_METHODS])];
+
+    test(`stale .kt: S4's ${m} missing`, () => {
+      const root = makeTree({
+        kt: goodKt({ methods: withS4.filter((x) => x !== m) }),
+      });
+      assertFails(
+        check(root),
+        new RegExp(`lacks 1 of 24 protected-text methods .*: ${m}$`, "m"),
+      );
+    });
+
+    test(`missing symbol: a lib without S4's ${m} function`, () => {
+      // The .kt does not name the fn symbol, so only the script's own list
+      // can require it of the library.
+      const fn = `uniffi_acutest_e2ee_fn_method_e2eeengine_${m}`;
+      const kt = goodKt({ methods: withS4 })
+        .split("\n")
+        .filter((line, i, all) => {
+          const decl = (l) => l.startsWith(`    fun ${fn}(`);
+          return !decl(line) && !(i > 0 && decl(all[i - 1]));
+        })
+        .join("\n");
+      assert.ok(!kt.includes(fn), "the .kt no longer binds the function");
+      const root = makeTree({
+        kt,
+        exports: (abi, s) =>
+          abi === "arm64-v8a" ? s.filter((x) => x.name !== fn) : s,
+      });
+      assertFails(
+        check(root),
+        new RegExp(`arm64-v8a.*does not export 1 symbol.*: ${fn}$`, "m"),
+      );
+    });
+
+    test(`missing symbol: a lib without S4's ${m} checksum`, () => {
+      const sum = `uniffi_acutest_e2ee_checksum_method_e2eeengine_${m}`;
+      const root = makeTree({
+        kt: goodKt({ methods: withS4 }),
+        exports: (abi, s) =>
+          abi === "armeabi-v7a" ? s.filter((x) => x.name !== sum) : s,
+      });
+      assertFails(
+        check(root),
+        new RegExp(`armeabi-v7a.*does not export 1 symbol.*: ${sum}$`, "m"),
+      );
+    });
+  }
 
   test("PROVENANCE inside jniLibs (the old build-android.ps1 location)", () => {
     for (const rel of [

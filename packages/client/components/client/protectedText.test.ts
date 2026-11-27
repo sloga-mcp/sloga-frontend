@@ -842,11 +842,15 @@ function fakeDeps(
           tsSkew: false,
           cid: row.nonce ?? "",
           filesUnsupported: 0,
+          timingUnverified: false,
+          belowBoundary: false,
+          historySender: false,
         };
       },
       markerForError: () => "error",
       ...over.messages,
     },
+    requestBackupRefresh: () => undefined,
   };
 }
 
@@ -857,6 +861,7 @@ function make(env: Env, deps?: ProtectedTextManagerDeps) {
       onView: (ch, v) => env.views.set(ch, v),
       onMessageView: (id, v) => env.msgViews.set(id, v),
       onTimelineMarker: (_ch, m) => env.markers.push(m),
+      onHistoryPolicy: () => undefined,
       onGroupReported: (ch: string, groupId: string, generation: number) => {
         env.reported.push([ch, groupId, generation]);
         env.trace.push(`reported ${groupId}`);
@@ -2326,7 +2331,10 @@ test("timeline markers: new devices and a server-forced removal", async () => {
   m.onEnvelope(envelope("E1", 4));
   await env.advance(0);
   assert.deepEqual(
-    env.markers.map((k) => [k.kind, k.userId]),
+    env.markers.map((k) => [
+      k.kind,
+      k.kind === "history_floor" ? null : k.userId,
+    ]),
     [
       ["new_device", OWNER],
       ["forced_removal", PEER],
@@ -2416,6 +2424,9 @@ test("L2: a history decrypt in flight never swallows the live one", async () => 
           tsSkew: false,
           cid: r.nonce ?? "",
           filesUnsupported: 0,
+          timingUnverified: false,
+          belowBoundary: false,
+          historySender: false,
         };
       },
     },
@@ -2453,6 +2464,9 @@ test("forget(ids): deleted messages drop views and dedupe state", async () => {
           tsSkew: false,
           cid: r.nonce ?? "",
           filesUnsupported: 0,
+          timingUnverified: false,
+          belowBoundary: false,
+          historySender: false,
         };
       },
     },
@@ -3377,6 +3391,7 @@ function nativeDecryptDeps(env: Env): ProtectedTextManagerDeps {
     sender_verified: true,
     ts_skew: false,
     files: [],
+    timing_unverified: false,
   });
   return fakeDeps(env, {
     messages: {
@@ -3398,6 +3413,9 @@ function nativeDecryptDeps(env: Env): ProtectedTextManagerDeps {
             tsSkew: d.ts_skew,
             cid: d.cid,
             filesUnsupported: 0,
+            timingUnverified: false,
+            belowBoundary: false,
+            historySender: false,
           };
         } catch {
           return { status: "marker", kind: "error" };
@@ -4066,7 +4084,11 @@ test("S2 retryNow: ONE manual refresh, never the open interval; held channels on
   await env.advance(10 * 60_000);
   assert.equal(seatsGets(), before + 1, "no interval started");
   assert.equal(env.sleeps.length, 0, "no timer left behind");
-  // a channel the manager doesn't hold is ignored (no register, no GET)
+  // a channel the manager doesn't hold and the client cache does not know
+  // is ignored (no register, no GET)
+  const known = env.channelInfo.bind(env);
+  env.channelInfo = (id: string) =>
+    id === CH ? known(id) : (null as unknown as ReturnType<typeof known>);
   m.retryNow("01J9Z3K4M5N6P7Q8R9S0T1V2XX");
   await env.advance(0);
   assert.equal(
@@ -4079,6 +4101,45 @@ test("S2 retryNow: ONE manual refresh, never the open interval; held channels on
   await env.advance(0);
   assert.equal(seatsGets(), before + 2);
   m.dispose();
+});
+
+test("C6 retryNow: a protected channel the manager does not hold is registered and gets ONE manual refresh, any other id none", async () => {
+  const env = new Env();
+  const m = make(env);
+  const seatsGets = () => env.api$("GET", /^\/channels\/[^/]+\/seats$/).length;
+  assert.equal(m.stateOf(CH), null, "not held");
+  assert.equal(seatsGets(), 0);
+  // a double click before the register settled is still one refresh
+  m.retryNow(CH);
+  m.retryNow(CH);
+  await env.advance(0);
+  assert.notEqual(m.stateOf(CH), null, "registered");
+  assert.equal(seatsGets(), 1, "one refresh");
+  // not an open: no interval, no timer
+  await env.advance(10 * 60_000);
+  assert.equal(seatsGets(), 1, "no interval started");
+  assert.equal(env.sleeps.length, 0, "no timer left behind");
+  // held now: the next click is the S2 path, one more refresh
+  m.retryNow(CH);
+  await env.advance(0);
+  assert.equal(seatsGets(), 2);
+  // a channel the cache knows as neither protected nor pinned: nothing
+  const OTHER = "01J9Z3K4M5N6P7Q8R9S0T1V2XX";
+  const known = env.channelInfo.bind(env);
+  env.channelInfo = (id: string) =>
+    id === OTHER
+      ? { ...known(id), serverProtected: false, locallyPinned: false }
+      : known(id);
+  m.retryNow(OTHER);
+  await env.advance(0);
+  assert.equal(m.stateOf(OTHER), null, "not registered");
+  assert.equal(env.api$("GET", /01J9Z3K4M5N6P7Q8R9S0T1V2XX/).length, 0);
+  // nothing after dispose
+  m.dispose();
+  const after = env.api.length;
+  m.retryNow(CH);
+  await env.advance(0);
+  assert.equal(env.api.length, after);
 });
 
 test("S2 retryNow: dropped while a refresh of the channel is in flight, and a double click is one refresh", async () => {
